@@ -1,26 +1,100 @@
 @import "tailwindcss";
 
+/* Dark-mode-by-default theme tokens for a control-room UI. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0b0d10;
+  --foreground: #e6e7ea;
+  --muted: #15181d;
+  --muted-foreground: #8b93a1;
+  --card: #101318;
+  --card-foreground: #e6e7ea;
+  --popover: #101318;
+  --popover-foreground: #e6e7ea;
+  --border: #262b33;
+  --input: #1a1f26;
+  --ring: #4b8eff;
+  --primary: #4b8eff;
+  --primary-foreground: #0b0d10;
+  --secondary: #1a1f26;
+  --secondary-foreground: #e6e7ea;
+  --accent: #242b36;
+  --accent-foreground: #e6e7ea;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --success: #22c55e;
+  --warning: #eab308;
+
+  /* Default nation colors; overridable from the DB per row. */
+  --nation-epicenter: #c84a4a;
+  --nation-folos: #4bb4e0;
+  --nation-emberlyn: #d18a2e;
+  --nation-spokgrad: #7a7fbf;
+  --nation-pelico: #4fb07a;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+    sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Form elements default to dark. */
+input,
+textarea,
+select,
+button {
+  color: inherit;
+  font: inherit;
+}
+
+::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Subtle scrollbars. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }
