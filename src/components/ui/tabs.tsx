@@ -1,8 +1,10 @@
+"use client";
+
 import * as React from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
-/** Simple link-based tabs. The active tab is highlighted by the caller passing `active`. */
 export function TabBar({
   children,
   className,
@@ -21,15 +23,16 @@ export function TabBar({
   );
 }
 
+/** Tab auto-highlights based on current pathname. */
 export function Tab({
   href,
-  active,
   children,
 }: {
   href: string;
-  active?: boolean;
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+  const active = pathname === href || pathname.startsWith(href + "/");
   return (
     <Link
       href={href}
