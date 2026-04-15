@@ -54,7 +54,8 @@ Plan file: `~/.claude/plans/quiet-snuggling-boot.md`.
    ```bash
    pnpm dev
    ```
-   The middleware bounces unauthenticated users to `/sign-in`.
+   The `proxy.ts` (Next 16's renamed middleware) bounces unauthenticated
+   users to `/sign-in`.
 5. **Typecheck / build**
    ```bash
    pnpm typecheck

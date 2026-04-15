@@ -2,9 +2,6 @@ import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Table, TBody, TD, TH, THead } from "@/components/ui/table";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Playthrough } from "@/lib/db/types";
@@ -36,35 +33,35 @@ export default async function PlaythroughsPage() {
         }
       />
 
-      <Card className="mb-6">
-        <CardContent className="pt-5">
-          <form action={createPlaythrough} className="flex items-end gap-3">
-            <div className="flex flex-col gap-1.5 flex-1">
-              <Label>Name</Label>
-              <Input name="name" placeholder="Rebel run" required />
-            </div>
-            <Button type="submit" size="sm">
-              New playthrough
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
       <Table>
         <THead>
           <tr>
             <TH>Name</TH>
             <TH style={{ width: 120 }}>Phase</TH>
-            <TH style={{ width: 120 }}>Active</TH>
-            <TH style={{ width: 200 }} />
+            <TH style={{ width: 140 }}>Active</TH>
           </tr>
         </THead>
         <TBody>
           {playthroughs.map((p) => (
-            <tr key={p.id}>
-              <TD className="font-medium">{p.name}</TD>
-              <TD className="text-xs text-muted-foreground">
-                {p.current_phase}
+            <tr
+              key={p.id}
+              className="cursor-pointer transition-colors hover:bg-accent/40"
+            >
+              <TD className="p-0">
+                <Link
+                  href={`/playthroughs/${p.id}`}
+                  className="block px-3 py-2 font-medium"
+                >
+                  {p.name}
+                </Link>
+              </TD>
+              <TD className="p-0">
+                <Link
+                  href={`/playthroughs/${p.id}`}
+                  className="block px-3 py-2 text-xs text-muted-foreground"
+                >
+                  {p.current_phase}
+                </Link>
               </TD>
               <TD>
                 {p.is_active ? (
@@ -78,24 +75,25 @@ export default async function PlaythroughsPage() {
                   </form>
                 )}
               </TD>
-              <TD>
-                <Link href={`/playthroughs/${p.id}`}>
-                  <Button size="sm" variant="secondary">
-                    Open
-                  </Button>
-                </Link>
-              </TD>
             </tr>
           ))}
           {playthroughs.length === 0 ? (
             <tr>
-              <TD colSpan={4} className="text-center text-muted-foreground">
+              <TD colSpan={3} className="text-center text-muted-foreground">
                 No playthroughs yet.
               </TD>
             </tr>
           ) : null}
         </TBody>
       </Table>
+
+      <div className="mt-4 flex justify-center">
+        <form action={createPlaythrough}>
+          <Button type="submit" variant="outline" size="sm">
+            + Playthrough
+          </Button>
+        </form>
+      </div>
     </div>
   );
 }

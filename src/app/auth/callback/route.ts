@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
 
   // Defense in depth: if a non-allow-listed email somehow got through, sign them out.
   const email = data.session?.user.email;
-  if (!isEmailAllowed(email)) {
+  if (!(await isEmailAllowed(email))) {
     await supabase.auth.signOut();
     return NextResponse.redirect(
       new URL(

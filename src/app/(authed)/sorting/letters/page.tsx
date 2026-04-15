@@ -2,9 +2,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead } from "@/components/ui/table";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Day, SortingLetterView } from "@/lib/db/types";
@@ -37,32 +35,9 @@ export default async function SortingLettersPage({
   return (
     <div>
       <PageHeader
-        title="Sorting letters"
+        title="Sorting Letters"
         description="Letters the player must sort during the sorting phase of each day."
       />
-
-      <Card className="mb-6">
-        <CardContent className="pt-5">
-          <form action={createSortingLetter} className="flex items-end gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label>Day</Label>
-              <Select name="day_id" required defaultValue="">
-                <option value="" disabled>
-                  Select day
-                </option>
-                {days.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.identifier}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <Button type="submit" size="sm">
-              Add sorting letter
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Label>Filter</Label>
@@ -100,50 +75,82 @@ export default async function SortingLettersPage({
             <TH>Sender</TH>
             <TH style={{ width: 80 }}>Fake?</TH>
             <TH style={{ width: 120 }}>Storage</TH>
-            <TH style={{ width: 100 }} />
           </tr>
         </THead>
         <TBody>
           {letters.map((l) => (
-            <tr key={l.id}>
-              <TD>
-                <Badge variant="secondary" className="font-mono">
-                  {l.content_id}
-                </Badge>
+            <tr
+              key={l.id}
+              className="cursor-pointer transition-colors hover:bg-accent/40"
+            >
+              <TD className="p-0">
+                <Link href={`/sorting/letters/${l.id}`} className="block px-3 py-2">
+                  <Badge variant="secondary" className="font-mono">
+                    {l.content_id}
+                  </Badge>
+                </Link>
               </TD>
-              <TD className="font-mono text-xs">D{l.day_number}</TD>
-              <TD className="text-xs text-muted-foreground">
-                {l.recipient_name ?? "—"}
+              <TD className="p-0">
+                <Link
+                  href={`/sorting/letters/${l.id}`}
+                  className="block px-3 py-2 font-mono text-xs"
+                >
+                  D{l.day_number}
+                </Link>
               </TD>
-              <TD className="text-xs text-muted-foreground">
-                {l.sender_name ?? "—"}
+              <TD className="p-0">
+                <Link
+                  href={`/sorting/letters/${l.id}`}
+                  className="block px-3 py-2 text-xs text-muted-foreground"
+                >
+                  {l.recipient_name ?? "—"}
+                </Link>
               </TD>
-              <TD>
-                {l.is_counterfeit ? (
-                  <Badge variant="destructive">yes</Badge>
-                ) : (
-                  "—"
-                )}
+              <TD className="p-0">
+                <Link
+                  href={`/sorting/letters/${l.id}`}
+                  className="block px-3 py-2 text-xs text-muted-foreground"
+                >
+                  {l.sender_name ?? "—"}
+                </Link>
               </TD>
-              <TD className="font-mono text-xs">{l.storage_location ?? "—"}</TD>
-              <TD>
-                <Link href={`/sorting/letters/${l.id}`}>
-                  <Button size="sm" variant="secondary">
-                    Edit
-                  </Button>
+              <TD className="p-0">
+                <Link href={`/sorting/letters/${l.id}`} className="block px-3 py-2">
+                  {l.is_counterfeit ? (
+                    <Badge variant="destructive">yes</Badge>
+                  ) : (
+                    "—"
+                  )}
+                </Link>
+              </TD>
+              <TD className="p-0">
+                <Link
+                  href={`/sorting/letters/${l.id}`}
+                  className="block px-3 py-2 font-mono text-xs"
+                >
+                  {l.storage_location ?? "—"}
                 </Link>
               </TD>
             </tr>
           ))}
           {letters.length === 0 ? (
             <tr>
-              <TD colSpan={7} className="text-center text-muted-foreground">
+              <TD colSpan={6} className="text-center text-muted-foreground">
                 No sorting letters yet.
               </TD>
             </tr>
           ) : null}
         </TBody>
       </Table>
+
+      <div className="mt-4 flex justify-center">
+        <form action={createSortingLetter}>
+          {day ? <input type="hidden" name="day_id" value={day} /> : null}
+          <Button type="submit" variant="outline" size="sm">
+            + Sorting letter
+          </Button>
+        </form>
+      </div>
     </div>
   );
 }

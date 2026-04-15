@@ -13,7 +13,7 @@ export function TabBar({
   return (
     <div
       className={cn(
-        "flex items-center gap-1 border-b border-border text-sm",
+        "flex items-center gap-1 border-b border-border font-mono text-sm uppercase tracking-wide",
         className
       )}
       {...props}

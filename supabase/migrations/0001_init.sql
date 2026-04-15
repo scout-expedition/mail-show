@@ -389,16 +389,15 @@ select
   coalesce(
     rs.delivery_day_override_id,
     (
-      select d2.id from public.days d2
-      where d2.number = (
-        select min(d.number) + 1 from public.days d
-        where d.id = coalesce(
-          (select min(il2.delivery_day_override_id)
+      select d_next.id from public.days d_next
+      where d_next.number = (
+        coalesce(
+          (select min(d_trig.number)
             from public.inspection_letters il2
-            where il2.letter_group_id = rg.letter_group_id
-              and il2.delivery_day_override_id is not null),
-          lg.delivery_day_id
-        )
+            join public.days d_trig on d_trig.id = il2.delivery_day_override_id
+            where il2.letter_group_id = rg.letter_group_id),
+          (select d_lg.number from public.days d_lg where d_lg.id = lg.delivery_day_id)
+        ) + 1
       )
     )
   ) as effective_day_id

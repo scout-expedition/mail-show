@@ -15,6 +15,8 @@ import {
   Package,
   PlayCircle,
   Settings,
+  Search,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,28 +25,30 @@ const NAV_ITEMS: Array<{
   href: string;
   label: string;
   icon: LucideIcon;
-  section: "Game" | "Data" | "Run";
+  section: "Game" | "Sorting" | "Inspection" | "Data" | "Run";
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
-  { href: "/storylines", label: "Storylines", icon: BookOpen, section: "Game" },
-  { href: "/sorting/letters", label: "Sorting letters", icon: Mail, section: "Game" },
-  { href: "/sorting/rules", label: "Sorting rules", icon: Ruler, section: "Game" },
-  { href: "/physical", label: "Physical letters", icon: Package, section: "Game" },
+  { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
+  { href: "/sorting/letters", label: "Sorting Letters", icon: Mail, section: "Sorting" },
+  { href: "/sorting/rules", label: "Sorting Rules", icon: Ruler, section: "Sorting" },
+  { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
+  { href: "/inspection/letters", label: "Inspection Letters", icon: Search, section: "Inspection" },
+  { href: "/inspection/actions", label: "Inspection Actions", icon: Zap, section: "Inspection" },
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
   { href: "/playthroughs", label: "Playthroughs", icon: PlayCircle, section: "Run" },
-  { href: "/graph", label: "Narrative graph", icon: MapIcon, section: "Run" },
+  { href: "/graph", label: "Narrative Graph", icon: MapIcon, section: "Run" },
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
-  const sections = ["Game", "Data", "Run"] as const;
+  const sections = ["Game", "Sorting", "Inspection", "Data", "Run"] as const;
 
   return (
-    <nav className="flex h-full w-56 flex-col gap-4 border-r border-border bg-card/50 px-3 py-4">
+    <nav className="flex h-full w-56 flex-col gap-4 border-r border-border bg-card/50 px-3 py-4 font-mono">
       <div className="px-2">
         <div className="text-sm font-semibold tracking-wide">Mail Show</div>
         <div className="text-xs text-muted-foreground">Planning tool</div>

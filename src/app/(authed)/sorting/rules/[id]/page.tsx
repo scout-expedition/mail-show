@@ -93,13 +93,7 @@ export default async function RuleDetail({
                 defaultValue={rule.destination_slot ?? ""}
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>Match mode</Label>
-              <Select name="match_mode" defaultValue={rule.match_mode}>
-                <option value="all">All conditions</option>
-                <option value="any">Any condition</option>
-              </Select>
-            </div>
+            <input type="hidden" name="match_mode" value={rule.match_mode} />
             <div className="col-span-3 flex flex-col gap-1.5">
               <Label>Day implemented</Label>
               <Select
@@ -144,6 +138,7 @@ export default async function RuleDetail({
           <ConditionBuilder
             ruleId={rule.id}
             initial={initial}
+            initialMatchMode={rule.match_mode}
             saveAction={saveConditions}
           />
         </CardContent>

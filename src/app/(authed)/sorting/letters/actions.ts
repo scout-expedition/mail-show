@@ -30,8 +30,16 @@ async function nextSortId(dayId: string): Promise<number> {
 
 export async function createSortingLetter(formData: FormData) {
   const supabase = await createSupabaseServerClient();
-  const day_id = String(formData.get("day_id") ?? "");
-  if (!day_id) return;
+  let day_id = String(formData.get("day_id") ?? "");
+  if (!day_id) {
+    const { data: firstDay } = await supabase
+      .from("days")
+      .select("id")
+      .order("number")
+      .limit(1);
+    day_id = firstDay?.[0]?.id ?? "";
+  }
+  if (!day_id) throw new Error("Create a day before adding sorting letters.");
   const sort_id = nilNum(formData.get("sort_id")) ?? (await nextSortId(day_id));
 
   const { data, error } = await supabase

@@ -15,6 +15,7 @@ import {
   RULE_TARGET_SLICES,
   RULE_TARGETS,
   VALID_OPERATOR_REFERENCES,
+  type RuleMatchMode,
   type RuleOperator,
   type RuleReferenceType,
   type RuleTarget,
@@ -29,12 +30,41 @@ export type BuilderCondition = {
   reference_value: string | null;
 };
 
+/** Operators available for a given slice (first/last char can't use "contains"). */
+function operatorsForSlice(slice: RuleTargetSlice): readonly RuleOperator[] {
+  if (slice === "first_char" || slice === "last_char") {
+    return RULE_OPERATORS.filter((o) => o !== "contains");
+  }
+  return RULE_OPERATORS;
+}
+
+/** Reference types available given operator, slice, and boolean-target status. */
+function referenceTypesFor(
+  operator: RuleOperator,
+  slice: RuleTargetSlice,
+  isBoolTarget: boolean
+): RuleReferenceType[] {
+  if (isBoolTarget) return ["true", "false"];
+  let allowed = VALID_OPERATOR_REFERENCES[operator].slice();
+  // For first/last-char + equals, a single char can't be true/false.
+  if (
+    (slice === "first_char" || slice === "last_char") &&
+    operator === "equals"
+  ) {
+    allowed = allowed.filter((r) => r !== "true" && r !== "false");
+  }
+  return allowed;
+}
+
 function normalizeCondition(c: BuilderCondition): BuilderCondition {
-  // Ensure operator + reference_type are compatible.
-  const allowedRefs = VALID_OPERATOR_REFERENCES[c.operator];
+  const isBool = BOOLEAN_TARGETS.includes(c.target);
+  const allowedOps = operatorsForSlice(c.target_slice);
+  let operator = allowedOps.includes(c.operator) ? c.operator : allowedOps[0];
+  if (isBool) operator = "is";
+  const allowedRefs = referenceTypesFor(operator, c.target_slice, isBool);
   let reference_type = c.reference_type;
   if (!allowedRefs.includes(reference_type)) reference_type = allowedRefs[0];
-  if (BOOLEAN_TARGETS.includes(c.target)) {
+  if (isBool) {
     return {
       ...c,
       operator: "is",
@@ -42,21 +72,22 @@ function normalizeCondition(c: BuilderCondition): BuilderCondition {
       reference_value: null,
     };
   }
-  return { ...c, reference_type };
+  return { ...c, operator, reference_type };
 }
 
 export function ConditionBuilder({
   ruleId,
   initial,
+  initialMatchMode,
   saveAction,
 }: {
   ruleId: string;
   initial: BuilderCondition[];
+  initialMatchMode: RuleMatchMode;
   saveAction: (
     ruleId: string,
-    conditions: Array<
-      BuilderCondition & { position: number }
-    >
+    conditions: Array<BuilderCondition & { position: number }>,
+    matchMode?: RuleMatchMode
   ) => Promise<void>;
 }) {
   const [conditions, setConditions] = useState<BuilderCondition[]>(
@@ -72,6 +103,7 @@ export function ConditionBuilder({
           },
         ]
   );
+  const [matchMode, setMatchMode] = useState<RuleMatchMode>(initialMatchMode);
   const [isPending, startTransition] = useTransition();
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
@@ -105,7 +137,11 @@ export function ConditionBuilder({
       position: i + 1,
     }));
     startTransition(async () => {
-      await saveAction(ruleId, payload);
+      await saveAction(
+        ruleId,
+        payload,
+        conditions.length > 1 ? matchMode : undefined
+      );
       setSavedMsg("Saved");
       setTimeout(() => setSavedMsg(null), 1500);
     });
@@ -114,7 +150,7 @@ export function ConditionBuilder({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <h3 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           Conditions ({conditions.length}/3)
         </h3>
         <div className="flex items-center gap-2">
@@ -134,9 +170,11 @@ export function ConditionBuilder({
           </Button>
         </div>
       </div>
+
       {conditions.map((c, i) => {
         const isBoolTarget = BOOLEAN_TARGETS.includes(c.target);
-        const allowedRefs = VALID_OPERATOR_REFERENCES[c.operator];
+        const allowedOps = operatorsForSlice(c.target_slice);
+        const allowedRefs = referenceTypesFor(c.operator, c.target_slice, isBoolTarget);
         const usesRawValue =
           (c.operator === "equals" ||
             c.operator === "contains" ||
@@ -148,104 +186,114 @@ export function ConditionBuilder({
               (c.reference_type === "string" || c.reference_type === "number"))) &&
           !isBoolTarget;
         return (
-          <div
-            key={i}
-            className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-3"
-          >
-            <div className="col-span-3 flex flex-col gap-1">
-              <Label>Target</Label>
-              <Select
-                value={c.target}
-                onChange={(e) =>
-                  update(i, { target: e.target.value as RuleTarget })
-                }
-                className="h-8"
-              >
-                {RULE_TARGETS.map((t) => (
-                  <option key={t} value={t}>
-                    {RULE_TARGET_LABELS[t]}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1">
-              <Label>Slice</Label>
-              <Select
-                value={c.target_slice}
-                onChange={(e) =>
-                  update(i, { target_slice: e.target.value as RuleTargetSlice })
-                }
-                disabled={isBoolTarget}
-                className="h-8"
-              >
-                {RULE_TARGET_SLICES.map((s) => (
-                  <option key={s} value={s}>
-                    {RULE_TARGET_SLICE_LABELS[s]}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1">
-              <Label>Operator</Label>
-              <Select
-                value={c.operator}
-                onChange={(e) =>
-                  update(i, { operator: e.target.value as RuleOperator })
-                }
-                disabled={isBoolTarget}
-                className="h-8"
-              >
-                {RULE_OPERATORS.map((o) => (
-                  <option key={o} value={o}>
-                    {RULE_OPERATOR_LABELS[o]}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1">
-              <Label>Reference type</Label>
-              <Select
-                value={c.reference_type}
-                onChange={(e) =>
-                  update(i, { reference_type: e.target.value as RuleReferenceType })
-                }
-                className="h-8"
-              >
-                {RULE_REFERENCE_TYPES.filter((r) =>
-                  isBoolTarget ? r === "true" || r === "false" : allowedRefs.includes(r)
-                ).map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1">
-              <Label>Value</Label>
-              {usesRawValue ? (
-                <Input
-                  value={c.reference_value ?? ""}
-                  onChange={(e) => update(i, { reference_value: e.target.value })}
+          <div key={i} className="flex flex-col gap-2">
+            <div className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-3">
+              <div className="col-span-3 flex flex-col gap-1">
+                <Label>Target</Label>
+                <Select
+                  value={c.target}
+                  onChange={(e) =>
+                    update(i, { target: e.target.value as RuleTarget })
+                  }
                   className="h-8"
-                />
-              ) : (
-                <Input
-                  value="(implicit)"
-                  disabled
-                  readOnly
-                  className="h-8 text-muted-foreground"
-                />
-              )}
+                >
+                  {RULE_TARGETS.map((t) => (
+                    <option key={t} value={t}>
+                      {RULE_TARGET_LABELS[t]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Slice</Label>
+                <Select
+                  value={c.target_slice}
+                  onChange={(e) =>
+                    update(i, { target_slice: e.target.value as RuleTargetSlice })
+                  }
+                  disabled={isBoolTarget}
+                  className="h-8"
+                >
+                  {RULE_TARGET_SLICES.map((s) => (
+                    <option key={s} value={s}>
+                      {RULE_TARGET_SLICE_LABELS[s]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Operator</Label>
+                <Select
+                  value={c.operator}
+                  onChange={(e) =>
+                    update(i, { operator: e.target.value as RuleOperator })
+                  }
+                  disabled={isBoolTarget}
+                  className="h-8"
+                >
+                  {allowedOps.map((o) => (
+                    <option key={o} value={o}>
+                      {RULE_OPERATOR_LABELS[o]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Reference type</Label>
+                <Select
+                  value={c.reference_type}
+                  onChange={(e) =>
+                    update(i, {
+                      reference_type: e.target.value as RuleReferenceType,
+                    })
+                  }
+                  className="h-8"
+                >
+                  {allowedRefs.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Value</Label>
+                {usesRawValue ? (
+                  <Input
+                    value={c.reference_value ?? ""}
+                    onChange={(e) =>
+                      update(i, { reference_value: e.target.value })
+                    }
+                    className="h-8"
+                  />
+                ) : (
+                  <Input
+                    value="(implicit)"
+                    disabled
+                    readOnly
+                    className="h-8 text-muted-foreground"
+                  />
+                )}
+              </div>
+              <div className="col-span-1 flex justify-end">
+                <Button size="sm" variant="ghost" onClick={() => remove(i)}>
+                  ×
+                </Button>
+              </div>
             </div>
-            <div className="col-span-1 flex justify-end">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => remove(i)}
-              >
-                ×
-              </Button>
-            </div>
+
+            {i === 0 && conditions.length > 1 ? (
+              <div className="ml-4 flex items-center gap-2">
+                <Select
+                  value={matchMode}
+                  onChange={(e) => setMatchMode(e.target.value as RuleMatchMode)}
+                  className="h-8 w-auto"
+                >
+                  <option value="all">And</option>
+                  <option value="any">And/Or</option>
+                </Select>
+              </div>
+            ) : null}
           </div>
         );
       })}

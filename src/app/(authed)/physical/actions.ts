@@ -10,21 +10,36 @@ function nilStr(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
-export async function createPhysicalLetter(formData: FormData) {
+export async function createPhysicalLetter() {
   const supabase = await createSupabaseServerClient();
-  const content_ref_type = String(formData.get("content_ref_type") ?? "sorting") as ContentRefType;
-  const content_ref_id = String(formData.get("content_ref_id") ?? "");
-  if (!content_ref_id) return;
+  // Default to the first available sorting letter, else the first inspection letter.
+  let content_ref_type: ContentRefType = "sorting";
+  const { data: sortingRef } = await supabase
+    .from("sorting_letters_view")
+    .select("id")
+    .order("content_id")
+    .limit(1);
+  let content_ref_id = sortingRef?.[0]?.id ?? "";
+  if (!content_ref_id) {
+    const { data: inspRef } = await supabase
+      .from("inspection_letters_view")
+      .select("id")
+      .order("content_id")
+      .limit(1);
+    content_ref_id = inspRef?.[0]?.id ?? "";
+    content_ref_type = "inspection";
+  }
+  if (!content_ref_id)
+    throw new Error(
+      "Create a sorting or inspection letter before adding physical letters."
+    );
 
-  // Generate a unique 6-digit letter_id (retry a few times).
   for (let attempt = 0; attempt < 6; attempt++) {
     const letter_id = randomLetterId();
     const { error } = await supabase.from("physical_letters").insert({
       letter_id,
       content_ref_type,
       content_ref_id,
-      storage_location: nilStr(formData.get("storage_location")),
-      notes: nilStr(formData.get("notes")),
     });
     if (!error) break;
     if (!/unique/i.test(error.message)) {

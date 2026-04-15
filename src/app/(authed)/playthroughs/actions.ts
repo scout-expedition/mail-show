@@ -10,12 +10,11 @@ function nilStr(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
-export async function createPlaythrough(formData: FormData) {
+export async function createPlaythrough() {
   const supabase = await createSupabaseServerClient();
-  const name = String(formData.get("name") ?? "").trim() || "New run";
   const { data, error } = await supabase
     .from("playthroughs")
-    .insert({ name, current_phase: "top_of_day" })
+    .insert({ name: "New playthrough", current_phase: "top_of_day" })
     .select("id")
     .single();
   if (error) throw new Error(error.message);

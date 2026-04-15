@@ -21,6 +21,8 @@ export interface Nation {
   abbreviation: string | null;
   color_hex: string;
   sort_order: number;
+  icon_type: IconType;
+  icon_value: string | null;
 }
 
 export interface City {
@@ -44,6 +46,7 @@ export interface Day {
   id: string;
   number: number;
   identifier: string;
+  name: string | null;
   notes: string | null;
   until_qup: number | null;
   month: number | null;
@@ -106,9 +109,19 @@ export interface InspectionLetterView extends InspectionLetter {
   content_id: string;
 }
 
+export interface ActionTemplate {
+  id: string;
+  name: string;
+  icon_type: IconType;
+  icon_value: string | null;
+  color_hex: string;
+  sort_order: number;
+}
+
 export interface ActionRow {
   id: string;
   inspection_letter_id: string;
+  action_template_id: string | null;
   name: string;
   icon_type: IconType;
   icon_value: string | null;

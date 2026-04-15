@@ -16,18 +16,22 @@ function nilStr(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
-export async function createDay(formData: FormData) {
+export async function createDay() {
   const supabase = await createSupabaseServerClient();
-  const numRaw = nilNum(formData.get("number"));
-  if (numRaw == null) return;
+  const { data: max } = await supabase
+    .from("days")
+    .select("number")
+    .order("number", { ascending: false })
+    .limit(1);
+  const nextNumber = (max?.[0]?.number ?? -1) + 1;
   const { data, error } = await supabase
     .from("days")
-    .insert({ number: numRaw })
-    .select("id")
+    .insert({ number: nextNumber })
+    .select("identifier")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/days");
-  redirect(`/days/${data!.id}`);
+  redirect(`/days/${data!.identifier.toLowerCase()}/overview`);
 }
 
 export async function updateDay(formData: FormData) {
@@ -36,6 +40,7 @@ export async function updateDay(formData: FormData) {
   if (!id) return;
   const payload = {
     number: nilNum(formData.get("number")) ?? undefined,
+    name: nilStr(formData.get("name")),
     notes: nilStr(formData.get("notes")),
     until_qup: nilNum(formData.get("until_qup")),
     month: nilNum(formData.get("month")),
@@ -52,8 +57,7 @@ export async function updateDay(formData: FormData) {
   };
   const { error } = await supabase.from("days").update(payload).eq("id", id);
   if (error) throw new Error(error.message);
-  revalidatePath(`/days/${id}`);
-  revalidatePath("/days");
+  revalidatePath("/days", "layout");
 }
 
 export async function deleteDay(formData: FormData) {

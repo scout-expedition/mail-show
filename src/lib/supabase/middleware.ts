@@ -31,9 +31,11 @@ export async function updateSession(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // getClaims() verifies the JWT locally (no network round-trip) and the
+  // @supabase/ssr client still refreshes expired tokens via the cookie
+  // adapter above. Much faster than getUser() on every request.
+  const { data: claims } = await supabase.auth.getClaims();
+  const user = claims?.claims ? { id: claims.claims.sub } : null;
 
   const { pathname } = request.nextUrl;
   const isPublic =

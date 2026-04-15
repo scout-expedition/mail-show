@@ -21,7 +21,7 @@ export async function signInWithMagicLink(formData: FormData) {
   if (!email) {
     redirect(buildRedirect({ error: "Email is required", next }));
   }
-  if (!isEmailAllowed(email)) {
+  if (!(await isEmailAllowed(email))) {
     redirect(buildRedirect({ error: "Email is not on the allow-list", next }));
   }
 

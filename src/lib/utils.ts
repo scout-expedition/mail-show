@@ -14,6 +14,35 @@ export function formatSortId(sortId: number): string {
   return lpad(sortId, 2);
 }
 
+/**
+ * Parse a user-entered duration into seconds.
+ * Accepts "5:00", "5.00", "5..00" (→ 5 minutes), or a plain number (→ seconds).
+ * Returns null for empty/invalid input.
+ */
+export function parseDurationToSeconds(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/[.:\s]+/g, ":").replace(/^:|:$/g, "");
+  if (!normalized) return null;
+  if (normalized.includes(":")) {
+    const [mm, ss = "0"] = normalized.split(":");
+    const m = Number(mm);
+    const s = Number(ss);
+    if (!Number.isFinite(m) || !Number.isFinite(s)) return null;
+    return Math.trunc(m) * 60 + Math.trunc(s);
+  }
+  const n = Number(normalized);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+/** Render a seconds count as "MM:SS". */
+export function formatDurationMMSS(total: number | null | undefined): string {
+  if (total == null || !Number.isFinite(total)) return "";
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
 /** Turn an integer into a lowercase roman numeral ("i", "ii", "iii"...). */
 export function toRoman(num: number): string {
   if (num <= 0 || num > 3999) return String(num);

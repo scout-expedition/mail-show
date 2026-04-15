@@ -59,16 +59,16 @@ export default async function DashboardPage() {
       ) : null}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-        <StatCard label="Storylines" value={counts.storylines} href="/storylines" />
+        <StatCard label="Storylines" value={counts.storylines} href="/inspection/storylines" />
         <StatCard
           label="Letter groups"
           value={counts.letterGroups}
-          href="/storylines"
+          href="/inspection/storylines"
         />
         <StatCard
           label="Inspection letters"
           value={counts.inspectionLetters}
-          href="/storylines"
+          href="/inspection/storylines"
         />
         <StatCard
           label="Sorting letters"
@@ -98,12 +98,12 @@ function StatCard({
   return (
     <Link
       href={href}
-      className="group rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/60"
+      className="group flex h-full flex-col justify-between rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/60"
     >
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
+      <div className="min-h-[2lh] font-mono text-xs uppercase leading-tight tracking-wide text-muted-foreground">
         {label}
       </div>
-      <div className="mt-1 text-3xl font-semibold tabular-nums group-hover:text-primary">
+      <div className="mt-2 font-mono text-3xl font-semibold tabular-nums group-hover:text-primary">
         {value}
       </div>
     </Link>

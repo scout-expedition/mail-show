@@ -1,10 +1,7 @@
 import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Table, TBody, TD, TH, THead } from "@/components/ui/table";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
@@ -31,6 +28,7 @@ export default async function PhysicalLettersPage() {
   const physical = (pData ?? []) as PhysicalLetter[];
   const sortingRefs = (sData ?? []) as Pick<SortingLetterView, "id" | "content_id">[];
   const inspectionRefs = (iData ?? []) as Pick<InspectionLetterView, "id" | "content_id">[];
+  const canAdd = sortingRefs.length > 0 || inspectionRefs.length > 0;
 
   const contentIdFor = (p: PhysicalLetter) => {
     if (p.content_ref_type === "sorting") {
@@ -44,54 +42,9 @@ export default async function PhysicalLettersPage() {
   return (
     <div>
       <PageHeader
-        title="Physical letters"
+        title="Physical Letters"
         description="Each row = one real piece. The 6-digit letter ID is encoded into the RFID tag as SL######."
       />
-
-      <Card className="mb-6">
-        <CardContent className="pt-5">
-          <form action={createPhysicalLetter} className="grid grid-cols-6 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label>Content type</Label>
-              <Select name="content_ref_type" defaultValue="sorting">
-                <option value="sorting">Sorting letter</option>
-                <option value="inspection">Inspection letter</option>
-              </Select>
-            </div>
-            <div className="col-span-3 flex flex-col gap-1.5">
-              <Label>Content</Label>
-              <Select name="content_ref_id" defaultValue="" required>
-                <option value="" disabled>
-                  Select a content letter…
-                </option>
-                <optgroup label="Sorting letters">
-                  {sortingRefs.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.content_id}
-                    </option>
-                  ))}
-                </optgroup>
-                <optgroup label="Inspection letters">
-                  {inspectionRefs.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.content_id}
-                    </option>
-                  ))}
-                </optgroup>
-              </Select>
-            </div>
-            <div className="col-span-2 flex flex-col gap-1.5">
-              <Label>Storage location</Label>
-              <Input name="storage_location" />
-            </div>
-            <div className="col-span-6 flex justify-end">
-              <Button type="submit" size="sm">
-                Add physical letter
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
 
       <Table>
         <THead>
@@ -149,7 +102,7 @@ export default async function PhysicalLettersPage() {
                   </Button>
                   <form action={deletePhysicalLetter}>
                     <input type="hidden" name="id" value={p.id} />
-                    <Button type="submit" size="sm" variant="destructive">
+                    <Button type="submit" size="sm" variant="outline">
                       Delete
                     </Button>
                   </form>
@@ -166,6 +119,24 @@ export default async function PhysicalLettersPage() {
           ) : null}
         </TBody>
       </Table>
+
+      <div className="mt-4 flex justify-center">
+        <form action={createPhysicalLetter}>
+          <Button
+            type="submit"
+            variant="outline"
+            size="sm"
+            disabled={!canAdd}
+            title={
+              canAdd
+                ? undefined
+                : "Create a sorting or inspection letter first."
+            }
+          >
+            + Physical letter
+          </Button>
+        </form>
+      </div>
     </div>
   );
 }
