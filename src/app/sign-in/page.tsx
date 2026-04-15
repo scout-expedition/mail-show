@@ -1,0 +1,33 @@
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { SignInForm } from "./sign-in-form";
+
+export default function SignInPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; error?: string; sent?: string }>;
+}) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle>Sign in</CardTitle>
+          <CardDescription>
+            Magic-link sign-in. Only allow-listed emails can access the app.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <SignInFormAsync searchParams={searchParams} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+async function SignInFormAsync({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; error?: string; sent?: string }>;
+}) {
+  const { next, error, sent } = await searchParams;
+  return <SignInForm next={next} error={error} sent={sent === "1"} />;
+}
