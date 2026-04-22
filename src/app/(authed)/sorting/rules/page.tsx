@@ -1,31 +1,37 @@
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { SortingRule, SortingRuleCondition } from "@/lib/db/types";
+import type { Day, SortingRule, SortingRuleCondition } from "@/lib/db/types";
 import { createRule } from "./actions";
 import { RulesList } from "./rules-list";
 
 export default async function RulesPage() {
   const supabase = await createSupabaseServerClient();
-  const [{ data: rData }, { data: cData }] = await Promise.all([
+  const [{ data: rData }, { data: cData }, { data: dData }] = await Promise.all([
     supabase.from("sorting_rules").select("*").order("letter"),
     supabase.from("sorting_rule_conditions").select("*").order("position"),
+    supabase.from("days").select("*").order("number"),
   ]);
   const rules = (rData ?? []) as SortingRule[];
   const allConditions = (cData ?? []) as SortingRuleCondition[];
+  const days = (dData ?? []) as Day[];
   const conditionsByRule: Record<string, SortingRuleCondition[]> = {};
   for (const c of allConditions) {
     (conditionsByRule[c.rule_id] ??= []).push(c);
   }
 
   return (
-    <div>
+    <div className="font-mono">
       <PageHeader
         title="Sorting Rules"
         description="Up to 26 rules (RR-A through RR-Z). Newer rules trump older on conflicts."
       />
 
-      <RulesList rules={rules} conditionsByRule={conditionsByRule} />
+      <RulesList
+        rules={rules}
+        conditionsByRule={conditionsByRule}
+        days={days}
+      />
 
       <div className="mt-4 flex justify-center">
         <form action={createRule}>

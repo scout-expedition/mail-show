@@ -135,6 +135,55 @@ export async function deleteRule(formData: FormData) {
   redirect("/sorting/rules");
 }
 
+export async function saveRuleAll(data: {
+  id: string;
+  letter: string;
+  destination_slot: number | null;
+  day_implemented_id: string | null;
+  storage_location: string | null;
+  summary: string | null;
+  match_mode: RuleMatchMode;
+  conditions: Array<{
+    target: RuleTarget;
+    target_slice: RuleTargetSlice;
+    operator: RuleOperator;
+    reference_type: RuleReferenceType;
+    reference_value: string | null;
+  }>;
+}) {
+  const supabase = await createSupabaseServerClient();
+  const { error: rErr } = await supabase
+    .from("sorting_rules")
+    .update({
+      letter: data.letter,
+      destination_slot: data.destination_slot,
+      day_implemented_id: data.day_implemented_id,
+      storage_location: data.storage_location,
+      summary: data.summary,
+      match_mode: data.match_mode,
+    })
+    .eq("id", data.id);
+  if (rErr) throw new Error(rErr.message);
+
+  const { error: delErr } = await supabase
+    .from("sorting_rule_conditions")
+    .delete()
+    .eq("rule_id", data.id);
+  if (delErr) throw new Error(delErr.message);
+  if (data.conditions.length > 0) {
+    const rows = data.conditions.map((c, i) => ({
+      rule_id: data.id,
+      position: i + 1,
+      ...c,
+    }));
+    const { error } = await supabase
+      .from("sorting_rule_conditions")
+      .insert(rows);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/sorting/rules");
+}
+
 export async function saveConditions(
   ruleId: string,
   conditions: Array<{

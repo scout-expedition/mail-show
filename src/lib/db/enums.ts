@@ -100,7 +100,7 @@ export const RULE_OPERATORS = [
 ] as const;
 export type RuleOperator = (typeof RULE_OPERATORS)[number];
 export const RULE_OPERATOR_LABELS: Record<RuleOperator, string> = {
-  equals: "equals",
+  equals: "=",
   contains: "contains",
   is: "is",
   gt: ">",
@@ -112,6 +112,7 @@ export const RULE_OPERATOR_LABELS: Record<RuleOperator, string> = {
 export const RULE_REFERENCE_TYPES = [
   "string",
   "number",
+  "any_number",
   "even",
   "odd",
   "letter",
@@ -120,17 +121,43 @@ export const RULE_REFERENCE_TYPES = [
 ] as const;
 export type RuleReferenceType = (typeof RULE_REFERENCE_TYPES)[number];
 
+/** Human-readable label shown in the reference-type dropdown. */
+export const RULE_REFERENCE_TYPE_LABELS: Record<RuleReferenceType, string> = {
+  string: "this string",
+  number: "this number",
+  any_number: "a number",
+  even: "an even number",
+  odd: "an odd number",
+  letter: "a letter",
+  true: "true",
+  false: "false",
+};
+
+/** Reference types that require the user to supply an explicit value. */
+export const REFERENCE_TYPES_WITH_VALUE: RuleReferenceType[] = [
+  "string",
+  "number",
+];
+
+/** Reference types that demand a numeric value when present. */
+export const NUMERIC_REFERENCE_TYPES: RuleReferenceType[] = [
+  "number",
+  "any_number",
+  "even",
+  "odd",
+];
+
 /**
  * Valid operator × reference_type combinations.
- * equals  → string / number          (exact match)
- * contains → string / number
- * is      → number / even / odd / letter / true / false
- * gt/gte/lt/lte → number
+ * equals  → this string / this number        (exact match)
+ * contains → this string / this number
+ * is      → a number / an even / an odd / a letter / true / false
+ * gt/gte/lt/lte → this number
  */
 export const VALID_OPERATOR_REFERENCES: Record<RuleOperator, RuleReferenceType[]> = {
   equals: ["string", "number"],
   contains: ["string", "number"],
-  is: ["number", "even", "odd", "letter", "true", "false"],
+  is: ["any_number", "even", "odd", "letter", "true", "false"],
   gt: ["number"],
   gte: ["number"],
   lt: ["number"],

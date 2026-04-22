@@ -71,7 +71,42 @@ export async function deleteStoryline(formData: FormData) {
   if (!id) return;
   const { error } = await supabase.from("storylines").delete().eq("id", id);
   if (error) throw new Error(error.message);
-  redirect("/inspection/storylines");
+  revalidatePath("/inspection/storylines");
+}
+
+export async function updateAllStorylines(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const ids = formData.getAll("ids").map(String);
+  const names = formData.getAll("names").map(String);
+  const abbrs = formData.getAll("abbreviations").map(String);
+  const descriptions = formData.getAll("descriptions").map(String);
+  const iconTypes = formData.getAll("icon_types").map(String);
+  const iconValues = formData.getAll("icon_values").map(String);
+  const colors = formData.getAll("colors").map(String);
+  const sortOrders = formData.getAll("sort_orders").map(String);
+
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (!id) continue;
+    const name = (names[i] ?? "").trim();
+    if (!name) continue;
+    const payload = {
+      name,
+      abbreviation:
+        (abbrs[i] ?? "").trim().toUpperCase().charAt(0) || "X",
+      description: (descriptions[i] ?? "").trim() || null,
+      icon_type: ((iconTypes[i] as IconType) ?? "lucide") as IconType,
+      icon_value: (iconValues[i] ?? "").trim() || null,
+      color_hex: normalizeHex(colors[i] ?? "#888888"),
+      sort_order: Number(sortOrders[i] ?? i),
+    };
+    const { error } = await supabase
+      .from("storylines")
+      .update(payload)
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/inspection/storylines");
 }
 
 export async function createLetterGroup(formData: FormData) {

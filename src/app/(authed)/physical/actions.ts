@@ -62,6 +62,22 @@ export async function updatePhysicalLetter(formData: FormData) {
   revalidatePath("/physical");
 }
 
+export async function updateAllPhysicalLetters(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const ids = formData.getAll("ids").map(String);
+  const storages = formData.getAll("storage_locations").map(String);
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (!id) continue;
+    const { error } = await supabase
+      .from("physical_letters")
+      .update({ storage_location: (storages[i] ?? "").trim() || null })
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/physical");
+}
+
 export async function deletePhysicalLetter(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");

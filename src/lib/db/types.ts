@@ -93,6 +93,7 @@ export interface InspectionLetter {
   letter_group_id: string;
   variant: string | null;
   piece: number | null;
+  sort_order: number;
   delivery_day_override_id: string | null;
   summary: string | null;
   content: string | null;
@@ -116,6 +117,7 @@ export interface ActionTemplate {
   icon_value: string | null;
   color_hex: string;
   sort_order: number;
+  paired_template_id: string | null;
 }
 
 export interface ActionRow {

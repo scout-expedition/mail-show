@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { IconDisplay } from "@/components/icon-display";
 import { IconPicker } from "@/components/icon-picker";
+import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
-import type { Nation } from "@/lib/db/types";
-import { deleteNation, updateAllNations } from "./actions";
+import type { Storyline } from "@/lib/db/types";
+import { deleteStoryline, updateAllStorylines } from "./actions";
 
 function readableOn(hex: string): string {
   const h = hex.replace(/^#/, "");
@@ -25,22 +25,24 @@ function readableOn(hex: string): string {
 type RowState = {
   id: string;
   name: string;
-  abbreviation: string | null;
-  color_hex: string;
+  abbreviation: string;
+  description: string | null;
   icon_type: IconType;
   icon_value: string | null;
+  color_hex: string;
 };
 
-export function NationsEditor({ nations }: { nations: Nation[] }) {
+export function StorylinesEditor({ storylines }: { storylines: Storyline[] }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [rows, setRows] = useState<RowState[]>(() =>
-    nations.map((n) => ({
-      id: n.id,
-      name: n.name,
-      abbreviation: n.abbreviation,
-      color_hex: n.color_hex,
-      icon_type: n.icon_type,
-      icon_value: n.icon_value,
+    storylines.map((s) => ({
+      id: s.id,
+      name: s.name,
+      abbreviation: s.abbreviation,
+      description: s.description,
+      icon_type: s.icon_type,
+      icon_value: s.icon_value,
+      color_hex: s.color_hex,
     }))
   );
   const [dirty, setDirty] = useState(false);
@@ -51,32 +53,33 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
   useEffect(() => {
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
-      const serverIds = new Set(nations.map((n) => n.id));
+      const serverIds = new Set(storylines.map((s) => s.id));
       const kept = prev.filter((r) => serverIds.has(r.id));
       const additions: RowState[] = [];
-      for (const n of nations) {
-        if (!prevById.has(n.id)) {
+      for (const s of storylines) {
+        if (!prevById.has(s.id)) {
           additions.push({
-            id: n.id,
-            name: n.name,
-            abbreviation: n.abbreviation,
-            color_hex: n.color_hex,
-            icon_type: n.icon_type,
-            icon_value: n.icon_value,
+            id: s.id,
+            name: s.name,
+            abbreviation: s.abbreviation,
+            description: s.description,
+            icon_type: s.icon_type,
+            icon_value: s.icon_value,
+            color_hex: s.color_hex,
           });
         }
       }
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [nations]);
+  }, [storylines]);
 
   function save() {
     const form = formRef.current;
     if (!form) return;
     const fd = new FormData(form);
     startTransition(async () => {
-      await updateAllNations(fd);
+      await updateAllStorylines(fd);
       setDirty(false);
     });
   }
@@ -124,11 +127,12 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
         ref={formRef}
         className="overflow-hidden rounded-md border border-border bg-card"
       >
-        <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
+        <div className="grid grid-cols-[20px_32px_220px_60px_1fr_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
           <span />
           <span />
           <Label>Name</Label>
           <Label>Abbr</Label>
+          <Label>Description</Label>
           <span />
         </div>
         {rows.map((row, i) => {
@@ -156,12 +160,12 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
               <input type="hidden" name="colors" value={row.color_hex} />
               <input type="hidden" name="sort_orders" value={i} />
 
-              <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 px-3 py-1">
+              <div className="grid grid-cols-[20px_32px_220px_60px_1fr_36px] items-center gap-2 px-3 py-1">
                 <DragHandle />
                 <button
                   type="button"
                   onClick={() => setExpandedId(expanded ? null : row.id)}
-                  className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-border"
                   style={{ background: row.color_hex, color: fg }}
                   title="Icon and color"
                   aria-label="Edit icon and color"
@@ -188,12 +192,25 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
                 />
                 <Input
                   name="abbreviations"
-                  value={row.abbreviation ?? ""}
+                  value={row.abbreviation}
                   onChange={(e) =>
-                    updateRow(row.id, { abbreviation: e.target.value })
+                    updateRow(row.id, {
+                      abbreviation: e.target.value
+                        .toUpperCase()
+                        .replace(/[^A-Z]/g, "")
+                        .slice(0, 1),
+                    })
                   }
                   maxLength={1}
                   className="h-8 text-center"
+                />
+                <Input
+                  name="descriptions"
+                  value={row.description ?? ""}
+                  onChange={(e) =>
+                    updateRow(row.id, { description: e.target.value || null })
+                  }
+                  className="h-8"
                 />
                 <DeleteX id={row.id} name={row.name} />
               </div>
@@ -211,9 +228,7 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
                       })
                     }
                     color={row.color_hex}
-                    onColorChange={(c) =>
-                      updateRow(row.id, { color_hex: c })
-                    }
+                    onColorChange={(c) => updateRow(row.id, { color_hex: c })}
                   />
                 </div>
               ) : null}
@@ -222,7 +237,7 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
         })}
         {rows.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No nations yet.
+            No storylines yet.
           </p>
         ) : null}
       </form>
@@ -250,36 +265,35 @@ function DragHandle() {
 }
 
 function DeleteX({ id, name }: { id: string; name: string }) {
+  const [pending, startTransition] = useTransition();
   return (
-    <form action={deleteNation}>
-      <input type="hidden" name="id" value={id} />
-      <button
-        type="submit"
-        aria-label="Delete nation"
-        title="Delete"
-        onClick={(e) => {
-          if (
-            !confirm(`Delete nation "${name}"? This cannot be undone.`)
-          )
-            e.preventDefault();
-        }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+    <button
+      type="button"
+      disabled={pending}
+      aria-label="Delete storyline"
+      title="Delete"
+      onClick={() => {
+        if (!confirm(`Delete storyline "${name}"? This cannot be undone.`)) return;
+        const fd = new FormData();
+        fd.set("id", id);
+        startTransition(() => deleteStoryline(fd));
+      }}
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
+    >
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-    </form>
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
   );
 }
 

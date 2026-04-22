@@ -5,11 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import {
   BOOLEAN_TARGETS,
+  NUMERIC_REFERENCE_TYPES,
+  REFERENCE_TYPES_WITH_VALUE,
   RULE_OPERATORS,
   RULE_OPERATOR_LABELS,
-  RULE_REFERENCE_TYPES,
+  RULE_REFERENCE_TYPE_LABELS,
   RULE_TARGET_LABELS,
   RULE_TARGET_SLICE_LABELS,
   RULE_TARGET_SLICES,
@@ -63,7 +66,17 @@ function normalizeCondition(c: BuilderCondition): BuilderCondition {
   if (isBool) operator = "is";
   const allowedRefs = referenceTypesFor(operator, c.target_slice, isBool);
   let reference_type = c.reference_type;
-  if (!allowedRefs.includes(reference_type)) reference_type = allowedRefs[0];
+  // gt/gte/lt/lte always compare against an explicit number.
+  if (
+    operator === "gt" ||
+    operator === "gte" ||
+    operator === "lt" ||
+    operator === "lte"
+  ) {
+    reference_type = "number";
+  } else if (!allowedRefs.includes(reference_type)) {
+    reference_type = allowedRefs[0];
+  }
   if (isBool) {
     return {
       ...c,
@@ -72,7 +85,19 @@ function normalizeCondition(c: BuilderCondition): BuilderCondition {
       reference_value: null,
     };
   }
-  return { ...c, operator, reference_type };
+  // Drop value when it's implicit for the type.
+  const takesValue = REFERENCE_TYPES_WITH_VALUE.includes(reference_type);
+  return {
+    ...c,
+    operator,
+    reference_type,
+    reference_value: takesValue ? c.reference_value : null,
+  };
+}
+
+function isNumericValue(s: string): boolean {
+  if (s.trim() === "") return false;
+  return Number.isFinite(Number(s));
 }
 
 export function ConditionBuilder({
@@ -176,15 +201,12 @@ export function ConditionBuilder({
         const allowedOps = operatorsForSlice(c.target_slice);
         const allowedRefs = referenceTypesFor(c.operator, c.target_slice, isBoolTarget);
         const usesRawValue =
-          (c.operator === "equals" ||
-            c.operator === "contains" ||
-            c.operator === "gt" ||
-            c.operator === "gte" ||
-            c.operator === "lt" ||
-            c.operator === "lte" ||
-            (c.operator === "is" &&
-              (c.reference_type === "string" || c.reference_type === "number"))) &&
-          !isBoolTarget;
+          REFERENCE_TYPES_WITH_VALUE.includes(c.reference_type) && !isBoolTarget;
+        const mustBeNumeric = NUMERIC_REFERENCE_TYPES.includes(c.reference_type);
+        const numericError =
+          usesRawValue &&
+          mustBeNumeric &&
+          (c.reference_value == null || !isNumericValue(c.reference_value));
         return (
           <div key={i} className="flex flex-col gap-2">
             <div className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-3">
@@ -247,11 +269,17 @@ export function ConditionBuilder({
                       reference_type: e.target.value as RuleReferenceType,
                     })
                   }
+                  disabled={
+                    c.operator === "gt" ||
+                    c.operator === "gte" ||
+                    c.operator === "lt" ||
+                    c.operator === "lte"
+                  }
                   className="h-8"
                 >
                   {allowedRefs.map((r) => (
                     <option key={r} value={r}>
-                      {r}
+                      {RULE_REFERENCE_TYPE_LABELS[r]}
                     </option>
                   ))}
                 </Select>
@@ -264,11 +292,16 @@ export function ConditionBuilder({
                     onChange={(e) =>
                       update(i, { reference_value: e.target.value })
                     }
-                    className="h-8"
+                    placeholder={mustBeNumeric ? "0" : ""}
+                    className={cn(
+                      "h-8",
+                      numericError && "ring-2 ring-destructive"
+                    )}
+                    aria-invalid={numericError}
                   />
                 ) : (
                   <Input
-                    value="(implicit)"
+                    value="—"
                     disabled
                     readOnly
                     className="h-8 text-muted-foreground"
@@ -287,6 +320,206 @@ export function ConditionBuilder({
                 <Select
                   value={matchMode}
                   onChange={(e) => setMatchMode(e.target.value as RuleMatchMode)}
+                  className="h-8 w-auto"
+                >
+                  <option value="all">And</option>
+                  <option value="any">And/Or</option>
+                </Select>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Fully-controlled builder used by inline editors. */
+export function ConditionBuilderInline({
+  conditions,
+  matchMode,
+  onChange,
+}: {
+  conditions: BuilderCondition[];
+  matchMode: RuleMatchMode;
+  onChange: (next: BuilderCondition[], matchMode?: RuleMatchMode) => void;
+}) {
+  function update(idx: number, patch: Partial<BuilderCondition>) {
+    const next = conditions.map((c, i) =>
+      i === idx ? normalizeCondition({ ...c, ...patch }) : c
+    );
+    onChange(next);
+  }
+  function add() {
+    if (conditions.length >= 3) return;
+    onChange([
+      ...conditions,
+      {
+        target: "recipient_nation",
+        target_slice: "whole",
+        operator: "equals",
+        reference_type: "string",
+        reference_value: null,
+      },
+    ]);
+  }
+  function remove(idx: number) {
+    onChange(conditions.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <h3 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          Conditions ({conditions.length}/3)
+        </h3>
+        <Button
+          size="sm"
+          variant="secondary"
+          type="button"
+          onClick={add}
+          disabled={conditions.length >= 3}
+        >
+          Add condition
+        </Button>
+      </div>
+
+      {conditions.map((c, i) => {
+        const isBoolTarget = BOOLEAN_TARGETS.includes(c.target);
+        const allowedOps = operatorsForSlice(c.target_slice);
+        const allowedRefs = referenceTypesFor(
+          c.operator,
+          c.target_slice,
+          isBoolTarget
+        );
+        const usesRawValue =
+          REFERENCE_TYPES_WITH_VALUE.includes(c.reference_type) &&
+          !isBoolTarget;
+        const mustBeNumeric = NUMERIC_REFERENCE_TYPES.includes(c.reference_type);
+        const numericError =
+          usesRawValue &&
+          mustBeNumeric &&
+          (c.reference_value == null || !isNumericValue(c.reference_value));
+        return (
+          <div key={i} className="flex flex-col gap-2">
+            <div className="grid grid-cols-12 items-end gap-2 rounded-md border border-border p-2">
+              <div className="col-span-3 flex flex-col gap-1">
+                <Label>Target</Label>
+                <Select
+                  value={c.target}
+                  onChange={(e) =>
+                    update(i, { target: e.target.value as RuleTarget })
+                  }
+                  className="h-8"
+                >
+                  {RULE_TARGETS.map((t) => (
+                    <option key={t} value={t}>
+                      {RULE_TARGET_LABELS[t]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Slice</Label>
+                <Select
+                  value={c.target_slice}
+                  onChange={(e) =>
+                    update(i, { target_slice: e.target.value as RuleTargetSlice })
+                  }
+                  disabled={isBoolTarget}
+                  className="h-8"
+                >
+                  {RULE_TARGET_SLICES.map((s) => (
+                    <option key={s} value={s}>
+                      {RULE_TARGET_SLICE_LABELS[s]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Operator</Label>
+                <Select
+                  value={c.operator}
+                  onChange={(e) =>
+                    update(i, { operator: e.target.value as RuleOperator })
+                  }
+                  disabled={isBoolTarget}
+                  className="h-8"
+                >
+                  {allowedOps.map((o) => (
+                    <option key={o} value={o}>
+                      {RULE_OPERATOR_LABELS[o]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Reference type</Label>
+                <Select
+                  value={c.reference_type}
+                  onChange={(e) =>
+                    update(i, {
+                      reference_type: e.target.value as RuleReferenceType,
+                    })
+                  }
+                  disabled={
+                    c.operator === "gt" ||
+                    c.operator === "gte" ||
+                    c.operator === "lt" ||
+                    c.operator === "lte"
+                  }
+                  className="h-8"
+                >
+                  {allowedRefs.map((r) => (
+                    <option key={r} value={r}>
+                      {RULE_REFERENCE_TYPE_LABELS[r]}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="col-span-2 flex flex-col gap-1">
+                <Label>Value</Label>
+                {usesRawValue ? (
+                  <Input
+                    value={c.reference_value ?? ""}
+                    onChange={(e) =>
+                      update(i, { reference_value: e.target.value })
+                    }
+                    placeholder={mustBeNumeric ? "0" : ""}
+                    className={cn(
+                      "h-8",
+                      numericError && "ring-2 ring-destructive"
+                    )}
+                    aria-invalid={numericError}
+                  />
+                ) : (
+                  <Input
+                    value="—"
+                    disabled
+                    readOnly
+                    className="h-8 text-muted-foreground"
+                  />
+                )}
+              </div>
+              <div className="col-span-1 flex justify-end">
+                <Button
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                  onClick={() => remove(i)}
+                >
+                  ×
+                </Button>
+              </div>
+            </div>
+
+            {i === 0 && conditions.length > 1 ? (
+              <div className="ml-4 flex items-center gap-2">
+                <Select
+                  value={matchMode}
+                  onChange={(e) =>
+                    onChange(conditions, e.target.value as RuleMatchMode)
+                  }
                   className="h-8 w-auto"
                 >
                   <option value="all">And</option>

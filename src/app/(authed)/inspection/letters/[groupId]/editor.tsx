@@ -27,48 +27,38 @@ import type {
   InspectionLetterView,
   LetterGroup,
   Nation,
+  ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
 import {
   addActionFromTemplate,
   createInspectionLettersInGroup,
+  createLetterInNextGroup,
+  createNextLetterGroupAndLetter,
+  createReportSegmentForGroup,
   deleteActionRow,
   deleteGroup,
   deleteInspectionLetter,
   quickCreateCitizen,
+  reorderInspectionLetters,
   saveGroup,
   saveLetterWithActions,
 } from "./actions";
+import { useSearchParams } from "next/navigation";
 
-const IMPACT_GROUPS: Array<{
-  title: string;
-  fields: Array<{ key: keyof ActionImpacts; label: string }>;
-}> = [
-  {
-    title: "Empire",
-    fields: [
-      { key: "impact_world_status", label: "World Status" },
-      { key: "impact_demerits", label: "Demerits" },
-    ],
-  },
-  {
-    title: "Classes",
-    fields: [
-      { key: "impact_proletariat", label: "Proletariat" },
-      { key: "impact_gentry", label: "Gentry" },
-    ],
-  },
-  {
-    title: "Nations",
-    fields: [
-      { key: "impact_epicenter", label: "Epicenter" },
-      { key: "impact_folos", label: "Folos" },
-      { key: "impact_emberlyn", label: "Emberlyn" },
-      { key: "impact_spokgrad", label: "Spokgrad" },
-      { key: "impact_pelico", label: "Pelico" },
-    ],
-  },
+const CLASS_AFFINITY: Array<{ key: keyof ActionImpacts; label: string }> = [
+  { key: "impact_proletariat", label: "Proletariat" },
+  { key: "impact_gentry", label: "Gentry" },
 ];
+
+/** Map a nation name (case-insensitive) to its impact column. */
+const NATION_IMPACT_KEYS: Record<string, keyof ActionImpacts> = {
+  epicenter: "impact_epicenter",
+  folos: "impact_folos",
+  emberlyn: "impact_emberlyn",
+  spokgrad: "impact_spokgrad",
+  pelico: "impact_pelico",
+};
 
 type ActionImpacts = {
   impact_world_status: number;
@@ -84,6 +74,7 @@ type ActionImpacts = {
 
 type ActionState = ActionImpacts & {
   id: string;
+  action_template_id: string | null;
   name: string;
   icon_type: ActionRow["icon_type"];
   icon_value: string | null;
@@ -94,7 +85,6 @@ type ActionState = ActionImpacts & {
 
 type LetterState = {
   id: string;
-  variant: string | null;
   piece: number | null;
   delivery_day_override_id: string | null;
   summary: string | null;
@@ -111,7 +101,6 @@ function toLetterState(
 ): LetterState {
   return {
     id: l.id,
-    variant: l.variant,
     piece: l.piece,
     delivery_day_override_id: l.delivery_day_override_id,
     summary: l.summary,
@@ -123,6 +112,7 @@ function toLetterState(
       .filter((a) => a.inspection_letter_id === l.id)
       .map((a) => ({
         id: a.id,
+        action_template_id: a.action_template_id,
         name: a.name,
         icon_type: a.icon_type,
         icon_value: a.icon_value,
@@ -152,6 +142,9 @@ export function GroupEditor({
   heroes: initialHeroes,
   cities,
   nations,
+  segments,
+  nextGroup,
+  nextGroupLetters,
 }: {
   group: LetterGroup;
   storylines: Storyline[];
@@ -162,6 +155,9 @@ export function GroupEditor({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
+  segments: ReportSegmentView[];
+  nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
+  nextGroupLetters: InspectionLetterView[];
 }) {
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
@@ -172,7 +168,6 @@ export function GroupEditor({
   const [groupState, setGroupState] = useState({
     storyline_id: group.storyline_id,
     name: group.name,
-    sequence: group.sequence,
     delivery_day_id: group.delivery_day_id,
     notes: group.notes,
   });
@@ -183,7 +178,6 @@ export function GroupEditor({
     setGroupState({
       storyline_id: group.storyline_id,
       name: group.name,
-      sequence: group.sequence,
       delivery_day_id: group.delivery_day_id,
       notes: group.notes,
     });
@@ -199,13 +193,18 @@ export function GroupEditor({
   }
 
   // ----- Letter state -----
+  const searchParams = useSearchParams();
+  const skipInitial = searchParams.get("letter") === "none";
   const [selectedId, setSelectedId] = useState<string | null>(
-    letters[0]?.id ?? null
+    skipInitial ? null : letters[0]?.id ?? null
   );
   const [letterState, setLetterState] = useState<LetterState | null>(() => {
-    if (!letters[0]) return null;
+    if (skipInitial || !letters[0]) return null;
     return toLetterState(letters[0], actions);
   });
+  const [listLocked, setListLocked] = useState(true);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
   const [letterDirty, setLetterDirty] = useState(false);
   const [letterPending, startLetterSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
@@ -216,10 +215,9 @@ export function GroupEditor({
 
   // When server data reloads, reconcile the selected letter if still present.
   useEffect(() => {
+    // Clear local drag order once server data matches.
+    setOrderOverride(null);
     if (!selectedId) {
-      setLetterState(letters[0] ? toLetterState(letters[0], actions) : null);
-      setSelectedId(letters[0]?.id ?? null);
-      setLetterDirty(false);
       return;
     }
     const found = letters.find((l) => l.id === selectedId);
@@ -271,7 +269,6 @@ export function GroupEditor({
       group.id,
       {
         id: state.id,
-        variant: state.variant,
         piece: state.piece,
         delivery_day_override_id: state.delivery_day_override_id,
         summary: state.summary,
@@ -320,7 +317,6 @@ export function GroupEditor({
         storyline_id: groupState.storyline_id,
         name: groupState.name,
         notes: groupState.notes,
-        sequence: groupState.sequence,
         delivery_day_id: groupState.delivery_day_id,
       });
       setGroupDirty(false);
@@ -428,7 +424,7 @@ export function GroupEditor({
           <span className="flex items-center gap-2">
             <Badge variant="secondary" className="font-mono">
               {currentStoryline?.abbreviation ?? "?"}
-              {groupState.sequence}
+              {group.sequence}
             </Badge>
             {groupState.name || (
               <span className="text-muted-foreground italic">(unnamed)</span>
@@ -477,22 +473,11 @@ export function GroupEditor({
                   ))}
                 </Select>
               </div>
-              <div className="col-span-2 flex flex-col gap-1">
+              <div className="col-span-3 flex flex-col gap-1">
                 <Label>Name</Label>
                 <Input
                   value={groupState.name}
                   onChange={(e) => updateGroup("name", e.target.value)}
-                  className="h-8"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label>Sequence</Label>
-                <Input
-                  type="number"
-                  value={groupState.sequence}
-                  onChange={(e) =>
-                    updateGroup("sequence", Number(e.target.value) || 0)
-                  }
                   className="h-8"
                 />
               </div>
@@ -526,24 +511,72 @@ export function GroupEditor({
           </div>
 
           <div className="rounded-md border border-border bg-card">
-            <div className="border-b border-border px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-              Letters ({letters.length})
+            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+              <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Letters ({letters.length})
+              </span>
+              <button
+                type="button"
+                onClick={() => setListLocked((v) => !v)}
+                title={listLocked ? "Unlock to reorder" : "Lock"}
+                aria-label={listLocked ? "Unlock to reorder" : "Lock reordering"}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <ReorderIcon active={!listLocked} />
+              </button>
             </div>
             <div className="flex flex-col">
-              {letters.map((l) => {
+              {(orderOverride
+                ? (orderOverride
+                    .map((id) => letters.find((x) => x.id === id))
+                    .filter(Boolean) as InspectionLetterView[])
+                : letters
+              ).map((l, i) => {
                 const active = l.id === selectedId;
                 return (
                   <div
                     key={l.id}
+                    draggable={!listLocked}
+                    onDragStart={() => setDragIndex(i)}
+                    onDragOver={(e) => {
+                      if (listLocked || dragIndex === null || dragIndex === i)
+                        return;
+                      e.preventDefault();
+                      const current = orderOverride ?? letters.map((x) => x.id);
+                      const next = current.slice();
+                      const [moved] = next.splice(dragIndex, 1);
+                      next.splice(i, 0, moved);
+                      setOrderOverride(next);
+                      setDragIndex(i);
+                    }}
+                    onDragEnd={() => {
+                      const finalOrder = orderOverride;
+                      setDragIndex(null);
+                      if (!finalOrder) return;
+                      startRowAction(async () => {
+                        await reorderInspectionLetters(group.id, finalOrder);
+                      });
+                    }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active && "bg-accent/40"
+                      active && "bg-accent/40",
+                      !listLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
+                    {!listLocked ? (
+                      <span
+                        aria-hidden
+                        className="text-muted-foreground"
+                        title="Drag to reorder"
+                      >
+                        ⋮⋮
+                      </span>
+                    ) : null}
                     <button
                       type="button"
                       onClick={() => selectLetter(l.id)}
-                      className="flex flex-1 items-center gap-2 text-left"
+                      disabled={!listLocked}
+                      className="flex flex-1 items-center gap-2 text-left disabled:cursor-grab"
                     >
                       <Badge variant="secondary" className="font-mono">
                         {l.content_id}
@@ -559,10 +592,12 @@ export function GroupEditor({
                         <span className="ml-auto text-xs text-warning">•</span>
                       ) : null}
                     </button>
-                    <DeleteX
-                      label={`Delete letter ${l.content_id}`}
-                      onClick={() => handleDeleteLetter(l.id)}
-                    />
+                    {listLocked ? (
+                      <DeleteX
+                        label={`Delete letter ${l.content_id}`}
+                        onClick={() => handleDeleteLetter(l.id)}
+                      />
+                    ) : null}
                   </div>
                 );
               })}
@@ -594,6 +629,10 @@ export function GroupEditor({
               cities={cities}
               nations={nations}
               templates={templates}
+              segments={segments}
+              nextGroup={nextGroup}
+              nextGroupLetters={nextGroupLetters}
+              groupId={group.id}
               dirty={letterDirty}
               pending={letterPending}
               rowPending={rowPending}
@@ -637,6 +676,10 @@ function LetterDetail({
   cities,
   nations,
   templates,
+  segments,
+  nextGroup,
+  nextGroupLetters,
+  groupId,
   dirty,
   pending,
   rowPending,
@@ -655,6 +698,10 @@ function LetterDetail({
   cities: City[];
   nations: Nation[];
   templates: ActionTemplate[];
+  segments: ReportSegmentView[];
+  nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
+  nextGroupLetters: InspectionLetterView[];
+  groupId: string;
   dirty: boolean;
   pending: boolean;
   rowPending: boolean;
@@ -665,10 +712,10 @@ function LetterDetail({
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onSave: () => void;
 }) {
-  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
   // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
   const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-4">
@@ -701,19 +748,6 @@ function LetterDetail({
         </div>
         <div className="grid grid-cols-6 gap-3">
           <div className="flex flex-col gap-1">
-            <Label>Variant</Label>
-            <Input
-              value={state.variant ?? ""}
-              onChange={(e) => {
-                const v = e.target.value.toLowerCase().replace(/[^a-z]/g, "").slice(0, 1);
-                onChange({ variant: v || null });
-              }}
-              maxLength={1}
-              placeholder="a"
-              className="h-8 lowercase"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
             <Label>Piece</Label>
             <Input
               type="number"
@@ -726,7 +760,7 @@ function LetterDetail({
               className="h-8"
             />
           </div>
-          <div className="col-span-4 flex flex-col gap-1">
+          <div className="col-span-5 flex flex-col gap-1">
             <Label>Delivery day</Label>
             <Select
               value={currentDayId ?? ""}
@@ -810,45 +844,63 @@ function LetterDetail({
           <h4 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             Actions ({state.actions.length})
           </h4>
-          <div className="flex items-center gap-2">
-            {templatePickerOpen ? (
-              <Select
-                autoFocus
-                defaultValue=""
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (!v) return;
-                  setTemplatePickerOpen(false);
-                  onAddAction(v);
-                }}
-                onBlur={() => setTemplatePickerOpen(false)}
-                className="h-8 w-auto"
+          {templatePickerOpen ? (
+            <Select
+              autoFocus
+              value=""
+              onChange={(e) => {
+                const v = e.target.value;
+                if (!v) return;
+                setTemplatePickerOpen(false);
+                onAddAction(v);
+              }}
+              onBlur={() => setTemplatePickerOpen(false)}
+              className="h-7 w-auto"
+              aria-label="Pick action"
+            >
+              <option value="">Pick action…</option>
+              {pickerEntries(templates).map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </Select>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setTemplatePickerOpen(true)}
+              disabled={rowPending || templates.length === 0}
+              aria-label="Add action"
+              title="Add action"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
               >
-                <option value="">Pick action…</option>
-                {templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </Select>
-            ) : (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => setTemplatePickerOpen(true)}
-                disabled={rowPending || templates.length === 0}
-              >
-                + Action
-              </Button>
-            )}
-          </div>
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          )}
         </div>
         <div className="flex flex-col gap-3">
           {state.actions.map((a, i) => (
             <ActionEditor
               key={a.id}
               action={a}
+              templates={templates}
+              nations={nations}
+              segments={segments}
+              nextGroup={nextGroup}
+              nextGroupLetters={nextGroupLetters}
+              groupId={groupId}
               onChange={(patch) => onActionChange(i, patch)}
               onDelete={() => onDeleteAction(a.id)}
             />
@@ -1086,76 +1138,340 @@ function AddLetterMenu({
   );
 }
 
+function readableOnHex(hex: string): string {
+  const h = hex.replace(/^#/, "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "#ffffff";
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.65 ? "#0b0d10" : "#ffffff";
+}
+
 function ActionEditor({
   action,
+  templates,
+  nations,
+  segments,
+  nextGroup,
+  nextGroupLetters,
+  groupId,
   onChange,
   onDelete,
 }: {
   action: ActionState;
+  templates: ActionTemplate[];
+  nations: Nation[];
+  segments: ReportSegmentView[];
+  nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
+  nextGroupLetters: InspectionLetterView[];
+  groupId: string;
   onChange: (patch: Partial<ActionState>) => void;
   onDelete: () => void;
 }) {
+  const [, startCreate] = useTransition();
+  const tpl = action.action_template_id
+    ? templates.find((t) => t.id === action.action_template_id)
+    : undefined;
+  const name = tpl?.name ?? action.name;
+  const iconType = tpl?.icon_type ?? action.icon_type;
+  const iconValue = tpl?.icon_value ?? action.icon_value;
+  const colorHex = tpl?.color_hex ?? action.color_hex;
+
+  const orderedNations = nations
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
+
   return (
     <div className="rounded-md border border-border p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span
-            className="flex h-6 w-6 items-center justify-center rounded"
-            style={{ background: action.color_hex, color: "#fff" }}
-          >
-            {action.icon_value ? (
-              <IconDisplay
-                type={action.icon_type}
-                value={action.icon_value}
-                size={14}
-              />
-            ) : null}
-          </span>
-          <span className="font-mono text-sm">{action.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Label className="!text-xs">Next variant</Label>
-          <Input
-            value={action.next_letter_variant ?? ""}
-            onChange={(e) =>
-              onChange({ next_letter_variant: e.target.value || null })
-            }
-            maxLength={1}
-            className="h-7 w-12 text-center"
-          />
-          <DeleteX label="Delete action" onClick={onDelete} />
-        </div>
+      {/* Top row: icon, name, delete */}
+      <div className="mb-3 flex items-center gap-3">
+        <span
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
+          style={{ background: colorHex, color: "#fff" }}
+        >
+          {iconValue ? (
+            <IconDisplay type={iconType} value={iconValue} size={16} />
+          ) : null}
+        </span>
+        <span className="flex-1 font-mono text-sm">{name}</span>
+        <DeleteX label="Delete action" onClick={onDelete} />
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        {IMPACT_GROUPS.map((g) => (
-          <div key={g.title} className="flex flex-col gap-2 rounded-md bg-muted/30 p-2">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              {g.title}
-            </div>
-            {g.fields.map((f) => (
-              <label
-                key={f.key}
-                className="flex items-center justify-between gap-2 text-xs"
-              >
-                <span className="text-muted-foreground">{f.label}</span>
-                <Input
-                  type="number"
-                  value={action[f.key] === 0 ? "" : action[f.key]}
-                  placeholder="0"
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    onChange({
-                      [f.key]: v === "" ? 0 : Number(v),
-                    } as Partial<ActionState>);
-                  }}
-                  className="h-7 w-16 text-center"
-                />
-              </label>
+      {/* Affinity line: Next letter + Report segment | Class | National | Player */}
+      <div className="flex items-start gap-4 rounded-md bg-muted/30 p-2">
+        <div className="flex items-start gap-2 pt-[1.375rem]">
+          <TileFrame label="Next letter">
+            <Select
+              value={action.next_letter_variant ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "__new_letter") {
+                  startCreate(async () => {
+                    await createLetterInNextGroup(groupId);
+                  });
+                  return;
+                }
+                if (v === "__new_group_and_letter") {
+                  startCreate(async () => {
+                    await createNextLetterGroupAndLetter(groupId);
+                  });
+                  return;
+                }
+                onChange({ next_letter_variant: v || null });
+              }}
+              className="h-7 w-28 px-1"
+            >
+              <option value="">—</option>
+              {nextGroup
+                ? nextGroupLetters.map((l) => (
+                    <option
+                      key={l.id}
+                      value={l.variant ?? ""}
+                      disabled={!l.variant}
+                    >
+                      {l.content_id}
+                      {l.summary ? ` — ${l.summary.slice(0, 20)}` : ""}
+                    </option>
+                  ))
+                : null}
+              {nextGroup ? (
+                <option value="__new_letter">+ New letter</option>
+              ) : (
+                <option value="__new_group_and_letter">
+                  + Group + Letter
+                </option>
+              )}
+            </Select>
+          </TileFrame>
+          <TileFrame label="Report">
+            <Select
+              value={action.report_segment_id ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "__new_segment") {
+                  startCreate(async () => {
+                    await createReportSegmentForGroup(groupId);
+                  });
+                  return;
+                }
+                onChange({ report_segment_id: v || null });
+              }}
+              className="h-7 w-28 px-1"
+            >
+              <option value="">—</option>
+              {segments.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.report_id}
+                </option>
+              ))}
+              <option value="__new_segment">+ New segment</option>
+            </Select>
+          </TileFrame>
+        </div>
+
+        <div className="flex flex-col gap-1 border-l border-border pl-4">
+          <AffinityGroupLabel>Class Affinity</AffinityGroupLabel>
+          <div className="flex items-start gap-2">
+            {CLASS_AFFINITY.map((c) => (
+              <ClassTile
+                key={c.key}
+                label={c.label}
+                value={action[c.key]}
+                onChange={(v) =>
+                  onChange({ [c.key]: v } as Partial<ActionState>)
+                }
+              />
             ))}
           </div>
-        ))}
+        </div>
+
+        <div className="flex flex-col gap-1 border-l border-border pl-4">
+          <AffinityGroupLabel>National Affinity</AffinityGroupLabel>
+          <div className="flex items-start gap-2">
+            {orderedNations.map((n) => {
+              const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
+              return (
+                <NationTile
+                  key={n.id}
+                  nation={n}
+                  value={action[key]}
+                  onChange={(v) =>
+                    onChange({ [key]: v } as Partial<ActionState>)
+                  }
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1 border-l border-border pl-4">
+          <AffinityGroupLabel>Player</AffinityGroupLabel>
+          <div className="flex items-start gap-2">
+            <ClassTile
+              label="Status"
+              value={action.impact_world_status}
+              onChange={(v) =>
+                onChange({ impact_world_status: v } as Partial<ActionState>)
+              }
+            />
+            <ClassTile
+              label="Demerits"
+              value={action.impact_demerits}
+              onChange={(v) =>
+                onChange({ impact_demerits: v } as Partial<ActionState>)
+              }
+            />
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function TileFrame({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span className="flex h-6 items-center text-[10px] text-muted-foreground">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function AffinityGroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+function CounterInput({
+  value,
+  onChange,
+  orientation,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  orientation: "horizontal" | "vertical";
+}) {
+  const input = (
+    <Input
+      type="text"
+      inputMode="numeric"
+      value={value === 0 ? "" : String(value)}
+      placeholder=""
+      onChange={(e) => {
+        const raw = e.target.value.replace(/[^0-9-]/g, "");
+        if (raw === "" || raw === "-") {
+          onChange(0);
+          return;
+        }
+        const n = Number(raw);
+        if (Number.isFinite(n)) onChange(n);
+      }}
+      className="h-7 w-8 px-1 text-center"
+    />
+  );
+  const minus = (
+    <button
+      type="button"
+      onClick={() => onChange(value - 1)}
+      tabIndex={-1}
+      className="flex h-4 w-8 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+      aria-label="Decrease"
+    >
+      −
+    </button>
+  );
+  const plus = (
+    <button
+      type="button"
+      onClick={() => onChange(value + 1)}
+      tabIndex={-1}
+      className="flex h-4 w-8 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+      aria-label="Increase"
+    >
+      +
+    </button>
+  );
+  if (orientation === "vertical") {
+    return (
+      <div className="flex flex-col items-center gap-0.5">
+        {plus}
+        {input}
+        {minus}
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1">
+      {minus}
+      {input}
+      {plus}
+    </div>
+  );
+}
+
+function ClassTile({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span className="flex h-6 items-center text-[10px] text-muted-foreground">
+        {label}
+      </span>
+      <CounterInput value={value} onChange={onChange} orientation="vertical" />
+    </div>
+  );
+}
+
+function NationTile({
+  nation,
+  value,
+  onChange,
+}: {
+  nation: Nation;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  const fg = readableOnHex(nation.color_hex);
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <span
+        className="flex h-6 w-6 items-center justify-center rounded"
+        style={{ background: nation.color_hex, color: fg }}
+        title={nation.name}
+      >
+        {nation.icon_value ? (
+          <IconDisplay
+            type={nation.icon_type}
+            value={nation.icon_value}
+            size={12}
+          />
+        ) : (
+          <span className="text-[10px] font-mono">
+            {nation.abbreviation ?? nation.name.slice(0, 1)}
+          </span>
+        )}
+      </span>
+      <CounterInput value={value} onChange={onChange} orientation="vertical" />
     </div>
   );
 }
@@ -1183,6 +1499,58 @@ function DeleteX({ label, onClick }: { label: string; onClick: () => void }) {
         <path d="M6 6l12 12M18 6L6 18" />
       </svg>
     </button>
+  );
+}
+
+/**
+ * Deduplicate paired templates into single picker entries labeled "A + B".
+ * The lower-sort_order template acts as the canonical id for the pair;
+ * addActionFromTemplate handles the pair insertion server-side.
+ */
+function pickerEntries(
+  templates: ActionTemplate[]
+): Array<{ id: string; label: string }> {
+  const byId = new Map(templates.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+  const entries: Array<{ id: string; label: string }> = [];
+  for (const t of templates) {
+    if (seen.has(t.id)) continue;
+    const partner = t.paired_template_id
+      ? byId.get(t.paired_template_id)
+      : undefined;
+    if (partner) {
+      const [a, b] =
+        t.sort_order <= partner.sort_order ? [t, partner] : [partner, t];
+      entries.push({ id: a.id, label: `${a.name} + ${b.name}` });
+      seen.add(a.id);
+      seen.add(b.id);
+    } else {
+      entries.push({ id: t.id, label: t.name });
+      seen.add(t.id);
+    }
+  }
+  return entries;
+}
+
+function ReorderIcon({ active }: { active: boolean }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={active ? 2.4 : 2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className={active ? "text-foreground" : undefined}
+    >
+      <path d="M7 4v16" />
+      <path d="M4 7l3-3 3 3" />
+      <path d="M17 4v16" />
+      <path d="M14 17l3 3 3-3" />
+    </svg>
   );
 }
 

@@ -8,10 +8,10 @@ import type { SortingRuleCondition } from "@/lib/db/types";
 
 /** Placeholder text per reference_type when no explicit value is given. */
 const REF_HINTS: Record<string, string> = {
-  number: "0, 1, 2, 3…",
-  even: "2, 4, 6, 8…",
-  odd: "1, 3, 5, 7…",
-  letter: "A, B, C, D…",
+  any_number: "a number",
+  even: "an even number",
+  odd: "an odd number",
+  letter: "a letter",
   true: "true",
   false: "false",
 };
@@ -30,11 +30,23 @@ export function ConditionDescription({ c }: { c: SortingRuleCondition }) {
   const refLabel = referenceLabel(c);
 
   return (
-    <span className="flex flex-wrap items-center gap-1.5 text-sm">
-      <Badge variant="muted">{RULE_TARGET_LABELS[c.target]}</Badge>
-      {sliceLabel ? <Badge variant="muted">{sliceLabel}</Badge> : null}
-      <span className="text-muted-foreground">{operator}</span>
-      {refLabel ? <Badge variant="outline">{refLabel}</Badge> : null}
+    <span className="flex flex-wrap items-center gap-1.5 font-mono text-sm text-sky-400">
+      <Badge className="border-transparent bg-sky-400/15 text-sky-400">
+        {RULE_TARGET_LABELS[c.target]}
+      </Badge>
+      {sliceLabel ? (
+        <Badge className="border-transparent bg-sky-400/15 text-sky-400">
+          {sliceLabel}
+        </Badge>
+      ) : null}
+      <Badge className="border-transparent bg-transparent text-muted-foreground">
+        {operator}
+      </Badge>
+      {refLabel ? (
+        <Badge className="border-sky-400/60 bg-transparent text-sky-400">
+          {refLabel}
+        </Badge>
+      ) : null}
     </span>
   );
 }

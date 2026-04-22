@@ -32,6 +32,8 @@ export async function updateAllActionTemplates(formData: FormData) {
   const colors = formData.getAll("colors").map(String);
   const sortOrders = formData.getAll("sort_orders").map(String);
 
+  const pairedIds = formData.getAll("paired_template_ids").map(String);
+
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
     if (!id) continue;
@@ -41,6 +43,7 @@ export async function updateAllActionTemplates(formData: FormData) {
       icon_value: iconValues[i] ? iconValues[i] : null,
       color_hex: normalizeHex(colors[i] ?? "#888888"),
       sort_order: Number(sortOrders[i] ?? 0) || 0,
+      paired_template_id: null as string | null,
     };
     if (!payload.name) continue;
     const { error } = await supabase
@@ -49,7 +52,28 @@ export async function updateAllActionTemplates(formData: FormData) {
       .eq("id", id);
     if (error) throw new Error(error.message);
   }
+  // Second pass: write pair links symmetrically.
+  const written = new Set<string>();
+  for (let i = 0; i < ids.length; i++) {
+    const a = ids[i];
+    const b = pairedIds[i];
+    if (!a || !b || a === b) continue;
+    if (written.has(a) || written.has(b)) continue;
+    const { error: e1 } = await supabase
+      .from("action_templates")
+      .update({ paired_template_id: b })
+      .eq("id", a);
+    if (e1) throw new Error(e1.message);
+    const { error: e2 } = await supabase
+      .from("action_templates")
+      .update({ paired_template_id: a })
+      .eq("id", b);
+    if (e2) throw new Error(e2.message);
+    written.add(a);
+    written.add(b);
+  }
   revalidatePath("/inspection/actions");
+  revalidatePath("/inspection/letters");
 }
 
 export async function deleteActionTemplate(formData: FormData) {

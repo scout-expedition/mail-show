@@ -88,6 +88,35 @@ export async function updateSortingLetter(formData: FormData) {
   revalidatePath(`/sorting/letters/${id}`);
 }
 
+export async function updateAllSortingLetters(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const ids = formData.getAll("ids").map(String);
+  const dayIds = formData.getAll("day_ids").map(String);
+  const recipientNames = formData.getAll("recipient_names").map(String);
+  const senderNames = formData.getAll("sender_names").map(String);
+  const storages = formData.getAll("storage_locations").map(String);
+  const counterfeits = formData.getAll("is_counterfeits").map(String);
+
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (!id) continue;
+    const payload = {
+      day_id: dayIds[i] || undefined,
+      recipient_name: (recipientNames[i] ?? "").trim() || null,
+      sender_name: (senderNames[i] ?? "").trim() || null,
+      storage_location: (storages[i] ?? "").trim() || null,
+      is_counterfeit: counterfeits[i] === "true",
+    };
+    if (!payload.day_id) delete (payload as Record<string, unknown>).day_id;
+    const { error } = await supabase
+      .from("sorting_letters")
+      .update(payload)
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/sorting/letters");
+}
+
 export async function deleteSortingLetter(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
