@@ -481,7 +481,10 @@ export function LettersWorkspace({
 
   async function selectLetter(id: string) {
     if (id === selectedId) {
-      // Toggle off — deselect the current letter so the right panel clears.
+      // Toggle off — deselect the current letter, but keep the slide
+      // position so the group panel stays on the left where the user
+      // put it. Slot 2 will just render the "Select a letter…" empty
+      // state until they pick another.
       if (letterDirty) {
         const ok = await onConfirmDiscard(
           "This letter has unsaved changes. Discard them and close?"
@@ -491,7 +494,6 @@ export function LettersWorkspace({
       setSelectedId(null);
       setLetterState(null);
       setLetterDirty(false);
-      setView("groups");
       setSelectedSegmentId(null);
       return;
     }
@@ -539,9 +541,11 @@ export function LettersWorkspace({
 
   /**
    * Open a segment directly from the group panel — used by the "Report
-   * segments" list. Clears the current letter selection so the actions slot
-   * (panel 3, visible at view="segment") doesn't show stale actions for a
-   * letter the user isn't editing.
+   * segments" list. Segments can be triggered by several actions across
+   * different letters; to avoid forcing the user through the
+   * actions-of-one-specific-letter path, we slide to view="main" and
+   * render the segment card in slot 2 (where the letter fields usually
+   * live) instead of going all the way to view="segment".
    */
   async function openSegmentFromGroup(segmentId: string) {
     if (letterDirty) {
@@ -557,13 +561,19 @@ export function LettersWorkspace({
     }
     setSelectedId(null);
     setSelectedSegmentId(segmentId);
-    setView("segment");
+    setView("main");
   }
 
   async function closeSegmentPanel(
     segmentDirty: boolean,
     onSave: () => Promise<void>
   ) {
+    // Segments opened from the group panel live in slot 2 (view="main");
+    // segments opened from an action live in slot 4 (view="segment"). Back
+    // returns to the panel that brought us here.
+    const targetView: "main" | "actions" | "groups" = letterState
+      ? "actions"
+      : "groups";
     if (segmentDirty) {
       const ok = await confirmDialog({
         title: "Save segment before closing?",
@@ -573,13 +583,13 @@ export function LettersWorkspace({
       if (ok) {
         startRowAction(async () => {
           await onSave();
-          setView("actions");
+          setView(targetView);
           setSelectedSegmentId(null);
         });
         return;
       }
     }
-    setView("actions");
+    setView(targetView);
     setSelectedSegmentId(null);
   }
 
@@ -1081,39 +1091,33 @@ export function LettersWorkspace({
           ) : (
           <>
           <div className="rounded-md border border-border bg-card p-4">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                <BackLink onNavigate={() => selectGroup(null)} />
-                <LetterGroupPill
-                  storyline={currentStoryline}
-                  sequence={group.sequence}
-                />
-                {groupState.name || (
-                  <span className="text-muted-foreground italic">(unnamed)</span>
-                )}
-              </h3>
-              <SaveRevert
-                dirty={groupDirty}
-                pending={groupPending}
-                onSave={handleSaveGroup}
-                onRevert={revertGroup}
+            <div className="mb-3 flex items-center gap-2">
+              <BackLink onNavigate={() => selectGroup(null)} />
+              <LetterGroupPill
+                storyline={currentStoryline}
+                sequence={group.sequence}
               />
+              <Input
+                value={groupState.name}
+                onChange={(e) => updateGroup("name", e.target.value)}
+                placeholder="Group name"
+                className={cn(
+                  "h-7 flex-1 px-1 text-base font-semibold text-foreground",
+                  GHOST_FIELD
+                )}
+              />
+              {/* Reserve width for the SaveRevert cluster so the name field
+                  doesn't jump when buttons appear. */}
+              <div className="flex h-7 w-[60px] shrink-0 justify-end">
+                <SaveRevert
+                  dirty={groupDirty}
+                  pending={groupPending}
+                  onSave={handleSaveGroup}
+                  onRevert={revertGroup}
+                />
+              </div>
             </div>
             <div className="grid grid-cols-6 gap-3">
-              <div className="col-span-3 flex flex-col gap-1">
-                <Label>Storyline</Label>
-                <span className="flex h-8 items-center truncate px-2 font-mono text-sm text-muted-foreground">
-                  {currentStoryline?.name ?? "—"}
-                </span>
-              </div>
-              <div className="col-span-3 flex flex-col gap-1">
-                <Label>Name</Label>
-                <Input
-                  value={groupState.name}
-                  onChange={(e) => updateGroup("name", e.target.value)}
-                  className={cn("h-8", GHOST_FIELD)}
-                />
-              </div>
               <div className="col-span-6 flex flex-col gap-1">
                 <Label>Delivery day</Label>
                 <DaySelect
@@ -1301,7 +1305,8 @@ export function LettersWorkspace({
           )}
         </div>
 
-        {/* LETTER slot: fields only */}
+        {/* LETTER slot: letter fields OR a segment card when the user opened
+            a segment directly from the group panel (no letter selected). */}
         <div className="flex w-1/5 shrink-0 flex-col gap-4 px-3">
           {letterState ? (
             <LetterFieldsCard
@@ -1325,6 +1330,31 @@ export function LettersWorkspace({
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
               onShowActions={() => setView("actions")}
+            />
+          ) : selectedSegmentId ? (
+            <LetterSegmentCard
+              key={`group-${selectedSegmentId}`}
+              segment={
+                segments.find((s) => s.id === selectedSegmentId) ?? null
+              }
+              days={days}
+              groupDeliveryDayId={(() => {
+                if (!groupState.delivery_day_id) return null;
+                const cur = days.find(
+                  (d) => d.id === groupState.delivery_day_id
+                );
+                if (!cur) return null;
+                return (
+                  days.find((d) => d.number === cur.number + 1)?.id ?? null
+                );
+              })()}
+              allActions={allActions}
+              allLetters={allLetters}
+              storylines={storylines}
+              onBack={closeSegmentPanel}
+              onDelete={handleDeleteSegment}
+              onJumpToTrigger={jumpToTrigger}
+              onConfirmDialog={confirmDialog}
             />
           ) : (
             <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
@@ -1483,12 +1513,14 @@ function LetterFieldsCard({
             <span className="text-muted-foreground/70">saved</span>
           )}
         </h3>
-        <SaveRevert
-          dirty={dirty}
-          pending={pending}
-          onSave={onSave}
-          onRevert={onRevert}
-        />
+        <div className="flex h-7 w-[60px] shrink-0 justify-end">
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={onSave}
+            onRevert={onRevert}
+          />
+        </div>
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-4 flex flex-col gap-1">
@@ -1689,12 +1721,14 @@ function LetterActionsCard({
             )}
           </h4>
         </div>
-        <SaveRevert
-          dirty={dirty}
-          pending={pending}
-          onSave={onSave}
-          onRevert={onRevert}
-        />
+        <div className="flex h-7 w-[60px] shrink-0 justify-end">
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={onSave}
+            onRevert={onRevert}
+          />
+        </div>
       </div>
       <div className="flex flex-col gap-3">
         {actions.map((a, i) => (
@@ -1913,27 +1947,29 @@ function LetterSegmentCard({
             )}
           </h3>
         </div>
-        <SaveRevert
-          dirty={dirty}
-          pending={pending}
-          onSave={() => startSave(saveNow)}
-          onRevert={async () => {
-            if (!dirty || !segment) return;
-            const ok = await onConfirmDialog({
-              title: "Discard segment changes?",
-              message: "Any unsaved edits will be lost.",
-              confirmLabel: "Revert",
-              intent: "destructive",
-            });
-            if (!ok) return;
-            setState({
-              variant: segment.variant,
-              content: segment.content,
-              delivery_day_override_id: segment.delivery_day_override_id,
-            });
-            setDirty(false);
-          }}
-        />
+        <div className="flex h-7 w-[60px] shrink-0 justify-end">
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={() => startSave(saveNow)}
+            onRevert={async () => {
+              if (!dirty || !segment) return;
+              const ok = await onConfirmDialog({
+                title: "Discard segment changes?",
+                message: "Any unsaved edits will be lost.",
+                confirmLabel: "Revert",
+                intent: "destructive",
+              });
+              if (!ok) return;
+              setState({
+                variant: segment.variant,
+                content: segment.content,
+                delivery_day_override_id: segment.delivery_day_override_id,
+              });
+              setDirty(false);
+            }}
+          />
+        </div>
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">

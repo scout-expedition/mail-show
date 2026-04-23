@@ -69,8 +69,8 @@ body {
 }
 
 body {
-  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
-    sans-serif;
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
