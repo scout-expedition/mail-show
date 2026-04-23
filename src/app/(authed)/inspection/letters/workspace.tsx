@@ -164,6 +164,23 @@ function toLetterState(
   };
 }
 
+/**
+ * True when the viewport is below Tailwind's `lg` breakpoint (1024px).
+ * The workspace uses this to swap the slide layout from "two panels
+ * side-by-side" (wide) to "one panel at a time" (narrow).
+ */
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1023px)");
+    setNarrow(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setNarrow(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return narrow;
+}
+
 export function LettersWorkspace({
   storylines,
   groups: allGroups,
@@ -305,12 +322,16 @@ export function LettersWorkspace({
   const [letterDirty, setLetterDirty] = useState(false);
   const [letterPending, startLetterSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
-  const [view, setView] = useState<"groups" | "main" | "actions" | "segment">(
+  const [view, setView] = useState<
+    "list" | "group" | "main" | "actions" | "segment"
+  >(
     initialSegmentId
       ? "segment"
       : initialLetterId
         ? "main"
-        : "groups"
+        : initialGroupId
+          ? "group"
+          : "list"
   );
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     initialSegmentId
@@ -399,22 +420,29 @@ export function LettersWorkspace({
   }
 
   async function selectGroup(id: string | null) {
-    if (id === selectedGroupId) {
+    if (id === selectedGroupId || id === null) {
       if (
         !(await confirmDiscardDirty(
           "Unsaved changes will be lost. Close anyway?"
         ))
       )
         return;
+      // Closing the group — fall back to the storyline inspector so the
+      // slide lands on [list + inspector] instead of bouncing home.
+      const currentGroup = selectedGroupId
+        ? allGroups.find((g) => g.id === selectedGroupId)
+        : null;
+      const parentStoryline =
+        currentGroup?.storyline_id ?? selectedStorylineId ?? null;
       setSelectedGroupId(null);
-      setSelectedStorylineId(null);
+      setSelectedStorylineId(parentStoryline);
       setSelectedId(null);
       setLetterState(null);
       setLetterDirty(false);
       setGroupDirty(false);
       setStorylineDirty(false);
       setSelectedSegmentId(null);
-      setView("groups");
+      setView("list");
       return;
     }
     if (
@@ -431,9 +459,8 @@ export function LettersWorkspace({
     setGroupDirty(false);
     setStorylineDirty(false);
     setSelectedSegmentId(null);
-    // Picking a group just opens it in the right-side slot — don't slide.
-    // The slide happens when a letter inside is opened.
-    setView("groups");
+    // Slide to the group view (inspector + group detail side-by-side).
+    setView("group");
   }
 
   async function selectStoryline(id: string | null) {
@@ -451,7 +478,7 @@ export function LettersWorkspace({
     setGroupDirty(false);
     setStorylineDirty(false);
     setSelectedSegmentId(null);
-    setView("groups");
+    setView("list");
   }
 
   // Heroes may grow via quick-create.
@@ -568,12 +595,12 @@ export function LettersWorkspace({
     segmentDirty: boolean,
     onSave: () => Promise<void>
   ) {
-    // Segments opened from the group panel live in slot 2 (view="main");
-    // segments opened from an action live in slot 4 (view="segment"). Back
+    // Segments opened from the group panel live in slot 3 (view="main");
+    // segments opened from an action live in slot 5 (view="segment"). Back
     // returns to the panel that brought us here.
-    const targetView: "main" | "actions" | "groups" = letterState
+    const targetView: "main" | "actions" | "group" = letterState
       ? "actions"
-      : "groups";
+      : "group";
     if (segmentDirty) {
       const ok = await confirmDialog({
         title: "Save segment before closing?",
@@ -899,12 +926,46 @@ export function LettersWorkspace({
     storylineById.get(groupState.storyline_id) ??
     (selectedStorylineId ? storylineById.get(selectedStorylineId) : undefined);
 
+  /** The storyline the inspector panel (slot 1) is currently bound to. */
+  const inspectorStoryline = selectedStorylineId
+    ? storylineById.get(selectedStorylineId) ?? null
+    : group
+      ? storylineById.get(group.storyline_id) ?? null
+      : null;
+
   const selectedLetter = selectedId
     ? letters.find((l) => l.id === selectedId)
     : null;
   const selectedSegment = selectedSegmentId
     ? segments.find((s) => s.id === selectedSegmentId)
     : null;
+
+  const narrow = useIsNarrow();
+  /**
+   * Transform offset (as a percentage of the slide container) that moves
+   * the desired panels into the viewport. At wide viewports the slide
+   * shows two panels at a time; at narrow viewports it shows one (the
+   * rightmost open panel, or the lone panel if only one is open).
+   */
+  const slideOffset = useMemo(() => {
+    const baseByView: Record<typeof view, number> = {
+      list: 0,
+      group: -(100 / 6),
+      main: -(100 / 6) * 2,
+      actions: -(100 / 6) * 3,
+      segment: -(100 / 6) * 4,
+    };
+    let offset = baseByView[view];
+    if (narrow) {
+      // At narrow widths show only the rightmost open panel. For the
+      // initial "list" view, that's the storyline inspector when
+      // something is selected — otherwise the lone list panel.
+      const rightPanelHasContent =
+        view !== "list" || !!inspectorStoryline;
+      if (rightPanelHasContent) offset -= 100 / 6;
+    }
+    return offset;
+  }, [view, narrow, inspectorStoryline]);
 
   async function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
     // Closing a panel discards all open panels below. If any are dirty,
@@ -934,13 +995,13 @@ export function LettersWorkspace({
       setGroupDirty(false);
       setLetterDirty(false);
       setStorylineDirty(false);
-      setView("groups");
+      setView("list");
     } else if (level === "group") {
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
       setLetterDirty(false);
-      setView("groups");
+      setView("group");
     } else if (level === "letter") {
       setSelectedSegmentId(null);
       setView("main");
@@ -972,7 +1033,7 @@ export function LettersWorkspace({
             <ChevronRight size={12} aria-hidden className="opacity-50" />
             <BreadcrumbLink
               onClick={() => goToBreadcrumb("group")}
-              active={view === "groups"}
+              active={view === "group"}
               icon={<Mails size={12} aria-hidden />}
             >
               {currentStoryline?.abbreviation ?? ""}
@@ -1020,73 +1081,63 @@ export function LettersWorkspace({
       <div className="relative overflow-hidden">
         <div
           className={cn(
-            "flex transition-transform duration-300 ease-out",
-            view === "main" && "-translate-x-[20%]",
-            view === "actions" && "-translate-x-[40%]",
-            view === "segment" && "-translate-x-[60%]"
+            "flex w-[600%] transition-transform duration-300 ease-out lg:w-[300%]"
           )}
-          style={{ width: "250%" }}
+          style={{ transform: `translateX(${slideOffset}%)` }}
         >
-        {/* STORYLINES slot: the list, OR the parent-storyline inspector once
-            a letter group is selected. */}
-        <div className="flex w-1/5 shrink-0 flex-col gap-4 pr-3">
-          {group ? (
+        {/* Slot 0 — storylines list (always). */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 pr-3">
+          <StorylinesListPanel
+            storylines={storylines}
+            groups={allGroups}
+            letters={allLetters}
+            days={days}
+            selectedGroupId={selectedGroupId}
+            selectedStorylineId={selectedStorylineId}
+            onSelectGroup={(id) => selectGroup(id)}
+            onOpenStoryline={(id) => selectStoryline(id)}
+          />
+        </div>
+
+        {/* Slot 1 — storyline inspector (for selectedStorylineId, or the
+            parent of the currently-open letter group). */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
+          {inspectorStoryline ? (
             <StorylineInspector
-              key={`group-parent-${group.storyline_id}`}
-              storyline={
-                storylines.find((s) => s.id === group.storyline_id)!
-              }
+              key={inspectorStoryline.id}
+              storyline={inspectorStoryline}
               groups={allGroups.filter(
-                (g) => g.storyline_id === group.storyline_id
+                (g) => g.storyline_id === inspectorStoryline.id
               )}
               allLetters={allLetters}
               days={days}
               dirty={storylineDirty}
               selectedGroupId={selectedGroupId}
               onDirtyChange={setStorylineDirty}
-              onBack={() => selectStoryline(group.storyline_id)}
+              onBack={() =>
+                group
+                  ? selectStoryline(group.storyline_id)
+                  : selectStoryline(null)
+              }
               onSelectGroup={(id) => selectGroup(id)}
-              onDeselectGroup={() => selectStoryline(group.storyline_id)}
+              onDeselectGroup={() =>
+                selectStoryline(inspectorStoryline.id)
+              }
               onConfirmDialog={confirmDialog}
             />
           ) : (
-            <StorylinesListPanel
-              storylines={storylines}
-              groups={allGroups}
-              letters={allLetters}
-              days={days}
-              selectedGroupId={selectedGroupId}
-              selectedStorylineId={selectedStorylineId}
-              onSelectGroup={(id) => selectGroup(id)}
-              onOpenStoryline={(id) => selectStoryline(id)}
-            />
+            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+              Pick a storyline or a letter group to begin.
+            </div>
           )}
         </div>
 
-        {/* GROUP slot: group info + letter list, OR storyline inspector */}
-        <div className="flex w-1/5 shrink-0 flex-col gap-4 px-3">
-          {selectedStorylineId ? (
-            <StorylineInspector
-              key={selectedStorylineId}
-              storyline={
-                storylines.find((s) => s.id === selectedStorylineId)!
-              }
-              groups={allGroups.filter(
-                (g) => g.storyline_id === selectedStorylineId
-              )}
-              allLetters={allLetters}
-              days={days}
-              dirty={storylineDirty}
-              selectedGroupId={selectedGroupId}
-              onDirtyChange={setStorylineDirty}
-              onBack={() => selectStoryline(null)}
-              onSelectGroup={(id) => selectGroup(id)}
-              onDeselectGroup={() => selectStoryline(selectedStorylineId)}
-              onConfirmDialog={confirmDialog}
-            />
-          ) : !group ? (
+        {/* Slot 2 — letter group card (letters list + report segments
+            list). Hidden placeholder when no group is selected. */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
+          {!group ? (
             <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-              Select a letter group on the left to open it.
+              Pick a letter group from the inspector.
             </div>
           ) : (
           <>
@@ -1305,9 +1356,10 @@ export function LettersWorkspace({
           )}
         </div>
 
-        {/* LETTER slot: letter fields OR a segment card when the user opened
-            a segment directly from the group panel (no letter selected). */}
-        <div className="flex w-1/5 shrink-0 flex-col gap-4 px-3">
+        {/* Slot 3 — letter fields OR a segment card (when the user
+            opened a segment directly from the group panel, no letter
+            selected). */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
           {letterState ? (
             <LetterFieldsCard
               key={letterState.id}
@@ -1363,8 +1415,8 @@ export function LettersWorkspace({
           )}
         </div>
 
-        {/* ACTIONS slot: action editors, shown by sliding */}
-        <div className="flex w-1/5 shrink-0 flex-col gap-4 px-3">
+        {/* Slot 4 — action editors for the currently-open letter. */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
           {letterState ? (
             <LetterActionsCard
               key={letterState.id}
@@ -1395,8 +1447,8 @@ export function LettersWorkspace({
           ) : null}
         </div>
 
-        {/* SEGMENT slot: selected report segment */}
-        <div className="flex w-1/5 shrink-0 flex-col gap-4 pl-3">
+        {/* Slot 5 — report segment opened from an action. */}
+        <div className="flex w-1/6 shrink-0 flex-col gap-4 pl-3">
           {selectedSegmentId ? (
             <LetterSegmentCard
               key={selectedSegmentId}
@@ -4155,7 +4207,7 @@ function StorylinesListPanel({
   selectedGroupId: string | null;
   selectedStorylineId: string | null;
   onSelectGroup: (id: string) => void;
-  onOpenStoryline: (id: string) => void;
+  onOpenStoryline: (id: string | null) => void;
 }) {
   const [groupMode, setGroupMode] = useState<"storyline" | "day">("storyline");
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
@@ -4313,9 +4365,11 @@ function StorylinesListPanel({
                 >
                   <button
                     type="button"
-                    onClick={() => onOpenStoryline(s.id)}
+                    onClick={() =>
+                      onOpenStoryline(headerActive ? null : s.id)
+                    }
                     className="flex flex-1 items-center gap-2 py-2 pl-3 text-left"
-                    title={`Open ${s.name}`}
+                    title={headerActive ? `Close ${s.name}` : `Open ${s.name}`}
                   >
                     <span
                       className="inline-block h-3 w-3 shrink-0 rounded-full"

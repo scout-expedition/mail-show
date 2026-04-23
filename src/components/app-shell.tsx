@@ -49,6 +49,10 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen w-screen overflow-hidden">
       <Nav />
       <div className="flex flex-1 flex-col overflow-hidden">
+        {/* Reserves room for the fixed nav Menu toggle so it doesn't
+            overlap page content at narrow viewports. At lg+ the nav is
+            inline and the toggle is hidden, so the spacer collapses. */}
+        <div className="h-12 shrink-0 lg:hidden" aria-hidden />
         {activePlaythrough ? (
           <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
             <div className="flex items-center gap-3 text-sm">
