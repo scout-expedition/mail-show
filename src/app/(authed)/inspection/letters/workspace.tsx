@@ -1036,6 +1036,7 @@ export function LettersWorkspace({
               onDirtyChange={setStorylineDirty}
               onBack={() => selectStoryline(group.storyline_id)}
               onSelectGroup={(id) => selectGroup(id)}
+              onDeselectGroup={() => selectStoryline(group.storyline_id)}
               onConfirmDialog={confirmDialog}
             />
           ) : (
@@ -1070,6 +1071,7 @@ export function LettersWorkspace({
               onDirtyChange={setStorylineDirty}
               onBack={() => selectStoryline(null)}
               onSelectGroup={(id) => selectGroup(id)}
+              onDeselectGroup={() => selectStoryline(selectedStorylineId)}
               onConfirmDialog={confirmDialog}
             />
           ) : !group ? (
@@ -3681,6 +3683,7 @@ function StorylineInspector({
   onDirtyChange,
   onBack,
   onSelectGroup,
+  onDeselectGroup,
   onConfirmDialog,
 }: {
   storyline: Storyline;
@@ -3692,6 +3695,10 @@ function StorylineInspector({
   onDirtyChange: (d: boolean) => void;
   onBack: () => void;
   onSelectGroup: (id: string) => void;
+  /** Called when the user clicks the currently-selected group row to toggle
+   * it off. Should return the UI to storyline-only mode (inspector visible,
+   * no group selected). */
+  onDeselectGroup: () => void;
   onConfirmDialog: (options: {
     title: string;
     message?: string;
@@ -3844,72 +3851,76 @@ function StorylineInspector({
 
   return (
     <div className="rounded-md border border-border bg-card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          <BackLink onNavigate={onBack} />
-          <button
-            type="button"
-            onClick={() => setPickerOpen((v) => !v)}
-            aria-expanded={pickerOpen}
-            aria-label="Edit icon and color"
-            title="Edit icon and color"
-            className={cn(
-              "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-              pickerOpen ? "border-foreground/60" : "border-border"
-            )}
-            style={{
-              background: state.color_hex,
-              color: readableOnHex(state.color_hex),
-            }}
-          >
-            {state.icon_value ? (
-              <IconDisplay
-                type={state.icon_type}
-                value={state.icon_value}
-                size={14}
-              />
-            ) : (
-              <span className="font-mono text-[9px] opacity-70">ic</span>
-            )}
-          </button>
-          {state.name || (
-            <span className="text-muted-foreground italic">(unnamed)</span>
+      <div className="mb-3 flex items-center gap-2">
+        <BackLink onNavigate={onBack} />
+        <button
+          type="button"
+          onClick={() => setPickerOpen((v) => !v)}
+          aria-expanded={pickerOpen}
+          aria-label="Edit icon and color"
+          title="Edit icon and color"
+          className={cn(
+            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+            pickerOpen ? "border-foreground/60" : "border-border"
           )}
-        </h3>
-        <SaveRevert
-          dirty={dirty}
-          pending={pending}
-          onSave={() => startSave(saveNow)}
-          onRevert={revert}
+          style={{
+            background: state.color_hex,
+            color: readableOnHex(state.color_hex),
+          }}
+        >
+          {state.icon_value ? (
+            <IconDisplay
+              type={state.icon_type}
+              value={state.icon_value}
+              size={14}
+            />
+          ) : (
+            <span className="font-mono text-[9px] opacity-70">ic</span>
+          )}
+        </button>
+        <Input
+          value={state.name}
+          onChange={(e) => update("name", e.target.value)}
+          placeholder="Storyline name"
+          className={cn(
+            "h-7 flex-1 px-1 text-base font-semibold text-foreground",
+            GHOST_FIELD
+          )}
         />
+        <Label
+          htmlFor="storyline-abbr"
+          className="shrink-0 self-center"
+        >
+          Abbr
+        </Label>
+        <Input
+          id="storyline-abbr"
+          value={state.abbreviation}
+          onChange={(e) =>
+            update(
+              "abbreviation",
+              e.target.value.toUpperCase().slice(0, 1)
+            )
+          }
+          maxLength={1}
+          className={cn(
+            "h-7 w-7 shrink-0 px-0 text-center font-mono text-xs uppercase",
+            GHOST_FIELD
+          )}
+        />
+        {/* Reserve space so the name field doesn't jump when SaveRevert
+            appears on dirty. Width matches the SaveRevert cluster. */}
+        <div className="flex h-7 w-[60px] shrink-0 justify-end">
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={() => startSave(saveNow)}
+            onRevert={revert}
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-6 gap-3">
-        <div className="col-span-4 flex flex-col gap-1">
-          <Label>Name</Label>
-          <Input
-            value={state.name}
-            onChange={(e) => update("name", e.target.value)}
-            className={cn("h-8", GHOST_FIELD)}
-          />
-        </div>
-        <div className="col-span-2 flex flex-col gap-1">
-          <Label>Abbr</Label>
-          <Input
-            value={state.abbreviation}
-            onChange={(e) =>
-              update(
-                "abbreviation",
-                e.target.value.toUpperCase().slice(0, 1)
-              )
-            }
-            maxLength={1}
-            className={cn(
-              "h-8 text-center font-mono uppercase",
-              GHOST_FIELD
-            )}
-          />
-        </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Description</Label>
           <AutoTextarea
@@ -4050,7 +4061,15 @@ function StorylineInspector({
               <button
                 key={g.id}
                 type="button"
-                onClick={() => onSelectGroup(g.id)}
+                onClick={() => {
+                  if (g.id === selectedGroupId) {
+                    // Toggle off — return to storyline-only mode so the
+                    // inspector stays visible without any group open.
+                    onDeselectGroup();
+                  } else {
+                    onSelectGroup(g.id);
+                  }
+                }}
                 className={cn(
                   "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
                   active ? "bg-accent/40" : "hover:bg-accent/30"
