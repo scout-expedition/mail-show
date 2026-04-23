@@ -64,10 +64,10 @@ import {
   Mails,
   Megaphone,
   Milestone,
-  RefreshCcwDot,
   Save,
   Trash2,
 } from "lucide-react";
+import { IconRestore } from "@tabler/icons-react";
 
 /** Plain-text-until-focused look for fields — mirrors the citizens page. */
 const GHOST_FIELD =
@@ -3281,7 +3281,8 @@ function DeleteButton({
 
 /**
  * Icon-only save + revert pair. Revert is guarded with a confirm modal when
- * the field is dirty; both are disabled when there are no unsaved changes.
+ * the field is dirty. The pair is hidden entirely until there are unsaved
+ * changes (or a save is in flight).
  */
 function SaveRevert({
   dirty,
@@ -3294,35 +3295,26 @@ function SaveRevert({
   onSave: () => void;
   onRevert: () => void;
 }) {
+  if (!dirty && !pending) return null;
   return (
     <div className="flex items-center gap-1">
       <button
         type="button"
         onClick={onRevert}
-        disabled={!dirty || pending}
-        aria-label="Revert changes"
+        disabled={pending}
+        aria-label="Revert to saved"
         title="Revert to saved"
-        className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-          dirty && !pending
-            ? "text-muted-foreground hover:bg-accent hover:text-foreground"
-            : "cursor-not-allowed text-muted-foreground/30"
-        )}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <RefreshCcwDot size={14} aria-hidden />
+        <IconRestore size={14} aria-hidden />
       </button>
       <button
         type="button"
         onClick={onSave}
-        disabled={!dirty || pending}
+        disabled={pending}
         aria-label="Save"
         title="Save"
-        className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-          dirty && !pending
-            ? "bg-primary text-primary-foreground hover:bg-primary/90"
-            : "cursor-not-allowed bg-muted text-muted-foreground/50"
-        )}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {pending ? <Spinner /> : <Save size={14} aria-hidden />}
       </button>
