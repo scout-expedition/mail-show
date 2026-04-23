@@ -497,6 +497,29 @@ export function LettersWorkspace({
     setView("segment");
   }
 
+  /**
+   * Open a segment directly from the group panel — used by the "Report
+   * segments" list. Clears the current letter selection so the actions slot
+   * (panel 3, visible at view="segment") doesn't show stale actions for a
+   * letter the user isn't editing.
+   */
+  async function openSegmentFromGroup(segmentId: string) {
+    if (letterDirty) {
+      const ok = await confirmDialog({
+        title: "Discard letter changes?",
+        message:
+          "The open letter has unsaved edits. Opening the report segment will discard them.",
+        confirmLabel: "Discard",
+        intent: "destructive",
+      });
+      if (!ok) return;
+      setLetterDirty(false);
+    }
+    setSelectedId(null);
+    setSelectedSegmentId(segmentId);
+    setView("segment");
+  }
+
   function closeSegmentPanel(segmentDirty: boolean, onSave: () => Promise<void>) {
     if (segmentDirty) {
       const ok = confirm(
@@ -1092,6 +1115,54 @@ export function LettersWorkspace({
                 pending={rowPending}
                 onPick={(n) => handleAddLetters(n)}
               />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-border bg-card">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+              <Megaphone
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
+              <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Report segments ({segments.length})
+              </span>
+            </div>
+            <div className="flex flex-col">
+              {segments.map((seg) => {
+                const active = seg.id === selectedSegmentId;
+                const preview = (seg.content ?? "").trim().split("\n")[0] ?? "";
+                return (
+                  <button
+                    key={seg.id}
+                    type="button"
+                    onClick={() => openSegmentFromGroup(seg.id)}
+                    className={cn(
+                      "flex items-center gap-2 border-t border-border px-3 py-2 text-left first:border-t-0",
+                      active ? "bg-accent/40" : "hover:bg-accent/15"
+                    )}
+                  >
+                    <Badge variant="secondary" className="font-mono">
+                      {seg.report_id.toLowerCase()}
+                    </Badge>
+                    <span className="truncate text-sm">
+                      {preview ? (
+                        preview
+                      ) : (
+                        <span className="text-muted-foreground italic">
+                          (empty)
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+              {segments.length === 0 ? (
+                <p className="px-4 py-4 text-center text-sm text-muted-foreground">
+                  No report segments yet.
+                </p>
+              ) : null}
             </div>
           </div>
           </>
