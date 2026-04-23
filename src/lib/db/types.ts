@@ -100,6 +100,8 @@ export interface InspectionLetter {
   sender_citizen_id: string | null;
   receiver_citizen_id: string | null;
   notes: string | null;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface InspectionLetterView extends InspectionLetter {
@@ -149,6 +151,8 @@ export interface ReportSegment {
   content: string | null;
   delivery_day_override_id: string | null;
   sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface ReportSegmentView extends ReportSegment {

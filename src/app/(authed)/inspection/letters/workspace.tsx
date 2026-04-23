@@ -68,6 +68,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { IconRestore } from "@tabler/icons-react";
+import { formatDistanceToNow } from "date-fns";
 
 /** Plain-text-until-focused look for fields — mirrors the citizens page. */
 const GHOST_FIELD =
@@ -1378,6 +1379,7 @@ function LetterFieldsCard({
       <div className="mt-4 flex justify-center">
         <DeleteButton onClick={onDelete} />
       </div>
+      <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
     </div>
   );
 }
@@ -1720,6 +1722,7 @@ function LetterSegmentCard({
           }}
         />
       </div>
+      <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
     </div>
   );
 }
@@ -3319,6 +3322,40 @@ function SaveRevert({
         {pending ? <Spinner /> : <Save size={14} aria-hidden />}
       </button>
     </div>
+  );
+}
+
+/**
+ * Footer showing when and by whom a record was last updated. Renders nothing
+ * if `at` is missing (i.e., the row predates the `updated_by` column).
+ */
+function LastUpdatedFooter({
+  at,
+  by,
+}: {
+  at: string | null | undefined;
+  by: string | null | undefined;
+}) {
+  if (!at) return null;
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return null;
+  const absolute = date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const relative = formatDistanceToNow(date, { addSuffix: true });
+  return (
+    <p
+      title={absolute}
+      className="mt-3 text-center text-[11px] text-muted-foreground/70"
+    >
+      Last updated {relative}
+      {by ? (
+        <>
+          {" "}by <span className="font-mono">{by}</span>
+        </>
+      ) : null}
+    </p>
   );
 }
 

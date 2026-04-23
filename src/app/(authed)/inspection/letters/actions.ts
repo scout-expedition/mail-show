@@ -296,10 +296,12 @@ export async function saveLetterWithActions(
   actions: ActionPatch[]
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { id: letterId, ...letterRest } = letter;
   const { error: lErr } = await supabase
     .from("inspection_letters")
-    .update(letterRest)
+    .update({ ...letterRest, updated_by: updatedBy })
     .eq("id", letterId);
   if (lErr) throw new Error(lErr.message);
   for (const a of actions) {
@@ -473,10 +475,12 @@ export async function saveReportSegment(data: {
   delivery_day_override_id: string | null;
 }) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { id, ...rest } = data;
   const { error } = await supabase
     .from("report_segments")
-    .update(rest)
+    .update({ ...rest, updated_by: updatedBy })
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
