@@ -988,7 +988,7 @@ export function LettersWorkspace({
             </BreadcrumbLink>
           </>
         ) : null}
-        {view === "actions" || view === "segment" ? (
+        {(view === "actions" || view === "segment") && selectedLetter ? (
           <>
             <ChevronRight size={12} aria-hidden className="opacity-50" />
             <BreadcrumbLink

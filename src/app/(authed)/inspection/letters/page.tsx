@@ -108,7 +108,22 @@ export default async function InspectionLettersPage({
         const seg = segments.find(
           (s) => s.letter_group_id === g.id && s.variant === parts.variant
         );
-        if (seg) initialSegmentId = seg.id;
+        if (seg) {
+          initialSegmentId = seg.id;
+          // Also resolve a triggering letter so the breadcrumb chain
+          // (group → letter → actions → segment) has every step. Prefer
+          // a trigger in the same letter group; fall back to any action
+          // that points at this segment.
+          const trigger =
+            allActions.find((a) => {
+              if (a.report_segment_id !== seg.id) return false;
+              const l = letters.find((x) => x.id === a.inspection_letter_id);
+              return l?.letter_group_id === g.id;
+            }) ??
+            allActions.find((a) => a.report_segment_id === seg.id) ??
+            null;
+          if (trigger) initialLetterId = trigger.inspection_letter_id;
+        }
       }
     }
   } else if (letterParam && letterParam !== "none") {
