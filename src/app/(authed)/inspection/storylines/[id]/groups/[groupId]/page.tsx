@@ -19,5 +19,5 @@ export default async function OldGroupRedirect({
     storylines: { abbreviation: string } | null;
   } | null)?.storylines?.abbreviation;
   if (!group || !abbr) notFound();
-  redirect(`/inspection/letters/${groupSlug(abbr, group.sequence)}`);
+  redirect(`/inspection/letters?group=${groupSlug(abbr, group.sequence)}`);
 }

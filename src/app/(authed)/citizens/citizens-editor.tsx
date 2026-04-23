@@ -6,6 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { CITIZEN_TYPES, type CitizenType } from "@/lib/db/enums";
+import {
+  formatCitizenIdInput,
+  generateRandomCitizenId,
+  isValidCitizenId,
+} from "@/lib/citizen-id";
 import { cn } from "@/lib/utils";
 import type { Citizen, City, Nation } from "@/lib/db/types";
 import { deleteCitizen, updateAllCitizens } from "./actions";
@@ -32,19 +37,6 @@ type RowValidation = {
 
 type SortMode = "name" | "type" | "nation";
 type TypeFilter = "all" | "hero" | "npc" | "unset";
-
-function formatCitizenIdInput(raw: string): string {
-  if (raw === "") return "";
-  const body = raw
-    .toUpperCase()
-    .replace(/^#*/, "")
-    .replace(/[^A-Z0-9]/g, "")
-    .slice(0, 4);
-  return body ? `#${body}` : "";
-}
-function isValidCitizenId(id: string): boolean {
-  return /^#[A-Z0-9]{4}$/.test(id);
-}
 
 function validateRow(r: RowState, duplicateIds: Set<string>): RowValidation {
   const missingType = !r.type;
@@ -151,6 +143,15 @@ export function CitizensEditor({
     const dupes = new Set<string>();
     for (const [k, n] of seen) if (n > 1) dupes.add(k);
     return dupes;
+  }, [rows]);
+
+  const allCitizenIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) {
+      const k = r.citizen_id.trim();
+      if (k) s.add(k);
+    }
+    return s;
   }, [rows]);
 
   const anyBlocked = rows.some((r) => validateRow(r, duplicateIds).blocksSave);
@@ -299,6 +300,7 @@ export function CitizensEditor({
             cities={cities}
             nations={nations}
             duplicateIds={duplicateIds}
+            allCitizenIds={allCitizenIds}
             nationById={nationById}
             onChange={(patch) => updateRow(r.id, patch)}
             onDelete={() => {
@@ -333,6 +335,7 @@ function CitizenRow({
   cities,
   nations,
   duplicateIds,
+  allCitizenIds,
   nationById,
   onChange,
   onDelete,
@@ -341,6 +344,7 @@ function CitizenRow({
   cities: City[];
   nations: Nation[];
   duplicateIds: Set<string>;
+  allCitizenIds: Set<string>;
   nationById: Map<string, Nation>;
   onChange: (patch: Partial<RowState>) => void;
   onDelete: () => void;
@@ -399,14 +403,11 @@ function CitizenRow({
             onChange={(t) => onChange({ type: t })}
             invalid={row.type === ""}
           />
-          <Input
+          <CitizenIdInput
             value={row.citizen_id}
-            onChange={(e) =>
-              onChange({ citizen_id: formatCitizenIdInput(e.target.value) })
-            }
-            placeholder="#0042"
-            maxLength={5}
+            onChange={(v) => onChange({ citizen_id: v })}
             className={cn("h-8", cidRing)}
+            allCitizenIds={allCitizenIds}
           />
           <Select
             value={row.city_id}
@@ -586,5 +587,69 @@ function Spinner() {
       aria-hidden
       className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
     />
+  );
+}
+
+function CitizenIdInput({
+  value,
+  onChange,
+  className,
+  allCitizenIds,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  className?: string;
+  allCitizenIds: Set<string>;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <div
+      className="relative flex items-center"
+      onFocus={() => setFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
+    >
+      <Input
+        value={value}
+        onChange={(e) => onChange(formatCitizenIdInput(e.target.value))}
+        placeholder="#0042"
+        maxLength={5}
+        className={cn(className, "pr-7")}
+      />
+      {focused ? (
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const taken = new Set(allCitizenIds);
+            taken.delete(value);
+            onChange(generateRandomCitizenId(taken));
+          }}
+          aria-label="Generate random citizen ID"
+          title="Generate random ID"
+          className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <rect x="3" y="3" width="18" height="18" rx="3" />
+            <circle cx="8" cy="8" r="1.1" fill="currentColor" />
+            <circle cx="12" cy="12" r="1.1" fill="currentColor" />
+            <circle cx="16" cy="16" r="1.1" fill="currentColor" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
   );
 }

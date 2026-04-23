@@ -90,7 +90,7 @@ export default async function InspectionTab({
                       <Link
                         href={
                           g
-                            ? `/inspection/letters/${s.abbreviation}${g.sequence}`
+                            ? `/inspection/letters?group=${s.abbreviation}${g.sequence}`
                             : "/inspection/letters"
                         }
                         className="text-xs text-primary hover:underline"

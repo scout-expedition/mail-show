@@ -136,7 +136,7 @@ export async function createLetterGroup(formData: FormData) {
   const abbr = storyline?.abbreviation ?? "";
   revalidatePath(`/inspection/storylines/${storyline_id}`);
   revalidatePath("/inspection/letters");
-  redirect(`/inspection/letters/${abbr}${nextSeq}`);
+  redirect(`/inspection/letters?group=${abbr}${nextSeq}`);
 }
 
 export async function updateLetterGroup(formData: FormData) {

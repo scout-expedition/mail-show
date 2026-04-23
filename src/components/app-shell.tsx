@@ -49,28 +49,26 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen w-screen overflow-hidden">
       <Nav />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
-          <div className="flex items-center gap-3 text-sm">
-            {currentDay ? (
-              <>
-                <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
-                  {currentDay.identifier}
-                </span>
-                <span className="text-muted-foreground">
-                  {PHASE_LABELS[activePlaythrough!.current_phase]}
-                </span>
-              </>
-            ) : (
-              <span className="text-muted-foreground">
-                No active playthrough
-              </span>
-            )}
-          </div>
-          <VariableHud
-            vars={vars}
-            playthroughName={activePlaythrough?.name ?? null}
-          />
-        </header>
+        {activePlaythrough ? (
+          <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
+            <div className="flex items-center gap-3 text-sm">
+              {currentDay ? (
+                <>
+                  <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
+                    {currentDay.identifier}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {PHASE_LABELS[activePlaythrough.current_phase]}
+                  </span>
+                </>
+              ) : null}
+            </div>
+            <VariableHud
+              vars={vars}
+              playthroughName={activePlaythrough.name}
+            />
+          </header>
+        ) : null}
         <main className="flex-1 overflow-y-auto px-8 py-6">{children}</main>
       </div>
     </div>
