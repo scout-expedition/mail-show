@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useTransition,
+  type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
 import { PageHeader } from "@/components/page-header";
@@ -71,16 +72,34 @@ import {
   Save,
   Trash2,
 } from "lucide-react";
-import { IconRestore } from "@tabler/icons-react";
+import {
+  IconCircleMinus,
+  IconDiamond,
+  IconHammer,
+  IconRestore,
+  IconWorldBolt,
+} from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
 
 /** Plain-text-until-focused look for fields — mirrors the citizens page. */
 const GHOST_FIELD =
   "border-transparent bg-transparent shadow-none hover:bg-accent/20 focus:border-border focus-visible:bg-input focus-visible:shadow-sm";
 
-const CLASS_AFFINITY: Array<{ key: keyof ActionImpacts; label: string }> = [
-  { key: "impact_proletariat", label: "Working" },
-  { key: "impact_gentry", label: "Gentry" },
+const CLASS_AFFINITY: Array<{
+  key: keyof ActionImpacts;
+  label: string;
+  icon: ReactNode;
+}> = [
+  {
+    key: "impact_proletariat",
+    label: "Working",
+    icon: <IconHammer size={14} aria-hidden />,
+  },
+  {
+    key: "impact_gentry",
+    label: "Gentry",
+    icon: <IconDiamond size={14} aria-hidden />,
+  },
 ];
 
 /** Map a nation name (case-insensitive) to its impact column. */
@@ -3012,13 +3031,15 @@ function ActionEditor({
         <div className="flex shrink-0 items-start gap-2">
           <ClassTile
             label="Demerits"
+            icon={<IconCircleMinus size={14} aria-hidden />}
             value={action.impact_demerits}
             onChange={(v) =>
               onChange({ impact_demerits: v } as Partial<ActionState>)
             }
           />
           <ClassTile
-            label="Status"
+            label="World Status"
+            icon={<IconWorldBolt size={14} aria-hidden />}
             value={action.impact_world_status}
             onChange={(v) =>
               onChange({ impact_world_status: v } as Partial<ActionState>)
@@ -3056,7 +3077,10 @@ function ActionEditor({
                 }
                 onChange({ next_letter_variant: v || null });
               }}
-              className={cn("h-7 w-28 px-1", GHOST_FIELD)}
+              className={cn(
+                "h-6 w-auto appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
+                GHOST_FIELD
+              )}
             >
               <option value="">—</option>
               {nextGroup
@@ -3111,7 +3135,10 @@ function ActionEditor({
                 }
                 onChange({ report_segment_id: v || null });
               }}
-              className={cn("h-7 w-28 px-1", GHOST_FIELD)}
+              className={cn(
+                "h-6 w-auto appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
+                GHOST_FIELD
+              )}
             >
               <option value="">—</option>
               {segments.map((s) => (
@@ -3165,6 +3192,7 @@ function ActionEditor({
               <ClassTile
                 key={c.key}
                 label={c.label}
+                icon={c.icon}
                 value={action[c.key]}
                 onChange={(v) =>
                   onChange({ [c.key]: v } as Partial<ActionState>)
@@ -3281,17 +3309,22 @@ function CounterInput({
 
 function ClassTile({
   label,
+  icon,
   value,
   onChange,
 }: {
   label: string;
+  icon?: ReactNode;
   value: number;
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="flex flex-col items-center gap-1">
-      <span className="flex h-6 items-center text-[10px] text-muted-foreground">
-        {label}
+    <div className="flex flex-col items-center gap-1" title={label}>
+      <span
+        aria-label={label}
+        className="flex h-6 items-center text-muted-foreground"
+      >
+        {icon ?? <span className="text-[10px]">{label}</span>}
       </span>
       <CounterInput value={value} onChange={onChange} orientation="vertical" />
     </div>
@@ -3682,7 +3715,7 @@ function DeleteButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-2 py-0.5 text-[10px] text-muted-foreground/20 transition-colors hover:border-destructive/80 hover:bg-destructive/90 hover:text-destructive-foreground disabled:opacity-40"
+      className="group inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground opacity-40 transition-[colors,opacity] hover:border-destructive hover:bg-destructive hover:text-destructive-foreground hover:opacity-100 disabled:opacity-30"
     >
       <Trash2 size={10} aria-hidden />
       <span>{label}</span>
