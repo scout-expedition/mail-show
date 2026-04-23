@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ConditionDescription } from "@/components/condition-description";
+import { useConfirm } from "@/components/confirm-dialog";
 import {
   ConditionBuilderInline,
   type BuilderCondition,
@@ -102,6 +103,7 @@ function RuleRow({
 }) {
   const [duplicating, startDuplicate] = useTransition();
   const [saving, startSave] = useTransition();
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   // Editable local state — mirrors current server rule when opened fresh.
   const [letter, setLetter] = useState(rule.letter);
@@ -156,9 +158,14 @@ function RuleRow({
     });
   }
 
-  function handleDelete() {
-    if (!confirm(`Delete rule RR-${rule.letter}? This cannot be undone.`))
-      return;
+  async function handleDelete() {
+    const ok = await confirmDialog({
+      title: "Delete rule?",
+      message: `RR-${rule.letter} will be permanently removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
     const fd = new FormData();
     fd.append("id", rule.id);
     startSave(async () => {
@@ -360,6 +367,7 @@ function RuleRow({
           </div>
         </div>
       ) : null}
+      {confirmDialogEl}
     </div>
   );
 }

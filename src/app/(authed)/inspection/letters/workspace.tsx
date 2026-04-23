@@ -391,15 +391,27 @@ export function LettersWorkspace({
   );
   const [storylineDirty, setStorylineDirty] = useState(false);
 
-  function selectGroup(id: string | null) {
+  async function confirmDiscardDirty(message: string): Promise<boolean> {
+    if (!(groupDirty || letterDirty || storylineDirty)) return true;
+    return onConfirmDiscard(message);
+  }
+  async function onConfirmDiscard(message: string): Promise<boolean> {
+    return confirmDialog({
+      title: "Discard unsaved changes?",
+      message,
+      confirmLabel: "Discard",
+      intent: "destructive",
+    });
+  }
+
+  async function selectGroup(id: string | null) {
     if (id === selectedGroupId) {
-      // Toggle off — close group panel.
-      if (groupDirty || letterDirty || storylineDirty) {
-        const ok = confirm(
+      if (
+        !(await confirmDiscardDirty(
           "Unsaved changes will be lost. Close anyway?"
-        );
-        if (!ok) return;
-      }
+        ))
+      )
+        return;
       setSelectedGroupId(null);
       setSelectedStorylineId(null);
       setSelectedId(null);
@@ -411,12 +423,12 @@ export function LettersWorkspace({
       setView("groups");
       return;
     }
-    if (groupDirty || letterDirty || storylineDirty) {
-      const ok = confirm(
+    if (
+      !(await confirmDiscardDirty(
         "Unsaved changes will be lost. Switch groups anyway?"
-      );
-      if (!ok) return;
-    }
+      ))
+    )
+      return;
     setSelectedGroupId(id);
     setSelectedStorylineId(null);
     setSelectedId(null);
@@ -430,13 +442,13 @@ export function LettersWorkspace({
     setView("groups");
   }
 
-  function selectStoryline(id: string | null) {
-    if (groupDirty || letterDirty || storylineDirty) {
-      const ok = confirm(
+  async function selectStoryline(id: string | null) {
+    if (
+      !(await confirmDiscardDirty(
         "Unsaved changes will be lost. Switch storylines anyway?"
-      );
-      if (!ok) return;
-    }
+      ))
+    )
+      return;
     setSelectedStorylineId(id);
     setSelectedGroupId(null);
     setSelectedId(null);
@@ -473,11 +485,11 @@ export function LettersWorkspace({
     }
   }, [letters, actions, selectedId, letterDirty]);
 
-  function selectLetter(id: string) {
+  async function selectLetter(id: string) {
     if (id === selectedId) {
       // Toggle off — deselect the current letter so the right panel clears.
       if (letterDirty) {
-        const ok = confirm(
+        const ok = await onConfirmDiscard(
           "This letter has unsaved changes. Discard them and close?"
         );
         if (!ok) return;
@@ -490,7 +502,7 @@ export function LettersWorkspace({
       return;
     }
     if (letterDirty) {
-      const ok = confirm(
+      const ok = await onConfirmDiscard(
         "This letter has unsaved changes. Discard them and switch?"
       );
       if (!ok) return;
@@ -504,11 +516,13 @@ export function LettersWorkspace({
     setSelectedSegmentId(null);
   }
 
-  function closeActionsPanel() {
+  async function closeActionsPanel() {
     if (letterDirty) {
-      const ok = confirm(
-        "Actions have unsaved changes. Save before closing?"
-      );
+      const ok = await confirmDialog({
+        title: "Save actions before closing?",
+        message: "Actions have unsaved changes.",
+        confirmLabel: "Save",
+      });
       if (ok && letterState) {
         const snap = letterState;
         startLetterSave(async () => {
@@ -552,11 +566,16 @@ export function LettersWorkspace({
     setView("segment");
   }
 
-  function closeSegmentPanel(segmentDirty: boolean, onSave: () => Promise<void>) {
+  async function closeSegmentPanel(
+    segmentDirty: boolean,
+    onSave: () => Promise<void>
+  ) {
     if (segmentDirty) {
-      const ok = confirm(
-        "Segment has unsaved changes. Save before closing?"
-      );
+      const ok = await confirmDialog({
+        title: "Save segment before closing?",
+        message: "Segment has unsaved changes.",
+        confirmLabel: "Save",
+      });
       if (ok) {
         startRowAction(async () => {
           await onSave();
@@ -576,7 +595,7 @@ export function LettersWorkspace({
    * selection if the trigger lives in a different letter group (e.g. a
    * sibling storyline's letter pointing at this segment).
    */
-  function jumpToTrigger(
+  async function jumpToTrigger(
     letterId: string,
     segmentDirty: boolean,
     onSave: () => Promise<void>
@@ -592,7 +611,11 @@ export function LettersWorkspace({
       setView("actions");
     };
     if (segmentDirty) {
-      const ok = confirm("Segment has unsaved changes. Save before jumping?");
+      const ok = await confirmDialog({
+        title: "Save segment before jumping?",
+        message: "Segment has unsaved changes.",
+        confirmLabel: "Save",
+      });
       if (ok) {
         startRowAction(async () => {
           await onSave();
@@ -659,14 +682,17 @@ export function LettersWorkspace({
     });
   }
 
-  function handleSaveGroup() {
+  async function handleSaveGroup() {
     if (!group) return;
     const groupId = group.id;
     let alsoSaveLetter = false;
     if (letterDirty && letterState) {
-      alsoSaveLetter = confirm(
-        "The open letter has unsaved changes. Save the letter too?"
-      );
+      alsoSaveLetter = await confirmDialog({
+        title: "Save the open letter too?",
+        message:
+          "The open letter has unsaved changes. Save the letter along with the group?",
+        confirmLabel: "Save both",
+      });
     }
     const snapshot = letterState;
     startGroupSave(async () => {
@@ -685,11 +711,11 @@ export function LettersWorkspace({
     });
   }
 
-  function handleAddLetters(count: number) {
+  async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
     if (letterDirty) {
-      const ok = confirm(
+      const ok = await onConfirmDiscard(
         "The open letter has unsaved changes. Discard them and add?"
       );
       if (!ok) return;
@@ -701,11 +727,11 @@ export function LettersWorkspace({
     });
   }
 
-  function handleAddPiece(letterId: string) {
+  async function handleAddPiece(letterId: string) {
     if (!group) return;
     const groupId = group.id;
     if (letterDirty) {
-      const ok = confirm(
+      const ok = await onConfirmDiscard(
         "The open letter has unsaved changes. Discard them and add a piece?"
       );
       if (!ok) return;
@@ -717,13 +743,18 @@ export function LettersWorkspace({
     });
   }
 
-  function handleDeleteLetter(id: string) {
+  async function handleDeleteLetter(id: string) {
     if (!group) return;
     const groupId = group.id;
     const l = letters.find((x) => x.id === id);
     if (!l) return;
-    if (!confirm(`Delete letter ${l.content_id}? This cannot be undone.`))
-      return;
+    const ok = await confirmDialog({
+      title: "Delete letter?",
+      message: `${l.content_id} will be permanently removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
     startRowAction(async () => {
       await deleteInspectionLetter(groupId, id);
       if (selectedId === id) {
@@ -734,28 +765,32 @@ export function LettersWorkspace({
     });
   }
 
-  function handleDeleteGroup() {
+  async function handleDeleteGroup() {
     if (!group) return;
     const groupId = group.id;
-    if (
-      !confirm(
-        `Delete letter group "${group.name}" and all of its letters? This cannot be undone.`
-      )
-    )
-      return;
+    const ok = await confirmDialog({
+      title: "Delete letter group?",
+      message: `"${group.name}" and all of its letters will be permanently removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
     startGroupSave(async () => {
       await deleteGroup(groupId);
     });
   }
 
-  function handleAddAction(templateId: string) {
+  async function handleAddAction(templateId: string) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
     if (letterDirty) {
-      const ok = confirm(
-        "This letter has unsaved changes. Save them before adding an action? (Cancel to discard.)"
-      );
+      const ok = await confirmDialog({
+        title: "Save letter before adding action?",
+        message:
+          "This letter has unsaved changes. Save them before adding an action? Cancel to discard them.",
+        confirmLabel: "Save",
+      });
       if (ok && letterState) {
         const snap = letterState;
         startRowAction(async () => {
@@ -772,10 +807,16 @@ export function LettersWorkspace({
     });
   }
 
-  function handleDeleteAction(actionId: string) {
+  async function handleDeleteAction(actionId: string) {
     if (!group) return;
     const groupId = group.id;
-    if (!confirm("Delete this action? This cannot be undone.")) return;
+    const ok = await confirmDialog({
+      title: "Delete action?",
+      message: "The action will be permanently removed.",
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
     startRowAction(async () => {
       await deleteActionRow(groupId, actionId);
     });

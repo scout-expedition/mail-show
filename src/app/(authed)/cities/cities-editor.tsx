@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useConfirm } from "@/components/confirm-dialog";
 import type { City, Nation } from "@/lib/db/types";
 import { deleteCity, updateAllCities } from "./actions";
 
@@ -365,31 +366,41 @@ function DeleteX({
   name: string;
   onDelete: () => void;
 }) {
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   return (
-    <button
-      type="button"
-      aria-label="Delete city"
-      title="Delete"
-      onClick={() => {
-        if (!confirm(`Delete city "${name}"? This cannot be undone.`)) return;
-        onDelete();
-      }}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-    >
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
+    <>
+      <button
+        type="button"
+        aria-label="Delete city"
+        title="Delete"
+        onClick={async () => {
+          const ok = await confirmDialog({
+            title: "Delete city?",
+            message: `"${name}" will be permanently removed.`,
+            confirmLabel: "Delete",
+            intent: "destructive",
+          });
+          if (!ok) return;
+          onDelete();
+        }}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
       >
-        <path d="M6 6l12 12M18 6L6 18" />
-      </svg>
-    </button>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+      {confirmDialogEl}
+    </>
   );
 }
 

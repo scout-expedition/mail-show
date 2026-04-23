@@ -6,6 +6,7 @@ import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import type { Storyline } from "@/lib/db/types";
@@ -34,6 +35,7 @@ type RowState = {
 
 export function StorylinesEditor({ storylines }: { storylines: Storyline[] }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const [rows, setRows] = useState<RowState[]>(() =>
     storylines.map((s) => ({
       id: s.id,
@@ -212,7 +214,11 @@ export function StorylinesEditor({ storylines }: { storylines: Storyline[] }) {
                   }
                   className="h-8"
                 />
-                <DeleteX id={row.id} name={row.name} />
+                <DeleteX
+                  id={row.id}
+                  name={row.name}
+                  onConfirmDialog={confirmDialog}
+                />
               </div>
 
               {expanded ? (
@@ -241,6 +247,7 @@ export function StorylinesEditor({ storylines }: { storylines: Storyline[] }) {
           </p>
         ) : null}
       </form>
+      {confirmDialogEl}
     </>
   );
 }
@@ -264,7 +271,20 @@ function DragHandle() {
   );
 }
 
-function DeleteX({ id, name }: { id: string; name: string }) {
+function DeleteX({
+  id,
+  name,
+  onConfirmDialog,
+}: {
+  id: string;
+  name: string;
+  onConfirmDialog: (options: {
+    title: string;
+    message?: string;
+    confirmLabel?: string;
+    intent?: "destructive" | "default";
+  }) => Promise<boolean>;
+}) {
   const [pending, startTransition] = useTransition();
   return (
     <button
@@ -272,8 +292,14 @@ function DeleteX({ id, name }: { id: string; name: string }) {
       disabled={pending}
       aria-label="Delete storyline"
       title="Delete"
-      onClick={() => {
-        if (!confirm(`Delete storyline "${name}"? This cannot be undone.`)) return;
+      onClick={async () => {
+        const ok = await onConfirmDialog({
+          title: "Delete storyline?",
+          message: `"${name}" will be permanently removed.`,
+          confirmLabel: "Delete",
+          intent: "destructive",
+        });
+        if (!ok) return;
         const fd = new FormData();
         fd.set("id", id);
         startTransition(() => deleteStoryline(fd));

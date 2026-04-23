@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import type { ActionTemplate } from "@/lib/db/types";
@@ -305,22 +306,28 @@ function DragHandle() {
 }
 
 function DeleteX({ id, name }: { id: string; name: string }) {
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const [pending, startTransition] = useTransition();
   return (
-    <form action={deleteActionTemplate}>
-      <input type="hidden" name="id" value={id} />
+    <>
       <button
-        type="submit"
+        type="button"
+        disabled={pending}
         aria-label="Delete action template"
         title="Delete"
-        onClick={(e) => {
-          if (
-            !confirm(
-              `Delete action template "${name}"? This cannot be undone.`
-            )
-          )
-            e.preventDefault();
+        onClick={async () => {
+          const ok = await confirmDialog({
+            title: "Delete action template?",
+            message: `"${name}" will be permanently removed.`,
+            confirmLabel: "Delete",
+            intent: "destructive",
+          });
+          if (!ok) return;
+          const fd = new FormData();
+          fd.set("id", id);
+          startTransition(() => deleteActionTemplate(fd));
         }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
       >
         <svg
           width="12"
@@ -336,7 +343,8 @@ function DeleteX({ id, name }: { id: string; name: string }) {
           <path d="M6 6l12 12M18 6L6 18" />
         </svg>
       </button>
-    </form>
+      {confirmDialogEl}
+    </>
   );
 }
 

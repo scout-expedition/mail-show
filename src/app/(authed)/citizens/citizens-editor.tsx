@@ -12,6 +12,7 @@ import {
   isValidCitizenId,
 } from "@/lib/citizen-id";
 import { cn } from "@/lib/utils";
+import { useConfirm } from "@/components/confirm-dialog";
 import type { Citizen, City, Nation } from "@/lib/db/types";
 import { deleteCitizen, updateAllCitizens } from "./actions";
 
@@ -553,13 +554,21 @@ function DeleteX({
   name: string;
   onDelete: () => void;
 }) {
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   return (
+    <>
     <button
       type="button"
       aria-label="Delete citizen"
       title="Delete"
-      onClick={() => {
-        if (!confirm(`Delete citizen "${name}"? This cannot be undone.`)) return;
+      onClick={async () => {
+        const ok = await confirmDialog({
+          title: "Delete citizen?",
+          message: `"${name}" will be permanently removed.`,
+          confirmLabel: "Delete",
+          intent: "destructive",
+        });
+        if (!ok) return;
         onDelete();
       }}
       className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
@@ -578,6 +587,8 @@ function DeleteX({
         <path d="M6 6l12 12M18 6L6 18" />
       </svg>
     </button>
+    {confirmDialogEl}
+    </>
   );
 }
 

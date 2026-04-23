@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useConfirm } from "@/components/confirm-dialog";
 import type { Day, SortingLetterView } from "@/lib/db/types";
 import {
   deleteSortingLetter,
@@ -249,18 +250,28 @@ function PencilIcon() {
 }
 
 function DeleteX({ id, name }: { id: string; name: string }) {
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const [pending, startTransition] = useTransition();
   return (
-    <form action={deleteSortingLetter}>
-      <input type="hidden" name="id" value={id} />
+    <>
       <button
-        type="submit"
+        type="button"
+        disabled={pending}
         aria-label="Delete sorting letter"
         title="Delete"
-        onClick={(e) => {
-          if (!confirm(`Delete sorting letter ${name}? This cannot be undone.`))
-            e.preventDefault();
+        onClick={async () => {
+          const ok = await confirmDialog({
+            title: "Delete sorting letter?",
+            message: `${name} will be permanently removed.`,
+            confirmLabel: "Delete",
+            intent: "destructive",
+          });
+          if (!ok) return;
+          const fd = new FormData();
+          fd.set("id", id);
+          startTransition(() => deleteSortingLetter(fd));
         }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
       >
         <svg
           width="12"
@@ -276,7 +287,8 @@ function DeleteX({ id, name }: { id: string; name: string }) {
           <path d="M6 6l12 12M18 6L6 18" />
         </svg>
       </button>
-    </form>
+      {confirmDialogEl}
+    </>
   );
 }
 
