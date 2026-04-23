@@ -1489,11 +1489,13 @@ function LetterFieldsCard({
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-4 flex flex-col gap-1">
-          <Label>Delivery Override</Label>
+          <Label>Delivery day</Label>
           <DaySelect
             value={currentDayId ?? ""}
             days={days}
             groupDefaultId={groupDeliveryDayId}
+            dashWhenGroupDefault
+            hideClear
             onChange={(v) =>
               onChange({
                 delivery_day_override_id:
@@ -1556,6 +1558,7 @@ function LetterFieldsCard({
             heroes={heroes}
             cities={cities}
             nations={nations}
+            placeholder="Add sender"
             onChange={(v) => onChange({ sender_citizen_id: v })}
             onCreate={() => onQuickCreateHero("sender")}
             onEdit={onEditCitizen}
@@ -1568,6 +1571,7 @@ function LetterFieldsCard({
             heroes={heroes}
             cities={cities}
             nations={nations}
+            placeholder="Add receiver"
             onChange={(v) => onChange({ receiver_citizen_id: v })}
             onCreate={() => onQuickCreateHero("receiver")}
             onEdit={onEditCitizen}
@@ -1949,9 +1953,12 @@ function LetterSegmentCard({
         <div className="col-span-4 flex flex-col gap-1">
           <Label>Delivery day</Label>
           <DaySelect
-            value={currentDayId ?? ""}
+            value={
+              (state.delivery_day_override_id ?? groupDeliveryDayId) ?? ""
+            }
             days={days}
             groupDefaultId={groupDeliveryDayId}
+            defaultSuffix="(Following Day)"
             onChange={(v) =>
               update(
                 "delivery_day_override_id",
@@ -2071,6 +2078,7 @@ function HeroSearch({
   heroes,
   cities,
   nations,
+  placeholder,
   onChange,
   onCreate,
   onEdit,
@@ -2079,6 +2087,7 @@ function HeroSearch({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
+  placeholder?: string;
   onChange: (v: string | null) => void;
   onCreate: () => void;
   onEdit: (citizen: Citizen) => void;
@@ -2173,7 +2182,7 @@ function HeroSearch({
             setOpen(true);
           }}
           onFocus={() => setOpen(true)}
-          placeholder="Search citizens"
+          placeholder={placeholder ?? "Search citizens"}
           className={cn("h-8 flex-1", GHOST_FIELD)}
         />
         <Button
@@ -2925,22 +2934,23 @@ function ActionEditor({
                 const v = e.target.value;
                 if (v === "__new_segment") {
                   startCreateSegment(async () => {
-                    const { segmentId } = await createReportSegmentForGroup(
-                      groupId,
-                      nextDay?.id ?? null
-                    );
-                    onChange({ report_segment_id: segmentId });
-                  });
-                  return;
-                }
-                if (v === "__new_day_and_segment") {
-                  if (!currentDay) return;
-                  startCreateSegment(async () => {
-                    const { segmentId } = await createNextDayAndReportSegment(
-                      groupId,
-                      currentDay.number
-                    );
-                    onChange({ report_segment_id: segmentId });
+                    // Default the new segment to the letter's delivery day
+                    // + 1. Auto-create that day if it doesn't exist yet.
+                    if (currentDay && !nextDay) {
+                      const { segmentId } =
+                        await createNextDayAndReportSegment(
+                          groupId,
+                          currentDay.number
+                        );
+                      onChange({ report_segment_id: segmentId });
+                    } else {
+                      const { segmentId } =
+                        await createReportSegmentForGroup(
+                          groupId,
+                          nextDay?.id ?? null
+                        );
+                      onChange({ report_segment_id: segmentId });
+                    }
                   });
                   return;
                 }
@@ -2954,13 +2964,7 @@ function ActionEditor({
                   {s.report_id}
                 </option>
               ))}
-              {currentDay && !nextDay ? (
-                <option value="__new_day_and_segment">
-                  + Day + Report Segment
-                </option>
-              ) : (
-                <option value="__new_segment">+ Report Segment</option>
-              )}
+              <option value="__new_segment">+ Report Segment</option>
             </Select>
           )}
         </TileFrame>
@@ -3317,12 +3321,21 @@ function DaySelect({
   value,
   days,
   groupDefaultId,
+  hideClear,
+  dashWhenGroupDefault,
+  defaultSuffix,
   onChange,
   className,
 }: {
   value: string;
   days: Day[];
   groupDefaultId?: string | null;
+  /** When true, the "—" clear option is not rendered in the dropdown. */
+  hideClear?: boolean;
+  /** When true, the closed button shows "—" whenever value equals groupDefaultId. */
+  dashWhenGroupDefault?: boolean;
+  /** Appended in parens when value equals groupDefaultId, e.g. "(Following Day)". */
+  defaultSuffix?: string;
   onChange: (v: string) => void;
   className?: string;
 }) {
@@ -3340,9 +3353,16 @@ function DaySelect({
   }, []);
 
   const selected = value ? days.find((d) => d.id === value) ?? null : null;
-  const displayText = selected
-    ? `${selected.identifier}${selected.name ? ` — ${selected.name}` : ""}`
-    : "—";
+  const isGroupDefault =
+    !!selected && !!groupDefaultId && selected.id === groupDefaultId;
+  const displayText =
+    selected && isGroupDefault && dashWhenGroupDefault
+      ? "—"
+      : selected
+        ? `${selected.identifier}${selected.name ? ` — ${selected.name}` : ""}${
+            isGroupDefault && defaultSuffix ? ` ${defaultSuffix}` : ""
+          }`
+        : "—";
 
   if (creating) {
     return (
@@ -3393,15 +3413,17 @@ function DaySelect({
           role="listbox"
           className="absolute left-0 top-full z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border border-border bg-card shadow-md"
         >
-          <DayOption
-            active={value === ""}
-            onPick={() => {
-              onChange("");
-              setOpen(false);
-            }}
-          >
-            —
-          </DayOption>
+          {!hideClear ? (
+            <DayOption
+              active={value === ""}
+              onPick={() => {
+                onChange("");
+                setOpen(false);
+              }}
+            >
+              —
+            </DayOption>
+          ) : null}
           {days.map((d) => (
             <DayOption
               key={d.id}
@@ -3415,7 +3437,7 @@ function DaySelect({
               {d.name ? ` — ${d.name}` : ""}
               {groupDefaultId && d.id === groupDefaultId ? (
                 <span className="ml-1 text-[10px] text-muted-foreground">
-                  (Group Default)
+                  {defaultSuffix ?? "(Group Default)"}
                 </span>
               ) : null}
             </DayOption>
