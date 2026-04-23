@@ -1,6 +1,6 @@
 import { lpad } from "@/lib/utils";
 
-/** Format an inspection-letter content id: IL-[storyline.abbr][group.seq][/variant][piece]. */
+/** Format an inspection-letter content id: L-[storyline.abbr][group.seq][/variant][piece]. */
 export function formatInspectionLetterId(params: {
   storylineAbbreviation: string;
   groupSequence: number;
@@ -10,7 +10,7 @@ export function formatInspectionLetterId(params: {
   const { storylineAbbreviation, groupSequence, variant, piece } = params;
   const v = variant ? `/${variant}` : "";
   const p = piece != null ? String(piece) : "";
-  return `IL-${storylineAbbreviation}${groupSequence}${v}${p}`;
+  return `L-${storylineAbbreviation}${groupSequence}${v}${p}`;
 }
 
 /** Format a report id: R-[storyline.abbr][group.seq]/[variant]. */

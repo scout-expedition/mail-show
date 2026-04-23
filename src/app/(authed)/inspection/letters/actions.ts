@@ -315,6 +315,34 @@ export async function saveLetterWithActions(
   revalidatePath("/inspection/letters");
 }
 
+/** Save just the inspection letter row — no actions touched. */
+export async function saveLetterFields(letter: LetterPatch) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { id: letterId, ...rest } = letter;
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update({ ...rest, updated_by: updatedBy })
+    .eq("id", letterId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+}
+
+/** Save only the action rows for a letter — letter row not touched. */
+export async function saveLetterActionsOnly(actions: ActionPatch[]) {
+  const supabase = await createSupabaseServerClient();
+  for (const a of actions) {
+    const { id: actionId, ...rest } = a;
+    const { error } = await supabase
+      .from("actions")
+      .update(rest)
+      .eq("id", actionId);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/inspection/letters");
+}
+
 export async function addActionFromTemplate(
   groupId: string,
   letterId: string,

@@ -55,6 +55,8 @@ import {
   reorderInspectionLetters,
   reorderLetterGroups,
   saveGroup,
+  saveLetterActionsOnly,
+  saveLetterFields,
   saveLetterWithActions,
   saveReportSegment,
   updateCitizen,
@@ -65,11 +67,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
 import {
+  ChevronLeft,
   ChevronRight,
   MailOpen,
   Mails,
   Megaphone,
   Milestone,
+  MoreVertical,
   Save,
   Trash2,
 } from "lucide-react";
@@ -83,9 +87,13 @@ import {
 } from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
 
-/** Plain-text-until-focused look for fields — mirrors the citizens page. */
+/**
+ * Entry-field look: a darker-than-panel fill that darkens further on
+ * hover and shows a visible border on focus. The border stays
+ * transparent at rest so the field blends with the panel edges.
+ */
 const GHOST_FIELD =
-  "border-transparent bg-transparent shadow-none hover:bg-accent/20 focus:border-border focus-visible:bg-input focus-visible:shadow-sm";
+  "border-transparent bg-black/35 shadow-none hover:bg-black/50 focus:border-border focus-visible:bg-black/50 focus-visible:shadow-sm";
 
 const CLASS_AFFINITY: Array<{
   key: keyof ActionImpacts;
@@ -342,7 +350,10 @@ export function LettersWorkspace({
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
   const [letterDirty, setLetterDirty] = useState(false);
   const [letterPending, startLetterSave] = useTransition();
+  const [actionsDirty, setActionsDirty] = useState(false);
+  const [actionsPending, startActionsSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
+  const anyLetterDirty = letterDirty || actionsDirty;
   const [view, setView] = useState<
     "list" | "group" | "main" | "actions" | "segment"
   >(
@@ -410,14 +421,47 @@ export function LettersWorkspace({
     if (!letterState || !letterDirty) return;
     const ok = await confirmDialog({
       title: "Discard letter changes?",
-      message: "Any unsaved edits to this letter (and its actions) will be lost.",
+      message: "Any unsaved edits to this letter's fields will be lost.",
       confirmLabel: "Revert",
       intent: "destructive",
     });
     if (!ok) return;
     const server = letters.find((l) => l.id === letterState.id);
-    if (server) setLetterState(toLetterState(server, actions));
+    if (server) {
+      // Only restore the letter fields; keep any in-flight action edits.
+      setLetterState((s) =>
+        s
+          ? {
+              ...s,
+              piece: server.piece,
+              delivery_day_override_id: server.delivery_day_override_id,
+              summary: server.summary,
+              content: server.content,
+              sender_citizen_id: server.sender_citizen_id,
+              receiver_citizen_id: server.receiver_citizen_id,
+              notes: server.notes,
+            }
+          : s
+      );
+    }
     setLetterDirty(false);
+  }
+
+  async function revertActions() {
+    if (!letterState || !actionsDirty) return;
+    const ok = await confirmDialog({
+      title: "Discard action changes?",
+      message: "Any unsaved edits to this letter's actions will be lost.",
+      confirmLabel: "Revert",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    const server = letters.find((l) => l.id === letterState.id);
+    if (server) {
+      const fresh = toLetterState(server, actions);
+      setLetterState((s) => (s ? { ...s, actions: fresh.actions } : s));
+    }
+    setActionsDirty(false);
   }
 
   // Slot 1 can host either a group or a storyline inspector — mutually
@@ -427,8 +471,106 @@ export function LettersWorkspace({
   );
   const [storylineDirty, setStorylineDirty] = useState(false);
 
+  // ----- Panel history: the mouse back/forward buttons navigate between
+  // panels in this workspace instead of browser pages. We record a
+  // snapshot whenever the focused entity or view changes; mouse-back
+  // moves the pointer one snapshot earlier, mouse-forward one later.
+  type PanelSnapshot = {
+    storylineId: string | null;
+    groupId: string | null;
+    letterId: string | null;
+    segmentId: string | null;
+    view: "list" | "group" | "main" | "actions" | "segment";
+  };
+  const panelHistory = useRef<PanelSnapshot[]>([]);
+  const panelIndex = useRef(-1);
+  const applyingPanelSnapshot = useRef(false);
+
+  useEffect(() => {
+    if (applyingPanelSnapshot.current) {
+      applyingPanelSnapshot.current = false;
+      return;
+    }
+    const snap: PanelSnapshot = {
+      storylineId: selectedStorylineId,
+      groupId: selectedGroupId,
+      letterId: selectedId,
+      segmentId: selectedSegmentId,
+      view,
+    };
+    const prev = panelHistory.current[panelIndex.current];
+    if (
+      prev &&
+      prev.storylineId === snap.storylineId &&
+      prev.groupId === snap.groupId &&
+      prev.letterId === snap.letterId &&
+      prev.segmentId === snap.segmentId &&
+      prev.view === snap.view
+    ) {
+      return;
+    }
+    panelHistory.current = [
+      ...panelHistory.current.slice(0, panelIndex.current + 1),
+      snap,
+    ];
+    panelIndex.current = panelHistory.current.length - 1;
+  }, [
+    selectedStorylineId,
+    selectedGroupId,
+    selectedId,
+    selectedSegmentId,
+    view,
+  ]);
+
+  useEffect(() => {
+    function applyPanelSnapshot(s: PanelSnapshot) {
+      applyingPanelSnapshot.current = true;
+      setSelectedStorylineId(s.storylineId);
+      setSelectedGroupId(s.groupId);
+      setSelectedId(s.letterId);
+      setSelectedSegmentId(s.segmentId);
+      setView(s.view);
+      // Discard any in-progress edits when jumping — matches browser
+      // back/forward semantics (you lose the form state you hadn't
+      // committed). The forward button can re-enter the panel.
+      setLetterDirty(false);
+      setGroupDirty(false);
+      setStorylineDirty(false);
+    }
+    function goPanelBack() {
+      if (panelIndex.current > 0) {
+        panelIndex.current -= 1;
+        applyPanelSnapshot(panelHistory.current[panelIndex.current]);
+      }
+    }
+    function goPanelForward() {
+      if (panelIndex.current < panelHistory.current.length - 1) {
+        panelIndex.current += 1;
+        applyPanelSnapshot(panelHistory.current[panelIndex.current]);
+      }
+    }
+    function handleMouseDown(e: MouseEvent) {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    }
+    function handleMouseUp(e: MouseEvent) {
+      if (e.button === 3) {
+        e.preventDefault();
+        goPanelBack();
+      } else if (e.button === 4) {
+        e.preventDefault();
+        goPanelForward();
+      }
+    }
+    window.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousedown", handleMouseDown);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
   async function confirmDiscardDirty(message: string): Promise<boolean> {
-    if (!(groupDirty || letterDirty || storylineDirty)) return true;
+    if (!(groupDirty || anyLetterDirty || storylineDirty)) return true;
     return onConfirmDiscard(message);
   }
   async function onConfirmDiscard(message: string): Promise<boolean> {
@@ -522,10 +664,10 @@ export function LettersWorkspace({
       return;
     }
     // Only overwrite if not dirty; otherwise preserve user edits.
-    if (!letterDirty) {
+    if (!(letterDirty || actionsDirty)) {
       setLetterState(toLetterState(found, actions));
     }
-  }, [letters, actions, selectedId, letterDirty]);
+  }, [letters, actions, selectedId, letterDirty, actionsDirty]);
 
   async function selectLetter(id: string) {
     if (id === selectedId) {
@@ -533,7 +675,7 @@ export function LettersWorkspace({
       // position so the group panel stays on the left where the user
       // put it. Slot 2 will just render the "Select a letter…" empty
       // state until they pick another.
-      if (letterDirty) {
+      if (anyLetterDirty) {
         const ok = await onConfirmDiscard(
           "This letter has unsaved changes. Discard them and close?"
         );
@@ -542,10 +684,11 @@ export function LettersWorkspace({
       setSelectedId(null);
       setLetterState(null);
       setLetterDirty(false);
+      setActionsDirty(false);
       setSelectedSegmentId(null);
       return;
     }
-    if (letterDirty) {
+    if (anyLetterDirty) {
       const ok = await onConfirmDiscard(
         "This letter has unsaved changes. Discard them and switch?"
       );
@@ -556,12 +699,36 @@ export function LettersWorkspace({
     setSelectedId(id);
     setLetterState(toLetterState(l, actions));
     setLetterDirty(false);
+    setActionsDirty(false);
     setView("main");
     setSelectedSegmentId(null);
   }
 
+  /**
+   * Pick a letter from the list panel — may live in a different group.
+   * Switches the active group when needed and lands on the letter view.
+   */
+  async function selectLetterFromList(id: string) {
+    const target = allLetters.find((l) => l.id === id);
+    if (!target) return;
+    if (anyLetterDirty) {
+      const ok = await onConfirmDiscard(
+        "This letter has unsaved changes. Discard them and switch?"
+      );
+      if (!ok) return;
+    }
+    if (target.letter_group_id !== selectedGroupId) {
+      setSelectedGroupId(target.letter_group_id);
+    }
+    setSelectedId(id);
+    setLetterDirty(false);
+    setActionsDirty(false);
+    setSelectedSegmentId(null);
+    setView("main");
+  }
+
   async function closeActionsPanel() {
-    if (letterDirty) {
+    if (actionsDirty) {
       const ok = await confirmDialog({
         title: "Save actions before closing?",
         message: "Actions have unsaved changes.",
@@ -569,9 +736,9 @@ export function LettersWorkspace({
       });
       if (ok && letterState) {
         const snap = letterState;
-        startLetterSave(async () => {
-          await saveLetterNow(snap);
-          setLetterDirty(false);
+        startActionsSave(async () => {
+          await saveLetterActionsOnly(letterActionsPatches(snap));
+          setActionsDirty(false);
           setView("main");
         });
         return;
@@ -596,7 +763,7 @@ export function LettersWorkspace({
    * live) instead of going all the way to view="segment".
    */
   async function openSegmentFromGroup(segmentId: string) {
-    if (letterDirty) {
+    if (anyLetterDirty) {
       const ok = await confirmDialog({
         title: "Discard letter changes?",
         message:
@@ -606,6 +773,7 @@ export function LettersWorkspace({
       });
       if (!ok) return;
       setLetterDirty(false);
+      setActionsDirty(false);
     }
     setSelectedId(null);
     setSelectedSegmentId(segmentId);
@@ -691,46 +859,65 @@ export function LettersWorkspace({
       next[idx] = { ...next[idx], ...patch };
       return { ...s, actions: next };
     });
-    setLetterDirty(true);
+    setActionsDirty(true);
   }
 
+  function letterFieldsPatch(state: LetterState) {
+    return {
+      id: state.id,
+      piece: state.piece,
+      delivery_day_override_id: state.delivery_day_override_id,
+      summary: state.summary,
+      content: state.content,
+      sender_citizen_id: state.sender_citizen_id,
+      receiver_citizen_id: state.receiver_citizen_id,
+      notes: state.notes,
+    };
+  }
+  function letterActionsPatches(state: LetterState) {
+    return state.actions.map((a) => ({
+      id: a.id,
+      report_segment_id: a.report_segment_id,
+      next_letter_variant: a.next_letter_variant,
+      impact_world_status: a.impact_world_status,
+      impact_demerits: a.impact_demerits,
+      impact_proletariat: a.impact_proletariat,
+      impact_gentry: a.impact_gentry,
+      impact_epicenter: a.impact_epicenter,
+      impact_folos: a.impact_folos,
+      impact_emberlyn: a.impact_emberlyn,
+      impact_spokgrad: a.impact_spokgrad,
+      impact_pelico: a.impact_pelico,
+    }));
+  }
+
+  /** Save both the letter row and its actions in one shot. Used when an
+   *  outer flow (closing the letter, saving the group together, etc.)
+   *  needs to flush every dirty bit on the letter at once. */
   async function saveLetterNow(state: LetterState) {
     if (!group) return;
     await saveLetterWithActions(
       group.id,
-      {
-        id: state.id,
-        piece: state.piece,
-        delivery_day_override_id: state.delivery_day_override_id,
-        summary: state.summary,
-        content: state.content,
-        sender_citizen_id: state.sender_citizen_id,
-        receiver_citizen_id: state.receiver_citizen_id,
-        notes: state.notes,
-      },
-      state.actions.map((a) => ({
-        id: a.id,
-        report_segment_id: a.report_segment_id,
-        next_letter_variant: a.next_letter_variant,
-        impact_world_status: a.impact_world_status,
-        impact_demerits: a.impact_demerits,
-        impact_proletariat: a.impact_proletariat,
-        impact_gentry: a.impact_gentry,
-        impact_epicenter: a.impact_epicenter,
-        impact_folos: a.impact_folos,
-        impact_emberlyn: a.impact_emberlyn,
-        impact_spokgrad: a.impact_spokgrad,
-        impact_pelico: a.impact_pelico,
-      }))
+      letterFieldsPatch(state),
+      letterActionsPatches(state)
     );
   }
 
-  function handleSaveLetter() {
+  function handleSaveLetterFields() {
     if (!letterState) return;
     const state = letterState;
     startLetterSave(async () => {
-      await saveLetterNow(state);
+      await saveLetterFields(letterFieldsPatch(state));
       setLetterDirty(false);
+    });
+  }
+
+  function handleSaveActions() {
+    if (!letterState) return;
+    const state = letterState;
+    startActionsSave(async () => {
+      await saveLetterActionsOnly(letterActionsPatches(state));
+      setActionsDirty(false);
     });
   }
 
@@ -738,7 +925,7 @@ export function LettersWorkspace({
     if (!group) return;
     const groupId = group.id;
     let alsoSaveLetter = false;
-    if (letterDirty && letterState) {
+    if (anyLetterDirty && letterState) {
       alsoSaveLetter = await confirmDialog({
         title: "Save the open letter too?",
         message:
@@ -759,6 +946,7 @@ export function LettersWorkspace({
       if (alsoSaveLetter && snapshot) {
         await saveLetterNow(snapshot);
         setLetterDirty(false);
+        setActionsDirty(false);
       }
     });
   }
@@ -766,7 +954,7 @@ export function LettersWorkspace({
   async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
-    if (letterDirty) {
+    if (anyLetterDirty) {
       const ok = await onConfirmDiscard(
         "The open letter has unsaved changes. Discard them and add?"
       );
@@ -776,13 +964,14 @@ export function LettersWorkspace({
       const ids = await createInspectionLettersInGroup(groupId, count);
       if (ids[0]) setSelectedId(ids[0]);
       setLetterDirty(false);
+      setActionsDirty(false);
     });
   }
 
   async function handleAddPiece(letterId: string) {
     if (!group) return;
     const groupId = group.id;
-    if (letterDirty) {
+    if (anyLetterDirty) {
       const ok = await onConfirmDiscard(
         "The open letter has unsaved changes. Discard them and add a piece?"
       );
@@ -792,6 +981,7 @@ export function LettersWorkspace({
       const { newLetterId } = await addPieceToLetter(groupId, letterId);
       setSelectedId(newLetterId);
       setLetterDirty(false);
+      setActionsDirty(false);
     });
   }
 
@@ -836,7 +1026,7 @@ export function LettersWorkspace({
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    if (letterDirty) {
+    if (anyLetterDirty) {
       const ok = await confirmDialog({
         title: "Save letter before adding action?",
         message:
@@ -849,6 +1039,7 @@ export function LettersWorkspace({
           await saveLetterNow(snap);
           await addActionFromTemplate(groupId, selectedId, templateId);
           setLetterDirty(false);
+          setActionsDirty(false);
         });
         return;
       }
@@ -856,6 +1047,7 @@ export function LettersWorkspace({
     startRowAction(async () => {
       await addActionFromTemplate(groupId, selectedId!, templateId);
       setLetterDirty(false);
+      setActionsDirty(false);
     });
   }
 
@@ -993,10 +1185,12 @@ export function LettersWorkspace({
     // confirm first; a single dirty blocker covers the whole stack.
     const willLoseDirty =
       level === "root"
-        ? groupDirty || letterDirty || storylineDirty
+        ? groupDirty || anyLetterDirty || storylineDirty
         : level === "group"
-          ? letterDirty
-          : false;
+          ? anyLetterDirty
+          : level === "letter"
+            ? actionsDirty
+            : false;
     if (willLoseDirty) {
       const ok = await confirmDialog({
         title: "Discard unsaved changes?",
@@ -1015,6 +1209,7 @@ export function LettersWorkspace({
       setSelectedSegmentId(null);
       setGroupDirty(false);
       setLetterDirty(false);
+      setActionsDirty(false);
       setStorylineDirty(false);
       setView("list");
     } else if (level === "group") {
@@ -1022,9 +1217,11 @@ export function LettersWorkspace({
       setLetterState(null);
       setSelectedSegmentId(null);
       setLetterDirty(false);
+      setActionsDirty(false);
       setView("group");
     } else if (level === "letter") {
       setSelectedSegmentId(null);
+      setActionsDirty(false);
       setView("main");
     } else if (level === "actions") {
       setSelectedSegmentId(null);
@@ -1122,8 +1319,10 @@ export function LettersWorkspace({
             letters={allLetters}
             days={days}
             selectedGroupId={selectedGroupId}
+            selectedLetterId={selectedId}
             selectedStorylineId={selectedStorylineId}
             onSelectGroup={(id) => selectGroup(id)}
+            onSelectLetter={(id) => selectLetterFromList(id)}
             onOpenStoryline={(id) => selectStoryline(id)}
           />
         </div>
@@ -1170,60 +1369,74 @@ export function LettersWorkspace({
             </div>
           ) : (
           <>
-          <div className="rounded-md border border-border bg-card p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <BackLink onNavigate={() => selectGroup(null)} />
-              <LetterGroupPill
-                storyline={currentStoryline}
-                sequence={group.sequence}
-              />
-              <Input
-                value={groupState.name}
-                onChange={(e) => updateGroup("name", e.target.value)}
-                placeholder="Group name"
-                className={cn(
-                  "h-7 flex-1 px-1 text-base font-semibold text-foreground",
-                  GHOST_FIELD
-                )}
-              />
-              {/* Reserve width for the SaveRevert cluster so the name field
-                  doesn't jump when buttons appear. */}
-              <div className="flex h-7 w-[60px] shrink-0 justify-end">
-                <SaveRevert
-                  dirty={groupDirty}
-                  pending={groupPending}
-                  onSave={handleSaveGroup}
-                  onRevert={revertGroup}
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-6 gap-3">
-              <div className="col-span-6 flex flex-col gap-1">
-                <Label>Delivery day</Label>
-                <DaySelect
-                  value={groupState.delivery_day_id ?? ""}
-                  days={days}
-                  onChange={(v) => updateGroup("delivery_day_id", v || null)}
-                  className={cn("h-8", GHOST_FIELD)}
-                />
-              </div>
-              <div className="col-span-6 flex flex-col gap-1">
-                <Label>Notes</Label>
-                <AutoTextarea
-                  value={groupState.notes ?? ""}
-                  onChange={(e) => updateGroup("notes", e.target.value || null)}
-                  minRows={2}
-                  className={GHOST_FIELD}
-                />
-              </div>
-            </div>
-            <div className="mt-4 flex justify-center">
-              <DeleteButton onClick={handleDeleteGroup} disabled={groupPending} />
-            </div>
-          </div>
-
           <div className="rounded-md border border-border bg-card">
-            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+            <PanelHeader
+              title="Letter Group"
+              dirty={groupDirty}
+              showSaved={!!group}
+              menu={
+                <OverflowMenu
+                  items={[
+                    {
+                      label: "Delete letter group",
+                      intent: "destructive",
+                      icon: <Trash2 size={12} aria-hidden />,
+                      onClick: handleDeleteGroup,
+                    },
+                  ]}
+                />
+              }
+            />
+            <div className="p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <BackLink onNavigate={() => selectGroup(null)} />
+                <LetterGroupPill
+                  storyline={currentStoryline}
+                  sequence={group.sequence}
+                />
+                <Input
+                  value={groupState.name}
+                  onChange={(e) => updateGroup("name", e.target.value)}
+                  placeholder="Group name"
+                  className={cn(
+                    "h-7 flex-1 px-1 text-base font-semibold text-foreground",
+                    GHOST_FIELD
+                  )}
+                />
+                {/* Reserve width for the SaveRevert cluster so the name field
+                    doesn't jump when buttons appear. */}
+                <div className="flex h-7 w-[60px] shrink-0 justify-end">
+                  <SaveRevert
+                    dirty={groupDirty}
+                    pending={groupPending}
+                    onSave={handleSaveGroup}
+                    onRevert={revertGroup}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-6 gap-3">
+                <div className="col-span-6 flex flex-col gap-1">
+                  <Label>Delivery day</Label>
+                  <DaySelect
+                    value={groupState.delivery_day_id ?? ""}
+                    days={days}
+                    onChange={(v) => updateGroup("delivery_day_id", v || null)}
+                    className={cn("h-8", GHOST_FIELD)}
+                  />
+                </div>
+                <div className="col-span-6 flex flex-col gap-1">
+                  <Label>Notes</Label>
+                  <AutoTextarea
+                    value={groupState.notes ?? ""}
+                    onChange={(e) => updateGroup("notes", e.target.value || null)}
+                    minRows={2}
+                    className={GHOST_FIELD}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-hidden rounded-md border border-border">
+            <div className="flex items-center justify-between border-b border-border bg-white/[0.04] px-3 py-2">
               <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 Letters ({letters.length})
               </span>
@@ -1301,7 +1514,7 @@ export function LettersWorkspace({
                           </span>
                         )}
                       </span>
-                      {active && letterDirty ? (
+                      {active && anyLetterDirty ? (
                         <span className="shrink-0 text-[10px] text-warning">
                           •
                         </span>
@@ -1334,10 +1547,10 @@ export function LettersWorkspace({
                 onPick={(n) => handleAddLetters(n)}
               />
             </div>
-          </div>
+              </div>
 
-          <div className="rounded-md border border-border bg-card">
-            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+              <div className="mt-3 overflow-hidden rounded-md border border-border">
+            <div className="flex items-center gap-2 border-b border-border bg-white/[0.04] px-3 py-2">
               <Megaphone
                 size={14}
                 aria-hidden
@@ -1361,10 +1574,11 @@ export function LettersWorkspace({
                       active ? "bg-accent/40" : "hover:bg-accent/15"
                     )}
                   >
-                    <Badge variant="secondary" className="font-mono">
-                      {seg.report_id}
-                    </Badge>
-                    <span className="truncate text-sm">
+                    <ReportSegmentPill
+                      storyline={currentStoryline}
+                      reportId={seg.report_id}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-xs">
                       {preview ? (
                         preview
                       ) : (
@@ -1381,6 +1595,8 @@ export function LettersWorkspace({
                   No report segments yet.
                 </p>
               ) : null}
+            </div>
+              </div>
             </div>
           </div>
           </>
@@ -1407,7 +1623,7 @@ export function LettersWorkspace({
               onChange={updateLetter}
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
-              onSave={handleSaveLetter}
+              onSave={handleSaveLetterFields}
               onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
               onBack={() => selectLetter(letterState.id)}
@@ -1466,16 +1682,16 @@ export function LettersWorkspace({
                 letterState.delivery_day_override_id ??
                 groupState.delivery_day_id
               }
-              dirty={letterDirty}
-              pending={letterPending}
+              dirty={actionsDirty}
+              pending={actionsPending}
               rowPending={rowPending}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
               onDeleteAction={handleDeleteAction}
               onOpenSegment={openSegmentForAction}
               openSegmentId={selectedSegmentId}
-              onSave={handleSaveLetter}
-              onRevert={revertLetter}
+              onSave={handleSaveActions}
+              onRevert={revertActions}
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -1592,7 +1808,25 @@ function LetterFieldsCard({
   const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
 
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader
+        title="Inspection Letter"
+        dirty={dirty}
+        showSaved
+        menu={
+          <OverflowMenu
+            items={[
+              {
+                label: "Delete inspection letter",
+                intent: "destructive",
+                icon: <Trash2 size={12} aria-hidden />,
+                onClick: onDelete,
+              },
+            ]}
+          />
+        }
+      />
+      <div className="p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           <BackLink onNavigate={onBack} />
@@ -1600,11 +1834,6 @@ function LetterFieldsCard({
             storyline={storyline}
             contentId={letterView.content_id}
           />
-          {dirty ? (
-            <span className="text-warning">• unsaved</span>
-          ) : (
-            <span className="text-muted-foreground/70">saved</span>
-          )}
         </h3>
         <div className="flex h-7 w-[60px] shrink-0 justify-end">
           <SaveRevert
@@ -1726,10 +1955,8 @@ function LetterFieldsCard({
         </div>
       </div>
 
-      <div className="mt-4 flex justify-center">
-        <DeleteButton onClick={onDelete} />
-      </div>
       <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
+      </div>
     </div>
   );
 }
@@ -1782,7 +2009,9 @@ function LetterActionsCard({
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader title="Letter Actions" dirty={dirty} showSaved />
+      <div className="p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button
@@ -1809,11 +2038,6 @@ function LetterActionsCard({
           <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             <Milestone size={14} aria-hidden className="text-muted-foreground/70" />
             Actions ({actions.length})
-            {dirty ? (
-              <span className="text-warning">• unsaved</span>
-            ) : (
-              <span className="text-muted-foreground/70">saved</span>
-            )}
           </h4>
         </div>
         <div className="flex h-7 w-[60px] shrink-0 justify-end">
@@ -1883,6 +2107,7 @@ function LetterActionsCard({
             </button>
           )}
         </div>
+      </div>
       </div>
     </div>
   );
@@ -2007,7 +2232,34 @@ function LetterSegmentCard({
 
   const currentDayId = state.delivery_day_override_id;
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader
+        title="Report Segment"
+        dirty={dirty}
+        showSaved
+        menu={
+          <OverflowMenu
+            items={[
+              {
+                label: "Delete report segment",
+                intent: "destructive",
+                icon: <Trash2 size={12} aria-hidden />,
+                onClick: async () => {
+                  const ok = await onConfirmDialog({
+                    title: "Delete report segment?",
+                    message: `Segment ${segment.report_id} will be removed from the report. This cannot be undone.`,
+                    confirmLabel: "Delete",
+                    intent: "destructive",
+                  });
+                  if (!ok) return;
+                  onDelete(segment.id);
+                },
+              },
+            ]}
+          />
+        }
+      />
+      <div className="p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <button
@@ -2036,11 +2288,6 @@ function LetterSegmentCard({
               storyline={storylines.find((s) => s.id === segment.storyline_id)}
               reportId={segment.report_id}
             />
-            {dirty ? (
-              <span className="text-warning">• unsaved</span>
-            ) : (
-              <span className="text-muted-foreground/70">saved</span>
-            )}
           </h3>
         </div>
         <div className="flex h-7 w-[60px] shrink-0 justify-end">
@@ -2150,21 +2397,8 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      <div className="mt-4 flex justify-center">
-        <DeleteButton
-          onClick={async () => {
-            const ok = await onConfirmDialog({
-              title: "Delete report segment?",
-              message: `Segment ${segment.report_id} will be removed from the report. This cannot be undone.`,
-              confirmLabel: "Delete",
-              intent: "destructive",
-            });
-            if (!ok) return;
-            onDelete(segment.id);
-          }}
-        />
-      </div>
       <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
+      </div>
     </div>
   );
 }
@@ -3034,7 +3268,7 @@ function ReportSegmentPill({
 
 /**
  * Inspection letter pill: [icon][content_id] filled with the storyline
- * color. Use wherever we display an inspection letter id like "IL-U2/a".
+ * color. Use wherever we display an inspection letter id like "L-U2/a".
  */
 function InspectionLetterPill({
   storyline,
@@ -3341,8 +3575,8 @@ function ActionEditor({
                 className={cn(
                   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
                   segmentOpen
-                    ? "border-foreground/40 bg-accent/60 text-foreground"
-                    : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    ? "border-foreground/60 bg-accent text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
                 )}
               >
                 <svg
@@ -4007,6 +4241,104 @@ function BreadcrumbPill({
   );
 }
 
+/**
+ * Section header bar at the top of a panel card. Matches the style of
+ * the inline list headers (e.g. "Letters (N)"). Uppercase mono label on
+ * a full-width border-b row.
+ */
+function PanelHeader({
+  title,
+  dirty,
+  showSaved,
+  menu,
+}: {
+  title: string;
+  dirty?: boolean;
+  showSaved?: boolean;
+  menu?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-2">
+      <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        {title}
+      </span>
+      <div className="flex items-center gap-2">
+        {dirty ? (
+          <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
+            • Unsaved
+          </span>
+        ) : showSaved ? (
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+            Saved
+          </span>
+        ) : null}
+        {menu}
+      </div>
+    </div>
+  );
+}
+
+type OverflowMenuItem = {
+  label: string;
+  onClick: () => void;
+  intent?: "default" | "destructive";
+  icon?: React.ReactNode;
+};
+
+function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <MoreVertical size={14} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+        >
+          {items.map((item, i) => (
+            <button
+              key={i}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                item.onClick();
+                setOpen(false);
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-accent/40",
+                item.intent === "destructive"
+                  ? "text-destructive"
+                  : "text-foreground"
+              )}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DeleteButton({
   onClick,
   disabled,
@@ -4314,7 +4646,9 @@ function StorylineInspector({
   }
 
   return (
-    <div className="rounded-md border border-border bg-card p-4">
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader title="Storyline" dirty={dirty} showSaved />
+      <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
         <BackLink onNavigate={onBack} />
         <button
@@ -4562,6 +4896,7 @@ function StorylineInspector({
           </div>
         ) : null}
       </div>
+      </div>
     </div>
   );
 }
@@ -4572,8 +4907,10 @@ function StorylinesListPanel({
   letters,
   days,
   selectedGroupId,
+  selectedLetterId,
   selectedStorylineId,
   onSelectGroup,
+  onSelectLetter,
   onOpenStoryline,
 }: {
   storylines: Storyline[];
@@ -4581,13 +4918,16 @@ function StorylinesListPanel({
   letters: InspectionLetterView[];
   days: Day[];
   selectedGroupId: string | null;
+  selectedLetterId: string | null;
   selectedStorylineId: string | null;
   onSelectGroup: (id: string) => void;
+  onSelectLetter: (id: string) => void;
   onOpenStoryline: (id: string | null) => void;
 }) {
   const [groupMode, setGroupMode] = useState<"storyline" | "day">("storyline");
+  // Default to all rows collapsed.
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
-    () => new Set(storylines.map((s) => s.id))
+    () => new Set()
   );
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
@@ -4683,36 +5023,113 @@ function StorylinesListPanel({
     const active = g.id === selectedGroupId;
     const count = letterCountByGroup.get(g.id) ?? 0;
     const day = g.delivery_day_id ? dayById.get(g.delivery_day_id) : null;
+    const groupKey = `group:${g.id}`;
+    const groupOpen = openBuckets.has(groupKey);
+    const groupLetters = letters
+      .filter((l) => l.letter_group_id === g.id)
+      .slice()
+      .sort((a, b) => {
+        const va = a.variant ?? "";
+        const vb = b.variant ?? "";
+        if (va !== vb) return va.localeCompare(vb);
+        return (a.piece ?? 0) - (b.piece ?? 0);
+      });
     return (
-      <button
+      <div
         key={g.id}
-        type="button"
-        onClick={() => onSelectGroup(g.id)}
         className={cn(
-          "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm hover:bg-accent/30 first:border-t-0",
+          "border-t border-border first:border-t-0",
           active && "bg-accent/40"
         )}
       >
-        <LetterGroupPill storyline={s} sequence={g.sequence} />
-        <span className="truncate">
-          {opts.showStoryline && s ? (
-            <>
-              <span className="text-muted-foreground/80">{s.name}: </span>
-              {g.name}
-            </>
-          ) : (
-            g.name
-          )}
-        </span>
-        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-          {count} letter{count === 1 ? "" : "s"}
-        </span>
-        {!opts.showStoryline && day ? (
-          <Badge variant="muted" className="ml-1 shrink-0">
-            {day.identifier}
-          </Badge>
+        <div className="flex items-stretch">
+          <button
+            type="button"
+            onClick={() => onSelectGroup(g.id)}
+            className={cn(
+              "flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm",
+              !active && "hover:bg-accent/30"
+            )}
+          >
+            <LetterGroupPill storyline={s} sequence={g.sequence} />
+            <span className="min-w-0 flex-1 truncate">
+              {opts.showStoryline && s ? (
+                <>
+                  <span className="text-muted-foreground/80">{s.name}: </span>
+                  {g.name}
+                </>
+              ) : (
+                g.name
+              )}
+            </span>
+            <span className="w-12 shrink-0 text-right font-mono text-[10px] text-muted-foreground">
+              {count} L
+            </span>
+            <span className="w-10 shrink-0 text-right">
+              {day ? (
+                <span className="inline-flex items-center rounded-full bg-foreground/15 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                  {day.identifier}
+                </span>
+              ) : (
+                <span className="font-mono text-[10px] text-muted-foreground/40">
+                  —
+                </span>
+              )}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => toggle(groupKey)}
+            aria-expanded={groupOpen}
+            aria-label={groupOpen ? "Hide letters" : "Show letters"}
+            className="inline-flex w-7 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+          >
+            <ChevronLeft
+              size={12}
+              aria-hidden
+              className={cn(
+                "transition-transform",
+                groupOpen && "-rotate-90"
+              )}
+            />
+          </button>
+        </div>
+        {groupOpen ? (
+          <div className="flex flex-col border-t border-border bg-black/20">
+            {groupLetters.map((l) => {
+              const letterActive = l.id === selectedLetterId;
+              return (
+                <button
+                  key={l.id}
+                  type="button"
+                  onClick={() => onSelectLetter(l.id)}
+                  className={cn(
+                    "flex items-center gap-2 px-6 py-1 text-left text-xs",
+                    letterActive ? "bg-accent/40" : "hover:bg-accent/30"
+                  )}
+                >
+                  <InspectionLetterPill
+                    storyline={s}
+                    contentId={l.content_id}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {l.summary || (
+                      <span className="italic text-muted-foreground/60">
+                        (no summary)
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+            {groupLetters.length === 0 ? (
+              <p className="px-6 py-2 text-xs text-muted-foreground/60">
+                No letters
+              </p>
+            ) : null}
+          </div>
         ) : null}
-      </button>
+      </div>
     );
   }
 
@@ -4759,15 +5176,14 @@ function StorylinesListPanel({
                     aria-label={open ? "Collapse" : "Expand"}
                     className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
                   >
-                    <span
+                    <ChevronLeft
+                      size={12}
                       aria-hidden
                       className={cn(
-                        "text-xs transition-transform",
-                        open && "rotate-90"
+                        "transition-transform",
+                        open && "-rotate-90"
                       )}
-                    >
-                      ›
-                    </span>
+                    />
                   </button>
                 </div>
                 {open ? (
@@ -4806,15 +5222,14 @@ function StorylinesListPanel({
                   <span className="font-mono text-[10px] text-muted-foreground">
                     {bucket.length}
                   </span>
-                  <span
+                  <ChevronLeft
+                    size={12}
                     aria-hidden
                     className={cn(
-                      "text-xs text-muted-foreground transition-transform",
-                      open && "rotate-90"
+                      "text-muted-foreground transition-transform",
+                      open && "-rotate-90"
                     )}
-                  >
-                    ›
-                  </span>
+                  />
                 </button>
                 {open ? (
                   <div className="flex flex-col border-t border-border">
