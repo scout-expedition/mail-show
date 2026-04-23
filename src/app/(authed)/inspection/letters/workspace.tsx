@@ -250,13 +250,6 @@ export function LettersWorkspace({
       });
   }, [allLetters, nextGroup]);
 
-  const siblingGroups = useMemo(() => {
-    if (!group) return [];
-    return allGroups
-      .filter((g) => g.storyline_id === group.storyline_id)
-      .sort((a, b) => a.sequence - b.sequence);
-  }, [allGroups, group]);
-
   // ----- Group state -----
   const [groupState, setGroupState] = useState(() => ({
     storyline_id: group?.storyline_id ?? "",
@@ -1007,7 +1000,7 @@ export function LettersWorkspace({
               active={view === "segment"}
               icon={<Megaphone size={12} aria-hidden />}
             >
-              {selectedSegment.report_id.toLowerCase()}
+              {selectedSegment.report_id}
             </BreadcrumbLink>
           </>
         ) : null}
@@ -1088,26 +1081,9 @@ export function LettersWorkspace({
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 <BackLink onNavigate={() => selectGroup(null)} />
-                <Mails size={14} aria-hidden className="text-muted-foreground/70" />
-                <GroupIdSwitcher
-                  current={group}
-                  currentAbbr={currentStoryline?.abbreviation ?? "?"}
-                  siblings={siblingGroups}
-                  onPick={(slug) => {
-                    // Find sibling by slug in state and switch without navigating.
-                    const parsed = parseGroupSlug(slug);
-                    if (!parsed) return;
-                    const s = storylines.find(
-                      (x) => x.abbreviation === parsed.abbreviation
-                    );
-                    if (!s) return;
-                    const target = allGroups.find(
-                      (g) =>
-                        g.storyline_id === s.id &&
-                        g.sequence === parsed.sequence
-                    );
-                    if (target) selectGroup(target.id);
-                  }}
+                <LetterGroupPill
+                  storyline={currentStoryline}
+                  sequence={group.sequence}
                 />
                 {groupState.name || (
                   <span className="text-muted-foreground italic">(unnamed)</span>
@@ -1146,10 +1122,10 @@ export function LettersWorkspace({
               </div>
               <div className="col-span-6 flex flex-col gap-1">
                 <Label>Notes</Label>
-                <Textarea
+                <AutoTextarea
                   value={groupState.notes ?? ""}
                   onChange={(e) => updateGroup("notes", e.target.value || null)}
-                  rows={2}
+                  minRows={2}
                   className={GHOST_FIELD}
                 />
               </div>
@@ -1227,9 +1203,10 @@ export function LettersWorkspace({
                       disabled={!listLocked}
                       className="flex flex-1 items-center gap-2 text-left disabled:cursor-grab"
                     >
-                      <Badge variant="secondary" className="font-mono">
-                        {l.content_id}
-                      </Badge>
+                      <InspectionLetterPill
+                        storyline={currentStoryline}
+                        contentId={l.content_id}
+                      />
                       <span className="truncate text-sm">
                         {l.summary || (
                           <span className="text-muted-foreground italic">
@@ -1296,7 +1273,7 @@ export function LettersWorkspace({
                     )}
                   >
                     <Badge variant="secondary" className="font-mono">
-                      {seg.report_id.toLowerCase()}
+                      {seg.report_id}
                     </Badge>
                     <span className="truncate text-sm">
                       {preview ? (
@@ -1328,6 +1305,7 @@ export function LettersWorkspace({
               key={letterState.id}
               state={letterState}
               letterView={letters.find((l) => l.id === letterState.id)!}
+              storyline={currentStoryline}
               groupDeliveryDayId={groupState.delivery_day_id}
               days={days}
               heroes={heroes}
@@ -1406,6 +1384,7 @@ export function LettersWorkspace({
               })()}
               allActions={allActions}
               allLetters={allLetters}
+              storylines={storylines}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
               onJumpToTrigger={jumpToTrigger}
@@ -1446,6 +1425,7 @@ export function LettersWorkspace({
 function LetterFieldsCard({
   state,
   letterView,
+  storyline,
   groupDeliveryDayId,
   days,
   heroes,
@@ -1465,6 +1445,7 @@ function LetterFieldsCard({
 }: {
   state: LetterState;
   letterView: InspectionLetterView;
+  storyline: Storyline | undefined;
   groupDeliveryDayId: string | null;
   days: Day[];
   heroes: Citizen[];
@@ -1489,8 +1470,10 @@ function LetterFieldsCard({
     <div className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          <MailOpen size={14} aria-hidden className="text-muted-foreground/70" />
-          <Badge variant="secondary">{letterView.content_id}</Badge>
+          <InspectionLetterPill
+            storyline={storyline}
+            contentId={letterView.content_id}
+          />
           {dirty ? (
             <span className="text-warning">• unsaved</span>
           ) : (
@@ -1753,15 +1736,14 @@ function LetterActionsCard({
               ))}
             </Select>
           ) : (
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="sm"
               onClick={() => setTemplatePickerOpen(true)}
               disabled={rowPending || templates.length === 0}
+              className={MUTED_ADD_BTN}
             >
               + Action
-            </Button>
+            </button>
           )}
         </div>
       </div>
@@ -1775,6 +1757,7 @@ function LetterSegmentCard({
   groupDeliveryDayId,
   allActions,
   allLetters,
+  storylines,
   onBack,
   onDelete,
   onJumpToTrigger,
@@ -1785,6 +1768,7 @@ function LetterSegmentCard({
   groupDeliveryDayId: string | null;
   allActions: ActionRow[];
   allLetters: InspectionLetterView[];
+  storylines: Storyline[];
   onBack: (
     dirty: boolean,
     onSave: () => Promise<void>
@@ -1845,7 +1829,8 @@ function LetterSegmentCard({
       actionId: string;
       actionName: string;
       letterId: string;
-      letterShortId: string;
+      contentId: string;
+      storylineId: string;
     }>;
     return allActions
       .filter((a) => a.report_segment_id === segment.id)
@@ -1856,7 +1841,8 @@ function LetterSegmentCard({
           actionId: a.id,
           actionName: a.name,
           letterId: letter.id,
-          letterShortId: letter.content_id.replace(/^IL-/, ""),
+          contentId: letter.content_id,
+          storylineId: letter.storyline_id,
         };
       })
       .filter(
@@ -1866,7 +1852,8 @@ function LetterSegmentCard({
           actionId: string;
           actionName: string;
           letterId: string;
-          letterShortId: string;
+          contentId: string;
+          storylineId: string;
         } => v !== null
       );
   }, [segment, allActions, allLetters]);
@@ -1911,7 +1898,7 @@ function LetterSegmentCard({
               aria-hidden
               className="text-muted-foreground/70"
             />
-            <Badge variant="secondary">{segment.report_id.toLowerCase()}</Badge>
+            <Badge variant="secondary">{segment.report_id}</Badge>
             {dirty ? (
               <span className="text-warning">• unsaved</span>
             ) : (
@@ -1989,7 +1976,7 @@ function LetterSegmentCard({
           onClick={async () => {
             const ok = await onConfirmDialog({
               title: "Delete report segment?",
-              message: `Segment ${segment.report_id.toLowerCase()} will be removed from the report. This cannot be undone.`,
+              message: `Segment ${segment.report_id} will be removed from the report. This cannot be undone.`,
               confirmLabel: "Delete",
               intent: "destructive",
             });
@@ -2004,21 +1991,27 @@ function LetterSegmentCard({
             Triggers ({triggers.length})
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {triggers.map((t) => (
-              <button
-                key={t.actionId}
-                type="button"
-                onClick={() =>
-                  onJumpToTrigger(t.letterId, dirty, saveNow)
-                }
-                title={`Jump to ${t.letterShortId} · ${t.actionName}`}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-accent hover:text-foreground"
-              >
-                <span className="font-mono">{t.letterShortId}</span>
-                <span className="text-muted-foreground/50">·</span>
-                <span>{t.actionName}</span>
-              </button>
-            ))}
+            {triggers.map((t) => {
+              const s = storylines.find((x) => x.id === t.storylineId);
+              return (
+                <button
+                  key={t.actionId}
+                  type="button"
+                  onClick={() =>
+                    onJumpToTrigger(t.letterId, dirty, saveNow)
+                  }
+                  title={`Jump to ${t.contentId} · ${t.actionName}`}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-accent hover:text-foreground"
+                >
+                  <InspectionLetterPill
+                    storyline={s}
+                    contentId={t.contentId}
+                  />
+                  <span className="text-muted-foreground/50">·</span>
+                  <span>{t.actionName}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -2698,12 +2691,11 @@ function AddLetterMenu({
   }, []);
   return (
     <div ref={ref} className="relative">
-      <Button
+      <button
         type="button"
-        variant="outline"
-        size="sm"
         onClick={() => setOpen((o) => !o)}
         disabled={pending}
+        className={MUTED_ADD_BTN}
       >
         {pending ? (
           <>
@@ -2713,7 +2705,7 @@ function AddLetterMenu({
         ) : (
           "+ Inspection Letter"
         )}
-      </Button>
+      </button>
       {open && !pending ? (
         <div className="absolute bottom-full left-1/2 z-10 mb-1 flex -translate-x-1/2 flex-col overflow-hidden rounded-md border border-border bg-card shadow-md">
           {[1, 2, 3].map((n) => (
@@ -2732,6 +2724,67 @@ function AddLetterMenu({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Letter group pill: [icon][abbr][sequence] with a border in the storyline
+ * color. Use anywhere we display a letter group id like "U2".
+ */
+function LetterGroupPill({
+  storyline,
+  sequence,
+  className,
+}: {
+  storyline: Pick<Storyline, "abbreviation" | "color_hex"> | undefined;
+  sequence: number;
+  className?: string;
+}) {
+  const abbr = storyline?.abbreviation ?? "?";
+  const color = storyline?.color_hex ?? "#888888";
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center gap-1 rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] leading-none",
+        className
+      )}
+      style={{ borderColor: color }}
+    >
+      <Mails size={11} aria-hidden className="shrink-0" />
+      <span>
+        {abbr}
+        {sequence}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Inspection letter pill: [icon][content_id] filled with the storyline
+ * color. Use wherever we display an inspection letter id like "IL-U2/a".
+ */
+function InspectionLetterPill({
+  storyline,
+  contentId,
+  className,
+}: {
+  storyline: Pick<Storyline, "color_hex"> | undefined;
+  contentId: string;
+  className?: string;
+}) {
+  const color = storyline?.color_hex ?? "#888888";
+  const fg = readableOnHex(color);
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center gap-1 rounded-md border border-transparent px-1.5 font-mono text-[11px] leading-none",
+        className
+      )}
+      style={{ background: color, color: fg }}
+    >
+      <MailOpen size={11} aria-hidden className="shrink-0" />
+      <span>{contentId}</span>
+    </span>
   );
 }
 
@@ -3167,92 +3220,6 @@ function BackLink({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-function GroupIdSwitcher({
-  current,
-  currentAbbr,
-  siblings,
-  onPick,
-}: {
-  current: Pick<LetterGroup, "id" | "sequence">;
-  currentAbbr: string;
-  siblings: Array<Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name">>;
-  onPick: (slug: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        title="Switch letter group"
-        className="inline-flex items-center gap-1 rounded-md"
-      >
-        <Badge variant="secondary" className="font-mono">
-          {currentAbbr}
-          {current.sequence}
-        </Badge>
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-          className="text-muted-foreground"
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-      {open ? (
-        <div
-          role="listbox"
-          className="absolute left-0 top-full z-20 mt-1 min-w-[220px] overflow-hidden rounded-md border border-border bg-card shadow-md"
-        >
-          {siblings.map((s) => {
-            const active = s.id === current.id;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                role="option"
-                aria-selected={active}
-                onClick={() => {
-                  setOpen(false);
-                  if (!active) onPick(`${currentAbbr}${s.sequence}`);
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent/40",
-                  active && "bg-accent/30"
-                )}
-              >
-                <Badge variant="secondary" className="font-mono">
-                  {currentAbbr}
-                  {s.sequence}
-                </Badge>
-                <span className="truncate">{s.name}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function DeleteX({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
@@ -3559,13 +3526,17 @@ function DeleteButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+      className="inline-flex items-center gap-2 rounded-md border border-border/40 px-3 py-1 text-xs text-muted-foreground/60 transition-colors hover:border-destructive hover:bg-destructive hover:text-destructive-foreground disabled:opacity-40"
     >
       <Trash2 size={12} aria-hidden />
       <span>{label}</span>
     </button>
   );
 }
+
+/** Shared style for "+ thing" buttons — muted at rest, solid accent on hover. */
+const MUTED_ADD_BTN =
+  "inline-flex h-8 items-center gap-1.5 rounded-md border border-border/40 px-3 text-xs text-muted-foreground/60 transition-colors hover:border-foreground/40 hover:bg-accent hover:text-accent-foreground disabled:opacity-40";
 
 /**
  * Icon-only save + revert pair. Revert is guarded with a confirm modal when
@@ -3852,12 +3823,12 @@ function StorylineInspector({
         </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Description</Label>
-          <Textarea
+          <AutoTextarea
             value={state.description ?? ""}
             onChange={(e) =>
               update("description", e.target.value || null)
             }
-            rows={2}
+            minRows={2}
             className={GHOST_FIELD}
           />
         </div>
@@ -3904,10 +3875,7 @@ function StorylineInspector({
                   active ? "bg-accent/40" : "hover:bg-accent/30"
                 )}
               >
-                <Badge variant="secondary" className="font-mono">
-                  {storyline.abbreviation}
-                  {g.sequence}
-                </Badge>
+                <LetterGroupPill storyline={storyline} sequence={g.sequence} />
                 <span className="truncate">{g.name}</span>
                 <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
                   {count} letter{count === 1 ? "" : "s"}
@@ -3927,15 +3895,14 @@ function StorylineInspector({
           ) : null}
         </div>
         <div className="flex justify-center border-t border-border px-3 py-2">
-          <Button
+          <button
             type="button"
-            variant="outline"
-            size="sm"
             onClick={handleAddGroup}
             disabled={rowPending}
+            className={MUTED_ADD_BTN}
           >
             {rowPending ? <Spinner /> : "+ Letter group"}
-          </Button>
+          </button>
         </div>
       </div>
     </div>
@@ -4069,9 +4036,7 @@ function StorylinesListPanel({
           active && "bg-accent/40"
         )}
       >
-        <Badge variant="secondary" className="font-mono">
-          {(s?.abbreviation ?? "?") + g.sequence}
-        </Badge>
+        <LetterGroupPill storyline={s} sequence={g.sequence} />
         <span className="truncate">
           {opts.showStoryline && s ? (
             <>
