@@ -73,7 +73,12 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
             />
           </header>
         ) : null}
-        <main className="flex-1 overflow-y-auto px-8 py-6">{children}</main>
+        <main
+          className="flex-1 overflow-y-auto px-8 py-6"
+          style={{ scrollbarGutter: "stable" }}
+        >
+          {children}
+        </main>
       </div>
     </div>
   );
