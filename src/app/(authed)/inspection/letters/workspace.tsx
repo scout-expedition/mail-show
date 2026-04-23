@@ -1039,12 +1039,12 @@ export function LettersWorkspace({
         {currentStoryline ? (
           <>
             <ChevronRight size={12} aria-hidden className="opacity-50" />
-            <BreadcrumbLink
+            <BreadcrumbPill
               onClick={() => goToBreadcrumb("group")}
-              color={currentStoryline.color_hex}
+              active={!group && view === "list"}
             >
-              {currentStoryline.name}
-            </BreadcrumbLink>
+              <StorylinePill storyline={currentStoryline} />
+            </BreadcrumbPill>
           </>
         ) : null}
         {group ? (
@@ -2928,6 +2928,62 @@ function LetterGroupPill({
 }
 
 /**
+ * Storyline pill: a filled circle on the left (storyline icon over the
+ * storyline color) visually overlapping a bordered pill on the right
+ * (storyline name in white, border in the storyline color). Meant for
+ * the storylines list panel and breadcrumbs.
+ */
+function StorylinePill({
+  storyline,
+  className,
+}: {
+  storyline: Pick<
+    Storyline,
+    "name" | "abbreviation" | "color_hex" | "icon_type" | "icon_value"
+  >;
+  className?: string;
+}) {
+  const color = storyline.color_hex;
+  const fg = readableOnHex(color);
+  return (
+    <span
+      className={cn(
+        "relative inline-flex h-6 items-center",
+        className
+      )}
+    >
+      {/* Pill body. Left padding reserves room for the circle that
+          overlaps the left cap. */}
+      <span
+        className="inline-flex h-6 min-w-0 items-center rounded-full border-[1.5px] bg-card pl-7 pr-2.5 font-mono text-[11px] font-semibold leading-none text-foreground"
+        style={{ borderColor: color }}
+      >
+        <span className="truncate">{storyline.name}</span>
+      </span>
+      {/* Circle (storyline icon over fill). Sits flush with the left
+          edge so it reads as one shape with the pill. */}
+      <span
+        aria-hidden
+        className="absolute left-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full"
+        style={{ background: color, color: fg }}
+      >
+        {storyline.icon_value ? (
+          <IconDisplay
+            type={storyline.icon_type}
+            value={storyline.icon_value}
+            size={12}
+          />
+        ) : (
+          <span className="font-mono text-[10px] font-semibold">
+            {storyline.abbreviation}
+          </span>
+        )}
+      </span>
+    </span>
+  );
+}
+
+/**
  * Report segment pill: [megaphone][report_id] with the storyline color as
  * a stroke/border and the fill being card grey tinted slightly toward the
  * storyline color. Use alongside LetterGroupPill / InspectionLetterPill.
@@ -4526,17 +4582,11 @@ function StorylinesListPanel({
                     onClick={() =>
                       onOpenStoryline(headerActive ? null : s.id)
                     }
-                    className="flex flex-1 items-center gap-2 py-2 pl-3 text-left"
+                    className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2 pr-1 text-left"
                     title={headerActive ? `Close ${s.name}` : `Open ${s.name}`}
                   >
-                    <span
-                      className="inline-block h-3 w-3 shrink-0 rounded-full"
-                      style={{ background: s.color_hex }}
-                    />
-                    <span className="flex-1 truncate text-sm font-semibold">
-                      {s.name}
-                    </span>
-                    <span className="font-mono text-[10px] text-muted-foreground">
+                    <StorylinePill storyline={s} className="min-w-0 flex-1" />
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
                       {bucket.length}
                     </span>
                   </button>
