@@ -458,6 +458,37 @@ export async function createNextLetterGroupAndLetter(
   return { newGroupId, letterId, variant };
 }
 
+/**
+ * Non-redirecting variant of storylines/actions.ts::createLetterGroup, for
+ * the inline StorylineInspector — returns the new group's id so the caller
+ * can select it client-side instead of navigating.
+ */
+export async function createLetterGroupInStoryline(
+  storylineId: string
+): Promise<{ groupId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("letter_groups")
+    .select("sequence")
+    .eq("storyline_id", storylineId)
+    .order("sequence", { ascending: false })
+    .limit(1);
+  const nextSeq = (existing?.[0]?.sequence ?? 0) + 1;
+  const { data, error } = await supabase
+    .from("letter_groups")
+    .insert({
+      storyline_id: storylineId,
+      name: `Group ${nextSeq}`,
+      sequence: nextSeq,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath(`/inspection/storylines/${storylineId}`);
+  return { groupId: data!.id as string };
+}
+
 export async function deleteReportSegment(segmentId: string) {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase

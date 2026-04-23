@@ -39,6 +39,7 @@ import {
   addActionFromTemplate,
   addPieceToLetter,
   createInspectionLettersInGroup,
+  createLetterGroupInStoryline,
   createLetterInNextGroup,
   createNextDay,
   createNextDayAndReportSegment,
@@ -55,6 +56,8 @@ import {
   saveReportSegment,
   updateCitizen,
 } from "./actions";
+import { updateStorylineFields } from "../storylines/actions";
+import { IconPicker } from "@/components/icon-picker";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -381,38 +384,67 @@ export function LettersWorkspace({
     setLetterDirty(false);
   }
 
+  // Slot 1 can host either a group or a storyline inspector — mutually
+  // exclusive. Selecting a storyline clears any active group and vice versa.
+  const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(
+    null
+  );
+  const [storylineDirty, setStorylineDirty] = useState(false);
+
   function selectGroup(id: string | null) {
     if (id === selectedGroupId) {
       // Toggle off — close group panel.
-      if (groupDirty || letterDirty) {
+      if (groupDirty || letterDirty || storylineDirty) {
         const ok = confirm(
           "Unsaved changes will be lost. Close anyway?"
         );
         if (!ok) return;
       }
       setSelectedGroupId(null);
+      setSelectedStorylineId(null);
       setSelectedId(null);
       setLetterState(null);
       setLetterDirty(false);
       setGroupDirty(false);
+      setStorylineDirty(false);
       setSelectedSegmentId(null);
       setView("groups");
       return;
     }
-    if (groupDirty || letterDirty) {
+    if (groupDirty || letterDirty || storylineDirty) {
       const ok = confirm(
         "Unsaved changes will be lost. Switch groups anyway?"
       );
       if (!ok) return;
     }
     setSelectedGroupId(id);
+    setSelectedStorylineId(null);
     setSelectedId(null);
     setLetterState(null);
     setLetterDirty(false);
     setGroupDirty(false);
+    setStorylineDirty(false);
     setSelectedSegmentId(null);
     // Picking a group just opens it in the right-side slot — don't slide.
     // The slide happens when a letter inside is opened.
+    setView("groups");
+  }
+
+  function selectStoryline(id: string | null) {
+    if (groupDirty || letterDirty || storylineDirty) {
+      const ok = confirm(
+        "Unsaved changes will be lost. Switch storylines anyway?"
+      );
+      if (!ok) return;
+    }
+    setSelectedStorylineId(id);
+    setSelectedGroupId(null);
+    setSelectedId(null);
+    setLetterState(null);
+    setLetterDirty(false);
+    setGroupDirty(false);
+    setStorylineDirty(false);
+    setSelectedSegmentId(null);
     setView("groups");
   }
 
@@ -818,7 +850,9 @@ export function LettersWorkspace({
     setHeroDialogRole(null);
   }
 
-  const currentStoryline = storylineById.get(groupState.storyline_id);
+  const currentStoryline =
+    storylineById.get(groupState.storyline_id) ??
+    (selectedStorylineId ? storylineById.get(selectedStorylineId) : undefined);
 
   const selectedLetter = selectedId
     ? letters.find((l) => l.id === selectedId)
@@ -832,7 +866,7 @@ export function LettersWorkspace({
     // confirm first; a single dirty blocker covers the whole stack.
     const willLoseDirty =
       level === "root"
-        ? groupDirty || letterDirty
+        ? groupDirty || letterDirty || storylineDirty
         : level === "group"
           ? letterDirty
           : false;
@@ -848,11 +882,13 @@ export function LettersWorkspace({
     }
     if (level === "root") {
       setSelectedGroupId(null);
+      setSelectedStorylineId(null);
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
       setGroupDirty(false);
       setLetterDirty(false);
+      setStorylineDirty(false);
       setView("groups");
     } else if (level === "group") {
       setSelectedId(null);
@@ -954,13 +990,32 @@ export function LettersWorkspace({
             letters={allLetters}
             days={days}
             selectedGroupId={selectedGroupId}
+            selectedStorylineId={selectedStorylineId}
             onSelectGroup={(id) => selectGroup(id)}
+            onOpenStoryline={(id) => selectStoryline(id)}
           />
         </div>
 
-        {/* GROUP slot: group info + letter list */}
+        {/* GROUP slot: group info + letter list, OR storyline inspector */}
         <div className="flex w-1/5 shrink-0 flex-col gap-4 px-3">
-          {!group ? (
+          {selectedStorylineId ? (
+            <StorylineInspector
+              key={selectedStorylineId}
+              storyline={
+                storylines.find((s) => s.id === selectedStorylineId)!
+              }
+              groups={allGroups.filter(
+                (g) => g.storyline_id === selectedStorylineId
+              )}
+              allLetters={allLetters}
+              days={days}
+              dirty={storylineDirty}
+              onDirtyChange={setStorylineDirty}
+              onBack={() => selectStoryline(null)}
+              onSelectGroup={(id) => selectGroup(id)}
+              onConfirmDialog={confirmDialog}
+            />
+          ) : !group ? (
             <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
               Select a letter group on the left to open it.
             </div>
@@ -3547,24 +3602,286 @@ function CreatingPill() {
   );
 }
 
+/**
+ * Inline storyline editor that occupies slot 1 in place of the group panel.
+ * Owns its own dirty flag so the workspace can include it in breadcrumb /
+ * switch-group guards via the `dirty` + `onDirtyChange` pair.
+ */
+function StorylineInspector({
+  storyline,
+  groups,
+  allLetters,
+  days,
+  dirty,
+  onDirtyChange,
+  onBack,
+  onSelectGroup,
+  onConfirmDialog,
+}: {
+  storyline: Storyline;
+  groups: LetterGroup[];
+  allLetters: InspectionLetterView[];
+  days: Day[];
+  dirty: boolean;
+  onDirtyChange: (d: boolean) => void;
+  onBack: () => void;
+  onSelectGroup: (id: string) => void;
+  onConfirmDialog: (options: {
+    title: string;
+    message?: string;
+    confirmLabel?: string;
+    intent?: "destructive" | "default";
+  }) => Promise<boolean>;
+}) {
+  const [state, setState] = useState(() => ({
+    name: storyline.name,
+    abbreviation: storyline.abbreviation,
+    description: storyline.description,
+    icon_type: storyline.icon_type,
+    icon_value: storyline.icon_value,
+    color_hex: storyline.color_hex,
+  }));
+  const [pending, startSave] = useTransition();
+  const [rowPending, startRowAction] = useTransition();
+
+  useEffect(() => {
+    setState({
+      name: storyline.name,
+      abbreviation: storyline.abbreviation,
+      description: storyline.description,
+      icon_type: storyline.icon_type,
+      icon_value: storyline.icon_value,
+      color_hex: storyline.color_hex,
+    });
+    onDirtyChange(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storyline.id]);
+
+  function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
+    setState((s) => ({ ...s, [k]: v }));
+    onDirtyChange(true);
+  }
+
+  async function saveNow() {
+    await updateStorylineFields({
+      id: storyline.id,
+      name: state.name,
+      abbreviation: state.abbreviation,
+      description: state.description,
+      icon_type: state.icon_type,
+      icon_value: state.icon_value,
+      color_hex: state.color_hex,
+    });
+    onDirtyChange(false);
+  }
+
+  async function revert() {
+    if (!dirty) return;
+    const ok = await onConfirmDialog({
+      title: "Discard storyline changes?",
+      message: "Any unsaved edits will be lost.",
+      confirmLabel: "Revert",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    setState({
+      name: storyline.name,
+      abbreviation: storyline.abbreviation,
+      description: storyline.description,
+      icon_type: storyline.icon_type,
+      icon_value: storyline.icon_value,
+      color_hex: storyline.color_hex,
+    });
+    onDirtyChange(false);
+  }
+
+  function handleAddGroup() {
+    startRowAction(async () => {
+      const { groupId } = await createLetterGroupInStoryline(storyline.id);
+      onSelectGroup(groupId);
+    });
+  }
+
+  const letterCountByGroup = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of allLetters)
+      m.set(l.letter_group_id, (m.get(l.letter_group_id) ?? 0) + 1);
+    return m;
+  }, [allLetters]);
+  const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
+
+  const sortedGroups = useMemo(
+    () => groups.slice().sort((a, b) => a.sequence - b.sequence),
+    [groups]
+  );
+
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <BackLink onNavigate={onBack} />
+          <span
+            aria-hidden
+            className="inline-block h-3 w-3 shrink-0 rounded-full"
+            style={{ background: state.color_hex }}
+          />
+          <IconDisplay
+            type={state.icon_type}
+            value={state.icon_value}
+            size={14}
+          />
+          {state.name || (
+            <span className="text-muted-foreground italic">(unnamed)</span>
+          )}
+        </h3>
+        <SaveRevert
+          dirty={dirty}
+          pending={pending}
+          onSave={() => startSave(saveNow)}
+          onRevert={revert}
+        />
+      </div>
+
+      <div className="grid grid-cols-6 gap-3">
+        <div className="col-span-4 flex flex-col gap-1">
+          <Label>Name</Label>
+          <Input
+            value={state.name}
+            onChange={(e) => update("name", e.target.value)}
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </div>
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Abbr</Label>
+          <Input
+            value={state.abbreviation}
+            onChange={(e) =>
+              update(
+                "abbreviation",
+                e.target.value.toUpperCase().slice(0, 1)
+              )
+            }
+            maxLength={1}
+            className={cn(
+              "h-8 text-center font-mono uppercase",
+              GHOST_FIELD
+            )}
+          />
+        </div>
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Description</Label>
+          <Textarea
+            value={state.description ?? ""}
+            onChange={(e) =>
+              update("description", e.target.value || null)
+            }
+            rows={2}
+            className={GHOST_FIELD}
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
+        <IconPicker
+          initialType={state.icon_type}
+          initialValue={state.icon_value}
+          emitHiddenFields={false}
+          onChange={(next) => {
+            setState((s) => ({
+              ...s,
+              icon_type: next.type,
+              icon_value: next.value || null,
+            }));
+            onDirtyChange(true);
+          }}
+          color={state.color_hex}
+          onColorChange={(c) => update("color_hex", c)}
+        />
+      </div>
+
+      <div className="mt-4 rounded-md border border-border">
+        <div className="border-b border-border px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          Letter groups ({sortedGroups.length})
+        </div>
+        <div className="flex flex-col">
+          {sortedGroups.map((g) => {
+            const count = letterCountByGroup.get(g.id) ?? 0;
+            const day = g.delivery_day_id
+              ? dayById.get(g.delivery_day_id)
+              : null;
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => onSelectGroup(g.id)}
+                className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm hover:bg-accent/30 first:border-t-0"
+              >
+                <Badge variant="secondary" className="font-mono">
+                  {storyline.abbreviation}
+                  {g.sequence}
+                </Badge>
+                <span className="truncate">{g.name}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                  {count} letter{count === 1 ? "" : "s"}
+                </span>
+                {day ? (
+                  <Badge variant="muted" className="ml-1 shrink-0">
+                    {day.identifier}
+                  </Badge>
+                ) : null}
+              </button>
+            );
+          })}
+          {sortedGroups.length === 0 ? (
+            <p className="px-4 py-4 text-center text-sm text-muted-foreground">
+              No letter groups yet.
+            </p>
+          ) : null}
+        </div>
+        <div className="flex justify-center border-t border-border px-3 py-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleAddGroup}
+            disabled={rowPending}
+          >
+            {rowPending ? <Spinner /> : "+ Letter group"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StorylinesListPanel({
   storylines,
   groups,
   letters,
   days,
   selectedGroupId,
+  selectedStorylineId,
   onSelectGroup,
+  onOpenStoryline,
 }: {
   storylines: Storyline[];
   groups: LetterGroup[];
   letters: InspectionLetterView[];
   days: Day[];
   selectedGroupId: string | null;
+  selectedStorylineId: string | null;
   onSelectGroup: (id: string) => void;
+  onOpenStoryline: (id: string) => void;
 }) {
-  const [openStorylineIds, setOpenStorylineIds] = useState<Set<string>>(
+  const [groupMode, setGroupMode] = useState<"storyline" | "day">("storyline");
+  const [openBuckets, setOpenBuckets] = useState<Set<string>>(
     () => new Set(storylines.map((s) => s.id))
   );
+  const storylineById = useMemo(
+    () => new Map(storylines.map((s) => [s.id, s])),
+    [storylines]
+  );
+
   const groupsByStoryline = useMemo(() => {
     const m = new Map<string, LetterGroup[]>();
     for (const g of groups) {
@@ -3584,8 +3901,43 @@ function StorylinesListPanel({
 
   const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
 
+  const dayBuckets = useMemo(() => {
+    const m = new Map<string | "unscheduled", LetterGroup[]>();
+    for (const g of groups) {
+      const key = g.delivery_day_id ?? "unscheduled";
+      const arr = m.get(key) ?? [];
+      arr.push(g);
+      m.set(key, arr);
+    }
+    // Sort groups within each day by storyline abbreviation then sequence.
+    for (const arr of m.values()) {
+      arr.sort((a, b) => {
+        const sa = storylineById.get(a.storyline_id)?.abbreviation ?? "";
+        const sb = storylineById.get(b.storyline_id)?.abbreviation ?? "";
+        if (sa !== sb) return sa.localeCompare(sb);
+        return a.sequence - b.sequence;
+      });
+    }
+    // Return ordered list of [bucketKey, day|null, groups].
+    const entries: Array<{ key: string; day: Day | null; groups: LetterGroup[] }> = [];
+    for (const [key, arr] of m) {
+      if (key === "unscheduled") {
+        entries.push({ key: "unscheduled", day: null, groups: arr });
+      } else {
+        const day = dayById.get(key) ?? null;
+        entries.push({ key, day, groups: arr });
+      }
+    }
+    entries.sort((a, b) => {
+      if (a.key === "unscheduled") return 1;
+      if (b.key === "unscheduled") return -1;
+      return (a.day?.number ?? 0) - (b.day?.number ?? 0);
+    });
+    return entries;
+  }, [groups, storylineById, dayById]);
+
   function toggle(id: string) {
-    setOpenStorylineIds((prev) => {
+    setOpenBuckets((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -3593,86 +3945,186 @@ function StorylinesListPanel({
     });
   }
 
+  const ModeToggle = (
+    <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[10px] font-mono uppercase tracking-wider">
+      {(["storyline", "day"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => setGroupMode(m)}
+          aria-pressed={groupMode === m}
+          className={cn(
+            "rounded px-2 py-1 transition-colors",
+            groupMode === m
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {m === "storyline" ? "Storylines" : "Days"}
+        </button>
+      ))}
+    </div>
+  );
+
+  function renderGroupRow(g: LetterGroup, opts: { showStoryline: boolean }) {
+    const s = storylineById.get(g.storyline_id);
+    const active = g.id === selectedGroupId;
+    const count = letterCountByGroup.get(g.id) ?? 0;
+    const day = g.delivery_day_id ? dayById.get(g.delivery_day_id) : null;
+    return (
+      <button
+        key={g.id}
+        type="button"
+        onClick={() => onSelectGroup(g.id)}
+        className={cn(
+          "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm hover:bg-accent/30 first:border-t-0",
+          active && "bg-accent/40"
+        )}
+      >
+        <Badge variant="secondary" className="font-mono">
+          {(s?.abbreviation ?? "?") + g.sequence}
+        </Badge>
+        <span className="truncate">
+          {opts.showStoryline && s ? (
+            <>
+              <span className="text-muted-foreground/80">{s.name}: </span>
+              {g.name}
+            </>
+          ) : (
+            g.name
+          )}
+        </span>
+        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+          {count} letter{count === 1 ? "" : "s"}
+        </span>
+        {!opts.showStoryline && day ? (
+          <Badge variant="muted" className="ml-1 shrink-0">
+            {day.identifier}
+          </Badge>
+        ) : null}
+      </button>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3">
-      {storylines.map((s) => {
-        const bucket = groupsByStoryline.get(s.id) ?? [];
-        const open = openStorylineIds.has(s.id);
-        return (
-          <div
-            key={s.id}
-            className="overflow-hidden rounded-md border border-border bg-card"
-          >
-            <button
-              type="button"
-              onClick={() => toggle(s.id)}
-              aria-expanded={open}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/30"
-            >
-              <span
-                className="inline-block h-3 w-3 shrink-0 rounded-full"
-                style={{ background: s.color_hex }}
-              />
-              <span className="flex-1 truncate text-sm font-semibold">
-                {s.name}
-              </span>
-              <span className="font-mono text-[10px] text-muted-foreground">
-                {bucket.length}
-              </span>
-              <span
-                aria-hidden
+      <div className="flex justify-end">{ModeToggle}</div>
+
+      {groupMode === "storyline"
+        ? storylines.map((s) => {
+            const bucket = groupsByStoryline.get(s.id) ?? [];
+            const open = openBuckets.has(s.id);
+            const headerActive = s.id === selectedStorylineId;
+            return (
+              <div
+                key={s.id}
                 className={cn(
-                  "text-xs text-muted-foreground transition-transform",
-                  open && "rotate-90"
+                  "overflow-hidden rounded-md border border-border bg-card",
+                  headerActive && "border-foreground/40"
                 )}
               >
-                ›
-              </span>
-            </button>
-            {open ? (
-              <div className="flex flex-col border-t border-border">
-                {bucket.map((g) => {
-                  const active = g.id === selectedGroupId;
-                  const count = letterCountByGroup.get(g.id) ?? 0;
-                  const day = g.delivery_day_id
-                    ? dayById.get(g.delivery_day_id)
-                    : null;
-                  return (
-                    <button
-                      key={g.id}
-                      type="button"
-                      onClick={() => onSelectGroup(g.id)}
+                <div
+                  className={cn(
+                    "flex items-center text-left",
+                    headerActive ? "bg-accent/40" : "hover:bg-accent/20"
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenStoryline(s.id)}
+                    className="flex flex-1 items-center gap-2 py-2 pl-3 text-left"
+                    title={`Open ${s.name}`}
+                  >
+                    <span
+                      className="inline-block h-3 w-3 shrink-0 rounded-full"
+                      style={{ background: s.color_hex }}
+                    />
+                    <span className="flex-1 truncate text-sm font-semibold">
+                      {s.name}
+                    </span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {bucket.length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggle(s.id)}
+                    aria-expanded={open}
+                    aria-label={open ? "Collapse" : "Expand"}
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                  >
+                    <span
+                      aria-hidden
                       className={cn(
-                        "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm hover:bg-accent/30 first:border-t-0",
-                        active && "bg-accent/40"
+                        "text-xs transition-transform",
+                        open && "rotate-90"
                       )}
                     >
-                      <Badge variant="secondary" className="font-mono">
-                        {s.abbreviation}
-                        {g.sequence}
-                      </Badge>
-                      <span className="truncate">{g.name}</span>
-                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                        {count} letter{count === 1 ? "" : "s"}
-                      </span>
-                      {day ? (
-                        <Badge variant="muted" className="ml-1 shrink-0">
-                          {day.identifier}
-                        </Badge>
-                      ) : null}
-                    </button>
-                  );
-                })}
-                {bucket.length === 0 ? (
-                  <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
-                    No groups yet.
-                  </p>
+                      ›
+                    </span>
+                  </button>
+                </div>
+                {open ? (
+                  <div className="flex flex-col border-t border-border">
+                    {bucket.map((g) =>
+                      renderGroupRow(g, { showStoryline: false })
+                    )}
+                    {bucket.length === 0 ? (
+                      <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
+                        No groups yet.
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
-            ) : null}
-          </div>
-        );
-      })}
+            );
+          })
+        : dayBuckets.map(({ key, day, groups: bucket }) => {
+            const open = openBuckets.has(`day:${key}`);
+            return (
+              <div
+                key={key}
+                className="overflow-hidden rounded-md border border-border bg-card"
+              >
+                <button
+                  type="button"
+                  onClick={() => toggle(`day:${key}`)}
+                  aria-expanded={open}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/30"
+                >
+                  <span className="flex-1 truncate text-sm font-semibold">
+                    {day
+                      ? `Day ${day.number}${day.identifier ? ` · ${day.identifier}` : ""}`
+                      : "Unscheduled"}
+                  </span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {bucket.length}
+                  </span>
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "text-xs text-muted-foreground transition-transform",
+                      open && "rotate-90"
+                    )}
+                  >
+                    ›
+                  </span>
+                </button>
+                {open ? (
+                  <div className="flex flex-col border-t border-border">
+                    {bucket.map((g) =>
+                      renderGroupRow(g, { showStoryline: true })
+                    )}
+                    {bucket.length === 0 ? (
+                      <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
+                        No groups.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
     </div>
   );
 }

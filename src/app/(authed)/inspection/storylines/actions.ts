@@ -43,6 +43,40 @@ export async function createStoryline() {
   redirect(`/inspection/storylines/${data!.id}`);
 }
 
+/**
+ * Plain-object update used by the inline StorylineInspector on
+ * /inspection/letters. The original `updateStoryline` below still accepts
+ * a FormData for use with the storylines editor page.
+ */
+export async function updateStorylineFields(data: {
+  id: string;
+  name: string;
+  abbreviation: string;
+  description: string | null;
+  icon_type: IconType;
+  icon_value: string | null;
+  color_hex: string;
+}) {
+  const supabase = await createSupabaseServerClient();
+  const payload = {
+    name: data.name.trim(),
+    abbreviation:
+      data.abbreviation.trim().toUpperCase().charAt(0) || "X",
+    description: data.description?.trim() || null,
+    icon_type: data.icon_type,
+    icon_value: data.icon_value?.trim() || null,
+    color_hex: normalizeHex(data.color_hex),
+  };
+  const { error } = await supabase
+    .from("storylines")
+    .update(payload)
+    .eq("id", data.id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath(`/inspection/storylines/${data.id}`);
+  revalidatePath("/inspection/storylines");
+}
+
 export async function updateStoryline(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
