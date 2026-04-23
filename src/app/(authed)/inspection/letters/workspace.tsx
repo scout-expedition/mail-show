@@ -1119,6 +1119,7 @@ export function LettersWorkspace({
               onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
               actionsCount={letterState.actions.length}
+              actionsActive={view === "actions"}
               onShowActions={() => setView("actions")}
             />
           ) : (
@@ -1233,6 +1234,7 @@ function LetterFieldsCard({
   onRevert,
   onDelete,
   actionsCount,
+  actionsActive,
   onShowActions,
 }: {
   state: LetterState;
@@ -1251,6 +1253,7 @@ function LetterFieldsCard({
   onRevert: () => void;
   onDelete: () => void;
   actionsCount: number;
+  actionsActive: boolean;
   onShowActions: () => void;
 }) {
   // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
@@ -1303,7 +1306,13 @@ function LetterFieldsCard({
             onClick={onShowActions}
             aria-label="Show actions"
             title="Show actions"
-            className="flex h-8 items-center justify-between gap-2 rounded-md border border-border px-3 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-pressed={actionsActive}
+            className={cn(
+              "flex h-8 items-center justify-between gap-2 rounded-md border px-3 text-xs transition-colors",
+              actionsActive
+                ? "border-foreground/60 bg-accent text-foreground"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
           >
             <span>Actions ({actionsCount})</span>
             <svg
