@@ -17,9 +17,17 @@ import { LettersWorkspace } from "./workspace";
 export default async function InspectionLettersPage({
   searchParams,
 }: {
-  searchParams: Promise<{ group?: string; letter?: string }>;
+  searchParams: Promise<{
+    group?: string;
+    letter?: string;
+    report?: string;
+  }>;
 }) {
-  const { group: groupParam, letter: letterParam } = await searchParams;
+  const {
+    group: groupParam,
+    letter: letterParam,
+    report: reportParam,
+  } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const [
     { data: sData },
@@ -67,19 +75,57 @@ export default async function InspectionLettersPage({
   const nations = (nationsData ?? []) as Nation[];
   const segments = (segmentsData ?? []) as ReportSegmentView[];
 
-  // Resolve ?group=<slug> → group id for initial selection.
+  // Resolve ?group=<slug>, ?letter=<slug>/<variant>, ?report=<slug>/<variant>
+  // into initial ids. `?letter` and `?report` imply their containing group.
   let initialGroupId: string | null = null;
-  if (groupParam) {
-    const parsed = parseGroupSlug(groupParam);
-    if (parsed) {
-      const s = storylines.find((s) => s.abbreviation === parsed.abbreviation);
-      if (s) {
-        const g = groups.find(
-          (g) => g.storyline_id === s.id && g.sequence === parsed.sequence
+  let initialLetterId: string | null = null;
+  let initialSegmentId: string | null = null;
+
+  function resolveSlugToGroup(slug: string): LetterGroup | null {
+    const parsed = parseGroupSlug(slug);
+    if (!parsed) return null;
+    const s = storylines.find((s) => s.abbreviation === parsed.abbreviation);
+    if (!s) return null;
+    return (
+      groups.find(
+        (g) => g.storyline_id === s.id && g.sequence === parsed.sequence
+      ) ?? null
+    );
+  }
+
+  function splitSlash(v: string): { slug: string; variant: string } | null {
+    const idx = v.indexOf("/");
+    if (idx < 0) return null;
+    return { slug: v.slice(0, idx), variant: v.slice(idx + 1) };
+  }
+
+  if (reportParam) {
+    const parts = splitSlash(reportParam);
+    if (parts) {
+      const g = resolveSlugToGroup(parts.slug);
+      if (g) {
+        initialGroupId = g.id;
+        const seg = segments.find(
+          (s) => s.letter_group_id === g.id && s.variant === parts.variant
         );
-        if (g) initialGroupId = g.id;
+        if (seg) initialSegmentId = seg.id;
       }
     }
+  } else if (letterParam && letterParam !== "none") {
+    const parts = splitSlash(letterParam);
+    if (parts) {
+      const g = resolveSlugToGroup(parts.slug);
+      if (g) {
+        initialGroupId = g.id;
+        const letter = letters.find(
+          (l) => l.letter_group_id === g.id && l.variant === parts.variant
+        );
+        if (letter) initialLetterId = letter.id;
+      }
+    }
+  } else if (groupParam) {
+    const g = resolveSlugToGroup(groupParam);
+    if (g) initialGroupId = g.id;
   }
 
   return (
@@ -96,7 +142,8 @@ export default async function InspectionLettersPage({
       nations={nations}
       segments={segments}
       initialGroupId={initialGroupId}
-      initialLetterHint={letterParam ?? null}
+      initialLetterId={initialLetterId}
+      initialSegmentId={initialSegmentId}
     />
   );
 }

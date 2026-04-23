@@ -172,7 +172,8 @@ export function LettersWorkspace({
   nations,
   segments: allSegments,
   initialGroupId,
-  initialLetterHint,
+  initialLetterId,
+  initialSegmentId,
 }: {
   storylines: Storyline[];
   groups: LetterGroup[];
@@ -186,7 +187,8 @@ export function LettersWorkspace({
   nations: Nation[];
   segments: ReportSegmentView[];
   initialGroupId: string | null;
-  initialLetterHint: string | null;
+  initialLetterId: string | null;
+  initialSegmentId: string | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -290,13 +292,14 @@ export function LettersWorkspace({
   }
 
   // ----- Letter state -----
-  const skipInitial = initialLetterHint === "none";
   const [selectedId, setSelectedId] = useState<string | null>(
-    skipInitial ? null : letters[0]?.id ?? null
+    initialLetterId ?? (initialSegmentId ? null : letters[0]?.id ?? null)
   );
   const [letterState, setLetterState] = useState<LetterState | null>(() => {
-    if (skipInitial || !letters[0]) return null;
-    return toLetterState(letters[0], actions);
+    const initId =
+      initialLetterId ?? (initialSegmentId ? null : letters[0]?.id ?? null);
+    const init = initId ? letters.find((l) => l.id === initId) : null;
+    return init ? toLetterState(init, actions) : null;
   });
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -305,23 +308,45 @@ export function LettersWorkspace({
   const [letterPending, startLetterSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
   const [view, setView] = useState<"groups" | "main" | "actions" | "segment">(
-    "groups"
+    initialSegmentId
+      ? "segment"
+      : initialLetterId
+        ? "main"
+        : "groups"
   );
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
+    initialSegmentId
+  );
 
-  // Keep URL in sync with the selected group for deep-linking.
+  // Keep URL in sync with the currently-focused entity.
   useEffect(() => {
     const currentAbbr = group
       ? storylineById.get(group.storyline_id)?.abbreviation ?? ""
       : "";
     const slug = group && currentAbbr ? groupSlug(currentAbbr, group.sequence) : null;
-    const target = slug
-      ? `${pathname}?group=${encodeURIComponent(slug)}`
-      : pathname;
+    let target = pathname;
+    if (slug) {
+      if (selectedSegmentId) {
+        const seg = segments.find((s) => s.id === selectedSegmentId);
+        if (seg?.variant) {
+          target = `${pathname}?report=${encodeURIComponent(`${slug}/${seg.variant}`)}`;
+        } else {
+          target = `${pathname}?group=${encodeURIComponent(slug)}`;
+        }
+      } else if (selectedId) {
+        const l = letters.find((x) => x.id === selectedId);
+        if (l?.variant) {
+          target = `${pathname}?letter=${encodeURIComponent(`${slug}/${l.variant}`)}`;
+        } else {
+          target = `${pathname}?group=${encodeURIComponent(slug)}`;
+        }
+      } else {
+        target = `${pathname}?group=${encodeURIComponent(slug)}`;
+      }
+    }
     router.replace(target, { scroll: false });
-    // Only react to selectedGroupId changing; pathname is stable per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId]);
+  }, [selectedGroupId, selectedId, selectedSegmentId]);
 
   async function revertGroup() {
     if (!group || !groupDirty) return;
@@ -737,12 +762,121 @@ export function LettersWorkspace({
 
   const currentStoryline = storylineById.get(groupState.storyline_id);
 
+  const selectedLetter = selectedId
+    ? letters.find((l) => l.id === selectedId)
+    : null;
+  const selectedSegment = selectedSegmentId
+    ? segments.find((s) => s.id === selectedSegmentId)
+    : null;
+
+  async function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
+    // Closing a panel discards all open panels below. If any are dirty,
+    // confirm first; a single dirty blocker covers the whole stack.
+    const willLoseDirty =
+      level === "root"
+        ? groupDirty || letterDirty
+        : level === "group"
+          ? letterDirty
+          : false;
+    if (willLoseDirty) {
+      const ok = await confirmDialog({
+        title: "Discard unsaved changes?",
+        message:
+          "There are unsaved edits in one or more panels. Close them anyway?",
+        confirmLabel: "Discard",
+        intent: "destructive",
+      });
+      if (!ok) return;
+    }
+    if (level === "root") {
+      setSelectedGroupId(null);
+      setSelectedId(null);
+      setLetterState(null);
+      setSelectedSegmentId(null);
+      setGroupDirty(false);
+      setLetterDirty(false);
+      setView("groups");
+    } else if (level === "group") {
+      setSelectedId(null);
+      setLetterState(null);
+      setSelectedSegmentId(null);
+      setLetterDirty(false);
+      setView("groups");
+    } else if (level === "letter") {
+      setSelectedSegmentId(null);
+      setView("main");
+    } else if (level === "actions") {
+      setSelectedSegmentId(null);
+      setView("actions");
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Inspection Letters"
-        description="Pick a letter group to open its letters and actions."
-      />
+      <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
+        <BreadcrumbLink onClick={() => goToBreadcrumb("root")}>
+          Inspection Letters
+        </BreadcrumbLink>
+        {currentStoryline ? (
+          <>
+            <ChevronRight size={12} aria-hidden className="opacity-50" />
+            <BreadcrumbLink
+              onClick={() => goToBreadcrumb("group")}
+              color={currentStoryline.color_hex}
+            >
+              {currentStoryline.name}
+            </BreadcrumbLink>
+          </>
+        ) : null}
+        {group ? (
+          <>
+            <ChevronRight size={12} aria-hidden className="opacity-50" />
+            <BreadcrumbLink
+              onClick={() => goToBreadcrumb("group")}
+              active={view === "groups"}
+              icon={<Mails size={12} aria-hidden />}
+            >
+              {currentStoryline?.abbreviation ?? ""}
+              {group.sequence}
+            </BreadcrumbLink>
+          </>
+        ) : null}
+        {selectedLetter ? (
+          <>
+            <ChevronRight size={12} aria-hidden className="opacity-50" />
+            <BreadcrumbLink
+              onClick={() => goToBreadcrumb("letter")}
+              active={view === "main"}
+              icon={<MailOpen size={12} aria-hidden />}
+            >
+              {selectedLetter.content_id}
+            </BreadcrumbLink>
+          </>
+        ) : null}
+        {view === "actions" || view === "segment" ? (
+          <>
+            <ChevronRight size={12} aria-hidden className="opacity-50" />
+            <BreadcrumbLink
+              onClick={() => goToBreadcrumb("actions")}
+              active={view === "actions"}
+              icon={<Milestone size={12} aria-hidden />}
+            >
+              Actions
+            </BreadcrumbLink>
+          </>
+        ) : null}
+        {selectedSegment ? (
+          <>
+            <ChevronRight size={12} aria-hidden className="opacity-50" />
+            <BreadcrumbLink
+              active={view === "segment"}
+              icon={<Megaphone size={12} aria-hidden />}
+            >
+              {selectedSegment.report_id.toLowerCase()}
+            </BreadcrumbLink>
+          </>
+        ) : null}
+      </div>
 
       <div className="relative overflow-hidden">
         <div
@@ -3075,6 +3209,53 @@ function DayOption({
 }
 
 /** Muted-outlined delete button used across all entity panels. */
+function BreadcrumbLink({
+  children,
+  onClick,
+  active,
+  color,
+  icon,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+  color?: string;
+  icon?: React.ReactNode;
+}) {
+  const base =
+    "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors";
+  if (!onClick) {
+    return (
+      <span
+        className={cn(
+          base,
+          active ? "bg-accent/40 text-foreground" : "text-muted-foreground"
+        )}
+        style={color ? { color } : undefined}
+      >
+        {icon}
+        {children}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        base,
+        active
+          ? "bg-accent/40 text-foreground"
+          : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+      )}
+      style={color ? { color } : undefined}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
 function DeleteButton({
   onClick,
   disabled,
