@@ -538,6 +538,40 @@ export function LettersWorkspace({
     setSelectedSegmentId(null);
   }
 
+  /**
+   * Jump from the segment panel to the actions panel for a specific letter
+   * — used by the segment's "Triggers" list. Also switches the group
+   * selection if the trigger lives in a different letter group (e.g. a
+   * sibling storyline's letter pointing at this segment).
+   */
+  function jumpToTrigger(
+    letterId: string,
+    segmentDirty: boolean,
+    onSave: () => Promise<void>
+  ) {
+    const target = allLetters.find((l) => l.id === letterId);
+    if (!target) return;
+    const doJump = () => {
+      if (target.letter_group_id !== selectedGroupId) {
+        setSelectedGroupId(target.letter_group_id);
+      }
+      setSelectedId(letterId);
+      setSelectedSegmentId(null);
+      setView("actions");
+    };
+    if (segmentDirty) {
+      const ok = confirm("Segment has unsaved changes. Save before jumping?");
+      if (ok) {
+        startRowAction(async () => {
+          await onSave();
+          doJump();
+        });
+        return;
+      }
+    }
+    doJump();
+  }
+
   function updateLetter(patch: Partial<LetterState>) {
     setLetterState((s) => (s ? { ...s, ...patch } : s));
     setLetterDirty(true);
@@ -1234,7 +1268,7 @@ export function LettersWorkspace({
 
         {/* SEGMENT slot: selected report segment */}
         <div className="flex w-1/5 shrink-0 flex-col gap-4 pl-3">
-          {letterState && selectedSegmentId ? (
+          {selectedSegmentId ? (
             <LetterSegmentCard
               key={selectedSegmentId}
               segment={
@@ -1252,8 +1286,11 @@ export function LettersWorkspace({
                   days.find((d) => d.number === cur.number + 1)?.id ?? null
                 );
               })()}
+              allActions={allActions}
+              allLetters={allLetters}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
             />
           ) : null}
@@ -1618,18 +1655,28 @@ function LetterSegmentCard({
   segment,
   days,
   groupDeliveryDayId,
+  allActions,
+  allLetters,
   onBack,
   onDelete,
+  onJumpToTrigger,
   onConfirmDialog,
 }: {
   segment: ReportSegmentView | null;
   days: Day[];
   groupDeliveryDayId: string | null;
+  allActions: ActionRow[];
+  allLetters: InspectionLetterView[];
   onBack: (
     dirty: boolean,
     onSave: () => Promise<void>
   ) => void;
   onDelete: (segmentId: string) => void;
+  onJumpToTrigger: (
+    letterId: string,
+    dirty: boolean,
+    onSave: () => Promise<void>
+  ) => void;
   onConfirmDialog: (options: {
     title: string;
     message?: string;
@@ -1674,6 +1721,37 @@ function LetterSegmentCard({
     setState((s) => ({ ...s, [k]: v }));
     setDirty(true);
   }
+
+  const triggers = useMemo(() => {
+    if (!segment) return [] as Array<{
+      actionId: string;
+      actionName: string;
+      letterId: string;
+      letterShortId: string;
+    }>;
+    return allActions
+      .filter((a) => a.report_segment_id === segment.id)
+      .map((a) => {
+        const letter = allLetters.find((l) => l.id === a.inspection_letter_id);
+        if (!letter) return null;
+        return {
+          actionId: a.id,
+          actionName: a.name,
+          letterId: letter.id,
+          letterShortId: letter.content_id.replace(/^IL-/, ""),
+        };
+      })
+      .filter(
+        (
+          v
+        ): v is {
+          actionId: string;
+          actionName: string;
+          letterId: string;
+          letterShortId: string;
+        } => v !== null
+      );
+  }, [segment, allActions, allLetters]);
 
   if (!segment) {
     return (
@@ -1802,6 +1880,30 @@ function LetterSegmentCard({
           }}
         />
       </div>
+      {triggers.length > 0 ? (
+        <div className="mt-4 border-t border-border pt-3">
+          <div className="mb-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            Triggers ({triggers.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {triggers.map((t) => (
+              <button
+                key={t.actionId}
+                type="button"
+                onClick={() =>
+                  onJumpToTrigger(t.letterId, dirty, saveNow)
+                }
+                title={`Jump to ${t.letterShortId} · ${t.actionName}`}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-accent hover:text-foreground"
+              >
+                <span className="font-mono">{t.letterShortId}</span>
+                <span className="text-muted-foreground/50">·</span>
+                <span>{t.actionName}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
     </div>
   );
