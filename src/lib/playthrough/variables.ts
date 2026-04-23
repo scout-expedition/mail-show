@@ -38,7 +38,7 @@ export function tallyVariables(
 export const VARIABLE_LABELS = {
   world_status: "World Status",
   demerits: "Demerits",
-  proletariat: "Proletariat",
+  proletariat: "Working",
   gentry: "Gentry",
   epicenter: "Epicenter",
   folos: "Folos",

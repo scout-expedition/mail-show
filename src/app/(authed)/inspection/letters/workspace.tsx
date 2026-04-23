@@ -79,7 +79,7 @@ const GHOST_FIELD =
   "border-transparent bg-transparent shadow-none hover:bg-accent/20 focus:border-border focus-visible:bg-input focus-visible:shadow-sm";
 
 const CLASS_AFFINITY: Array<{ key: keyof ActionImpacts; label: string }> = [
-  { key: "impact_proletariat", label: "Proletariat" },
+  { key: "impact_proletariat", label: "Working" },
   { key: "impact_gentry", label: "Gentry" },
 ];
 
@@ -3646,9 +3646,13 @@ function DeleteButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="inline-flex items-center gap-2 rounded-md border border-border/40 px-3 py-1 text-xs text-muted-foreground/60 transition-colors hover:border-destructive hover:bg-destructive hover:text-destructive-foreground disabled:opacity-40"
+      className="group inline-flex items-center gap-2 rounded-md border border-border/30 px-3 py-1 text-xs text-muted-foreground/40 transition-colors hover:border-destructive hover:bg-destructive hover:text-destructive-foreground disabled:opacity-40"
     >
-      <Trash2 size={12} aria-hidden />
+      <Trash2
+        size={12}
+        aria-hidden
+        className="opacity-60 transition-opacity group-hover:opacity-100"
+      />
       <span>{label}</span>
     </button>
   );
