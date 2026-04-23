@@ -551,23 +551,96 @@ export function LettersWorkspace({
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
     }
-    function handleMouseDown(e: MouseEvent) {
-      if (e.button === 3 || e.button === 4) e.preventDefault();
+    // macOS Chrome doesn't surface the side mouse buttons as JS mouse
+    // events we can preventDefault — they go straight to browser-history
+    // navigation and only show up via `popstate`. We set up a tiny
+    // history "sandwich" (back-trap, mid, forward-trap) and stay parked
+    // on `mid`. When the browser pops onto either trap we run the
+    // matching panel navigation and silently restore back to mid.
+    let lastNavAt = 0;
+    function bump() {
+      const now = Date.now();
+      if (now - lastNavAt < 200) return false;
+      lastNavAt = now;
+      return true;
     }
-    function handleMouseUp(e: MouseEvent) {
-      if (e.button === 3) {
+
+    // Mouse / keyboard paths that *do* fire JS events on other browsers.
+    function suppress(e: MouseEvent) {
+      if (e.button === 3 || e.button === 4) {
         e.preventDefault();
-        goPanelBack();
-      } else if (e.button === 4) {
-        e.preventDefault();
-        goPanelForward();
+        e.stopPropagation();
       }
     }
-    window.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mouseup", handleMouseUp);
+    function navigate(e: MouseEvent) {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!bump()) return;
+      if (e.button === 3) goPanelBack();
+      else goPanelForward();
+    }
+    function navigateKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const isBack =
+        (e.metaKey && e.key === "ArrowLeft") ||
+        (e.altKey && e.key === "ArrowLeft");
+      const isForward =
+        (e.metaKey && e.key === "ArrowRight") ||
+        (e.altKey && e.key === "ArrowRight");
+      if (!isBack && !isForward) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!bump()) return;
+      if (isBack) goPanelBack();
+      else goPanelForward();
+    }
+
+    // History sandwich. Build the back / mid / forward entries and park
+    // on mid. Subsequent router.replace() in the URL-sync effect updates
+    // mid's state but leaves the trap entries untouched.
+    let restoring = false;
+    history.pushState({ _panelTrap: "back" }, "");
+    history.pushState({ _panelTrap: "mid" }, "");
+    history.pushState({ _panelTrap: "forward" }, "");
+    history.go(-1);
+
+    function onPopState(e: PopStateEvent) {
+      if (restoring) {
+        restoring = false;
+        return;
+      }
+      const trap = (e.state as { _panelTrap?: string } | null)?._panelTrap;
+      if (trap === "back") {
+        restoring = true;
+        history.forward();
+        if (bump()) goPanelBack();
+      } else if (trap === "forward") {
+        restoring = true;
+        history.back();
+        if (bump()) goPanelForward();
+      }
+    }
+
+    window.addEventListener("mousedown", suppress, true);
+    window.addEventListener("mouseup", navigate, true);
+    window.addEventListener("auxclick", navigate, true);
+    window.addEventListener("keydown", navigateKey, true);
+    window.addEventListener("popstate", onPopState);
     return () => {
-      window.removeEventListener("mousedown", handleMouseDown);
-      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("mousedown", suppress, true);
+      window.removeEventListener("mouseup", navigate, true);
+      window.removeEventListener("auxclick", navigate, true);
+      window.removeEventListener("keydown", navigateKey, true);
+      window.removeEventListener("popstate", onPopState);
     };
   }, []);
 
