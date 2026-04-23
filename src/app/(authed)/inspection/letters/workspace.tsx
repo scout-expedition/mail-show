@@ -3014,44 +3014,26 @@ function ActionEditor({
 
   return (
     <div className="rounded-md border border-border p-3">
-      {/* Header row: icon + name on the left, Demerits + Status pinned
-          right. */}
-      <div className="mb-2 flex items-center gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
-            style={{ background: colorHex, color: "#fff" }}
-          >
-            {iconValue ? (
-              <IconDisplay type={iconType} value={iconValue} size={16} />
-            ) : null}
-          </span>
-          <span className="truncate font-semibold">{name}</span>
-        </div>
-        <div className="flex shrink-0 items-start gap-2">
-          <ClassTile
-            label="Demerits"
-            icon={<IconCircleMinus size={14} aria-hidden />}
-            value={action.impact_demerits}
-            onChange={(v) =>
-              onChange({ impact_demerits: v } as Partial<ActionState>)
-            }
-          />
-          <ClassTile
-            label="World Status"
-            icon={<IconWorldBolt size={14} aria-hidden />}
-            value={action.impact_world_status}
-            onChange={(v) =>
-              onChange({ impact_world_status: v } as Partial<ActionState>)
-            }
-          />
-        </div>
+      {/* Header row: icon + name only. */}
+      <div className="mb-2 flex items-center gap-2">
+        <span
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
+          style={{ background: colorHex, color: "#fff" }}
+        >
+          {iconValue ? (
+            <IconDisplay type={iconType} value={iconValue} size={16} />
+          ) : null}
+        </span>
+        <span className="truncate font-semibold">{name}</span>
       </div>
 
-      {/* Second row: Next letter + Report side by side with the open-
-          segment arrow. */}
-      <div className="mb-3 flex items-end gap-3">
-        <TileFrame label="Next letter">
+      {/* Links row: Next letter and Report each take half the row; the
+          open-segment arrow sits in the Report half. */}
+      <div className="flex items-end gap-2">
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+            Next letter
+          </span>
           {creatingLetter ? (
             <CreatingPill />
           ) : (
@@ -3078,7 +3060,7 @@ function ActionEditor({
                 onChange({ next_letter_variant: v || null });
               }}
               className={cn(
-                "h-6 w-auto appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
+                "h-6 w-full appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
                 GHOST_FIELD
               )}
             >
@@ -3104,153 +3086,146 @@ function ActionEditor({
               )}
             </Select>
           )}
-        </TileFrame>
-        <TileFrame label="Report">
-          {creatingSegment ? (
-            <CreatingPill />
-          ) : (
-            <Select
-              value={action.report_segment_id ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "__new_segment") {
-                  startCreateSegment(async () => {
-                    if (currentDay && !nextDay) {
-                      const { segmentId } =
-                        await createNextDayAndReportSegment(
-                          groupId,
-                          currentDay.number
-                        );
-                      onChange({ report_segment_id: segmentId });
-                    } else {
-                      const { segmentId } =
-                        await createReportSegmentForGroup(
-                          groupId,
-                          nextDay?.id ?? null
-                        );
-                      onChange({ report_segment_id: segmentId });
-                    }
-                  });
-                  return;
-                }
-                onChange({ report_segment_id: v || null });
-              }}
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
+          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+            Report
+          </span>
+          <div className="flex w-full items-center gap-1">
+            {creatingSegment ? (
+              <CreatingPill />
+            ) : (
+              <Select
+                value={action.report_segment_id ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "__new_segment") {
+                    startCreateSegment(async () => {
+                      if (currentDay && !nextDay) {
+                        const { segmentId } =
+                          await createNextDayAndReportSegment(
+                            groupId,
+                            currentDay.number
+                          );
+                        onChange({ report_segment_id: segmentId });
+                      } else {
+                        const { segmentId } =
+                          await createReportSegmentForGroup(
+                            groupId,
+                            nextDay?.id ?? null
+                          );
+                        onChange({ report_segment_id: segmentId });
+                      }
+                    });
+                    return;
+                  }
+                  onChange({ report_segment_id: v || null });
+                }}
+                className={cn(
+                  "h-6 min-w-0 flex-1 appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
+                  GHOST_FIELD
+                )}
+              >
+                <option value="">—</option>
+                {segments.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.report_id}
+                  </option>
+                ))}
+                <option value="__new_segment">+ Report Segment</option>
+              </Select>
+            )}
+            <button
+              type="button"
+              onClick={onOpenSegment}
+              disabled={!action.report_segment_id}
+              aria-label="Open report segment"
+              title={
+                action.report_segment_id
+                  ? "Open report segment"
+                  : "No report segment assigned"
+              }
               className={cn(
-                "h-6 w-auto appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
-                GHOST_FIELD
+                "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                segmentOpen
+                  ? "border-foreground/40 bg-accent/60 text-foreground"
+                  : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
               )}
             >
-              <option value="">—</option>
-              {segments.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.report_id}
-                </option>
-              ))}
-              <option value="__new_segment">+ Report Segment</option>
-            </Select>
-          )}
-        </TileFrame>
-        <button
-          type="button"
-          onClick={onOpenSegment}
-          disabled={!action.report_segment_id}
-          aria-label="Open report segment"
-          title={
-            action.report_segment_id
-              ? "Open report segment"
-              : "No report segment assigned"
-          }
-          className={cn(
-            "mb-[2px] inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-            segmentOpen
-              ? "border-foreground/40 bg-accent/60 text-foreground"
-              : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
-          )}
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M9 6l6 6-6 6" />
-          </svg>
-        </button>
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M9 6l6 6-6 6" />
+              </svg>
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Affinity tiles: Class | National */}
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2 rounded-md bg-muted/30 p-2">
-        <div className="flex flex-col gap-1">
-          <AffinityGroupLabel>Class Affinity</AffinityGroupLabel>
-          <div className="flex items-start gap-2">
-            {CLASS_AFFINITY.map((c) => (
-              <ClassTile
-                key={c.key}
-                label={c.label}
-                icon={c.icon}
-                value={action[c.key]}
-                onChange={(v) =>
-                  onChange({ [c.key]: v } as Partial<ActionState>)
-                }
-              />
-            ))}
-          </div>
-        </div>
+      {/* Divider, section label, divider. */}
+      <div className="mt-3 border-t border-border" />
+      <div className="py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+        Impact variables
+      </div>
+      <div className="mb-2 border-t border-border" />
 
-        <div className="flex flex-col gap-1 border-l border-border pl-4">
-          <AffinityGroupLabel>National Affinity</AffinityGroupLabel>
-          <div className="flex items-start gap-2">
-            {orderedNations.map((n) => {
-              const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
-              return (
-                <NationTile
-                  key={n.id}
-                  nation={n}
-                  value={action[key]}
-                  onChange={(v) =>
-                    onChange({ [key]: v } as Partial<ActionState>)
-                  }
-                />
-              );
-            })}
-          </div>
-        </div>
+      {/* All impact counters on a single row: world + class + nations.
+          No section labels; tighter spacing. */}
+      <div className="flex flex-wrap items-start gap-1">
+        <ClassTile
+          label="Demerits"
+          icon={<IconCircleMinus size={14} aria-hidden />}
+          value={action.impact_demerits}
+          onChange={(v) =>
+            onChange({ impact_demerits: v } as Partial<ActionState>)
+          }
+        />
+        <ClassTile
+          label="World Status"
+          icon={<IconWorldBolt size={14} aria-hidden />}
+          value={action.impact_world_status}
+          onChange={(v) =>
+            onChange({ impact_world_status: v } as Partial<ActionState>)
+          }
+        />
+        {CLASS_AFFINITY.map((c) => (
+          <ClassTile
+            key={c.key}
+            label={c.label}
+            icon={c.icon}
+            value={action[c.key]}
+            onChange={(v) =>
+              onChange({ [c.key]: v } as Partial<ActionState>)
+            }
+          />
+        ))}
+        {orderedNations.map((n) => {
+          const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
+          return (
+            <NationTile
+              key={n.id}
+              nation={n}
+              value={action[key]}
+              onChange={(v) =>
+                onChange({ [key]: v } as Partial<ActionState>)
+              }
+            />
+          );
+        })}
       </div>
 
       <div className="mt-3 flex justify-center">
         <DeleteButton onClick={onDelete} />
       </div>
     </div>
-  );
-}
-
-function TileFrame({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <span className="flex h-6 items-center text-[10px] text-muted-foreground">
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-}
-
-function AffinityGroupLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-      {children}
-    </span>
   );
 }
 
