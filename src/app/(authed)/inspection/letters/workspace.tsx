@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -244,6 +245,7 @@ export function LettersWorkspace({
   const router = useRouter();
   const pathname = usePathname();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog();
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -1180,27 +1182,109 @@ export function LettersWorkspace({
     return offset;
   }, [view, narrow, inspectorStoryline]);
 
+  /**
+   * Going-up navigation from the breadcrumb. For each panel that would
+   * be closed and is dirty, ask the user (one dialog per panel):
+   * Save / Don't save / Cancel. Cancel aborts the entire navigation;
+   * Save flushes that panel; Don't save drops its edits.
+   * Inner-most panels are asked first so users see them in reading
+   * order from the panel they were just on.
+   */
   async function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
-    // Closing a panel discards all open panels below. If any are dirty,
-    // confirm first; a single dirty blocker covers the whole stack.
-    const willLoseDirty =
-      level === "root"
-        ? groupDirty || anyLetterDirty || storylineDirty
-        : level === "group"
-          ? anyLetterDirty
-          : level === "letter"
-            ? actionsDirty
-            : false;
-    if (willLoseDirty) {
+    type DirtyPanel = {
+      key: string;
+      title: string;
+      message: string;
+      isDirty: () => boolean;
+      save: () => Promise<void>;
+      discard: () => void;
+    };
+    const closing: DirtyPanel[] = [];
+    // List the panels (innermost first) that this navigation would
+    // close. Add only if they're currently dirty.
+    if (level === "root" || level === "group" || level === "letter") {
+      if (actionsDirty) {
+        closing.push({
+          key: "actions",
+          title: "Save changes to actions?",
+          message:
+            "This letter's actions have unsaved edits.",
+          isDirty: () => actionsDirty,
+          save: async () => {
+            if (!letterState) return;
+            await saveLetterActionsOnly(letterActionsPatches(letterState));
+            setActionsDirty(false);
+          },
+          discard: () => setActionsDirty(false),
+        });
+      }
+    }
+    if (level === "root" || level === "group") {
+      if (letterDirty) {
+        closing.push({
+          key: "letter",
+          title: "Save changes to inspection letter?",
+          message: "This letter has unsaved edits.",
+          isDirty: () => letterDirty,
+          save: async () => {
+            if (!letterState) return;
+            await saveLetterFields(letterFieldsPatch(letterState));
+            setLetterDirty(false);
+          },
+          discard: () => setLetterDirty(false),
+        });
+      }
+    }
+    if (level === "root") {
+      if (groupDirty && group) {
+        const groupId = group.id;
+        const snap = { ...groupState };
+        closing.push({
+          key: "group",
+          title: "Save changes to letter group?",
+          message: "The open letter group has unsaved edits.",
+          isDirty: () => groupDirty,
+          save: async () => {
+            await saveGroup({
+              id: groupId,
+              storyline_id: snap.storyline_id,
+              name: snap.name,
+              notes: snap.notes,
+              delivery_day_id: snap.delivery_day_id,
+            });
+            setGroupDirty(false);
+          },
+          discard: () => setGroupDirty(false),
+        });
+      }
+    }
+
+    // Storyline saves live inside StorylineInspector and aren't exposed
+    // here — fall back to a simple Discard/Cancel for now and ask the
+    // user to save from the inspector if they want to keep edits.
+    if (level === "root" && storylineDirty) {
       const ok = await confirmDialog({
-        title: "Discard unsaved changes?",
+        title: "Discard storyline changes?",
         message:
-          "There are unsaved edits in one or more panels. Close them anyway?",
+          "The open storyline has unsaved edits. Save them from the storyline panel first if you want to keep them.",
         confirmLabel: "Discard",
         intent: "destructive",
       });
       if (!ok) return;
+      setStorylineDirty(false);
     }
+
+    for (const panel of closing) {
+      if (!panel.isDirty()) continue;
+      const outcome = await askUnsaved(panel.title, panel.message);
+      if (outcome === "cancel") return;
+      if (outcome === "save") {
+        await panel.save();
+      } else {
+        panel.discard();
+      }
+    }
+
     if (level === "root") {
       setSelectedGroupId(null);
       setSelectedStorylineId(null);
@@ -1374,6 +1458,14 @@ export function LettersWorkspace({
               title="Letter Group"
               dirty={groupDirty}
               showSaved={!!group}
+              saveRevert={
+                <SaveRevert
+                  dirty={groupDirty}
+                  pending={groupPending}
+                  onSave={handleSaveGroup}
+                  onRevert={revertGroup}
+                />
+              }
               menu={
                 <OverflowMenu
                   items={[
@@ -1403,16 +1495,6 @@ export function LettersWorkspace({
                     GHOST_FIELD
                   )}
                 />
-                {/* Reserve width for the SaveRevert cluster so the name field
-                    doesn't jump when buttons appear. */}
-                <div className="flex h-7 w-[60px] shrink-0 justify-end">
-                  <SaveRevert
-                    dirty={groupDirty}
-                    pending={groupPending}
-                    onSave={handleSaveGroup}
-                    onRevert={revertGroup}
-                  />
-                </div>
               </div>
               <div className="grid grid-cols-6 gap-3">
                 <div className="col-span-6 flex flex-col gap-1">
@@ -1754,6 +1836,7 @@ export function LettersWorkspace({
         />
       ) : null}
       {confirmDialogEl}
+      {unsavedDialogEl}
     </div>
   );
 }
@@ -1813,6 +1896,14 @@ function LetterFieldsCard({
         title="Inspection Letter"
         dirty={dirty}
         showSaved
+        saveRevert={
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={onSave}
+            onRevert={onRevert}
+          />
+        }
         menu={
           <OverflowMenu
             items={[
@@ -1827,22 +1918,12 @@ function LetterFieldsCard({
         }
       />
       <div className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          <BackLink onNavigate={onBack} />
-          <InspectionLetterPill
-            storyline={storyline}
-            contentId={letterView.content_id}
-          />
-        </h3>
-        <div className="flex h-7 w-[60px] shrink-0 justify-end">
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={onSave}
-            onRevert={onRevert}
-          />
-        </div>
+      <div className="mb-3 flex items-center gap-2">
+        <BackLink onNavigate={onBack} />
+        <InspectionLetterPill
+          storyline={storyline}
+          contentId={letterView.content_id}
+        />
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-4 flex flex-col gap-1">
@@ -2010,44 +2091,46 @@ function LetterActionsCard({
 
   return (
     <div className="rounded-md border border-border bg-card">
-      <PanelHeader title="Letter Actions" dirty={dirty} showSaved />
-      <div className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back to letter"
-            title="Back to letter"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M15 6l-6 6 6 6" />
-            </svg>
-          </button>
-          <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Milestone size={14} aria-hidden className="text-muted-foreground/70" />
-            Actions ({actions.length})
-          </h4>
-        </div>
-        <div className="flex h-7 w-[60px] shrink-0 justify-end">
+      <PanelHeader
+        title="Letter Actions"
+        dirty={dirty}
+        showSaved
+        saveRevert={
           <SaveRevert
             dirty={dirty}
             pending={pending}
             onSave={onSave}
             onRevert={onRevert}
           />
-        </div>
+        }
+      />
+      <div className="p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onBack}
+          aria-label="Back to letter"
+          title="Back to letter"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M15 6l-6 6 6 6" />
+          </svg>
+        </button>
+        <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <Milestone size={14} aria-hidden className="text-muted-foreground/70" />
+          Actions ({actions.length})
+        </h4>
       </div>
       <div className="flex flex-col gap-3">
         {actions.map((a, i) => (
@@ -2237,6 +2320,29 @@ function LetterSegmentCard({
         title="Report Segment"
         dirty={dirty}
         showSaved
+        saveRevert={
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={() => startSave(saveNow)}
+            onRevert={async () => {
+              if (!dirty || !segment) return;
+              const ok = await onConfirmDialog({
+                title: "Discard segment changes?",
+                message: "Any unsaved edits will be lost.",
+                confirmLabel: "Revert",
+                intent: "destructive",
+              });
+              if (!ok) return;
+              setState({
+                variant: segment.variant,
+                content: segment.content,
+                delivery_day_override_id: segment.delivery_day_override_id,
+              });
+              setDirty(false);
+            }}
+          />
+        }
         menu={
           <OverflowMenu
             items={[
@@ -2260,59 +2366,34 @@ function LetterSegmentCard({
         }
       />
       <div className="p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onBack(dirty, saveNow)}
-            aria-label="Back to actions"
-            title="Back to actions"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      <div className="mb-3 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onBack(dirty, saveNow)}
+          aria-label="Back to actions"
+          title="Back to actions"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
           >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M15 6l-6 6 6 6" />
-            </svg>
-          </button>
-          <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <ReportSegmentPill
-              storyline={storylines.find((s) => s.id === segment.storyline_id)}
-              reportId={segment.report_id}
-            />
-          </h3>
-        </div>
-        <div className="flex h-7 w-[60px] shrink-0 justify-end">
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={() => startSave(saveNow)}
-            onRevert={async () => {
-              if (!dirty || !segment) return;
-              const ok = await onConfirmDialog({
-                title: "Discard segment changes?",
-                message: "Any unsaved edits will be lost.",
-                confirmLabel: "Revert",
-                intent: "destructive",
-              });
-              if (!ok) return;
-              setState({
-                variant: segment.variant,
-                content: segment.content,
-                delivery_day_override_id: segment.delivery_day_override_id,
-              });
-              setDirty(false);
-            }}
+            <path d="M15 6l-6 6 6 6" />
+          </svg>
+        </button>
+        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <ReportSegmentPill
+            storyline={storylines.find((s) => s.id === segment.storyline_id)}
+            reportId={segment.report_id}
           />
-        </div>
+        </h3>
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
@@ -4246,19 +4327,109 @@ function BreadcrumbPill({
  * the inline list headers (e.g. "Letters (N)"). Uppercase mono label on
  * a full-width border-b row.
  */
+type UnsavedOutcome = "save" | "discard" | "cancel";
+
+/**
+ * Tri-state dialog for unsaved changes. Returns "save", "discard", or
+ * "cancel". Used by the breadcrumb / leave flow to ask once per dirty
+ * panel — pressing Cancel aborts the whole navigation, Save flushes
+ * that panel and continues, Don't save drops its edits and continues.
+ */
+function useUnsavedDialog(): {
+  ask: (title: string, message?: string) => Promise<UnsavedOutcome>;
+  dialog: React.ReactNode;
+} {
+  const [state, setState] = useState<{ title: string; message?: string } | null>(
+    null
+  );
+  const resolveRef = useRef<((v: UnsavedOutcome) => void) | null>(null);
+
+  const ask = useCallback(
+    (title: string, message?: string) =>
+      new Promise<UnsavedOutcome>((resolve) => {
+        resolveRef.current = resolve;
+        setState({ title, message });
+      }),
+    []
+  );
+
+  function settle(v: UnsavedOutcome) {
+    const r = resolveRef.current;
+    resolveRef.current = null;
+    setState(null);
+    r?.(v);
+  }
+
+  const dialog = state ? (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={state.title}
+      onClick={() => settle("cancel")}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-md border border-border bg-card p-6 shadow-xl"
+      >
+        <h3 className="font-mono text-sm font-semibold uppercase tracking-widest text-muted-foreground">
+          {state.title}
+        </h3>
+        {state.message ? (
+          <p className="mt-3 text-sm text-foreground/90">{state.message}</p>
+        ) : null}
+        <div className="mt-6 flex items-center gap-2">
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            onClick={() => settle("discard")}
+          >
+            Don&rsquo;t save
+          </Button>
+          <div className="ml-auto flex gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => settle("cancel")}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => settle("save")}
+              autoFocus
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  return { ask, dialog };
+}
+
 function PanelHeader({
   title,
   dirty,
   showSaved,
+  saveRevert,
   menu,
 }: {
   title: string;
   dirty?: boolean;
   showSaved?: boolean;
+  /** Optional Save / Revert pair; renders between the dirty indicator
+   *  and the overflow menu. Hidden when no SaveRevert is supplied. */
+  saveRevert?: React.ReactNode;
   menu?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-2">
+    <div className="flex items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-1.5">
       <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
         {title}
       </span>
@@ -4272,6 +4443,7 @@ function PanelHeader({
             Saved
           </span>
         ) : null}
+        {saveRevert}
         {menu}
       </div>
     </div>
@@ -4647,7 +4819,19 @@ function StorylineInspector({
 
   return (
     <div className="rounded-md border border-border bg-card">
-      <PanelHeader title="Storyline" dirty={dirty} showSaved />
+      <PanelHeader
+        title="Storyline"
+        dirty={dirty}
+        showSaved
+        saveRevert={
+          <SaveRevert
+            dirty={dirty}
+            pending={pending}
+            onSave={() => startSave(saveNow)}
+            onRevert={revert}
+          />
+        }
+      />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
         <BackLink onNavigate={onBack} />
@@ -4706,16 +4890,6 @@ function StorylineInspector({
             GHOST_FIELD
           )}
         />
-        {/* Reserve space so the name field doesn't jump when SaveRevert
-            appears on dirty. Width matches the SaveRevert cluster. */}
-        <div className="flex h-7 w-[60px] shrink-0 justify-end">
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={() => startSave(saveNow)}
-            onRevert={revert}
-          />
-        </div>
       </div>
 
       <div className="grid grid-cols-6 gap-3">
