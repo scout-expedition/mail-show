@@ -63,7 +63,7 @@ html {
   /* Scale every rem-based Tailwind size down from the default 16px
      baseline. Gives a slightly denser UI without re-tuning each
      text-xs/text-sm/etc. class individually. */
-  font-size: 14px;
+  font-size: 13px;
 }
 
 html,

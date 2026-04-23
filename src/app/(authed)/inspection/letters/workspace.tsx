@@ -1259,13 +1259,13 @@ export function LettersWorkspace({
                       type="button"
                       onClick={() => selectLetter(l.id)}
                       disabled={!listLocked}
-                      className="flex flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
                     >
                       <InspectionLetterPill
                         storyline={currentStoryline}
                         contentId={l.content_id}
                       />
-                      <span className="truncate text-sm">
+                      <span className="min-w-0 flex-1 truncate text-xs">
                         {l.summary || (
                           <span className="text-muted-foreground italic">
                             (no summary)
@@ -1273,7 +1273,9 @@ export function LettersWorkspace({
                         )}
                       </span>
                       {active && letterDirty ? (
-                        <span className="ml-auto text-xs text-warning">•</span>
+                        <span className="shrink-0 text-[10px] text-warning">
+                          •
+                        </span>
                       ) : null}
                     </button>
                     {listLocked && active ? (
@@ -1379,6 +1381,7 @@ export function LettersWorkspace({
               onSave={handleSaveLetter}
               onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
+              onBack={() => selectLetter(letterState.id)}
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
               onShowActions={() => setView("actions")}
@@ -1524,6 +1527,7 @@ function LetterFieldsCard({
   onSave,
   onRevert,
   onDelete,
+  onBack,
   actionsCount,
   actionsActive,
   onShowActions,
@@ -1544,6 +1548,10 @@ function LetterFieldsCard({
   onSave: () => void;
   onRevert: () => void;
   onDelete: () => void;
+  /** Called by the back-arrow in the panel header — typically
+   * deselects the current letter, dropping the panel view back to
+   * the group card. */
+  onBack: () => void;
   actionsCount: number;
   actionsActive: boolean;
   onShowActions: () => void;
@@ -1555,6 +1563,7 @@ function LetterFieldsCard({
     <div className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <BackLink onNavigate={onBack} />
           <InspectionLetterPill
             storyline={storyline}
             contentId={letterView.content_id}
@@ -1598,24 +1607,24 @@ function LetterFieldsCard({
             )}
           />
         </div>
-        <div className="col-span-2 flex flex-col justify-end">
+        <div className="col-span-2 flex flex-col items-end justify-end">
           <button
             type="button"
             onClick={onShowActions}
-            aria-label="Show actions"
+            aria-label={`Show ${actionsCount} action${actionsCount === 1 ? "" : "s"}`}
             title="Show actions"
             aria-pressed={actionsActive}
             className={cn(
-              "flex h-8 items-center justify-between gap-2 rounded-md border px-3 text-xs transition-colors",
+              "inline-flex h-8 items-center justify-center gap-1 rounded-md border px-2 transition-colors",
               actionsActive
                 ? "border-foreground/60 bg-accent text-foreground"
                 : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
-            <span>Actions ({actionsCount})</span>
+            <Milestone size={14} aria-hidden />
             <svg
-              width="14"
-              height="14"
+              width="12"
+              height="12"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -2265,7 +2274,7 @@ function HeroSearch({
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="flex gap-1">
+      <div className="group flex gap-1">
         <Input
           value={query}
           onChange={(e) => {
@@ -2274,17 +2283,20 @@ function HeroSearch({
           }}
           onFocus={() => setOpen(true)}
           placeholder={placeholder ?? "Search citizens"}
-          className={cn("h-8 flex-1", GHOST_FIELD)}
+          className={cn(
+            "h-8 flex-1 placeholder:italic",
+            GHOST_FIELD
+          )}
         />
-        <Button
+        <button
           type="button"
-          variant="ghost"
-          size="sm"
           onClick={onCreate}
+          aria-label="Create new hero"
           title="Create new hero"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
         >
           +
-        </Button>
+        </button>
       </div>
       {open && matches.length > 0 ? (
         <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border border-border bg-card shadow-md">
@@ -2589,6 +2601,7 @@ function MarkdownTextarea({
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [focused, setFocused] = useState(false);
+  const [caretOnFirstLine, setCaretOnFirstLine] = useState(false);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -2596,6 +2609,20 @@ function MarkdownTextarea({
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
+
+  // Recompute whether the caret is on the first visual line of the
+  // textarea. When it is, the floating toolbar slides down so it
+  // doesn't obstruct the text the user is editing.
+  function updateCaretPosition() {
+    const el = ref.current;
+    if (!el) {
+      setCaretOnFirstLine(false);
+      return;
+    }
+    // Text before the caret; first line if it has no newline.
+    const before = el.value.slice(0, el.selectionStart);
+    setCaretOnFirstLine(!before.includes("\n"));
+  }
 
   function fireInput(el: HTMLTextAreaElement, next: string) {
     const setter = Object.getOwnPropertyDescriptor(
@@ -2658,14 +2685,24 @@ function MarkdownTextarea({
       <Textarea
         ref={ref}
         value={value}
-        onChange={onChange}
+        onChange={(e) => {
+          onChange(e);
+          updateCaretPosition();
+        }}
+        onKeyUp={updateCaretPosition}
+        onClick={updateCaretPosition}
+        onSelect={updateCaretPosition}
+        onFocus={updateCaretPosition}
         rows={minRows}
         className={cn("resize-none overflow-hidden", className)}
       />
       <div
         className={cn(
-          "pointer-events-none absolute right-2 top-2 flex items-center gap-0.5 rounded-md border border-border bg-card/95 px-1 py-0.5 shadow-sm backdrop-blur-sm transition-opacity",
-          focused ? "opacity-100" : "opacity-0"
+          "pointer-events-none absolute right-2 flex items-center gap-0.5 rounded-md border border-border bg-card/95 px-1 py-0.5 shadow-sm backdrop-blur-sm transition-[opacity,top] duration-150",
+          focused ? "opacity-100" : "opacity-0",
+          // Dodge the caret when it's sitting on the first line so the
+          // toolbar isn't hovering over what the user is typing.
+          caretOnFirstLine ? "top-9" : "top-2"
         )}
         aria-hidden={!focused}
       >
@@ -2958,9 +2995,10 @@ function ActionEditor({
 
   return (
     <div className="rounded-md border border-border p-3">
-      {/* Top row: icon, name, Next letter, Report, delete */}
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
+      {/* Header row: icon + name on the left, Demerits + Status pinned
+          right. */}
+      <div className="mb-2 flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <span
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
             style={{ background: colorHex, color: "#fff" }}
@@ -2969,8 +3007,29 @@ function ActionEditor({
               <IconDisplay type={iconType} value={iconValue} size={16} />
             ) : null}
           </span>
-          <span className="truncate font-mono text-sm">{name}</span>
+          <span className="truncate font-semibold">{name}</span>
         </div>
+        <div className="flex shrink-0 items-start gap-2">
+          <ClassTile
+            label="Demerits"
+            value={action.impact_demerits}
+            onChange={(v) =>
+              onChange({ impact_demerits: v } as Partial<ActionState>)
+            }
+          />
+          <ClassTile
+            label="Status"
+            value={action.impact_world_status}
+            onChange={(v) =>
+              onChange({ impact_world_status: v } as Partial<ActionState>)
+            }
+          />
+        </div>
+      </div>
+
+      {/* Second row: Next letter + Report side by side with the open-
+          segment arrow. */}
+      <div className="mb-3 flex items-end gap-3">
         <TileFrame label="Next letter">
           {creatingLetter ? (
             <CreatingPill />
@@ -3032,8 +3091,6 @@ function ActionEditor({
                 const v = e.target.value;
                 if (v === "__new_segment") {
                   startCreateSegment(async () => {
-                    // Default the new segment to the letter's delivery day
-                    // + 1. Auto-create that day if it doesn't exist yet.
                     if (currentDay && !nextDay) {
                       const { segmentId } =
                         await createNextDayAndReportSegment(
@@ -3077,7 +3134,7 @@ function ActionEditor({
               : "No report segment assigned"
           }
           className={cn(
-            "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+            "mb-[2px] inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
             segmentOpen
               ? "border-foreground/40 bg-accent/60 text-foreground"
               : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -3099,7 +3156,7 @@ function ActionEditor({
         </button>
       </div>
 
-      {/* Bottom row: Class Affinity | National Affinity | World */}
+      {/* Affinity tiles: Class | National */}
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2 rounded-md bg-muted/30 p-2">
         <div className="flex flex-col gap-1">
           <AffinityGroupLabel>Class Affinity</AffinityGroupLabel>
@@ -3133,27 +3190,6 @@ function ActionEditor({
                 />
               );
             })}
-          </div>
-        </div>
-
-        {/* World: demerits on left, status on right — wraps as a unit */}
-        <div className="flex flex-col gap-1 border-l border-border pl-4">
-          <AffinityGroupLabel>World</AffinityGroupLabel>
-          <div className="flex items-start gap-2">
-            <ClassTile
-              label="Demerits"
-              value={action.impact_demerits}
-              onChange={(v) =>
-                onChange({ impact_demerits: v } as Partial<ActionState>)
-              }
-            />
-            <ClassTile
-              label="Status"
-              value={action.impact_world_status}
-              onChange={(v) =>
-                onChange({ impact_world_status: v } as Partial<ActionState>)
-              }
-            />
           </div>
         </div>
       </div>
@@ -3646,9 +3682,9 @@ function DeleteButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="inline-flex items-center gap-2 rounded-md border border-border/30 px-3 py-1 text-xs text-muted-foreground/35 transition-colors hover:border-destructive hover:bg-destructive hover:text-destructive-foreground disabled:opacity-40"
+      className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-2 py-0.5 text-[10px] text-muted-foreground/20 transition-colors hover:border-destructive/80 hover:bg-destructive/90 hover:text-destructive-foreground disabled:opacity-40"
     >
-      <Trash2 size={12} aria-hidden />
+      <Trash2 size={10} aria-hidden />
       <span>{label}</span>
     </button>
   );
