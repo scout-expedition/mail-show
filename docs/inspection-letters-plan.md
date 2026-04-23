@@ -12,11 +12,10 @@ This is the continuation plan for the /inspection/letters workspace. A fresh ses
 4. `77131d5` — Merge letter group detail into /inspection/letters workspace with 5-panel slide
 5. `02ca047` — Slug-based letter group URLs and sliding letter/actions/segment editor
 
-## Outstanding DB migration
-`supabase/migrations/0007_updated_by.sql` adds `updated_by text` to
-`inspection_letters` and `report_segments` and re-creates their views.
-Must be applied against the dev DB before the "Last updated by …" footer
-on the letter and report-segment panels will populate.
+## Applied DB migrations (since last session)
+- `0007_updated_by` — adds `updated_by text` to `inspection_letters` and
+  `report_segments`, re-creates the two views. Applied on 2026-04-23 to
+  project `qleuihyqfpnectqcqagx`.
 
 ## Key files
 
