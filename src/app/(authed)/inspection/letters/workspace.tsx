@@ -1023,18 +1023,38 @@ export function LettersWorkspace({
           )}
           style={{ width: "250%" }}
         >
-        {/* STORYLINES slot: list of groups grouped by storyline */}
+        {/* STORYLINES slot: the list, OR the parent-storyline inspector once
+            a letter group is selected. */}
         <div className="flex w-1/5 shrink-0 flex-col gap-4 pr-3">
-          <StorylinesListPanel
-            storylines={storylines}
-            groups={allGroups}
-            letters={allLetters}
-            days={days}
-            selectedGroupId={selectedGroupId}
-            selectedStorylineId={selectedStorylineId}
-            onSelectGroup={(id) => selectGroup(id)}
-            onOpenStoryline={(id) => selectStoryline(id)}
-          />
+          {group ? (
+            <StorylineInspector
+              key={`group-parent-${group.storyline_id}`}
+              storyline={
+                storylines.find((s) => s.id === group.storyline_id)!
+              }
+              groups={allGroups.filter(
+                (g) => g.storyline_id === group.storyline_id
+              )}
+              allLetters={allLetters}
+              days={days}
+              dirty={storylineDirty}
+              onDirtyChange={setStorylineDirty}
+              onBack={() => selectGroup(null)}
+              onSelectGroup={(id) => selectGroup(id)}
+              onConfirmDialog={confirmDialog}
+            />
+          ) : (
+            <StorylinesListPanel
+              storylines={storylines}
+              groups={allGroups}
+              letters={allLetters}
+              days={days}
+              selectedGroupId={selectedGroupId}
+              selectedStorylineId={selectedStorylineId}
+              onSelectGroup={(id) => selectGroup(id)}
+              onOpenStoryline={(id) => selectStoryline(id)}
+            />
+          )}
         </div>
 
         {/* GROUP slot: group info + letter list, OR storyline inspector */}
