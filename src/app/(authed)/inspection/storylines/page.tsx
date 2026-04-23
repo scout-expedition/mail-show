@@ -1,9 +1,8 @@
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Storyline } from "@/lib/db/types";
-import { createStoryline } from "./actions";
 import { StorylinesEditor } from "./storylines-editor";
+import { AddStorylineDialog } from "./add-storyline-dialog";
 
 export default async function StorylinesPage() {
   const supabase = await createSupabaseServerClient();
@@ -24,11 +23,7 @@ export default async function StorylinesPage() {
       <StorylinesEditor storylines={storylines} />
 
       <div className="mt-4 flex justify-center">
-        <form action={createStoryline}>
-          <Button type="submit" variant="outline" size="sm">
-            + Storyline
-          </Button>
-        </form>
+        <AddStorylineDialog storylines={storylines} />
       </div>
     </div>
   );

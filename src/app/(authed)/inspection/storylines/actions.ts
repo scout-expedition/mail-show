@@ -11,6 +11,40 @@ function nilStr(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
+/**
+ * Create a storyline from explicit fields — used by the "+ Storyline"
+ * modal on /inspection/storylines. Does not redirect so the dialog can
+ * close cleanly and the list refresh via revalidatePath.
+ */
+export async function createStorylineWithFields(data: {
+  name: string;
+  abbreviation: string;
+  description: string | null;
+  icon_type: IconType;
+  icon_value: string | null;
+  color_hex: string;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const payload = {
+    name: data.name.trim() || "New storyline",
+    abbreviation:
+      data.abbreviation.trim().toUpperCase().charAt(0) || "X",
+    description: data.description?.trim() || null,
+    icon_type: data.icon_type,
+    icon_value: data.icon_value?.trim() || null,
+    color_hex: normalizeHex(data.color_hex),
+  };
+  const { data: row, error } = await supabase
+    .from("storylines")
+    .insert(payload)
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/storylines");
+  revalidatePath("/inspection/letters");
+  return { id: row!.id as string };
+}
+
 export async function createStoryline() {
   const supabase = await createSupabaseServerClient();
   // Pick the next unused single uppercase letter A-Z; fall back to "X".
