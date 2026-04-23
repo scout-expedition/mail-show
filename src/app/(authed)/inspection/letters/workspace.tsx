@@ -1529,7 +1529,7 @@ export function LettersWorkspace({
           <div className="rounded-md border border-border bg-card">
             <PanelHeader
               title="Letter Group"
-              dirty={groupDirty}
+              dirty={groupDirty || !!orderOverride}
               showSaved={!!group}
               saveRevert={
                 <SaveRevert
@@ -1595,15 +1595,36 @@ export function LettersWorkspace({
               <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 Letters ({letters.length})
               </span>
-              <button
-                type="button"
-                onClick={() => setListLocked((v) => !v)}
-                title={listLocked ? "Unlock to reorder" : "Lock"}
-                aria-label={listLocked ? "Unlock to reorder" : "Lock reordering"}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <ReorderIcon active={!listLocked} />
-              </button>
+              <div className="flex items-center gap-2">
+                {orderOverride ? (
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
+                    • Unsaved
+                  </span>
+                ) : null}
+                <SaveRevert
+                  dirty={!!orderOverride}
+                  pending={rowPending}
+                  onSave={() => {
+                    if (!orderOverride) return;
+                    const final = orderOverride;
+                    const groupId = group.id;
+                    startRowAction(async () => {
+                      await reorderInspectionLetters(groupId, final);
+                      setOrderOverride(null);
+                    });
+                  }}
+                  onRevert={() => setOrderOverride(null)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setListLocked((v) => !v)}
+                  title={listLocked ? "Unlock to reorder" : "Lock"}
+                  aria-label={listLocked ? "Unlock to reorder" : "Lock reordering"}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <ReorderIcon active={!listLocked} />
+                </button>
+              </div>
             </div>
             <div className="flex flex-col">
               {(orderOverride
@@ -1629,14 +1650,7 @@ export function LettersWorkspace({
                       setOrderOverride(next);
                       setDragIndex(i);
                     }}
-                    onDragEnd={() => {
-                      const finalOrder = orderOverride;
-                      setDragIndex(null);
-                      if (!finalOrder) return;
-                      startRowAction(async () => {
-                        await reorderInspectionLetters(group.id, finalOrder);
-                      });
-                    }}
+                    onDragEnd={() => setDragIndex(null)}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
                       active ? "bg-accent/40" : "hover:bg-accent/15",
@@ -4883,18 +4897,27 @@ function StorylineInspector({
   }
   function saveReorder() {
     if (!pendingOrder) return;
+    const final = pendingOrder;
     startReorder(async () => {
-      await reorderLetterGroups(storyline.id, pendingOrder);
-      setReorderMode(false);
-      setPendingOrder(null);
+      await reorderLetterGroups(storyline.id, final);
+      // Server data flowing back will line up with `final`, so the
+      // dirty check below clears itself naturally.
+      setPendingOrder(final);
     });
   }
+
+  // Reorder has unsaved changes when the pending order differs from the
+  // server's current sortedGroups order.
+  const orderDirty =
+    !!pendingOrder &&
+    (pendingOrder.length !== sortedGroups.length ||
+      pendingOrder.some((id, i) => id !== sortedGroups[i]?.id));
 
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Storyline"
-        dirty={dirty}
+        dirty={dirty || orderDirty}
         showSaved
         saveRevert={
           <SaveRevert
@@ -5004,38 +5027,30 @@ function StorylineInspector({
           <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             Letter groups ({sortedGroups.length})
           </span>
-          {reorderMode ? (
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={cancelReorder}
-                disabled={reorderPending}
-                className="inline-flex h-6 items-center rounded-md border border-border/40 px-2 text-[11px] text-muted-foreground/70 transition-colors hover:border-foreground/40 hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={saveReorder}
-                disabled={reorderPending}
-                className="inline-flex h-6 items-center gap-1 rounded-md bg-primary px-2 text-[11px] text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
-              >
-                {reorderPending ? <Spinner /> : null}
-                Save order
-              </button>
-            </div>
-          ) : (
+          <div className="flex items-center gap-2">
+            {orderDirty ? (
+              <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
+                • Unsaved
+              </span>
+            ) : null}
+            <SaveRevert
+              dirty={orderDirty}
+              pending={reorderPending}
+              onSave={saveReorder}
+              onRevert={() => setPendingOrder(sortedGroups.map((g) => g.id))}
+            />
             <button
               type="button"
-              onClick={beginReorder}
+              onClick={() => (reorderMode ? cancelReorder() : beginReorder())}
               disabled={sortedGroups.length < 2}
-              aria-label="Reorder letter groups"
-              title="Reorder"
+              aria-pressed={reorderMode}
+              aria-label={reorderMode ? "Lock order" : "Unlock to reorder"}
+              title={reorderMode ? "Lock order" : "Unlock to reorder"}
               className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
             >
-              <ReorderIcon active={false} />
+              <ReorderIcon active={reorderMode} />
             </button>
-          )}
+          </div>
         </div>
         <div className="flex flex-col">
           {viewOrderedGroups.map((g, i) => {
