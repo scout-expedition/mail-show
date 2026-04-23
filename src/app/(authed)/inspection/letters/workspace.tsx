@@ -51,6 +51,7 @@ import {
   deleteReportSegment,
   quickCreateCitizen,
   reorderInspectionLetters,
+  reorderLetterGroups,
   saveGroup,
   saveLetterWithActions,
   saveReportSegment,
@@ -3782,6 +3783,65 @@ function StorylineInspector({
     [groups]
   );
 
+  // --- Reorder mode for the letter-groups list ---
+  const [reorderMode, setReorderMode] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  const [reorderPending, startReorder] = useTransition();
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
+  // If the server group set changes (e.g. a new group was added), reset the
+  // pending order so stale IDs don't leak in.
+  useEffect(() => {
+    if (reorderMode) {
+      setPendingOrder(sortedGroups.map((g) => g.id));
+    } else {
+      setPendingOrder(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storyline.id, reorderMode]);
+
+  const viewOrderedGroups = useMemo(() => {
+    if (!reorderMode || !pendingOrder) return sortedGroups;
+    const byId = new Map(sortedGroups.map((g) => [g.id, g]));
+    return pendingOrder
+      .map((id) => byId.get(id))
+      .filter((g): g is LetterGroup => !!g);
+  }, [reorderMode, pendingOrder, sortedGroups]);
+
+  /**
+   * Returns the set of group ids whose delivery day is out of monotonic
+   * order (earlier than the prior group's day) under the current view
+   * order. Used to paint those rows red while reordering.
+   */
+  const dayOrderViolations = useMemo(() => {
+    const v = new Set<string>();
+    let prev = -Infinity;
+    for (const g of viewOrderedGroups) {
+      const day = g.delivery_day_id ? dayById.get(g.delivery_day_id) : null;
+      if (day && day.number < prev) v.add(g.id);
+      if (day) prev = day.number;
+    }
+    return v;
+  }, [viewOrderedGroups, dayById]);
+
+  function beginReorder() {
+    setReorderMode(true);
+    setPendingOrder(sortedGroups.map((g) => g.id));
+  }
+  function cancelReorder() {
+    setReorderMode(false);
+    setPendingOrder(null);
+    setDragIndex(null);
+  }
+  function saveReorder() {
+    if (!pendingOrder) return;
+    startReorder(async () => {
+      await reorderLetterGroups(storyline.id, pendingOrder);
+      setReorderMode(false);
+      setPendingOrder(null);
+    });
+  }
+
   return (
     <div className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -3884,16 +3944,108 @@ function StorylineInspector({
       ) : null}
 
       <div className="mt-4 rounded-md border border-border">
-        <div className="border-b border-border px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          Letter groups ({sortedGroups.length})
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            Letter groups ({sortedGroups.length})
+          </span>
+          {reorderMode ? (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={cancelReorder}
+                disabled={reorderPending}
+                className="inline-flex h-6 items-center rounded-md border border-border/40 px-2 text-[11px] text-muted-foreground/70 transition-colors hover:border-foreground/40 hover:bg-accent hover:text-accent-foreground disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveReorder}
+                disabled={reorderPending}
+                className="inline-flex h-6 items-center gap-1 rounded-md bg-primary px-2 text-[11px] text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40"
+              >
+                {reorderPending ? <Spinner /> : null}
+                Save order
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={beginReorder}
+              disabled={sortedGroups.length < 2}
+              aria-label="Reorder letter groups"
+              title="Reorder"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
+            >
+              <ReorderIcon active={false} />
+            </button>
+          )}
         </div>
         <div className="flex flex-col">
-          {sortedGroups.map((g) => {
+          {viewOrderedGroups.map((g, i) => {
             const count = letterCountByGroup.get(g.id) ?? 0;
             const day = g.delivery_day_id
               ? dayById.get(g.delivery_day_id)
               : null;
-            const active = g.id === selectedGroupId;
+            const active = !reorderMode && g.id === selectedGroupId;
+            const violates = reorderMode && dayOrderViolations.has(g.id);
+            const rowContent = (
+              <>
+                {reorderMode ? (
+                  <span
+                    aria-hidden
+                    className="shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing"
+                    title="Drag to reorder"
+                  >
+                    ⋮⋮
+                  </span>
+                ) : null}
+                <LetterGroupPill storyline={storyline} sequence={g.sequence} />
+                <span className="truncate">{g.name}</span>
+                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                  {count} letter{count === 1 ? "" : "s"}
+                </span>
+                {day ? (
+                  <Badge
+                    variant="muted"
+                    className={cn(
+                      "ml-1 shrink-0",
+                      violates && "bg-destructive/15 text-destructive"
+                    )}
+                  >
+                    {day.identifier}
+                  </Badge>
+                ) : null}
+              </>
+            );
+            if (reorderMode) {
+              return (
+                <div
+                  key={g.id}
+                  draggable
+                  onDragStart={() => setDragIndex(i)}
+                  onDragOver={(e) => {
+                    if (dragIndex === null || dragIndex === i) return;
+                    e.preventDefault();
+                    const current =
+                      pendingOrder ?? sortedGroups.map((x) => x.id);
+                    const next = current.slice();
+                    const [moved] = next.splice(dragIndex, 1);
+                    next.splice(i, 0, moved);
+                    setPendingOrder(next);
+                    setDragIndex(i);
+                  }}
+                  onDragEnd={() => setDragIndex(null)}
+                  className={cn(
+                    "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
+                    dragIndex === i && "opacity-60",
+                    violates && "bg-destructive/5"
+                  )}
+                >
+                  {rowContent}
+                </div>
+              );
+            }
             return (
               <button
                 key={g.id}
@@ -3904,16 +4056,7 @@ function StorylineInspector({
                   active ? "bg-accent/40" : "hover:bg-accent/30"
                 )}
               >
-                <LetterGroupPill storyline={storyline} sequence={g.sequence} />
-                <span className="truncate">{g.name}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                  {count} letter{count === 1 ? "" : "s"}
-                </span>
-                {day ? (
-                  <Badge variant="muted" className="ml-1 shrink-0">
-                    {day.identifier}
-                  </Badge>
-                ) : null}
+                {rowContent}
               </button>
             );
           })}
@@ -3923,16 +4066,18 @@ function StorylineInspector({
             </p>
           ) : null}
         </div>
-        <div className="flex justify-center border-t border-border px-3 py-2">
-          <button
-            type="button"
-            onClick={handleAddGroup}
-            disabled={rowPending}
-            className={MUTED_ADD_BTN}
-          >
-            {rowPending ? <Spinner /> : "+ Letter group"}
-          </button>
-        </div>
+        {!reorderMode ? (
+          <div className="flex justify-center border-t border-border px-3 py-2">
+            <button
+              type="button"
+              onClick={handleAddGroup}
+              disabled={rowPending}
+              className={MUTED_ADD_BTN}
+            >
+              {rowPending ? <Spinner /> : "+ Letter group"}
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
