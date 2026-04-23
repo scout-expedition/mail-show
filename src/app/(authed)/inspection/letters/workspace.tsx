@@ -2436,7 +2436,7 @@ function MarkdownTextarea({
 
   return (
     <div
-      className="flex flex-col"
+      className="flex w-full flex-col"
       onFocus={() => setFocused(true)}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
@@ -2444,15 +2444,8 @@ function MarkdownTextarea({
         }
       }}
     >
-      <div
-        className={cn(
-          "flex items-center gap-1 overflow-hidden rounded-t-md border border-border bg-muted/40 transition-all duration-150 ease-out",
-          focused
-            ? "max-h-8 border-b-0 px-1.5 py-1 opacity-100"
-            : "pointer-events-none max-h-0 border-transparent px-0 py-0 opacity-0"
-        )}
-        aria-hidden={!focused}
-      >
+      {focused ? (
+      <div className="flex w-full items-center gap-1 rounded-t-md border border-b-0 border-border bg-muted/40 px-1.5 py-1">
         <button
           type="button"
           title="Bold"
@@ -2552,19 +2545,11 @@ function MarkdownTextarea({
           🔗
         </button>
       </div>
+      ) : null}
       <Textarea
         ref={ref}
         value={value}
         onChange={onChange}
-        onFocus={() => setFocused(true)}
-        onBlur={(e) => {
-          // Keep focused if a toolbar button (in the sibling div) takes focus.
-          const next = e.relatedTarget as Node | null;
-          const container = (e.currentTarget.parentElement?.parentElement) ?? null;
-          if (!container || !next || !container.contains(next)) {
-            setFocused(false);
-          }
-        }}
         rows={minRows}
         className={cn(
           "resize-none overflow-hidden",
