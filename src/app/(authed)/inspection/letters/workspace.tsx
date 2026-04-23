@@ -1038,8 +1038,9 @@ export function LettersWorkspace({
               allLetters={allLetters}
               days={days}
               dirty={storylineDirty}
+              selectedGroupId={selectedGroupId}
               onDirtyChange={setStorylineDirty}
-              onBack={() => selectGroup(null)}
+              onBack={() => selectStoryline(group.storyline_id)}
               onSelectGroup={(id) => selectGroup(id)}
               onConfirmDialog={confirmDialog}
             />
@@ -1071,6 +1072,7 @@ export function LettersWorkspace({
               allLetters={allLetters}
               days={days}
               dirty={storylineDirty}
+              selectedGroupId={selectedGroupId}
               onDirtyChange={setStorylineDirty}
               onBack={() => selectStoryline(null)}
               onSelectGroup={(id) => selectGroup(id)}
@@ -3674,6 +3676,7 @@ function StorylineInspector({
   allLetters,
   days,
   dirty,
+  selectedGroupId,
   onDirtyChange,
   onBack,
   onSelectGroup,
@@ -3684,6 +3687,7 @@ function StorylineInspector({
   allLetters: InspectionLetterView[];
   days: Day[];
   dirty: boolean;
+  selectedGroupId: string | null;
   onDirtyChange: (d: boolean) => void;
   onBack: () => void;
   onSelectGroup: (id: string) => void;
@@ -3889,12 +3893,16 @@ function StorylineInspector({
             const day = g.delivery_day_id
               ? dayById.get(g.delivery_day_id)
               : null;
+            const active = g.id === selectedGroupId;
             return (
               <button
                 key={g.id}
                 type="button"
                 onClick={() => onSelectGroup(g.id)}
-                className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm hover:bg-accent/30 first:border-t-0"
+                className={cn(
+                  "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
+                  active ? "bg-accent/40" : "hover:bg-accent/30"
+                )}
               >
                 <Badge variant="secondary" className="font-mono">
                   {storyline.abbreviation}
