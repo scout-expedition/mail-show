@@ -2556,7 +2556,7 @@ function MarkdownTextarea({
 
   return (
     <div
-      className="flex w-full flex-col"
+      className="relative flex w-full flex-col"
       onFocus={() => setFocused(true)}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
@@ -2564,119 +2564,126 @@ function MarkdownTextarea({
         }
       }}
     >
-      {focused ? (
-      <div className="flex w-full items-center gap-1 rounded-t-md border border-b-0 border-border bg-muted/40 px-1.5 py-1">
-        <button
-          type="button"
-          title="Bold"
-          aria-label="Bold"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            wrap("**", "**", "bold");
-          }}
-          className={cn(BTN, "font-bold")}
-        >
-          B
-        </button>
-        <button
-          type="button"
-          title="Italic"
-          aria-label="Italic"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            wrap("*", "*", "italic");
-          }}
-          className={cn(BTN, "italic")}
-        >
-          I
-        </button>
-        <button
-          type="button"
-          title="Heading"
-          aria-label="Heading"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            linePrefix("## ");
-          }}
-          className={cn(BTN, "font-semibold")}
-        >
-          H
-        </button>
-        <span className="mx-1 h-4 w-px bg-border" aria-hidden />
-        <button
-          type="button"
-          title="Bullet list"
-          aria-label="Bullet list"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            linePrefix("- ");
-          }}
-          className={BTN}
-        >
-          •
-        </button>
-        <button
-          type="button"
-          title="Numbered list"
-          aria-label="Numbered list"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            linePrefix("1. ");
-          }}
-          className={BTN}
-        >
-          1.
-        </button>
-        <button
-          type="button"
-          title="Quote"
-          aria-label="Quote"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            linePrefix("> ");
-          }}
-          className={BTN}
-        >
-          ❝
-        </button>
-        <span className="mx-1 h-4 w-px bg-border" aria-hidden />
-        <button
-          type="button"
-          title="Inline code"
-          aria-label="Inline code"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            wrap("`", "`", "code");
-          }}
-          className={cn(BTN, "font-mono")}
-        >
-          {"<>"}
-        </button>
-        <button
-          type="button"
-          title="Link"
-          aria-label="Link"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            wrap("[", "](url)", "text");
-          }}
-          className={BTN}
-        >
-          🔗
-        </button>
-      </div>
-      ) : null}
       <Textarea
         ref={ref}
         value={value}
         onChange={onChange}
         rows={minRows}
-        className={cn(
-          "resize-none overflow-hidden",
-          focused && "rounded-t-none",
-          className
-        )}
+        className={cn("resize-none overflow-hidden", className)}
       />
+      <div
+        className={cn(
+          "pointer-events-none absolute right-2 top-2 flex items-center gap-0.5 rounded-md border border-border bg-card/95 px-1 py-0.5 shadow-sm backdrop-blur-sm transition-opacity",
+          focused ? "opacity-100" : "opacity-0"
+        )}
+        aria-hidden={!focused}
+      >
+        <div
+          className={cn(
+            "flex items-center gap-0.5",
+            focused ? "pointer-events-auto" : ""
+          )}
+        >
+          <button
+            type="button"
+            title="Bold"
+            aria-label="Bold"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              wrap("**", "**", "bold");
+            }}
+            className={cn(BTN, "font-bold")}
+          >
+            B
+          </button>
+          <button
+            type="button"
+            title="Italic"
+            aria-label="Italic"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              wrap("*", "*", "italic");
+            }}
+            className={cn(BTN, "italic")}
+          >
+            I
+          </button>
+          <button
+            type="button"
+            title="Heading"
+            aria-label="Heading"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              linePrefix("## ");
+            }}
+            className={cn(BTN, "font-semibold")}
+          >
+            H
+          </button>
+          <span className="mx-0.5 h-3.5 w-px bg-border" aria-hidden />
+          <button
+            type="button"
+            title="Bullet list"
+            aria-label="Bullet list"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              linePrefix("- ");
+            }}
+            className={BTN}
+          >
+            •
+          </button>
+          <button
+            type="button"
+            title="Numbered list"
+            aria-label="Numbered list"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              linePrefix("1. ");
+            }}
+            className={BTN}
+          >
+            1.
+          </button>
+          <button
+            type="button"
+            title="Quote"
+            aria-label="Quote"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              linePrefix("> ");
+            }}
+            className={BTN}
+          >
+            ❝
+          </button>
+          <span className="mx-0.5 h-3.5 w-px bg-border" aria-hidden />
+          <button
+            type="button"
+            title="Inline code"
+            aria-label="Inline code"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              wrap("`", "`", "code");
+            }}
+            className={cn(BTN, "font-mono")}
+          >
+            {"<>"}
+          </button>
+          <button
+            type="button"
+            title="Link"
+            aria-label="Link"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              wrap("[", "](url)", "text");
+            }}
+            className={BTN}
+          >
+            🔗
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
