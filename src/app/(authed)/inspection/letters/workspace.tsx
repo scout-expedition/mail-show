@@ -3684,6 +3684,7 @@ function StorylineInspector({
   }));
   const [pending, startSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     setState({
@@ -3695,6 +3696,7 @@ function StorylineInspector({
       color_hex: storyline.color_hex,
     });
     onDirtyChange(false);
+    setPickerOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storyline.id]);
 
@@ -3761,16 +3763,31 @@ function StorylineInspector({
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           <BackLink onNavigate={onBack} />
-          <span
-            aria-hidden
-            className="inline-block h-3 w-3 shrink-0 rounded-full"
-            style={{ background: state.color_hex }}
-          />
-          <IconDisplay
-            type={state.icon_type}
-            value={state.icon_value}
-            size={14}
-          />
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            aria-expanded={pickerOpen}
+            aria-label="Edit icon and color"
+            title="Edit icon and color"
+            className={cn(
+              "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+              pickerOpen ? "border-foreground/60" : "border-border"
+            )}
+            style={{
+              background: state.color_hex,
+              color: readableOnHex(state.color_hex),
+            }}
+          >
+            {state.icon_value ? (
+              <IconDisplay
+                type={state.icon_type}
+                value={state.icon_value}
+                size={14}
+              />
+            ) : (
+              <span className="font-mono text-[9px] opacity-70">ic</span>
+            )}
+          </button>
           {state.name || (
             <span className="text-muted-foreground italic">(unnamed)</span>
           )}
@@ -3822,23 +3839,25 @@ function StorylineInspector({
         </div>
       </div>
 
-      <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
-        <IconPicker
-          initialType={state.icon_type}
-          initialValue={state.icon_value}
-          emitHiddenFields={false}
-          onChange={(next) => {
-            setState((s) => ({
-              ...s,
-              icon_type: next.type,
-              icon_value: next.value || null,
-            }));
-            onDirtyChange(true);
-          }}
-          color={state.color_hex}
-          onColorChange={(c) => update("color_hex", c)}
-        />
-      </div>
+      {pickerOpen ? (
+        <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
+          <IconPicker
+            initialType={state.icon_type}
+            initialValue={state.icon_value}
+            emitHiddenFields={false}
+            onChange={(next) => {
+              setState((s) => ({
+                ...s,
+                icon_type: next.type,
+                icon_value: next.value || null,
+              }));
+              onDirtyChange(true);
+            }}
+            color={state.color_hex}
+            onColorChange={(c) => update("color_hex", c)}
+          />
+        </div>
+      ) : null}
 
       <div className="mt-4 rounded-md border border-border">
         <div className="border-b border-border px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
