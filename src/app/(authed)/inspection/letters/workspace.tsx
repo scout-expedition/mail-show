@@ -24,6 +24,7 @@ import {
   isValidCitizenId,
 } from "@/lib/citizen-id";
 import { cn } from "@/lib/utils";
+import type { IconType } from "@/lib/db/enums";
 import type {
   ActionRow,
   ActionTemplate,
@@ -1036,6 +1037,7 @@ export function LettersWorkspace({
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
         <BreadcrumbLink
           onClick={() => goToBreadcrumb("root")}
+          color="#ffffff"
           icon={<IconMailOpened size={13} aria-hidden />}
         >
           Inspection Letters
@@ -1085,6 +1087,7 @@ export function LettersWorkspace({
             <BreadcrumbLink
               onClick={() => goToBreadcrumb("actions")}
               active={view === "actions"}
+              color="#ffffff"
               icon={<Milestone size={12} aria-hidden />}
             >
               Actions
@@ -1432,6 +1435,7 @@ export function LettersWorkspace({
               allActions={allActions}
               allLetters={allLetters}
               storylines={storylines}
+              templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
               onJumpToTrigger={jumpToTrigger}
@@ -1500,6 +1504,7 @@ export function LettersWorkspace({
               allActions={allActions}
               allLetters={allLetters}
               storylines={storylines}
+              templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
               onJumpToTrigger={jumpToTrigger}
@@ -1890,6 +1895,7 @@ function LetterSegmentCard({
   allActions,
   allLetters,
   storylines,
+  templates,
   onBack,
   onDelete,
   onJumpToTrigger,
@@ -1901,6 +1907,7 @@ function LetterSegmentCard({
   allActions: ActionRow[];
   allLetters: InspectionLetterView[];
   storylines: Storyline[];
+  templates: ActionTemplate[];
   onBack: (
     dirty: boolean,
     onSave: () => Promise<void>
@@ -1956,39 +1963,39 @@ function LetterSegmentCard({
     setDirty(true);
   }
 
+  type Trigger = {
+    actionId: string;
+    actionName: string;
+    actionIconType: IconType;
+    actionIconValue: string | null;
+    actionColorHex: string;
+    letterId: string;
+    contentId: string;
+    storylineId: string;
+  };
   const triggers = useMemo(() => {
-    if (!segment) return [] as Array<{
-      actionId: string;
-      actionName: string;
-      letterId: string;
-      contentId: string;
-      storylineId: string;
-    }>;
+    if (!segment) return [] as Trigger[];
     return allActions
       .filter((a) => a.report_segment_id === segment.id)
-      .map((a) => {
+      .map((a): Trigger | null => {
         const letter = allLetters.find((l) => l.id === a.inspection_letter_id);
         if (!letter) return null;
+        const tpl = a.action_template_id
+          ? templates.find((t) => t.id === a.action_template_id)
+          : undefined;
         return {
           actionId: a.id,
-          actionName: a.name,
+          actionName: tpl?.name ?? a.name,
+          actionIconType: tpl?.icon_type ?? a.icon_type,
+          actionIconValue: tpl?.icon_value ?? a.icon_value,
+          actionColorHex: tpl?.color_hex ?? a.color_hex,
           letterId: letter.id,
           contentId: letter.content_id,
           storylineId: letter.storyline_id,
         };
       })
-      .filter(
-        (
-          v
-        ): v is {
-          actionId: string;
-          actionName: string;
-          letterId: string;
-          contentId: string;
-          storylineId: string;
-        } => v !== null
-      );
-  }, [segment, allActions, allLetters]);
+      .filter((v): v is Trigger => v !== null);
+  }, [segment, allActions, allLetters, templates]);
 
   if (!segment) {
     return (
@@ -2106,20 +2113,6 @@ function LetterSegmentCard({
           />
         </div>
       </div>
-      <div className="mt-4 flex justify-center">
-        <DeleteButton
-          onClick={async () => {
-            const ok = await onConfirmDialog({
-              title: "Delete report segment?",
-              message: `Segment ${segment.report_id} will be removed from the report. This cannot be undone.`,
-              confirmLabel: "Delete",
-              intent: "destructive",
-            });
-            if (!ok) return;
-            onDelete(segment.id);
-          }}
-        />
-      </div>
       {triggers.length > 0 ? (
         <div className="mt-4 border-t border-border pt-3">
           <div className="mb-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
@@ -2136,20 +2129,41 @@ function LetterSegmentCard({
                     onJumpToTrigger(t.letterId, dirty, saveNow)
                   }
                   title={`Jump to ${t.contentId} · ${t.actionName}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border/40 px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-foreground/40 hover:bg-accent hover:text-foreground"
+                  className="inline-flex items-center rounded-md transition-opacity hover:opacity-80"
                 >
                   <InspectionLetterPill
                     storyline={s}
                     contentId={t.contentId}
+                    className="rounded-r-none"
                   />
-                  <span className="text-muted-foreground/50">·</span>
-                  <span>{t.actionName}</span>
+                  <ActionPill
+                    name={t.actionName}
+                    iconType={t.actionIconType}
+                    iconValue={t.actionIconValue}
+                    colorHex={t.actionColorHex}
+                    iconOnly
+                    className="rounded-l-none"
+                  />
                 </button>
               );
             })}
           </div>
         </div>
       ) : null}
+      <div className="mt-4 flex justify-center">
+        <DeleteButton
+          onClick={async () => {
+            const ok = await onConfirmDialog({
+              title: "Delete report segment?",
+              message: `Segment ${segment.report_id} will be removed from the report. This cannot be undone.`,
+              confirmLabel: "Delete",
+              intent: "destructive",
+            });
+            if (!ok) return;
+            onDelete(segment.id);
+          }}
+        />
+      </div>
       <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
     </div>
   );
@@ -2917,7 +2931,7 @@ function LetterGroupPill({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] leading-none",
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
         className
       )}
       style={{ borderColor: color }}
@@ -2952,23 +2966,23 @@ function StorylinePill({
   return (
     <span
       className={cn(
-        "relative inline-flex h-5 items-center",
+        "relative inline-flex h-6 items-center",
         className
       )}
     >
-      {/* Pill body. Left padding reserves room for the circle that
+      {/* Pill body. Left padding reserves room for the icon square that
           overlaps the left cap. */}
       <span
-        className="inline-flex h-5 min-w-0 items-center rounded-md border-[1.5px] bg-card pl-6 pr-1.5 font-mono text-[11px] leading-none text-foreground"
+        className="inline-flex h-6 min-w-0 items-center rounded-md border-[1.5px] bg-card pl-7 pr-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white"
         style={{ borderColor: color }}
       >
         <span className="truncate">{storyline.name}</span>
       </span>
-      {/* Circle (storyline icon over fill). Sits flush with the left
-          edge so it reads as one shape with the pill. */}
+      {/* Rounded-square icon tile (storyline icon over fill). Matches the
+          pill's corner radius so the left cap reads as one shape. */}
       <span
         aria-hidden
-        className="absolute left-0 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full"
+        className="absolute left-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md"
         style={{ background: color, color: fg }}
       >
         {storyline.icon_value ? (
@@ -3005,12 +3019,11 @@ function ReportSegmentPill({
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] px-1.5 font-mono text-[11px] leading-none",
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
         className
       )}
       style={{
-        borderColor: color,
-        backgroundColor: `color-mix(in srgb, ${color} 14%, var(--card))`,
+        backgroundColor: `color-mix(in srgb, ${color} 40%, var(--card))`,
       }}
     >
       <Megaphone size={11} aria-hidden className="shrink-0" />
@@ -3033,17 +3046,61 @@ function InspectionLetterPill({
   className?: string;
 }) {
   const color = storyline?.color_hex ?? "#888888";
-  const fg = readableOnHex(color);
   return (
     <span
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent px-1.5 font-mono text-[11px] leading-none",
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
         className
       )}
-      style={{ background: color, color: fg }}
+      style={{ background: color }}
     >
       <MailOpen size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">{contentId}</span>
+    </span>
+  );
+}
+
+/**
+ * Action pill: rounded rectangle filled with the action's color, showing
+ * the action icon and name. Icon + text adopt the same foreground color
+ * the action icon uses on the actions tab (readable on the action color).
+ */
+function ActionPill({
+  name,
+  iconType,
+  iconValue,
+  colorHex,
+  iconOnly,
+  className,
+}: {
+  name: string;
+  iconType: IconType;
+  iconValue: string | null;
+  colorHex: string;
+  iconOnly?: boolean;
+  className?: string;
+}) {
+  const fg = readableOnHex(colorHex);
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent font-mono text-[11px] font-normal normal-case leading-none tracking-normal",
+        iconOnly ? "w-6 justify-center px-0" : "px-1.5",
+        className
+      )}
+      style={{ background: colorHex, color: fg }}
+      title={iconOnly ? name : undefined}
+      aria-label={iconOnly ? name : undefined}
+    >
+      {iconValue ? (
+        <IconDisplay
+          type={iconType}
+          value={iconValue}
+          size={11}
+          className="shrink-0"
+        />
+      ) : null}
+      {iconOnly ? null : <span className="whitespace-nowrap">{name}</span>}
     </span>
   );
 }
@@ -3112,12 +3169,12 @@ function ActionEditor({
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
   return (
-    <div className="rounded-md border border-border p-3">
+    <div className="rounded-md border border-border bg-black/20 p-3">
       {/* Header row: icon + name only. */}
       <div className="mb-2 flex items-center gap-2">
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
-          style={{ background: colorHex, color: "#fff" }}
+          style={{ background: colorHex, color: readableOnHex(colorHex) }}
         >
           {iconValue ? (
             <IconDisplay type={iconType} value={iconValue} size={16} />
@@ -3127,235 +3184,253 @@ function ActionEditor({
       </div>
 
       {/* Links row: Next letter and Report each take half the row; the
-          open-segment arrow sits in the Report half. */}
-      <div className="flex items-end gap-2">
+          open-segment arrow sits in the Report half. Both columns share
+          the same row height (h-7) so the pills line up. */}
+      <div className="flex items-stretch gap-2">
         <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
             Next letter
           </span>
-          {creatingLetter ? (
-            <CreatingPill />
-          ) : (
-            <Select
-              value={action.next_letter_variant ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "__new_letter") {
-                  startCreateLetter(async () => {
-                    const { variant } = await createLetterInNextGroup(groupId);
-                    onChange({ next_letter_variant: variant });
-                  });
-                  return;
+          <div className="flex h-7 w-full items-center">
+            {creatingLetter ? (
+              <CreatingPill />
+            ) : (
+              <PillSelect
+                pill={
+                  action.next_letter_variant && storyline ? (
+                    <InspectionLetterPill
+                      storyline={storyline}
+                      contentId={(() => {
+                        const match = nextGroupLetters.find(
+                          (l) => l.variant === action.next_letter_variant
+                        );
+                        return match?.content_id ?? action.next_letter_variant;
+                      })()}
+                    />
+                  ) : null
                 }
-                if (v === "__new_group_and_letter") {
-                  startCreateLetter(async () => {
-                    const { variant } = await createNextLetterGroupAndLetter(
-                      groupId
-                    );
-                    onChange({ next_letter_variant: variant });
-                  });
-                  return;
-                }
-                onChange({ next_letter_variant: v || null });
-              }}
-              style={(() => {
-                // Filled inspection-letter pill when a value is picked,
-                // muted otherwise.
-                if (!action.next_letter_variant || !storyline) return {};
-                const color = storyline.color_hex;
-                return {
-                  background: color,
-                  color: readableOnHex(color),
-                  borderColor: "transparent",
-                };
-              })()}
-              className={cn(
-                "h-5 w-full appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 text-center font-mono text-[11px] leading-none shadow-none hover:border-border"
-              )}
-            >
-              <option value="">—</option>
-              {nextGroup
-                ? nextGroupLetters.map((l) => (
-                    <option
-                      key={l.id}
-                      value={l.variant ?? ""}
-                      disabled={!l.variant}
-                    >
-                      {l.content_id}
-                      {l.summary ? ` — ${l.summary.slice(0, 20)}` : ""}
-                    </option>
-                  ))
-                : null}
-              {nextGroup ? (
-                <option value="__new_letter">+ Letter</option>
-              ) : (
-                <option value="__new_group_and_letter">
-                  + Letter Group + Letter
-                </option>
-              )}
-            </Select>
-          )}
+                items={[
+                  {
+                    key: "__unset",
+                    label: <span className="text-muted-foreground">(Unset)</span>,
+                    active: !action.next_letter_variant,
+                    onPick: () => onChange({ next_letter_variant: null }),
+                  },
+                  ...(nextGroup
+                    ? nextGroupLetters
+                        .filter((l) => l.variant)
+                        .map((l) => ({
+                          key: l.id,
+                          active: action.next_letter_variant === l.variant,
+                          label: (
+                            <>
+                              <InspectionLetterPill
+                                storyline={storyline}
+                                contentId={l.content_id}
+                              />
+                              {l.summary ? (
+                                <span className="truncate text-muted-foreground">
+                                  {l.summary.slice(0, 24)}
+                                </span>
+                              ) : null}
+                            </>
+                          ),
+                          onPick: () =>
+                            onChange({ next_letter_variant: l.variant }),
+                        }))
+                    : []),
+                  nextGroup
+                    ? {
+                        key: "__new_letter",
+                        muted: true,
+                        label: "+ Letter",
+                        onPick: () =>
+                          startCreateLetter(async () => {
+                            const { variant } = await createLetterInNextGroup(
+                              groupId
+                            );
+                            onChange({ next_letter_variant: variant });
+                          }),
+                      }
+                    : {
+                        key: "__new_group_and_letter",
+                        muted: true,
+                        label: "+ Letter Group + Letter",
+                        onPick: () =>
+                          startCreateLetter(async () => {
+                            const { variant } =
+                              await createNextLetterGroupAndLetter(groupId);
+                            onChange({ next_letter_variant: variant });
+                          }),
+                      },
+                ]}
+              />
+            )}
+          </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
             Report
           </span>
-          <div className="flex w-full items-center gap-1">
+          <div className="flex h-7 w-full items-center gap-1">
             {creatingSegment ? (
               <CreatingPill />
             ) : (
-              <Select
-                value={action.report_segment_id ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "__new_segment") {
-                    startCreateSegment(async () => {
-                      if (currentDay && !nextDay) {
-                        const { segmentId } =
-                          await createNextDayAndReportSegment(
-                            groupId,
-                            currentDay.number
-                          );
-                        onChange({ report_segment_id: segmentId });
-                      } else {
-                        const { segmentId } =
-                          await createReportSegmentForGroup(
-                            groupId,
-                            nextDay?.id ?? null
-                          );
-                        onChange({ report_segment_id: segmentId });
-                      }
-                    });
-                    return;
-                  }
-                  onChange({ report_segment_id: v || null });
-                }}
-                style={(() => {
-                  // ReportSegmentPill style when selected: storyline-color
-                  // stroke + tinted card fill.
-                  if (!action.report_segment_id || !storyline) return {};
-                  const color = storyline.color_hex;
-                  return {
-                    borderColor: color,
-                    borderWidth: "1.5px",
-                    backgroundColor: `color-mix(in srgb, ${color} 14%, var(--card))`,
-                  };
+              <PillSelect
+                pill={(() => {
+                  const seg = action.report_segment_id
+                    ? segments.find((s) => s.id === action.report_segment_id)
+                    : null;
+                  return seg ? (
+                    <ReportSegmentPill
+                      storyline={storyline}
+                      reportId={seg.report_id}
+                    />
+                  ) : null;
                 })()}
+                items={[
+                  {
+                    key: "__unset",
+                    label: <span className="text-muted-foreground">(Unset)</span>,
+                    active: !action.report_segment_id,
+                    onPick: () => onChange({ report_segment_id: null }),
+                  },
+                  ...segments.map((s) => ({
+                    key: s.id,
+                    active: action.report_segment_id === s.id,
+                    label: (
+                      <ReportSegmentPill
+                        storyline={storyline}
+                        reportId={s.report_id}
+                      />
+                    ),
+                    onPick: () => onChange({ report_segment_id: s.id }),
+                  })),
+                  {
+                    key: "__new_segment",
+                    muted: true,
+                    label: "+ Report Segment",
+                    onPick: () =>
+                      startCreateSegment(async () => {
+                        if (currentDay && !nextDay) {
+                          const { segmentId } =
+                            await createNextDayAndReportSegment(
+                              groupId,
+                              currentDay.number
+                            );
+                          onChange({ report_segment_id: segmentId });
+                        } else {
+                          const { segmentId } =
+                            await createReportSegmentForGroup(
+                              groupId,
+                              nextDay?.id ?? null
+                            );
+                          onChange({ report_segment_id: segmentId });
+                        }
+                      }),
+                  },
+                ]}
+              />
+            )}
+            {action.report_segment_id ? (
+              <button
+                type="button"
+                onClick={onOpenSegment}
+                aria-label="Open report segment"
+                title="Open report segment"
                 className={cn(
-                  "h-5 min-w-0 flex-1 appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 text-center font-mono text-[11px] leading-none shadow-none hover:border-border"
+                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+                  segmentOpen
+                    ? "border-foreground/40 bg-accent/60 text-foreground"
+                    : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
                 )}
               >
-                <option value="">—</option>
-                {segments.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.report_id}
-                  </option>
-                ))}
-                <option value="__new_segment">+ Report Segment</option>
-              </Select>
-            )}
-            <button
-              type="button"
-              onClick={onOpenSegment}
-              disabled={!action.report_segment_id}
-              aria-label="Open report segment"
-              title={
-                action.report_segment_id
-                  ? "Open report segment"
-                  : "No report segment assigned"
-              }
-              className={cn(
-                "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                segmentOpen
-                  ? "border-foreground/40 bg-accent/60 text-foreground"
-                  : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M9 6l6 6-6 6" />
-              </svg>
-            </button>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
 
-      {/* Impact variables label (no horizontal dividers). */}
+      {/* Impact variables label. */}
       <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
         Impact variables
       </div>
 
-      {/* Single row: [class affinities] | [nation affinities] | [world]. */}
-      <div className="mt-1 flex flex-wrap items-start gap-0.5">
-        {CLASS_AFFINITY.map((c) => (
-          <ClassTile
-            key={c.key}
-            label={c.label}
-            icon={c.icon}
-            value={action[c.key]}
-            onChange={(v) =>
-              onChange({ [c.key]: v } as Partial<ActionState>)
-            }
-          />
-        ))}
-        <div
-          aria-hidden
-          className="mx-1 h-10 w-px self-center bg-border/80"
-        />
-        {orderedNations.map((n) => {
-          const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
-          return (
-            <NationTile
-              key={n.id}
-              nation={n}
-              value={action[key]}
+      {/* Three grouped boxes: [class affinities] [nation affinities]
+          [world]. Each box is slightly darker than the card so the
+          groups read as separate without divider lines. */}
+      <div className="mt-1 flex flex-wrap items-start gap-1.5">
+        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+          {CLASS_AFFINITY.map((c) => (
+            <ClassTile
+              key={c.key}
+              label={c.label}
+              icon={c.icon}
+              value={action[c.key]}
               onChange={(v) =>
-                onChange({ [key]: v } as Partial<ActionState>)
+                onChange({ [c.key]: v } as Partial<ActionState>)
               }
             />
-          );
-        })}
-        <div
-          aria-hidden
-          className="mx-1 h-10 w-px self-center bg-border/80"
-        />
-        <ClassTile
-          label="Demerits"
-          icon={
-            <IconCircleMinus
-              size={14}
-              aria-hidden
-              className="text-red-500"
-            />
-          }
-          value={action.impact_demerits}
-          onChange={(v) =>
-            onChange({ impact_demerits: v } as Partial<ActionState>)
-          }
-        />
-        <ClassTile
-          label="World Status"
-          icon={
-            <IconWorldBolt
-              size={14}
-              aria-hidden
-              className="text-cyan-400"
-            />
-          }
-          value={action.impact_world_status}
-          onChange={(v) =>
-            onChange({ impact_world_status: v } as Partial<ActionState>)
-          }
-        />
+          ))}
+        </div>
+        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+          {orderedNations.map((n) => {
+            const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
+            return (
+              <NationTile
+                key={n.id}
+                nation={n}
+                value={action[key]}
+                onChange={(v) =>
+                  onChange({ [key]: v } as Partial<ActionState>)
+                }
+              />
+            );
+          })}
+        </div>
+        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+          <ClassTile
+            label="Demerits"
+            icon={
+              <IconCircleMinus
+                size={14}
+                aria-hidden
+                className="text-red-500"
+              />
+            }
+            value={action.impact_demerits}
+            onChange={(v) =>
+              onChange({ impact_demerits: v } as Partial<ActionState>)
+            }
+          />
+          <ClassTile
+            label="World Status"
+            icon={
+              <IconWorldBolt
+                size={14}
+                aria-hidden
+                className="text-cyan-400"
+              />
+            }
+            value={action.impact_world_status}
+            onChange={(v) =>
+              onChange({ impact_world_status: v } as Partial<ActionState>)
+            }
+          />
+        </div>
       </div>
 
       <div className="mt-3 flex justify-center">
@@ -3762,6 +3837,89 @@ function DayOption({
   );
 }
 
+type PillSelectItem = {
+  key: string;
+  label: React.ReactNode;
+  active?: boolean;
+  muted?: boolean;
+  onPick: () => void;
+};
+
+/**
+ * Dropdown whose trigger renders an arbitrary pill (or nothing when empty).
+ * Used so the Action editor's Next-letter / Report fields can display the
+ * same standard pill styling as the rest of the app instead of a styled
+ * native <select>. The dropdown menu itself falls back to text labels.
+ */
+function PillSelect({
+  pill,
+  items,
+  triggerClassName,
+  menuClassName,
+}: {
+  pill: React.ReactNode | null;
+  items: PillSelectItem[];
+  triggerClassName?: string;
+  menuClassName?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "inline-flex h-6 items-center rounded-md",
+          pill ? "" : "min-w-[24px] border border-dashed border-border/40",
+          triggerClassName
+        )}
+      >
+        {pill}
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          className={cn(
+            "absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md",
+            menuClassName
+          )}
+        >
+          {items.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="option"
+              aria-selected={!!item.active}
+              onClick={() => {
+                item.onPick();
+                setOpen(false);
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs hover:bg-accent/40",
+                item.active && "bg-accent/30",
+                item.muted && "text-muted-foreground"
+              )}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Muted-outlined delete button used across all entity panels. */
 function BreadcrumbLink({
   children,
@@ -3864,7 +4022,7 @@ function DeleteButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className="group inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-0.5 text-[10px] text-muted-foreground opacity-40 transition-[colors,opacity] hover:border-destructive hover:bg-destructive hover:text-destructive-foreground hover:opacity-100 disabled:opacity-30"
+      className="group inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground opacity-40 transition-[colors,opacity] hover:border-destructive hover:bg-destructive hover:text-destructive-foreground hover:opacity-100 disabled:opacity-30"
     >
       <Trash2 size={10} aria-hidden />
       <span>{label}</span>
