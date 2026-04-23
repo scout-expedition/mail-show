@@ -1050,26 +1050,29 @@ export function LettersWorkspace({
         {group ? (
           <>
             <ChevronRight size={12} aria-hidden className="opacity-50" />
-            <BreadcrumbLink
+            <BreadcrumbPill
               onClick={() => goToBreadcrumb("group")}
               active={view === "group"}
-              icon={<Mails size={12} aria-hidden />}
             >
-              {currentStoryline?.abbreviation ?? ""}
-              {group.sequence}
-            </BreadcrumbLink>
+              <LetterGroupPill
+                storyline={currentStoryline}
+                sequence={group.sequence}
+              />
+            </BreadcrumbPill>
           </>
         ) : null}
         {selectedLetter ? (
           <>
             <ChevronRight size={12} aria-hidden className="opacity-50" />
-            <BreadcrumbLink
+            <BreadcrumbPill
               onClick={() => goToBreadcrumb("letter")}
               active={view === "main"}
-              icon={<MailOpen size={12} aria-hidden />}
             >
-              {selectedLetter.content_id}
-            </BreadcrumbLink>
+              <InspectionLetterPill
+                storyline={currentStoryline}
+                contentId={selectedLetter.content_id}
+              />
+            </BreadcrumbPill>
           </>
         ) : null}
         {(view === "actions" || view === "segment") && selectedLetter ? (
@@ -1087,12 +1090,12 @@ export function LettersWorkspace({
         {selectedSegment ? (
           <>
             <ChevronRight size={12} aria-hidden className="opacity-50" />
-            <BreadcrumbLink
-              active={view === "segment"}
-              icon={<Megaphone size={12} aria-hidden />}
-            >
-              {selectedSegment.report_id}
-            </BreadcrumbLink>
+            <BreadcrumbPill active={view === "segment"}>
+              <ReportSegmentPill
+                storyline={currentStoryline}
+                reportId={selectedSegment.report_id}
+              />
+            </BreadcrumbPill>
           </>
         ) : null}
       </div>
@@ -1446,6 +1449,7 @@ export function LettersWorkspace({
               templates={templates}
               nations={nations}
               segments={segments}
+              storyline={currentStoryline}
               nextGroup={nextGroup}
               nextGroupLetters={nextGroupLetters}
               groupId={group?.id ?? ""}
@@ -1726,6 +1730,7 @@ function LetterActionsCard({
   templates,
   nations,
   segments,
+  storyline,
   nextGroup,
   nextGroupLetters,
   groupId,
@@ -1747,6 +1752,7 @@ function LetterActionsCard({
   templates: ActionTemplate[];
   nations: Nation[];
   segments: ReportSegmentView[];
+  storyline: Storyline | undefined;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
   nextGroupLetters: InspectionLetterView[];
   groupId: string;
@@ -1818,6 +1824,7 @@ function LetterActionsCard({
             templates={templates}
             nations={nations}
             segments={segments}
+            storyline={storyline}
             nextGroup={nextGroup}
             nextGroupLetters={nextGroupLetters}
             groupId={groupId}
@@ -2014,12 +2021,10 @@ function LetterSegmentCard({
             </svg>
           </button>
           <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Megaphone
-              size={14}
-              aria-hidden
-              className="text-muted-foreground/70"
+            <ReportSegmentPill
+              storyline={storylines.find((s) => s.id === segment.storyline_id)}
+              reportId={segment.report_id}
             />
-            <Badge variant="secondary">{segment.report_id}</Badge>
             {dirty ? (
               <span className="text-warning">• unsaved</span>
             ) : (
@@ -2923,6 +2928,38 @@ function LetterGroupPill({
 }
 
 /**
+ * Report segment pill: [megaphone][report_id] with the storyline color as
+ * a stroke/border and the fill being card grey tinted slightly toward the
+ * storyline color. Use alongside LetterGroupPill / InspectionLetterPill.
+ */
+function ReportSegmentPill({
+  storyline,
+  reportId,
+  className,
+}: {
+  storyline: Pick<Storyline, "color_hex"> | undefined;
+  reportId: string;
+  className?: string;
+}) {
+  const color = storyline?.color_hex ?? "#888888";
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] px-1.5 font-mono text-[11px] leading-none",
+        className
+      )}
+      style={{
+        borderColor: color,
+        backgroundColor: `color-mix(in srgb, ${color} 14%, var(--card))`,
+      }}
+    >
+      <Megaphone size={11} aria-hidden className="shrink-0" />
+      <span className="whitespace-nowrap">{reportId}</span>
+    </span>
+  );
+}
+
+/**
  * Inspection letter pill: [icon][content_id] filled with the storyline
  * color. Use wherever we display an inspection letter id like "IL-U2/a".
  */
@@ -2967,6 +3004,7 @@ function ActionEditor({
   templates,
   nations,
   segments,
+  storyline,
   nextGroup,
   nextGroupLetters,
   groupId,
@@ -2981,6 +3019,7 @@ function ActionEditor({
   templates: ActionTemplate[];
   nations: Nation[];
   segments: ReportSegmentView[];
+  storyline: Storyline | undefined;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
   nextGroupLetters: InspectionLetterView[];
   groupId: string;
@@ -3059,9 +3098,19 @@ function ActionEditor({
                 }
                 onChange({ next_letter_variant: v || null });
               }}
+              style={(() => {
+                // Filled inspection-letter pill when a value is picked,
+                // muted otherwise.
+                if (!action.next_letter_variant || !storyline) return {};
+                const color = storyline.color_hex;
+                return {
+                  background: color,
+                  color: readableOnHex(color),
+                  borderColor: "transparent",
+                };
+              })()}
               className={cn(
-                "h-6 w-full appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
-                GHOST_FIELD
+                "h-5 w-full appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 text-center font-mono text-[11px] leading-none shadow-none hover:border-border"
               )}
             >
               <option value="">—</option>
@@ -3121,9 +3170,19 @@ function ActionEditor({
                   }
                   onChange({ report_segment_id: v || null });
                 }}
+                style={(() => {
+                  // ReportSegmentPill style when selected: storyline-color
+                  // stroke + tinted card fill.
+                  if (!action.report_segment_id || !storyline) return {};
+                  const color = storyline.color_hex;
+                  return {
+                    borderColor: color,
+                    borderWidth: "1.5px",
+                    backgroundColor: `color-mix(in srgb, ${color} 14%, var(--card))`,
+                  };
+                })()}
                 className={cn(
-                  "h-6 min-w-0 flex-1 appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 font-mono text-[11px] leading-none shadow-none hover:border-border",
-                  GHOST_FIELD
+                  "h-5 min-w-0 flex-1 appearance-none rounded-md border border-border/60 bg-card px-1.5 py-0 text-center font-mono text-[11px] leading-none shadow-none hover:border-border"
                 )}
               >
                 <option value="">—</option>
@@ -3170,32 +3229,13 @@ function ActionEditor({
         </div>
       </div>
 
-      {/* Divider, section label, divider. */}
-      <div className="mt-3 border-t border-border" />
-      <div className="py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+      {/* Impact variables label (no horizontal dividers). */}
+      <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
         Impact variables
       </div>
-      <div className="mb-2 border-t border-border" />
 
-      {/* All impact counters on a single row: world + class + nations.
-          No section labels; tighter spacing. */}
-      <div className="flex flex-wrap items-start gap-1">
-        <ClassTile
-          label="Demerits"
-          icon={<IconCircleMinus size={14} aria-hidden />}
-          value={action.impact_demerits}
-          onChange={(v) =>
-            onChange({ impact_demerits: v } as Partial<ActionState>)
-          }
-        />
-        <ClassTile
-          label="World Status"
-          icon={<IconWorldBolt size={14} aria-hidden />}
-          value={action.impact_world_status}
-          onChange={(v) =>
-            onChange({ impact_world_status: v } as Partial<ActionState>)
-          }
-        />
+      {/* Single row: [class affinities] | [nation affinities] | [world]. */}
+      <div className="mt-1 flex flex-wrap items-start gap-0.5">
         {CLASS_AFFINITY.map((c) => (
           <ClassTile
             key={c.key}
@@ -3207,6 +3247,10 @@ function ActionEditor({
             }
           />
         ))}
+        <div
+          aria-hidden
+          className="mx-1 h-10 w-px self-center bg-border/80"
+        />
         {orderedNations.map((n) => {
           const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
           return (
@@ -3220,6 +3264,38 @@ function ActionEditor({
             />
           );
         })}
+        <div
+          aria-hidden
+          className="mx-1 h-10 w-px self-center bg-border/80"
+        />
+        <ClassTile
+          label="Demerits"
+          icon={
+            <IconCircleMinus
+              size={14}
+              aria-hidden
+              className="text-red-500"
+            />
+          }
+          value={action.impact_demerits}
+          onChange={(v) =>
+            onChange({ impact_demerits: v } as Partial<ActionState>)
+          }
+        />
+        <ClassTile
+          label="World Status"
+          icon={
+            <IconWorldBolt
+              size={14}
+              aria-hidden
+              className="text-cyan-400"
+            />
+          }
+          value={action.impact_world_status}
+          onChange={(v) =>
+            onChange({ impact_world_status: v } as Partial<ActionState>)
+          }
+        />
       </div>
 
       <div className="mt-3 flex justify-center">
@@ -3315,19 +3391,18 @@ function NationTile({
   value: number;
   onChange: (v: number) => void;
 }) {
-  const fg = readableOnHex(nation.color_hex);
   return (
-    <div className="flex flex-col items-center gap-1">
+    <div className="flex flex-col items-center gap-1" title={nation.name}>
       <span
-        className="flex h-6 w-6 items-center justify-center rounded"
-        style={{ background: nation.color_hex, color: fg }}
-        title={nation.name}
+        className="flex h-6 w-6 items-center justify-center"
+        style={{ color: nation.color_hex }}
+        aria-label={nation.name}
       >
         {nation.icon_value ? (
           <IconDisplay
             type={nation.icon_type}
             value={nation.icon_value}
-            size={12}
+            size={14}
           />
         ) : (
           <span className="text-[10px] font-mono">
@@ -3670,6 +3745,45 @@ function BreadcrumbLink({
       style={color ? { color } : undefined}
     >
       {icon}
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Thin wrapper that makes a styled pill (LetterGroupPill,
+ * InspectionLetterPill, ReportSegmentPill) act as a breadcrumb link.
+ * Keeps the pill's intrinsic styling and just adds hover/focus states
+ * and a muted ring when `active`.
+ */
+function BreadcrumbPill({
+  children,
+  onClick,
+  active,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+}) {
+  const ringClass = active
+    ? "ring-2 ring-foreground/30 ring-offset-2 ring-offset-background rounded-md"
+    : "";
+  if (!onClick) {
+    return (
+      <span className={cn("inline-flex items-center", ringClass)}>
+        {children}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center rounded-md transition-opacity hover:opacity-80",
+        ringClass
+      )}
+    >
       {children}
     </button>
   );
