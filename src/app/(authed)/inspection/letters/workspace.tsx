@@ -76,6 +76,7 @@ import {
   IconCircleMinus,
   IconDiamond,
   IconHammer,
+  IconMailOpened,
   IconRestore,
   IconWorldBolt,
 } from "@tabler/icons-react";
@@ -1033,7 +1034,10 @@ export function LettersWorkspace({
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
-        <BreadcrumbLink onClick={() => goToBreadcrumb("root")}>
+        <BreadcrumbLink
+          onClick={() => goToBreadcrumb("root")}
+          icon={<IconMailOpened size={13} aria-hidden />}
+        >
           Inspection Letters
         </BreadcrumbLink>
         {currentStoryline ? (
@@ -2948,14 +2952,14 @@ function StorylinePill({
   return (
     <span
       className={cn(
-        "relative inline-flex h-6 items-center",
+        "relative inline-flex h-5 items-center",
         className
       )}
     >
       {/* Pill body. Left padding reserves room for the circle that
           overlaps the left cap. */}
       <span
-        className="inline-flex h-6 min-w-0 items-center rounded-full border-[1.5px] bg-card pl-7 pr-2.5 font-mono text-[11px] font-semibold leading-none text-foreground"
+        className="inline-flex h-5 min-w-0 items-center rounded-md border-[1.5px] bg-card pl-6 pr-1.5 font-mono text-[11px] leading-none text-foreground"
         style={{ borderColor: color }}
       >
         <span className="truncate">{storyline.name}</span>
@@ -2964,7 +2968,7 @@ function StorylinePill({
           edge so it reads as one shape with the pill. */}
       <span
         aria-hidden
-        className="absolute left-0 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full"
+        className="absolute left-0 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full"
         style={{ background: color, color: fg }}
       >
         {storyline.icon_value ? (

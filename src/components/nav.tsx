@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { ComponentType, SVGProps } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -13,30 +14,31 @@ import {
   Flag,
   Inbox,
   Menu,
+  Milestone,
   Ruler,
   Package,
   PlayCircle,
   Settings,
-  Search,
-  Zap,
-  type LucideIcon,
 } from "lucide-react";
+import { IconMailOpened } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
+
+type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
 
 const NAV_ITEMS: Array<{
   href: string;
   label: string;
-  icon: LucideIcon;
+  icon: NavIcon;
   section: "Game" | "Sorting" | "Inspection" | "Data" | "Run";
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
   { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
-  { href: "/sorting/letters", label: "Sorting Letters", icon: Mail, section: "Sorting" },
-  { href: "/sorting/rules", label: "Sorting Rules", icon: Ruler, section: "Sorting" },
+  { href: "/sorting/letters", label: "Letters", icon: Mail, section: "Sorting" },
+  { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
+  { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
   { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
-  { href: "/inspection/letters", label: "Inspection Letters", icon: Search, section: "Inspection" },
-  { href: "/inspection/actions", label: "Inspection Actions", icon: Zap, section: "Inspection" },
+  { href: "/inspection/actions", label: "Actions", icon: Milestone, section: "Inspection" },
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
