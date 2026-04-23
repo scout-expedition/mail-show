@@ -120,19 +120,23 @@ export async function createLetterGroup(formData: FormData) {
     .order("sequence", { ascending: false })
     .limit(1);
   const nextSeq = (existing?.[0]?.sequence ?? 0) + 1;
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("letter_groups")
     .insert({
       storyline_id,
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
-    })
-    .select("id")
-    .single();
+    });
   if (error) throw new Error(error.message);
+  const { data: storyline } = await supabase
+    .from("storylines")
+    .select("abbreviation")
+    .eq("id", storyline_id)
+    .maybeSingle();
+  const abbr = storyline?.abbreviation ?? "";
   revalidatePath(`/inspection/storylines/${storyline_id}`);
   revalidatePath("/inspection/letters");
-  redirect(`/inspection/letters/${data!.id}`);
+  redirect(`/inspection/letters/${abbr}${nextSeq}`);
 }
 
 export async function updateLetterGroup(formData: FormData) {

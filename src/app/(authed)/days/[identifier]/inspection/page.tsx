@@ -88,7 +88,11 @@ export default async function InspectionTab({
                         </p>
                       </div>
                       <Link
-                        href={`/inspection/letters/${g?.id}`}
+                        href={
+                          g
+                            ? `/inspection/letters/${s.abbreviation}${g.sequence}`
+                            : "/inspection/letters"
+                        }
                         className="text-xs text-primary hover:underline"
                       >
                         Open

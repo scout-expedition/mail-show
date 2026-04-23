@@ -78,7 +78,7 @@ export async function saveGroup(data: {
     .from("report_groups")
     .update({ name: rest.name })
     .eq("letter_group_id", id);
-  revalidatePath(`/inspection/letters/${id}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
   revalidatePath("/inspection/letters");
 }
 
@@ -125,7 +125,7 @@ export async function createInspectionLettersInGroup(
     .select("id");
   if (error) throw new Error(error.message);
   await reassignVariants(groupId);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
   return (data ?? []).map((r) => r.id as string);
 }
 
@@ -137,7 +137,7 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
     .eq("id", letterId);
   if (error) throw new Error(error.message);
   await reassignVariants(groupId);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
 }
 
 /** Reorder letters by passing the new order of letter ids. */
@@ -154,7 +154,7 @@ export async function reorderInspectionLetters(
     if (error) throw new Error(error.message);
   }
   await reassignVariants(groupId);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
   revalidatePath("/inspection/letters");
 }
 
@@ -196,7 +196,7 @@ export async function saveLetterWithActions(
       .eq("id", actionId);
     if (error) throw new Error(error.message);
   }
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
 }
 
 export async function addActionFromTemplate(
@@ -244,18 +244,41 @@ export async function addActionFromTemplate(
   }));
   const { error } = await supabase.from("actions").insert(rows);
   if (error) throw new Error(error.message);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
 }
 
 export async function deleteActionRow(groupId: string, actionId: string) {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.from("actions").delete().eq("id", actionId);
   if (error) throw new Error(error.message);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
 }
 
-/** Create a new letter in the "next" letter group (by sequence) in the same storyline. */
-export async function createLetterInNextGroup(currentGroupId: string) {
+/** Ensure the given letter has a non-null variant so it can be referenced. */
+async function ensureLetterVariant(letterId: string): Promise<string> {
+  const supabase = await createSupabaseServerClient();
+  const { data: row } = await supabase
+    .from("inspection_letters")
+    .select("variant")
+    .eq("id", letterId)
+    .maybeSingle();
+  const existing = (row?.variant ?? null) as string | null;
+  if (existing) return existing;
+  await supabase
+    .from("inspection_letters")
+    .update({ variant: "a" })
+    .eq("id", letterId);
+  return "a";
+}
+
+/**
+ * Create a new letter in the "next" letter group (by sequence) in the same
+ * storyline. Returns the new letter's variant so the caller can set it as
+ * `next_letter_variant` on the current action.
+ */
+export async function createLetterInNextGroup(
+  currentGroupId: string
+): Promise<{ letterId: string; variant: string }> {
   const supabase = await createSupabaseServerClient();
   const { data: cur } = await supabase
     .from("letter_groups")
@@ -273,12 +296,19 @@ export async function createLetterInNextGroup(currentGroupId: string) {
   const nextGroupId = next?.[0]?.id as string | undefined;
   if (!nextGroupId) throw new Error("No next letter group exists");
   const ids = await createInspectionLettersInGroup(nextGroupId, 1);
-  revalidatePath(`/inspection/letters/${currentGroupId}`);
-  return ids[0];
+  const letterId = ids[0];
+  const variant = await ensureLetterVariant(letterId);
+  revalidatePath("/inspection/letters/[slug]", "page");
+  return { letterId, variant };
 }
 
-/** Create the next letter group (auto sequence) and a first letter in it. */
-export async function createNextLetterGroupAndLetter(currentGroupId: string) {
+/**
+ * Create the next letter group (auto sequence) and a first letter in it.
+ * Returns the new letter's variant for the action linkage.
+ */
+export async function createNextLetterGroupAndLetter(
+  currentGroupId: string
+): Promise<{ newGroupId: string; letterId: string; variant: string }> {
   const supabase = await createSupabaseServerClient();
   const { data: cur } = await supabase
     .from("letter_groups")
@@ -303,13 +333,38 @@ export async function createNextLetterGroupAndLetter(currentGroupId: string) {
     .select("id")
     .single();
   if (error) throw new Error(error.message);
-  await createInspectionLettersInGroup(newGroup!.id as string, 1);
-  revalidatePath(`/inspection/letters/${currentGroupId}`);
+  const newGroupId = newGroup!.id as string;
+  const ids = await createInspectionLettersInGroup(newGroupId, 1);
+  const letterId = ids[0];
+  const variant = await ensureLetterVariant(letterId);
+  revalidatePath("/inspection/letters/[slug]", "page");
   revalidatePath("/inspection/letters");
+  return { newGroupId, letterId, variant };
 }
 
-/** Create a new report segment in the given letter group's report_group. */
-export async function createReportSegmentForGroup(groupId: string) {
+export async function saveReportSegment(data: {
+  id: string;
+  variant: string;
+  content: string | null;
+  delivery_day_override_id: string | null;
+}) {
+  const supabase = await createSupabaseServerClient();
+  const { id, ...rest } = data;
+  const { error } = await supabase
+    .from("report_segments")
+    .update(rest)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters/[slug]", "page");
+}
+
+/**
+ * Create a new report segment in the given letter group's report_group.
+ * Returns the new segment's id for the action linkage.
+ */
+export async function createReportSegmentForGroup(
+  groupId: string
+): Promise<{ segmentId: string }> {
   const supabase = await createSupabaseServerClient();
   const { data: rg } = await supabase
     .from("report_groups")
@@ -329,13 +384,18 @@ export async function createReportSegmentForGroup(groupId: string) {
     const m = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
     return m[n - 1] ?? String(n);
   };
-  const { error } = await supabase.from("report_segments").insert({
-    report_group_id: rg.id,
-    variant: roman(nextSort),
-    sort_order: nextSort,
-  });
+  const { data: inserted, error } = await supabase
+    .from("report_segments")
+    .insert({
+      report_group_id: rg.id,
+      variant: roman(nextSort),
+      sort_order: nextSort,
+    })
+    .select("id")
+    .single();
   if (error) throw new Error(error.message);
-  revalidatePath(`/inspection/letters/${groupId}`);
+  revalidatePath("/inspection/letters/[slug]", "page");
+  return { segmentId: inserted!.id as string };
 }
 
 export async function quickCreateCitizen(data: {

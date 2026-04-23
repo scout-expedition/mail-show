@@ -15,7 +15,8 @@ import type {
   Storyline,
 } from "@/lib/db/types";
 import { createLetterGroup } from "../storylines/actions";
-import { reorderLetterGroups } from "./[groupId]/actions";
+import { groupSlug } from "@/lib/letter-groups";
+import { reorderLetterGroups } from "./[slug]/actions";
 
 function readableOn(hex: string): string {
   const h = hex.replace(/^#/, "");
@@ -392,7 +393,7 @@ export function InspectionLettersList({
                           </button>
                           {!draggableBucket ? (
                             <Link
-                              href={`/inspection/letters/${g.id}?letter=none`}
+                              href={`/inspection/letters/${groupSlug(s?.abbreviation ?? "", g.sequence)}?letter=none`}
                               className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
                               aria-label="Open letter group"
                               title="Open letter group"
@@ -406,7 +407,7 @@ export function InspectionLettersList({
                             {ls.map((l) => (
                               <Link
                                 key={l.id}
-                                href={`/inspection/letters/${g.id}`}
+                                href={`/inspection/letters/${groupSlug(s?.abbreviation ?? "", g.sequence)}`}
                                 className="flex items-center gap-2 border-t border-border px-3 py-1.5 pl-10 text-sm hover:bg-accent/40"
                               >
                                 <Badge

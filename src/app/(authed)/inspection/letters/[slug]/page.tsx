@@ -12,15 +12,32 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
+import { parseGroupSlug } from "@/lib/letter-groups";
 import { GroupEditor } from "./editor";
 
 export default async function GroupEditorPage({
   params,
 }: {
-  params: Promise<{ groupId: string }>;
+  params: Promise<{ slug: string }>;
 }) {
-  const { groupId } = await params;
+  const { slug } = await params;
+  const parsed = parseGroupSlug(slug);
+  if (!parsed) notFound();
   const supabase = await createSupabaseServerClient();
+  const { data: slugStoryline } = await supabase
+    .from("storylines")
+    .select("id")
+    .eq("abbreviation", parsed.abbreviation)
+    .maybeSingle();
+  if (!slugStoryline) notFound();
+  const { data: slugGroup } = await supabase
+    .from("letter_groups")
+    .select("id")
+    .eq("storyline_id", slugStoryline.id)
+    .eq("sequence", parsed.sequence)
+    .maybeSingle();
+  if (!slugGroup) notFound();
+  const groupId = slugGroup.id as string;
   const [
     { data: gData },
     { data: sData },
@@ -101,6 +118,10 @@ export default async function GroupEditorPage({
     letterIds.has(a.inspection_letter_id)
   );
 
+  const siblingGroups = allGroups
+    .filter((g) => g.storyline_id === group.storyline_id)
+    .sort((a, b) => a.sequence - b.sequence);
+
   return (
     <GroupEditor
       group={group}
@@ -113,6 +134,7 @@ export default async function GroupEditorPage({
       cities={cities}
       nations={nations}
       segments={segments}
+      siblingGroups={siblingGroups}
       nextGroup={nextGroup}
       nextGroupLetters={nextGroupLetters}
     />

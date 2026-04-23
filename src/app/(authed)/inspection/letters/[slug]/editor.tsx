@@ -43,8 +43,13 @@ import {
   reorderInspectionLetters,
   saveGroup,
   saveLetterWithActions,
+  saveReportSegment,
 } from "./actions";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+
+/** Plain-text-until-focused look for fields — mirrors the citizens page. */
+const GHOST_FIELD =
+  "border-transparent bg-transparent shadow-none hover:bg-accent/20 focus:border-border focus-visible:bg-input focus-visible:shadow-sm";
 
 const CLASS_AFFINITY: Array<{ key: keyof ActionImpacts; label: string }> = [
   { key: "impact_proletariat", label: "Proletariat" },
@@ -143,6 +148,7 @@ export function GroupEditor({
   cities,
   nations,
   segments,
+  siblingGroups,
   nextGroup,
   nextGroupLetters,
 }: {
@@ -156,9 +162,11 @@ export function GroupEditor({
   cities: City[];
   nations: Nation[];
   segments: ReportSegmentView[];
+  siblingGroups: Array<Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name">>;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
   nextGroupLetters: InspectionLetterView[];
 }) {
+  const router = useRouter();
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -208,6 +216,18 @@ export function GroupEditor({
   const [letterDirty, setLetterDirty] = useState(false);
   const [letterPending, startLetterSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
+  const [view, setView] = useState<"main" | "actions" | "segment">("main");
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+
+  function navigateGuarded(href: string) {
+    if (groupDirty || letterDirty) {
+      const ok = confirm(
+        "This page has unsaved changes. Discard them and leave?"
+      );
+      if (!ok) return;
+    }
+    router.push(href);
+  }
 
   // Heroes may grow via quick-create.
   const [heroes, setHeroes] = useState<Citizen[]>(initialHeroes);
@@ -247,6 +267,51 @@ export function GroupEditor({
     setSelectedId(id);
     setLetterState(toLetterState(l, actions));
     setLetterDirty(false);
+    setView("main");
+    setSelectedSegmentId(null);
+  }
+
+  function closeActionsPanel() {
+    if (letterDirty) {
+      const ok = confirm(
+        "Actions have unsaved changes. Save before closing?"
+      );
+      if (ok && letterState) {
+        const snap = letterState;
+        startLetterSave(async () => {
+          await saveLetterNow(snap);
+          setLetterDirty(false);
+          setView("main");
+        });
+        return;
+      }
+    }
+    setView("main");
+  }
+
+  function openSegmentForAction(actionIdx: number) {
+    const segId = letterState?.actions[actionIdx]?.report_segment_id ?? null;
+    if (!segId) return;
+    setSelectedSegmentId(segId);
+    setView("segment");
+  }
+
+  function closeSegmentPanel(segmentDirty: boolean, onSave: () => Promise<void>) {
+    if (segmentDirty) {
+      const ok = confirm(
+        "Segment has unsaved changes. Save before closing?"
+      );
+      if (ok) {
+        startRowAction(async () => {
+          await onSave();
+          setView("actions");
+          setSelectedSegmentId(null);
+        });
+        return;
+      }
+    }
+    setView("actions");
+    setSelectedSegmentId(null);
   }
 
   function updateLetter(patch: Partial<LetterState>) {
@@ -422,10 +487,13 @@ export function GroupEditor({
       <PageHeader
         title={
           <span className="flex items-center gap-2">
-            <Badge variant="secondary" className="font-mono">
-              {currentStoryline?.abbreviation ?? "?"}
-              {group.sequence}
-            </Badge>
+            <BackLink onNavigate={() => navigateGuarded("/inspection/letters")} />
+            <GroupIdSwitcher
+              current={group}
+              currentAbbr={currentStoryline?.abbreviation ?? "?"}
+              siblings={siblingGroups}
+              onPick={(slug) => navigateGuarded(`/inspection/letters/${slug}`)}
+            />
             {groupState.name || (
               <span className="text-muted-foreground italic">(unnamed)</span>
             )}
@@ -451,9 +519,17 @@ export function GroupEditor({
         }
       />
 
-      <div className="grid grid-cols-2 gap-6">
-        {/* LEFT: group info + letter list */}
-        <div className="flex flex-col gap-4">
+      <div className="relative overflow-hidden">
+        <div
+          className={cn(
+            "flex transition-transform duration-300 ease-out",
+            view === "actions" && "-translate-x-1/4",
+            view === "segment" && "-translate-x-2/4"
+          )}
+          style={{ width: "200%" }}
+        >
+        {/* GROUP slot: group info + letter list */}
+        <div className="flex w-1/4 shrink-0 flex-col gap-4 pr-3">
           <div className="rounded-md border border-border bg-card p-4">
             <h3 className="mb-3 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
               Group
@@ -464,7 +540,7 @@ export function GroupEditor({
                 <Select
                   value={groupState.storyline_id}
                   onChange={(e) => updateGroup("storyline_id", e.target.value)}
-                  className="h-8"
+                  className={cn("h-8", GHOST_FIELD)}
                 >
                   {storylines.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -478,7 +554,7 @@ export function GroupEditor({
                 <Input
                   value={groupState.name}
                   onChange={(e) => updateGroup("name", e.target.value)}
-                  className="h-8"
+                  className={cn("h-8", GHOST_FIELD)}
                 />
               </div>
               <div className="col-span-3 flex flex-col gap-1">
@@ -488,7 +564,7 @@ export function GroupEditor({
                   onChange={(e) =>
                     updateGroup("delivery_day_id", e.target.value || null)
                   }
-                  className="h-8"
+                  className={cn("h-8", GHOST_FIELD)}
                 >
                   <option value="">—</option>
                   {days.map((d) => (
@@ -505,6 +581,7 @@ export function GroupEditor({
                   value={groupState.notes ?? ""}
                   onChange={(e) => updateGroup("notes", e.target.value || null)}
                   rows={2}
+                  className={GHOST_FIELD}
                 />
               </div>
             </div>
@@ -616,10 +693,10 @@ export function GroupEditor({
           </div>
         </div>
 
-        {/* RIGHT: selected letter detail */}
-        <div className="flex flex-col gap-4">
+        {/* LETTER slot: fields only */}
+        <div className="flex w-1/4 shrink-0 flex-col gap-4 px-3">
           {letterState ? (
-            <LetterDetail
+            <LetterFieldsCard
               key={letterState.id}
               state={letterState}
               letterView={letters.find((l) => l.id === letterState.id)!}
@@ -628,7 +705,29 @@ export function GroupEditor({
               heroes={heroes}
               cities={cities}
               nations={nations}
+              dirty={letterDirty}
+              pending={letterPending}
+              onChange={updateLetter}
+              onQuickCreateHero={handleQuickCreateHero}
+              onSave={handleSaveLetter}
+              actionsCount={letterState.actions.length}
+              onShowActions={() => setView("actions")}
+            />
+          ) : (
+            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+              Select a letter to edit, or add one.
+            </div>
+          )}
+        </div>
+
+        {/* ACTIONS slot: action editors, shown by sliding */}
+        <div className="flex w-1/4 shrink-0 flex-col gap-4 px-3">
+          {letterState ? (
+            <LetterActionsCard
+              key={letterState.id}
+              actions={letterState.actions}
               templates={templates}
+              nations={nations}
               segments={segments}
               nextGroup={nextGroup}
               nextGroupLetters={nextGroupLetters}
@@ -636,18 +735,30 @@ export function GroupEditor({
               dirty={letterDirty}
               pending={letterPending}
               rowPending={rowPending}
-              onChange={updateLetter}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
               onDeleteAction={handleDeleteAction}
-              onQuickCreateHero={handleQuickCreateHero}
+              onOpenSegment={openSegmentForAction}
               onSave={handleSaveLetter}
+              onBack={closeActionsPanel}
             />
-          ) : (
-            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-              Select a letter to edit, or add one.
-            </div>
-          )}
+          ) : null}
+        </div>
+
+        {/* SEGMENT slot: selected report segment */}
+        <div className="flex w-1/4 shrink-0 flex-col gap-4 pl-3">
+          {letterState && selectedSegmentId ? (
+            <LetterSegmentCard
+              key={selectedSegmentId}
+              segment={
+                segments.find((s) => s.id === selectedSegmentId) ?? null
+              }
+              days={days}
+              groupDeliveryDayId={groupState.delivery_day_id}
+              onBack={closeSegmentPanel}
+            />
+          ) : null}
+        </div>
         </div>
       </div>
 
@@ -667,7 +778,7 @@ export function GroupEditor({
   );
 }
 
-function LetterDetail({
+function LetterFieldsCard({
   state,
   letterView,
   groupDeliveryDayId,
@@ -675,20 +786,13 @@ function LetterDetail({
   heroes,
   cities,
   nations,
-  templates,
-  segments,
-  nextGroup,
-  nextGroupLetters,
-  groupId,
   dirty,
   pending,
-  rowPending,
   onChange,
-  onActionChange,
-  onAddAction,
-  onDeleteAction,
   onQuickCreateHero,
   onSave,
+  actionsCount,
+  onShowActions,
 }: {
   state: LetterState;
   letterView: InspectionLetterView;
@@ -697,7 +801,185 @@ function LetterDetail({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
+  dirty: boolean;
+  pending: boolean;
+  onChange: (patch: Partial<LetterState>) => void;
+  onQuickCreateHero: (role: "sender" | "receiver") => void;
+  onSave: () => void;
+  actionsCount: number;
+  onShowActions: () => void;
+}) {
+  // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
+  const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
+
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <Badge variant="secondary">{letterView.content_id}</Badge>
+          {dirty ? (
+            <span className="text-warning">• unsaved</span>
+          ) : (
+            <span className="text-muted-foreground/70">saved</span>
+          )}
+        </h3>
+        <Button
+          type="button"
+          onClick={onSave}
+          disabled={pending || !dirty}
+          variant={dirty ? "default" : "secondary"}
+          size="sm"
+        >
+          {pending ? (
+            <>
+              <Spinner />
+              Saving…
+            </>
+          ) : (
+            "Save letter"
+          )}
+        </Button>
+      </div>
+      <div className="grid grid-cols-6 gap-3">
+        <div className="flex flex-col gap-1">
+          <Label>Piece</Label>
+          <Input
+            type="number"
+            value={state.piece ?? ""}
+            onChange={(e) =>
+              onChange({
+                piece: e.target.value === "" ? null : Number(e.target.value),
+              })
+            }
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </div>
+        <div className="col-span-4 flex flex-col gap-1">
+          <Label>Delivery day</Label>
+          <Select
+            value={currentDayId ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              // Storing null when matches the group default keeps "inherit"
+              // semantics; otherwise store an explicit override.
+              onChange({
+                delivery_day_override_id:
+                  v === "" ? null : v === groupDeliveryDayId ? null : v,
+              });
+            }}
+            className={cn("h-8", GHOST_FIELD)}
+          >
+            <option value="">—</option>
+            {days.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.identifier}
+                {d.name ? ` — ${d.name}` : ""}
+                {d.id === groupDeliveryDayId ? " (Group Default)" : ""}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <Label>Actions ({actionsCount})</Label>
+          <button
+            type="button"
+            onClick={onShowActions}
+            aria-label="Show actions"
+            title="Show actions"
+            className="inline-flex h-8 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M9 6l6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Summary</Label>
+          <Input
+            value={state.summary ?? ""}
+            onChange={(e) => onChange({ summary: e.target.value || null })}
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </div>
+
+        <div className="col-span-3 flex flex-col gap-1">
+          <Label>Sender</Label>
+          <HeroSearch
+            value={state.sender_citizen_id}
+            heroes={heroes}
+            cities={cities}
+            nations={nations}
+            onChange={(v) => onChange({ sender_citizen_id: v })}
+            onCreate={() => onQuickCreateHero("sender")}
+          />
+        </div>
+        <div className="col-span-3 flex flex-col gap-1">
+          <Label>Receiver</Label>
+          <HeroSearch
+            value={state.receiver_citizen_id}
+            heroes={heroes}
+            cities={cities}
+            nations={nations}
+            onChange={(v) => onChange({ receiver_citizen_id: v })}
+            onCreate={() => onQuickCreateHero("receiver")}
+          />
+        </div>
+
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Content (markdown)</Label>
+          <AutoTextarea
+            value={state.content ?? ""}
+            onChange={(e) => onChange({ content: e.target.value || null })}
+            minRows={6}
+            className={cn("font-mono text-xs", GHOST_FIELD)}
+          />
+        </div>
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Notes</Label>
+          <AutoTextarea
+            value={state.notes ?? ""}
+            onChange={(e) => onChange({ notes: e.target.value || null })}
+            minRows={2}
+            className={GHOST_FIELD}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LetterActionsCard({
+  actions,
+  templates,
+  nations,
+  segments,
+  nextGroup,
+  nextGroupLetters,
+  groupId,
+  dirty,
+  pending,
+  rowPending,
+  onActionChange,
+  onAddAction,
+  onDeleteAction,
+  onOpenSegment,
+  onSave,
+  onBack,
+}: {
+  actions: ActionState[];
   templates: ActionTemplate[];
+  nations: Nation[];
   segments: ReportSegmentView[];
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
   nextGroupLetters: InspectionLetterView[];
@@ -705,30 +987,50 @@ function LetterDetail({
   dirty: boolean;
   pending: boolean;
   rowPending: boolean;
-  onChange: (patch: Partial<LetterState>) => void;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
   onAddAction: (templateId: string) => void;
   onDeleteAction: (actionId: string) => void;
-  onQuickCreateHero: (role: "sender" | "receiver") => void;
+  onOpenSegment: (actionIdx: number) => void;
   onSave: () => void;
+  onBack: () => void;
 }) {
-
-  // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
-  const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="rounded-md border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Badge variant="secondary">{letterView.content_id}</Badge>
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back to letter"
+            title="Back to letter"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+          </button>
+          <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            Actions ({actions.length})
             {dirty ? (
               <span className="text-warning">• unsaved</span>
             ) : (
               <span className="text-muted-foreground/70">saved</span>
             )}
-          </h3>
+          </h4>
+        </div>
+        <div className="flex items-center gap-2">
           <Button
             type="button"
             onClick={onSave}
@@ -742,172 +1044,232 @@ function LetterDetail({
                 Saving…
               </>
             ) : (
-              "Save letter"
+              "Save actions"
             )}
           </Button>
-        </div>
-        <div className="grid grid-cols-6 gap-3">
-          <div className="flex flex-col gap-1">
-            <Label>Piece</Label>
-            <Input
-              type="number"
-              value={state.piece ?? ""}
-              onChange={(e) =>
-                onChange({
-                  piece: e.target.value === "" ? null : Number(e.target.value),
-                })
-              }
-              className="h-8"
-            />
-          </div>
-          <div className="col-span-5 flex flex-col gap-1">
-            <Label>Delivery day</Label>
-            <Select
-              value={currentDayId ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                // Storing null when matches the group default keeps "inherit"
-                // semantics; otherwise store an explicit override.
-                onChange({
-                  delivery_day_override_id:
-                    v === "" ? null : v === groupDeliveryDayId ? null : v,
-                });
-              }}
-              className="h-8"
+        {templatePickerOpen ? (
+          <Select
+            autoFocus
+            value=""
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v) return;
+              setTemplatePickerOpen(false);
+              onAddAction(v);
+            }}
+            onBlur={() => setTemplatePickerOpen(false)}
+            className="h-7 w-auto"
+            aria-label="Pick action"
+          >
+            <option value="">Pick action…</option>
+            {pickerEntries(templates).map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setTemplatePickerOpen(true)}
+            disabled={rowPending || templates.length === 0}
+            aria-label="Add action"
+            title="Add action"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
             >
-              <option value="">—</option>
-              {days.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.identifier}
-                  {d.name ? ` — ${d.name}` : ""}
-                  {d.id === groupDeliveryDayId ? " (Group Default)" : ""}
-                </option>
-              ))}
-            </Select>
-          </div>
-
-          <div className="col-span-6 flex flex-col gap-1">
-            <Label>Summary</Label>
-            <Input
-              value={state.summary ?? ""}
-              onChange={(e) => onChange({ summary: e.target.value || null })}
-              className="h-8"
-            />
-          </div>
-
-          <div className="col-span-3 flex flex-col gap-1">
-            <Label>Sender</Label>
-            <HeroSearch
-              value={state.sender_citizen_id}
-              heroes={heroes}
-              cities={cities}
-              nations={nations}
-              onChange={(v) => onChange({ sender_citizen_id: v })}
-              onCreate={() => onQuickCreateHero("sender")}
-            />
-          </div>
-          <div className="col-span-3 flex flex-col gap-1">
-            <Label>Receiver</Label>
-            <HeroSearch
-              value={state.receiver_citizen_id}
-              heroes={heroes}
-              cities={cities}
-              nations={nations}
-              onChange={(v) => onChange({ receiver_citizen_id: v })}
-              onCreate={() => onQuickCreateHero("receiver")}
-            />
-          </div>
-
-          <div className="col-span-6 flex flex-col gap-1">
-            <Label>Content (markdown)</Label>
-            <AutoTextarea
-              value={state.content ?? ""}
-              onChange={(e) => onChange({ content: e.target.value || null })}
-              minRows={6}
-              className="font-mono text-xs"
-            />
-          </div>
-          <div className="col-span-6 flex flex-col gap-1">
-            <Label>Notes</Label>
-            <AutoTextarea
-              value={state.notes ?? ""}
-              onChange={(e) => onChange({ notes: e.target.value || null })}
-              minRows={2}
-            />
-          </div>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
         </div>
       </div>
+      <div className="flex flex-col gap-3">
+        {actions.map((a, i) => (
+          <ActionEditor
+            key={a.id}
+            action={a}
+            templates={templates}
+            nations={nations}
+            segments={segments}
+            nextGroup={nextGroup}
+            nextGroupLetters={nextGroupLetters}
+            groupId={groupId}
+            onChange={(patch) => onActionChange(i, patch)}
+            onDelete={() => onDeleteAction(a.id)}
+            onOpenSegment={() => onOpenSegment(i)}
+          />
+        ))}
+        {actions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No actions yet.</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
-      {/* Actions */}
-      <div className="rounded-md border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h4 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Actions ({state.actions.length})
-          </h4>
-          {templatePickerOpen ? (
-            <Select
-              autoFocus
-              value=""
-              onChange={(e) => {
-                const v = e.target.value;
-                if (!v) return;
-                setTemplatePickerOpen(false);
-                onAddAction(v);
-              }}
-              onBlur={() => setTemplatePickerOpen(false)}
-              className="h-7 w-auto"
-              aria-label="Pick action"
+function LetterSegmentCard({
+  segment,
+  days,
+  groupDeliveryDayId,
+  onBack,
+}: {
+  segment: ReportSegmentView | null;
+  days: Day[];
+  groupDeliveryDayId: string | null;
+  onBack: (
+    dirty: boolean,
+    onSave: () => Promise<void>
+  ) => void;
+}) {
+  const [state, setState] = useState(() =>
+    segment
+      ? {
+          variant: segment.variant,
+          content: segment.content,
+          delivery_day_override_id: segment.delivery_day_override_id,
+        }
+      : { variant: "", content: null as string | null, delivery_day_override_id: null as string | null }
+  );
+  const [dirty, setDirty] = useState(false);
+  const [pending, startSave] = useTransition();
+
+  useEffect(() => {
+    if (!segment) return;
+    setState({
+      variant: segment.variant,
+      content: segment.content,
+      delivery_day_override_id: segment.delivery_day_override_id,
+    });
+    setDirty(false);
+  }, [segment]);
+
+  async function saveNow() {
+    if (!segment) return;
+    await saveReportSegment({
+      id: segment.id,
+      variant: state.variant.trim() || segment.variant,
+      content: state.content,
+      delivery_day_override_id: state.delivery_day_override_id,
+    });
+    setDirty(false);
+  }
+
+  function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
+    setState((s) => ({ ...s, [k]: v }));
+    setDirty(true);
+  }
+
+  if (!segment) {
+    return (
+      <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
+        Segment not available.
+      </div>
+    );
+  }
+
+  const currentDayId = state.delivery_day_override_id;
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onBack(dirty, saveNow)}
+            aria-label="Back to actions"
+            title="Back to actions"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
             >
-              <option value="">Pick action…</option>
-              {pickerEntries(templates).map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.label}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setTemplatePickerOpen(true)}
-              disabled={rowPending || templates.length === 0}
-              aria-label="Add action"
-              title="Add action"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            </button>
-          )}
+              <path d="M15 6l-6 6 6 6" />
+            </svg>
+          </button>
+          <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            <Badge variant="secondary">{segment.report_id}</Badge>
+            {dirty ? (
+              <span className="text-warning">• unsaved</span>
+            ) : (
+              <span className="text-muted-foreground/70">saved</span>
+            )}
+          </h3>
         </div>
-        <div className="flex flex-col gap-3">
-          {state.actions.map((a, i) => (
-            <ActionEditor
-              key={a.id}
-              action={a}
-              templates={templates}
-              nations={nations}
-              segments={segments}
-              nextGroup={nextGroup}
-              nextGroupLetters={nextGroupLetters}
-              groupId={groupId}
-              onChange={(patch) => onActionChange(i, patch)}
-              onDelete={() => onDeleteAction(a.id)}
-            />
-          ))}
-          {state.actions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No actions yet.</p>
-          ) : null}
+        <Button
+          type="button"
+          onClick={() => startSave(saveNow)}
+          disabled={pending || !dirty}
+          variant={dirty ? "default" : "secondary"}
+          size="sm"
+        >
+          {pending ? (
+            <>
+              <Spinner />
+              Saving…
+            </>
+          ) : (
+            "Save segment"
+          )}
+        </Button>
+      </div>
+      <div className="grid grid-cols-6 gap-3">
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Variant</Label>
+          <Input
+            value={state.variant}
+            onChange={(e) => update("variant", e.target.value)}
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </div>
+        <div className="col-span-4 flex flex-col gap-1">
+          <Label>Delivery day</Label>
+          <Select
+            value={currentDayId ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              update(
+                "delivery_day_override_id",
+                v === "" ? null : v === groupDeliveryDayId ? null : v
+              );
+            }}
+            className={cn("h-8", GHOST_FIELD)}
+          >
+            <option value="">—</option>
+            {days.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.identifier}
+                {d.name ? ` — ${d.name}` : ""}
+                {d.id === groupDeliveryDayId ? " (Group Default)" : ""}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Content (markdown)</Label>
+          <AutoTextarea
+            value={state.content ?? ""}
+            onChange={(e) => update("content", e.target.value || null)}
+            minRows={8}
+            className={cn("font-mono text-xs", GHOST_FIELD)}
+          />
         </div>
       </div>
     </div>
@@ -1006,7 +1368,7 @@ function HeroSearch({
           }}
           onFocus={() => setOpen(true)}
           placeholder="Search citizens"
-          className="h-8 flex-1"
+          className={cn("h-8 flex-1", GHOST_FIELD)}
         />
         <Button
           type="button"
@@ -1159,6 +1521,7 @@ function ActionEditor({
   groupId,
   onChange,
   onDelete,
+  onOpenSegment,
 }: {
   action: ActionState;
   templates: ActionTemplate[];
@@ -1169,8 +1532,10 @@ function ActionEditor({
   groupId: string;
   onChange: (patch: Partial<ActionState>) => void;
   onDelete: () => void;
+  onOpenSegment: () => void;
 }) {
-  const [, startCreate] = useTransition();
+  const [creatingLetter, startCreateLetter] = useTransition();
+  const [creatingSegment, startCreateSegment] = useTransition();
   const tpl = action.action_template_id
     ? templates.find((t) => t.id === action.action_template_id)
     : undefined;
@@ -1186,43 +1551,46 @@ function ActionEditor({
 
   return (
     <div className="rounded-md border border-border p-3">
-      {/* Top row: icon, name, delete */}
-      <div className="mb-3 flex items-center gap-3">
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
-          style={{ background: colorHex, color: "#fff" }}
-        >
-          {iconValue ? (
-            <IconDisplay type={iconType} value={iconValue} size={16} />
-          ) : null}
-        </span>
-        <span className="flex-1 font-mono text-sm">{name}</span>
-        <DeleteX label="Delete action" onClick={onDelete} />
-      </div>
-
-      {/* Affinity line: Next letter + Report segment | Class | National | Player */}
-      <div className="flex items-start gap-4 rounded-md bg-muted/30 p-2">
-        <div className="flex items-start gap-2 pt-[1.375rem]">
-          <TileFrame label="Next letter">
+      {/* Top row: icon, name, Next letter, Report, delete */}
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
+            style={{ background: colorHex, color: "#fff" }}
+          >
+            {iconValue ? (
+              <IconDisplay type={iconType} value={iconValue} size={16} />
+            ) : null}
+          </span>
+          <span className="truncate font-mono text-sm">{name}</span>
+        </div>
+        <TileFrame label="Next letter">
+          {creatingLetter ? (
+            <CreatingPill />
+          ) : (
             <Select
               value={action.next_letter_variant ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "__new_letter") {
-                  startCreate(async () => {
-                    await createLetterInNextGroup(groupId);
+                  startCreateLetter(async () => {
+                    const { variant } = await createLetterInNextGroup(groupId);
+                    onChange({ next_letter_variant: variant });
                   });
                   return;
                 }
                 if (v === "__new_group_and_letter") {
-                  startCreate(async () => {
-                    await createNextLetterGroupAndLetter(groupId);
+                  startCreateLetter(async () => {
+                    const { variant } = await createNextLetterGroupAndLetter(
+                      groupId
+                    );
+                    onChange({ next_letter_variant: variant });
                   });
                   return;
                 }
                 onChange({ next_letter_variant: v || null });
               }}
-              className="h-7 w-28 px-1"
+              className={cn("h-7 w-28 px-1", GHOST_FIELD)}
             >
               <option value="">—</option>
               {nextGroup
@@ -1238,28 +1606,35 @@ function ActionEditor({
                   ))
                 : null}
               {nextGroup ? (
-                <option value="__new_letter">+ New letter</option>
+                <option value="__new_letter">+ Letter</option>
               ) : (
                 <option value="__new_group_and_letter">
-                  + Group + Letter
+                  + Letter Group + Letter
                 </option>
               )}
             </Select>
-          </TileFrame>
-          <TileFrame label="Report">
+          )}
+        </TileFrame>
+        <TileFrame label="Report">
+          {creatingSegment ? (
+            <CreatingPill />
+          ) : (
             <Select
               value={action.report_segment_id ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "__new_segment") {
-                  startCreate(async () => {
-                    await createReportSegmentForGroup(groupId);
+                  startCreateSegment(async () => {
+                    const { segmentId } = await createReportSegmentForGroup(
+                      groupId
+                    );
+                    onChange({ report_segment_id: segmentId });
                   });
                   return;
                 }
                 onChange({ report_segment_id: v || null });
               }}
-              className="h-7 w-28 px-1"
+              className={cn("h-7 w-28 px-1", GHOST_FIELD)}
             >
               <option value="">—</option>
               {segments.map((s) => (
@@ -1269,10 +1644,40 @@ function ActionEditor({
               ))}
               <option value="__new_segment">+ New segment</option>
             </Select>
-          </TileFrame>
-        </div>
+          )}
+        </TileFrame>
+        <button
+          type="button"
+          onClick={onOpenSegment}
+          disabled={!action.report_segment_id}
+          aria-label="Open report segment"
+          title={
+            action.report_segment_id
+              ? "Open report segment"
+              : "No report segment assigned"
+          }
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+        <DeleteX label="Delete action" onClick={onDelete} />
+      </div>
 
-        <div className="flex flex-col gap-1 border-l border-border pl-4">
+      {/* Bottom row: Class Affinity | National Affinity | World */}
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-2 rounded-md bg-muted/30 p-2">
+        <div className="flex flex-col gap-1">
           <AffinityGroupLabel>Class Affinity</AffinityGroupLabel>
           <div className="flex items-start gap-2">
             {CLASS_AFFINITY.map((c) => (
@@ -1307,21 +1712,22 @@ function ActionEditor({
           </div>
         </div>
 
+        {/* World: demerits on left, status on right — wraps as a unit */}
         <div className="flex flex-col gap-1 border-l border-border pl-4">
-          <AffinityGroupLabel>Player</AffinityGroupLabel>
+          <AffinityGroupLabel>World</AffinityGroupLabel>
           <div className="flex items-start gap-2">
-            <ClassTile
-              label="Status"
-              value={action.impact_world_status}
-              onChange={(v) =>
-                onChange({ impact_world_status: v } as Partial<ActionState>)
-              }
-            />
             <ClassTile
               label="Demerits"
               value={action.impact_demerits}
               onChange={(v) =>
                 onChange({ impact_demerits: v } as Partial<ActionState>)
+              }
+            />
+            <ClassTile
+              label="Status"
+              value={action.impact_world_status}
+              onChange={(v) =>
+                onChange({ impact_world_status: v } as Partial<ActionState>)
               }
             />
           </div>
@@ -1380,7 +1786,7 @@ function CounterInput({
         const n = Number(raw);
         if (Number.isFinite(n)) onChange(n);
       }}
-      className="h-7 w-8 px-1 text-center"
+      className={cn("h-7 w-8 px-1 text-center", GHOST_FIELD)}
     />
   );
   const minus = (
@@ -1476,6 +1882,118 @@ function NationTile({
   );
 }
 
+function BackLink({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onNavigate}
+      aria-label="Back to inspection letters"
+      title="Back to inspection letters"
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M15 18l-6-6 6-6" />
+      </svg>
+    </button>
+  );
+}
+
+function GroupIdSwitcher({
+  current,
+  currentAbbr,
+  siblings,
+  onPick,
+}: {
+  current: Pick<LetterGroup, "id" | "sequence">;
+  currentAbbr: string;
+  siblings: Array<Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name">>;
+  onPick: (slug: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Switch letter group"
+        className="inline-flex items-center gap-1 rounded-md"
+      >
+        <Badge variant="secondary" className="font-mono">
+          {currentAbbr}
+          {current.sequence}
+        </Badge>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+          className="text-muted-foreground"
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          className="absolute left-0 top-full z-20 mt-1 min-w-[220px] overflow-hidden rounded-md border border-border bg-card shadow-md"
+        >
+          {siblings.map((s) => {
+            const active = s.id === current.id;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => {
+                  setOpen(false);
+                  if (!active) onPick(`${currentAbbr}${s.sequence}`);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-accent/40",
+                  active && "bg-accent/30"
+                )}
+              >
+                <Badge variant="secondary" className="font-mono">
+                  {currentAbbr}
+                  {s.sequence}
+                </Badge>
+                <span className="truncate">{s.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function DeleteX({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
@@ -1560,5 +2078,18 @@ function Spinner() {
       aria-hidden
       className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
     />
+  );
+}
+
+function CreatingPill() {
+  return (
+    <span
+      role="status"
+      aria-label="Creating"
+      className="inline-flex h-7 w-28 items-center justify-center gap-1 rounded-md border border-border bg-muted px-1 text-[11px] text-muted-foreground"
+    >
+      <Spinner />
+      Creating…
+    </span>
   );
 }
