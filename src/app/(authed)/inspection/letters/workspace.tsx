@@ -2852,13 +2852,13 @@ function LetterGroupPill({
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center gap-1 rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] leading-none",
+        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] leading-none",
         className
       )}
       style={{ borderColor: color }}
     >
       <Mails size={11} aria-hidden className="shrink-0" />
-      <span>
+      <span className="whitespace-nowrap">
         {abbr}
         {sequence}
       </span>
@@ -2884,13 +2884,13 @@ function InspectionLetterPill({
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center gap-1 rounded-md border border-transparent px-1.5 font-mono text-[11px] leading-none",
+        "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent px-1.5 font-mono text-[11px] leading-none",
         className
       )}
       style={{ background: color, color: fg }}
     >
       <MailOpen size={11} aria-hidden className="shrink-0" />
-      <span>{contentId}</span>
+      <span className="whitespace-nowrap">{contentId}</span>
     </span>
   );
 }
