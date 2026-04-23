@@ -47,6 +47,7 @@ import {
   deleteActionRow,
   deleteGroup,
   deleteInspectionLetter,
+  deleteReportSegment,
   quickCreateCitizen,
   reorderInspectionLetters,
   saveGroup,
@@ -56,6 +57,17 @@ import {
 } from "./actions";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
+import { useConfirm } from "@/components/confirm-dialog";
+import {
+  ChevronRight,
+  MailOpen,
+  Mails,
+  Megaphone,
+  Milestone,
+  RefreshCcwDot,
+  Save,
+  Trash2,
+} from "lucide-react";
 
 /** Plain-text-until-focused look for fields — mirrors the citizens page. */
 const GHOST_FIELD =
@@ -178,6 +190,7 @@ export function LettersWorkspace({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -309,6 +322,38 @@ export function LettersWorkspace({
     // Only react to selectedGroupId changing; pathname is stable per mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId]);
+
+  async function revertGroup() {
+    if (!group || !groupDirty) return;
+    const ok = await confirmDialog({
+      title: "Discard group changes?",
+      message: "Any unsaved edits to the group will be lost.",
+      confirmLabel: "Revert",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    setGroupState({
+      storyline_id: group.storyline_id,
+      name: group.name,
+      delivery_day_id: group.delivery_day_id,
+      notes: group.notes,
+    });
+    setGroupDirty(false);
+  }
+
+  async function revertLetter() {
+    if (!letterState || !letterDirty) return;
+    const ok = await confirmDialog({
+      title: "Discard letter changes?",
+      message: "Any unsaved edits to this letter (and its actions) will be lost.",
+      confirmLabel: "Revert",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    const server = letters.find((l) => l.id === letterState.id);
+    if (server) setLetterState(toLetterState(server, actions));
+    setLetterDirty(false);
+  }
 
   function selectGroup(id: string | null) {
     if (id === selectedGroupId) {
@@ -621,6 +666,14 @@ export function LettersWorkspace({
     });
   }
 
+  function handleDeleteSegment(segmentId: string) {
+    startRowAction(async () => {
+      await deleteReportSegment(segmentId);
+      setSelectedSegmentId(null);
+      setView("actions");
+    });
+  }
+
   const [heroDialogRole, setHeroDialogRole] = useState<
     "sender" | "receiver" | null
   >(null);
@@ -725,6 +778,7 @@ export function LettersWorkspace({
             <div className="mb-3 flex items-center justify-between gap-2">
               <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 <BackLink onNavigate={() => selectGroup(null)} />
+                <Mails size={14} aria-hidden className="text-muted-foreground/70" />
                 <GroupIdSwitcher
                   current={group}
                   currentAbbr={currentStoryline?.abbreviation ?? "?"}
@@ -749,22 +803,12 @@ export function LettersWorkspace({
                   <span className="text-muted-foreground italic">(unnamed)</span>
                 )}
               </h3>
-              <Button
-                type="button"
-                onClick={handleSaveGroup}
-                disabled={groupPending || !groupDirty}
-                variant={groupDirty ? "default" : "secondary"}
-                size="sm"
-              >
-                {groupPending ? (
-                  <>
-                    <Spinner />
-                    Saving…
-                  </>
-                ) : (
-                  "Save group"
-                )}
-              </Button>
+              <SaveRevert
+                dirty={groupDirty}
+                pending={groupPending}
+                onSave={handleSaveGroup}
+                onRevert={revertGroup}
+              />
             </div>
             <div className="grid grid-cols-6 gap-3">
               <div className="col-span-3 flex flex-col gap-1">
@@ -800,31 +844,8 @@ export function LettersWorkspace({
                 />
               </div>
             </div>
-            {/* Danger zone: delete letter group */}
-            <div className="mt-4 flex justify-center border-t border-destructive/20 pt-3">
-              <button
-                type="button"
-                onClick={handleDeleteGroup}
-                disabled={groupPending}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
-              >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M3 6h18" />
-                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                </svg>
-                Delete group
-              </button>
+            <div className="mt-4 flex justify-center">
+              <DeleteButton onClick={handleDeleteGroup} disabled={groupPending} />
             </div>
           </div>
 
@@ -877,7 +898,7 @@ export function LettersWorkspace({
                     }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active && "bg-accent/40",
+                      active ? "bg-accent/40" : "hover:bg-accent/15",
                       !listLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
@@ -960,6 +981,7 @@ export function LettersWorkspace({
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
               onSave={handleSaveLetter}
+              onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
               actionsCount={letterState.actions.length}
               onShowActions={() => setView("actions")}
@@ -995,7 +1017,9 @@ export function LettersWorkspace({
               onAddAction={handleAddAction}
               onDeleteAction={handleDeleteAction}
               onOpenSegment={openSegmentForAction}
+              openSegmentId={selectedSegmentId}
               onSave={handleSaveLetter}
+              onRevert={revertLetter}
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -1010,8 +1034,20 @@ export function LettersWorkspace({
                 segments.find((s) => s.id === selectedSegmentId) ?? null
               }
               days={days}
-              groupDeliveryDayId={groupState.delivery_day_id}
+              groupDeliveryDayId={(() => {
+                // Segment default is the day AFTER the letter group delivers.
+                if (!groupState.delivery_day_id) return null;
+                const cur = days.find(
+                  (d) => d.id === groupState.delivery_day_id
+                );
+                if (!cur) return null;
+                return (
+                  days.find((d) => d.number === cur.number + 1)?.id ?? null
+                );
+              })()}
               onBack={closeSegmentPanel}
+              onDelete={handleDeleteSegment}
+              onConfirmDialog={confirmDialog}
             />
           ) : null}
         </div>
@@ -1040,6 +1076,7 @@ export function LettersWorkspace({
           onSubmit={handleEditCitizen}
         />
       ) : null}
+      {confirmDialogEl}
     </div>
   );
 }
@@ -1058,6 +1095,7 @@ function LetterFieldsCard({
   onQuickCreateHero,
   onEditCitizen,
   onSave,
+  onRevert,
   onDelete,
   actionsCount,
   onShowActions,
@@ -1075,6 +1113,7 @@ function LetterFieldsCard({
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
   onSave: () => void;
+  onRevert: () => void;
   onDelete: () => void;
   actionsCount: number;
   onShowActions: () => void;
@@ -1086,6 +1125,7 @@ function LetterFieldsCard({
     <div className="rounded-md border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <MailOpen size={14} aria-hidden className="text-muted-foreground/70" />
           <Badge variant="secondary">{letterView.content_id}</Badge>
           {dirty ? (
             <span className="text-warning">• unsaved</span>
@@ -1093,22 +1133,12 @@ function LetterFieldsCard({
             <span className="text-muted-foreground/70">saved</span>
           )}
         </h3>
-        <Button
-          type="button"
-          onClick={onSave}
-          disabled={pending || !dirty}
-          variant={dirty ? "default" : "secondary"}
-          size="sm"
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              Saving…
-            </>
-          ) : (
-            "Save letter"
-          )}
-        </Button>
+        <SaveRevert
+          dirty={dirty}
+          pending={pending}
+          onSave={onSave}
+          onRevert={onRevert}
+        />
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-4 flex flex-col gap-1">
@@ -1211,30 +1241,8 @@ function LetterFieldsCard({
         </div>
       </div>
 
-      {/* Danger zone: delete letter */}
-      <div className="mt-4 flex justify-center border-t border-destructive/20 pt-3">
-        <button
-          type="button"
-          onClick={onDelete}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M3 6h18" />
-            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-          </svg>
-          Delete letter
-        </button>
+      <div className="mt-4 flex justify-center">
+        <DeleteButton onClick={onDelete} />
       </div>
     </div>
   );
@@ -1257,7 +1265,9 @@ function LetterActionsCard({
   onAddAction,
   onDeleteAction,
   onOpenSegment,
+  openSegmentId,
   onSave,
+  onRevert,
   onBack,
 }: {
   actions: ActionState[];
@@ -1276,7 +1286,9 @@ function LetterActionsCard({
   onAddAction: (templateId: string) => void;
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
+  openSegmentId: string | null;
   onSave: () => void;
+  onRevert: () => void;
   onBack: () => void;
 }) {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -1307,6 +1319,7 @@ function LetterActionsCard({
             </svg>
           </button>
           <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            <Milestone size={14} aria-hidden className="text-muted-foreground/70" />
             Actions ({actions.length})
             {dirty ? (
               <span className="text-warning">• unsaved</span>
@@ -1315,22 +1328,12 @@ function LetterActionsCard({
             )}
           </h4>
         </div>
-        <Button
-          type="button"
-          onClick={onSave}
-          disabled={pending || !dirty}
-          variant={dirty ? "default" : "secondary"}
-          size="sm"
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              Saving…
-            </>
-          ) : (
-            "Save actions"
-          )}
-        </Button>
+        <SaveRevert
+          dirty={dirty}
+          pending={pending}
+          onSave={onSave}
+          onRevert={onRevert}
+        />
       </div>
       <div className="flex flex-col gap-3">
         {actions.map((a, i) => (
@@ -1348,6 +1351,9 @@ function LetterActionsCard({
             onChange={(patch) => onActionChange(i, patch)}
             onDelete={() => onDeleteAction(a.id)}
             onOpenSegment={() => onOpenSegment(i)}
+            segmentOpen={
+              !!a.report_segment_id && a.report_segment_id === openSegmentId
+            }
           />
         ))}
         {actions.length === 0 ? (
@@ -1397,6 +1403,8 @@ function LetterSegmentCard({
   days,
   groupDeliveryDayId,
   onBack,
+  onDelete,
+  onConfirmDialog,
 }: {
   segment: ReportSegmentView | null;
   days: Day[];
@@ -1405,6 +1413,13 @@ function LetterSegmentCard({
     dirty: boolean,
     onSave: () => Promise<void>
   ) => void;
+  onDelete: (segmentId: string) => void;
+  onConfirmDialog: (options: {
+    title: string;
+    message?: string;
+    confirmLabel?: string;
+    intent?: "destructive" | "default";
+  }) => Promise<boolean>;
 }) {
   const [state, setState] = useState(() =>
     segment
@@ -1479,7 +1494,12 @@ function LetterSegmentCard({
             </svg>
           </button>
           <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            <Badge variant="secondary">{segment.report_id}</Badge>
+            <Megaphone
+              size={14}
+              aria-hidden
+              className="text-muted-foreground/70"
+            />
+            <Badge variant="secondary">{segment.report_id.toLowerCase()}</Badge>
             {dirty ? (
               <span className="text-warning">• unsaved</span>
             ) : (
@@ -1487,30 +1507,44 @@ function LetterSegmentCard({
             )}
           </h3>
         </div>
-        <Button
-          type="button"
-          onClick={() => startSave(saveNow)}
-          disabled={pending || !dirty}
-          variant={dirty ? "default" : "secondary"}
-          size="sm"
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              Saving…
-            </>
-          ) : (
-            "Save segment"
-          )}
-        </Button>
+        <SaveRevert
+          dirty={dirty}
+          pending={pending}
+          onSave={() => startSave(saveNow)}
+          onRevert={async () => {
+            if (!dirty || !segment) return;
+            const ok = await onConfirmDialog({
+              title: "Discard segment changes?",
+              message: "Any unsaved edits will be lost.",
+              confirmLabel: "Revert",
+              intent: "destructive",
+            });
+            if (!ok) return;
+            setState({
+              variant: segment.variant,
+              content: segment.content,
+              delivery_day_override_id: segment.delivery_day_override_id,
+            });
+            setDirty(false);
+          }}
+        />
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
           <Label>Variant</Label>
           <Input
             value={state.variant}
-            onChange={(e) => update("variant", e.target.value)}
-            className={cn("h-8", GHOST_FIELD)}
+            onChange={(e) =>
+              update("variant", formatRomanInput(e.target.value))
+            }
+            placeholder="i"
+            className={cn(
+              "h-8 lowercase",
+              GHOST_FIELD,
+              state.variant && !isValidRoman(state.variant)
+                ? "ring-2 ring-destructive"
+                : undefined
+            )}
           />
         </div>
         <div className="col-span-4 flex flex-col gap-1">
@@ -1537,6 +1571,20 @@ function LetterSegmentCard({
             className={cn("font-mono text-xs", GHOST_FIELD)}
           />
         </div>
+      </div>
+      <div className="mt-4 flex justify-center">
+        <DeleteButton
+          onClick={async () => {
+            const ok = await onConfirmDialog({
+              title: "Delete report segment?",
+              message: `Segment ${segment.report_id.toLowerCase()} will be removed from the report. This cannot be undone.`,
+              confirmLabel: "Delete",
+              intent: "destructive",
+            });
+            if (!ok) return;
+            onDelete(segment.id);
+          }}
+        />
       </div>
     </div>
   );
@@ -2289,6 +2337,7 @@ function ActionEditor({
   onChange,
   onDelete,
   onOpenSegment,
+  segmentOpen,
 }: {
   action: ActionState;
   templates: ActionTemplate[];
@@ -2302,6 +2351,7 @@ function ActionEditor({
   onChange: (patch: Partial<ActionState>) => void;
   onDelete: () => void;
   onOpenSegment: () => void;
+  segmentOpen: boolean;
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
@@ -2449,7 +2499,12 @@ function ActionEditor({
               ? "Open report segment"
               : "No report segment assigned"
           }
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          className={cn(
+            "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+            segmentOpen
+              ? "border-foreground/40 bg-accent/60 text-foreground"
+              : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground"
+          )}
         >
           <svg
             width="14"
@@ -2526,38 +2581,8 @@ function ActionEditor({
         </div>
       </div>
 
-      {/* Danger zone: delete action */}
-      <div className="mt-3 flex justify-center border-t border-destructive/20 pt-2">
-        <button
-          type="button"
-          onClick={() => {
-            if (
-              confirm(
-                `Delete action "${name}"? This cannot be undone.`
-              )
-            ) {
-              onDelete();
-            }
-          }}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M3 6h18" />
-            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-          </svg>
-          Delete action
-        </button>
+      <div className="mt-3 flex justify-center">
+        <DeleteButton onClick={onDelete} />
       </div>
     </div>
   );
@@ -2591,66 +2616,52 @@ function AffinityGroupLabel({ children }: { children: React.ReactNode }) {
 function CounterInput({
   value,
   onChange,
-  orientation,
 }: {
   value: number;
   onChange: (v: number) => void;
-  orientation: "horizontal" | "vertical";
+  orientation?: "horizontal" | "vertical";
 }) {
-  const input = (
-    <Input
-      type="text"
-      inputMode="numeric"
-      value={value === 0 ? "" : String(value)}
-      placeholder=""
-      onChange={(e) => {
-        const raw = e.target.value.replace(/[^0-9-]/g, "");
-        if (raw === "" || raw === "-") {
-          onChange(0);
-          return;
-        }
-        const n = Number(raw);
-        if (Number.isFinite(n)) onChange(n);
-      }}
-      className={cn("h-7 w-8 px-1 text-center", GHOST_FIELD)}
-    />
-  );
-  const minus = (
-    <button
-      type="button"
-      onClick={() => onChange(value - 1)}
-      tabIndex={-1}
-      className="flex h-4 w-8 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-      aria-label="Decrease"
-    >
-      −
-    </button>
-  );
-  const plus = (
-    <button
-      type="button"
-      onClick={() => onChange(value + 1)}
-      tabIndex={-1}
-      className="flex h-4 w-8 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-      aria-label="Increase"
-    >
-      +
-    </button>
-  );
-  if (orientation === "vertical") {
-    return (
-      <div className="flex flex-col items-center gap-0.5">
-        {plus}
-        {input}
-        {minus}
-      </div>
-    );
-  }
   return (
-    <div className="flex items-center gap-1">
-      {minus}
-      {input}
-      {plus}
+    <div className="group flex flex-col items-center gap-0.5">
+      <Input
+        type="text"
+        inputMode="numeric"
+        value={value === 0 ? "" : String(value)}
+        placeholder="—"
+        onChange={(e) => {
+          const raw = e.target.value.replace(/[^0-9-]/g, "");
+          if (raw === "" || raw === "-") {
+            onChange(0);
+            return;
+          }
+          const n = Number(raw);
+          if (Number.isFinite(n)) onChange(n);
+        }}
+        className={cn(
+          "h-6 w-9 px-1 text-center placeholder:text-muted-foreground/70",
+          GHOST_FIELD
+        )}
+      />
+      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <button
+          type="button"
+          onClick={() => onChange(value - 1)}
+          tabIndex={-1}
+          className="flex h-4 w-4 items-center justify-center rounded-sm text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label="Decrease"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange(value + 1)}
+          tabIndex={-1}
+          className="flex h-4 w-4 items-center justify-center rounded-sm text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label="Increase"
+        >
+          +
+        </button>
+      </div>
     </div>
   );
 }
@@ -3061,6 +3072,89 @@ function DayOption({
       {children}
     </button>
   );
+}
+
+/** Muted-outlined delete button used across all entity panels. */
+function DeleteButton({
+  onClick,
+  disabled,
+  label = "Delete",
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-destructive hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
+    >
+      <Trash2 size={12} aria-hidden />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+/**
+ * Icon-only save + revert pair. Revert is guarded with a confirm modal when
+ * the field is dirty; both are disabled when there are no unsaved changes.
+ */
+function SaveRevert({
+  dirty,
+  pending,
+  onSave,
+  onRevert,
+}: {
+  dirty: boolean;
+  pending: boolean;
+  onSave: () => void;
+  onRevert: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={onRevert}
+        disabled={!dirty || pending}
+        aria-label="Revert changes"
+        title="Revert to saved"
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+          dirty && !pending
+            ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+            : "cursor-not-allowed text-muted-foreground/30"
+        )}
+      >
+        <RefreshCcwDot size={14} aria-hidden />
+      </button>
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={!dirty || pending}
+        aria-label="Save"
+        title="Save"
+        className={cn(
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+          dirty && !pending
+            ? "bg-primary text-primary-foreground hover:bg-primary/90"
+            : "cursor-not-allowed bg-muted text-muted-foreground/50"
+        )}
+      >
+        {pending ? <Spinner /> : <Save size={14} aria-hidden />}
+      </button>
+    </div>
+  );
+}
+
+const ROMAN_RE = /^[ivxlcdm]+$/;
+function formatRomanInput(raw: string): string {
+  return raw.toLowerCase().replace(/[^ivxlcdm]/g, "");
+}
+function isValidRoman(v: string): boolean {
+  return ROMAN_RE.test(v);
 }
 
 function CreatingPill() {

@@ -456,6 +456,16 @@ export async function createNextLetterGroupAndLetter(
   return { newGroupId, letterId, variant };
 }
 
+export async function deleteReportSegment(segmentId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("report_segments")
+    .delete()
+    .eq("id", segmentId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+}
+
 export async function saveReportSegment(data: {
   id: string;
   variant: string;
