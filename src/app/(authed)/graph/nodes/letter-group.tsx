@@ -3,37 +3,34 @@
 import { memo } from "react";
 import Link from "next/link";
 import { type NodeProps } from "@xyflow/react";
+import { LetterGroupPill } from "@/components/pills";
 
 export type LetterGroupData = {
   width: number;
   height: number;
-  label: string; // e.g. "L-W2 Mainstage announcement"
+  sequence: number; // group sequence (e.g., 2)
+  abbr: string; // storyline abbreviation
   color: string; // storyline color hex
-  href: string; // click target
+  href: string;
 };
 
 function LetterGroupNode({ data }: NodeProps) {
   const d = data as unknown as LetterGroupData;
   return (
     <div
-      style={{
-        width: d.width,
-        height: d.height,
-        borderColor: `color-mix(in srgb, ${d.color} 60%, var(--border))`,
-      }}
-      className="relative rounded-md border-[1.5px] bg-card/40"
+      style={{ width: d.width, height: d.height }}
+      className="relative rounded-md border border-transparent bg-white/5"
     >
       <Link
         href={d.href}
         draggable={false}
         onDragStart={(e) => e.preventDefault()}
-        className="absolute left-2 -top-2.5 inline-flex h-5 items-center rounded bg-card px-1.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground"
-        style={{
-          borderColor: `color-mix(in srgb, ${d.color} 60%, var(--border))`,
-          border: "1px solid",
-        }}
+        className="absolute left-1/2 -top-3 -translate-x-1/2"
       >
-        {d.label}
+        <LetterGroupPill
+          storyline={{ abbreviation: d.abbr, color_hex: d.color }}
+          sequence={d.sequence}
+        />
       </Link>
     </div>
   );

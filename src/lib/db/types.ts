@@ -148,6 +148,7 @@ export interface ReportSegment {
   id: string;
   report_group_id: string;
   variant: string;
+  summary: string | null;
   content: string | null;
   delivery_day_override_id: string | null;
   sort_order: number;

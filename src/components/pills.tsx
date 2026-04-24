@@ -1,4 +1,4 @@
-import { Mail, MailOpen, Megaphone } from "lucide-react";
+import { Mail, MailOpen, Mails, Megaphone } from "lucide-react";
 import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import type { Storyline } from "@/lib/db/types";
@@ -62,17 +62,50 @@ export function StorylinePill({
   );
 }
 
+/** [Mails][abbr+sequence] pill with a storyline-color border on a card fill. */
+export function LetterGroupPill({
+  storyline,
+  sequence,
+  className,
+  style,
+}: {
+  storyline: Pick<Storyline, "abbreviation" | "color_hex"> | undefined;
+  sequence: number;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const abbr = storyline?.abbreviation ?? "?";
+  const color = storyline?.color_hex ?? "#888888";
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
+        className
+      )}
+      style={{ borderColor: color, ...style }}
+    >
+      <Mails size={11} aria-hidden className="shrink-0" />
+      <span className="whitespace-nowrap">
+        {abbr}
+        {sequence}
+      </span>
+    </span>
+  );
+}
+
 /** [icon][content_id] pill filled with the storyline color. */
 export function InspectionLetterPill({
   storyline,
   contentId,
   className,
   closed,
+  style,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   contentId: string;
   className?: string;
   closed?: boolean;
+  style?: React.CSSProperties;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   const Icon = closed ? Mail : MailOpen;
@@ -82,7 +115,7 @@ export function InspectionLetterPill({
         "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
         className
       )}
-      style={{ background: color }}
+      style={{ background: color, ...style }}
     >
       <Icon size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">{contentId}</span>
@@ -98,10 +131,12 @@ export function ReportSegmentPill({
   storyline,
   reportId,
   className,
+  style,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   reportId: string;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   return (
@@ -112,10 +147,138 @@ export function ReportSegmentPill({
       )}
       style={{
         backgroundColor: `color-mix(in srgb, ${color} 40%, var(--card))`,
+        ...style,
       }}
     >
       <Megaphone size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">{reportId}</span>
     </span>
+  );
+}
+
+/**
+ * Card layout: storyline-bordered wrapper with the existing pill as a heading
+ * row and a body box of summary text underneath. Empty summary collapses the
+ * body. Used in the narrative graph; matches the design where each node grows
+ * to fit a short summary.
+ */
+// The pill acts as the card's heading, flush with the top edge. Only the
+// border inflates the outer width beyond PILL_W.
+export const PILL_CARD_BORDER = 3;
+export const PILL_CARD_EXTRA = PILL_CARD_BORDER;
+// Pill (heading) height inside the card.
+export const PILL_H_PX = 24;
+// Distance from card top to the heading-row vertical center. Used by graph
+// nodes to pin xyflow handles at the pill row regardless of body height.
+export const HEADING_CENTER_OFFSET_PX = PILL_CARD_BORDER / 2 + PILL_H_PX / 2;
+
+function PillCard({
+  borderColor,
+  children,
+  summary,
+  widthPx,
+  className,
+}: {
+  borderColor: string;
+  children: React.ReactNode;
+  summary: string | null | undefined;
+  widthPx?: number;
+  className?: string;
+}) {
+  const trimmed = summary?.trim();
+  return (
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden rounded-md border-[1.5px]",
+        className
+      )}
+      style={{
+        borderColor,
+        width: widthPx ? widthPx + PILL_CARD_EXTRA : undefined,
+      }}
+    >
+      {children}
+      {trimmed ? (
+        <div
+          className="px-1.5 py-1 text-xs leading-snug text-white/70"
+          style={{ wordBreak: "break-word" }}
+        >
+          {trimmed}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Letter pill rendered as the card heading, flush with the top border. */
+export function InspectionLetterCard({
+  storyline,
+  contentId,
+  summary,
+  widthPx,
+  className,
+}: {
+  storyline: Pick<Storyline, "color_hex"> | undefined;
+  contentId: string;
+  summary: string | null | undefined;
+  widthPx?: number;
+  className?: string;
+}) {
+  const color = storyline?.color_hex ?? "#888888";
+  return (
+    <PillCard
+      borderColor={color}
+      summary={summary}
+      widthPx={widthPx}
+      className={className}
+    >
+      <InspectionLetterPill
+        storyline={storyline}
+        contentId={contentId}
+        className={cn(
+          "!rounded-none",
+          widthPx ? "justify-start" : undefined
+        )}
+        style={widthPx ? { width: widthPx } : undefined}
+      />
+    </PillCard>
+  );
+}
+
+/** Report pill rendered as the card heading. Border matches the pill tint. */
+export function ReportSegmentCard({
+  storyline,
+  reportId,
+  summary,
+  widthPx,
+  className,
+}: {
+  storyline: Pick<Storyline, "color_hex"> | undefined;
+  reportId: string;
+  summary: string | null | undefined;
+  widthPx?: number;
+  className?: string;
+}) {
+  const color = storyline?.color_hex ?? "#888888";
+  // The report pill is a 40% mix of storyline + card; the card border matches
+  // it so the heading flows seamlessly into the box outline.
+  const borderColor = `color-mix(in srgb, ${color} 40%, var(--card))`;
+  return (
+    <PillCard
+      borderColor={borderColor}
+      summary={summary}
+      widthPx={widthPx}
+      className={className}
+    >
+      <ReportSegmentPill
+        storyline={storyline}
+        reportId={reportId}
+        className={cn(
+          "!rounded-none",
+          widthPx ? "justify-start" : undefined
+        )}
+        style={widthPx ? { width: widthPx } : undefined}
+      />
+    </PillCard>
   );
 }

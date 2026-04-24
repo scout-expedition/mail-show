@@ -55,6 +55,7 @@ import {
   deleteGroup,
   deleteInspectionLetter,
   deleteReportSegment,
+  ensureInspectionLetterVariant,
   quickCreateCitizen,
   reorderInspectionLetters,
   reorderLetterGroups,
@@ -871,7 +872,10 @@ export function LettersWorkspace({
       setLetterDirty(false);
       setActionsDirty(false);
     }
+    // Clear the letter detail slot as well — otherwise the letter form stays
+    // rendered underneath and the segment detail pane never shows.
     setSelectedId(null);
+    setLetterState(null);
     setSelectedSegmentId(segmentId);
     setView("main");
   }
@@ -1756,7 +1760,7 @@ export function LettersWorkspace({
             <div className="flex flex-col">
               {segments.map((seg) => {
                 const active = seg.id === selectedSegmentId;
-                const preview = (seg.content ?? "").trim().split("\n")[0] ?? "";
+                const preview = (seg.summary ?? "").trim();
                 return (
                   <button
                     key={seg.id}
@@ -1819,7 +1823,17 @@ export function LettersWorkspace({
               onSave={handleSaveLetterFields}
               onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
-              onBack={() => selectLetter(letterState.id)}
+              onBack={() => {
+                // From actions/segment views, "back" steps up one level
+                // to the letter detail. From the letter detail itself,
+                // it toggles the letter off.
+                if (view === "actions" || view === "segment") {
+                  setView("main");
+                  setSelectedSegmentId(null);
+                  return;
+                }
+                selectLetter(letterState.id);
+              }}
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
               onShowActions={() => setView("actions")}
@@ -2356,10 +2370,16 @@ function LetterSegmentCard({
     segment
       ? {
           variant: segment.variant,
+          summary: segment.summary,
           content: segment.content,
           delivery_day_override_id: segment.delivery_day_override_id,
         }
-      : { variant: "", content: null as string | null, delivery_day_override_id: null as string | null }
+      : {
+          variant: "",
+          summary: null as string | null,
+          content: null as string | null,
+          delivery_day_override_id: null as string | null,
+        }
   );
   const [dirty, setDirty] = useState(false);
   const [pending, startSave] = useTransition();
@@ -2368,6 +2388,7 @@ function LetterSegmentCard({
     if (!segment) return;
     setState({
       variant: segment.variant,
+      summary: segment.summary,
       content: segment.content,
       delivery_day_override_id: segment.delivery_day_override_id,
     });
@@ -2379,6 +2400,7 @@ function LetterSegmentCard({
     await saveReportSegment({
       id: segment.id,
       variant: state.variant.trim() || segment.variant,
+      summary: state.summary,
       content: state.content,
       delivery_day_override_id: state.delivery_day_override_id,
     });
@@ -2455,6 +2477,7 @@ function LetterSegmentCard({
               if (!ok) return;
               setState({
                 variant: segment.variant,
+                summary: segment.summary,
                 content: segment.content,
                 delivery_day_override_id: segment.delivery_day_override_id,
               });
@@ -2547,6 +2570,14 @@ function LetterSegmentCard({
                 !v ? null : v === groupDeliveryDayId ? null : v
               )
             }
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </div>
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Summary</Label>
+          <Input
+            value={state.summary ?? ""}
+            onChange={(e) => update("summary", e.target.value || null)}
             className={cn("h-8", GHOST_FIELD)}
           />
         </div>
@@ -3300,49 +3331,64 @@ function AddLetterMenu({
   onPick: (count: number) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-  return (
-    <div ref={ref} className="relative">
+
+  if (pending) {
+    return (
+      <button type="button" disabled className={MUTED_ADD_BTN}>
+        <Spinner />
+        Working…
+      </button>
+    );
+  }
+
+  if (!open) {
+    return (
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        disabled={pending}
+        onClick={() => setOpen(true)}
         className={MUTED_ADD_BTN}
       >
-        {pending ? (
-          <>
-            <Spinner />
-            Working…
-          </>
-        ) : (
-          "+ Inspection Letter"
-        )}
+        + Inspection Letter
       </button>
-      {open && !pending ? (
-        <div className="absolute bottom-full left-1/2 z-10 mb-1 flex -translate-x-1/2 flex-col overflow-hidden rounded-md border border-border bg-card shadow-md">
-          {[1, 2, 3].map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onPick(n);
-              }}
-              className="px-4 py-1.5 text-left text-sm hover:bg-accent/40"
-            >
-              {n} letter{n > 1 ? "s" : ""}
-            </button>
-          ))}
-        </div>
-      ) : null}
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {[1, 2, 3].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            onPick(n);
+          }}
+          className={MUTED_ADD_BTN}
+        >
+          + {n === 1 ? "Letter" : `${n} Letters`}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        aria-label="Cancel"
+        title="Cancel"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -3655,27 +3701,39 @@ function ActionEditor({
                     onPick: () => onChange({ next_letter_variant: null }),
                   },
                   ...(nextGroup
-                    ? nextGroupLetters
-                        .filter((l) => l.variant)
-                        .map((l) => ({
-                          key: l.id,
-                          active: action.next_letter_variant === l.variant,
-                          label: (
-                            <>
-                              <InspectionLetterPill
-                                storyline={storyline}
-                                contentId={l.content_id}
-                              />
-                              {l.summary ? (
-                                <span className="truncate text-muted-foreground">
-                                  {l.summary.slice(0, 24)}
-                                </span>
-                              ) : null}
-                            </>
-                          ),
-                          onPick: () =>
-                            onChange({ next_letter_variant: l.variant }),
-                        }))
+                    ? nextGroupLetters.map((l) => ({
+                        key: l.id,
+                        active:
+                          !!l.variant &&
+                          action.next_letter_variant === l.variant,
+                        label: (
+                          <>
+                            <InspectionLetterPill
+                              storyline={storyline}
+                              contentId={l.content_id}
+                            />
+                            {l.summary ? (
+                              <span className="truncate text-muted-foreground">
+                                {l.summary.slice(0, 24)}
+                              </span>
+                            ) : null}
+                          </>
+                        ),
+                        onPick: () => {
+                          if (l.variant) {
+                            onChange({ next_letter_variant: l.variant });
+                            return;
+                          }
+                          // The next letter has no variant (single-letter
+                          // group). Promote it to 'a' so the action can
+                          // reference it stably.
+                          startCreateLetter(async () => {
+                            const { variant } =
+                              await ensureInspectionLetterVariant(l.id);
+                            onChange({ next_letter_variant: variant });
+                          });
+                        },
+                      }))
                     : []),
                   nextGroup
                     ? {

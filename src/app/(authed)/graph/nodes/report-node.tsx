@@ -3,13 +3,18 @@
 import { memo } from "react";
 import Link from "next/link";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { ReportSegmentPill } from "@/components/pills";
+import {
+  HEADING_CENTER_OFFSET_PX,
+  ReportSegmentCard,
+} from "@/components/pills";
 import type { Storyline } from "@/lib/db/types";
 
 export type ReportNodeData = {
   reportId: string;
   href: string;
   storyline: Pick<Storyline, "color_hex">;
+  summary: string | null;
+  widthPx?: number;
 };
 
 function ReportNode({ data }: NodeProps) {
@@ -21,15 +26,18 @@ function ReportNode({ data }: NodeProps) {
         position={Position.Left}
         isConnectable={false}
         className="!h-2 !w-2 !border-none !bg-transparent"
+        style={{ top: HEADING_CENTER_OFFSET_PX }}
       />
       <Link
         href={d.href}
         draggable={false}
         onDragStart={(e) => e.preventDefault()}
       >
-        <ReportSegmentPill
+        <ReportSegmentCard
           storyline={d.storyline}
           reportId={d.reportId}
+          summary={d.summary}
+          widthPx={d.widthPx}
         />
       </Link>
       <Handle
@@ -37,6 +45,7 @@ function ReportNode({ data }: NodeProps) {
         position={Position.Right}
         isConnectable={false}
         className="!h-2 !w-2 !border-none !bg-transparent"
+        style={{ top: HEADING_CENTER_OFFSET_PX }}
       />
     </div>
   );

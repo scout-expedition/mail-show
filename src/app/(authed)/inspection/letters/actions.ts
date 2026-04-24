@@ -7,7 +7,9 @@ import type { CitizenType, IconType } from "@/lib/db/enums";
 
 /**
  * Reassign variants for every letter in a group based on current sort_order.
- * One letter → variant = null. Multiple → a, b, c... in sort_order.
+ * Always 'a', 'b', 'c' ... — the view hides the "/a" suffix when the group
+ * has only one letter, so the display stays clean while the underlying
+ * variant is stable for action references.
  */
 async function reassignVariants(groupId: string) {
   const supabase = await createSupabaseServerClient();
@@ -18,13 +20,6 @@ async function reassignVariants(groupId: string) {
     .order("sort_order");
   const list = rows ?? [];
   if (list.length === 0) return;
-  if (list.length === 1) {
-    await supabase
-      .from("inspection_letters")
-      .update({ variant: null })
-      .eq("id", list[0].id as string);
-    return;
-  }
   for (let i = 0; i < list.length; i++) {
     const variant = String.fromCharCode(97 + i);
     await supabase
@@ -463,6 +458,21 @@ async function ensureLetterVariant(letterId: string): Promise<string> {
 }
 
 /**
+ * Public wrapper: promote a letter's variant from null to 'a' if needed, so
+ * actions can reference it by `next_letter_variant`. Single-letter groups
+ * keep a null variant for display, but picking them as a "next letter"
+ * requires a stable variant to point at.
+ */
+export async function ensureInspectionLetterVariant(
+  letterId: string
+): Promise<{ variant: string }> {
+  const variant = await ensureLetterVariant(letterId);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  return { variant };
+}
+
+/**
  * Create a new letter in the "next" letter group (by sequence) in the same
  * storyline. Returns the new letter's variant so the caller can set it as
  * `next_letter_variant` on the current action.
@@ -577,6 +587,7 @@ export async function deleteReportSegment(segmentId: string) {
 export async function saveReportSegment(data: {
   id: string;
   variant: string;
+  summary: string | null;
   content: string | null;
   delivery_day_override_id: string | null;
 }) {
@@ -592,11 +603,43 @@ export async function saveReportSegment(data: {
   revalidatePath("/inspection/letters");
 }
 
+function toRoman(n: number): string {
+  if (n <= 0) return String(n);
+  const pairs: Array<[number, string]> = [
+    [1000, "m"],
+    [900, "cm"],
+    [500, "d"],
+    [400, "cd"],
+    [100, "c"],
+    [90, "xc"],
+    [50, "l"],
+    [40, "xl"],
+    [10, "x"],
+    [9, "ix"],
+    [5, "v"],
+    [4, "iv"],
+    [1, "i"],
+  ];
+  let out = "";
+  let rem = n;
+  for (const [v, ch] of pairs) {
+    while (rem >= v) {
+      out += ch;
+      rem -= v;
+    }
+  }
+  return out;
+}
+
 /**
  * Create a new report segment in the given letter group's report_group.
  * When `deliveryDayId` is provided, it is set as the segment's
  * `delivery_day_override_id` (typically the day after the inspection letter
  * delivers). Returns the new segment's id for the action linkage.
+ *
+ * Variant selection: scans existing variants in the report group and picks
+ * the first unused lowercase roman numeral (i, ii, iii, …). This fills
+ * gaps left by deletes instead of colliding on (report_group_id, variant).
  */
 export async function createReportSegmentForGroup(
   groupId: string,
@@ -609,30 +652,33 @@ export async function createReportSegmentForGroup(
     .eq("letter_group_id", groupId)
     .maybeSingle();
   if (!rg) throw new Error("Report group missing");
+
   const { data: existing } = await supabase
     .from("report_segments")
-    .select("sort_order")
-    .eq("report_group_id", rg.id)
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
-  // Variant is a roman numeral — use the next sequential one.
-  const roman = (n: number): string => {
-    const m = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
-    return m[n - 1] ?? String(n);
-  };
+    .select("variant")
+    .eq("report_group_id", rg.id);
+  const taken = new Set((existing ?? []).map((r) => r.variant as string));
+
+  let index = 1;
+  let variant = toRoman(index);
+  while (taken.has(variant)) {
+    index += 1;
+    variant = toRoman(index);
+  }
+
   const { data: inserted, error } = await supabase
     .from("report_segments")
     .insert({
       report_group_id: rg.id,
-      variant: roman(nextSort),
-      sort_order: nextSort,
+      variant,
+      sort_order: index,
       delivery_day_override_id: deliveryDayId,
     })
     .select("id")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
   return { segmentId: inserted!.id as string };
 }
 

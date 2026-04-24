@@ -1,14 +1,16 @@
-import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   ActionRow,
+  ActionTemplate,
   Day,
+  InspectionActionEndingAssignment,
   InspectionLetterView,
   LetterGroup,
+  Nation,
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
-import { GraphView } from "./graph-view";
+import { GraphSurface } from "./graph-surface";
 
 export default async function GraphPage() {
   const supabase = await createSupabaseServerClient();
@@ -19,6 +21,9 @@ export default async function GraphPage() {
     { data: aData },
     { data: dData },
     { data: rData },
+    { data: tData },
+    { data: nData },
+    { data: eaData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
     supabase.from("letter_groups").select("*").order("sequence"),
@@ -26,6 +31,9 @@ export default async function GraphPage() {
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("days").select("*").order("number"),
     supabase.from("report_segments_view").select("*"),
+    supabase.from("action_templates").select("*"),
+    supabase.from("nations").select("*").order("sort_order"),
+    supabase.from("inspection_action_ending_assignments").select("*"),
   ]);
   const storylines = (sData ?? []) as Storyline[];
   const letterGroups = (gData ?? []) as LetterGroup[];
@@ -33,27 +41,21 @@ export default async function GraphPage() {
   const actions = (aData ?? []) as ActionRow[];
   const days = (dData ?? []) as Day[];
   const segments = (rData ?? []) as ReportSegmentView[];
+  const actionTemplates = (tData ?? []) as ActionTemplate[];
+  const nations = (nData ?? []) as Nation[];
+  const endingAssignments = (eaData ?? []) as InspectionActionEndingAssignment[];
 
   return (
-    <div>
-      <PageHeader
-        title="Narrative graph"
-        description="Columns are days; rows are storylines. Letter groups sit in their delivery day; actions arrow to report segments and the next letter."
-      />
-      {letterGroups.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-          Create some storylines and letter groups to see the graph.
-        </p>
-      ) : (
-        <GraphView
-          storylines={storylines}
-          letterGroups={letterGroups}
-          letters={letters}
-          actions={actions}
-          days={days}
-          segments={segments}
-        />
-      )}
-    </div>
+    <GraphSurface
+      storylines={storylines}
+      letterGroups={letterGroups}
+      letters={letters}
+      actions={actions}
+      actionTemplates={actionTemplates}
+      days={days}
+      segments={segments}
+      nations={nations}
+      endingAssignments={endingAssignments}
+    />
   );
 }
