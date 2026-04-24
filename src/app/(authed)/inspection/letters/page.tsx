@@ -5,6 +5,9 @@ import type {
   Citizen,
   City,
   Day,
+  EndingVariable,
+  EndingVariableValue,
+  InspectionActionEndingAssignment,
   InspectionLetterView,
   LetterGroup,
   Nation,
@@ -41,6 +44,9 @@ export default async function InspectionLettersPage({
     { data: citiesData },
     { data: nationsData },
     { data: segmentsData },
+    { data: endingVarData },
+    { data: endingValueData },
+    { data: endingAssignmentData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
     supabase.from("letter_groups").select("*").order("sequence"),
@@ -57,6 +63,9 @@ export default async function InspectionLettersPage({
     supabase.from("cities").select("*"),
     supabase.from("nations").select("*"),
     supabase.from("report_segments_view").select("*"),
+    supabase.from("ending_variables").select("*").order("sort_order"),
+    supabase.from("ending_variable_values").select("*").order("sort_order"),
+    supabase.from("inspection_action_ending_assignments").select("*"),
   ]);
 
   const storylines = (sData ?? []) as Storyline[];
@@ -74,6 +83,10 @@ export default async function InspectionLettersPage({
   const cities = (citiesData ?? []) as City[];
   const nations = (nationsData ?? []) as Nation[];
   const segments = (segmentsData ?? []) as ReportSegmentView[];
+  const endingVariables = (endingVarData ?? []) as EndingVariable[];
+  const endingValues = (endingValueData ?? []) as EndingVariableValue[];
+  const endingAssignments = (endingAssignmentData ??
+    []) as InspectionActionEndingAssignment[];
 
   // Resolve ?group=<slug>, ?letter=<slug>/<variant>, ?report=<slug>/<variant>
   // into initial ids. `?letter` and `?report` imply their containing group.
@@ -156,6 +169,9 @@ export default async function InspectionLettersPage({
       cities={cities}
       nations={nations}
       segments={segments}
+      endingVariables={endingVariables}
+      endingValues={endingValues}
+      endingAssignments={endingAssignments}
       initialGroupId={initialGroupId}
       initialLetterId={initialLetterId}
       initialSegmentId={initialSegmentId}

@@ -45,6 +45,8 @@ type LetterPatch = {
   notes: string | null;
 };
 
+type EndingAssignmentPatch = { variable_id: string; value_id: string };
+
 type ActionPatch = {
   id: string;
   report_segment_id: string | null;
@@ -58,7 +60,48 @@ type ActionPatch = {
   impact_emberlyn: number;
   impact_spokgrad: number;
   impact_pelico: number;
+  ending_assignments: EndingAssignmentPatch[];
 };
+
+/**
+ * Replace an action's ending-variable assignments wholesale. The caller
+ * passes the full desired set; we delete whatever's there and reinsert.
+ * De-dupes by variable_id so we never violate the (action_id, variable_id)
+ * unique constraint even if the client sends two rows for the same variable.
+ */
+async function replaceEndingAssignments(
+  actionId: string,
+  assignments: EndingAssignmentPatch[]
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error: delErr } = await supabase
+    .from("inspection_action_ending_assignments")
+    .delete()
+    .eq("action_id", actionId);
+  if (delErr) throw new Error(delErr.message);
+  const seen = new Set<string>();
+  const rows: Array<{
+    action_id: string;
+    variable_id: string;
+    value_id: string;
+  }> = [];
+  for (const a of assignments) {
+    if (!a.variable_id || !a.value_id) continue;
+    if (seen.has(a.variable_id)) continue;
+    seen.add(a.variable_id);
+    rows.push({
+      action_id: actionId,
+      variable_id: a.variable_id,
+      value_id: a.value_id,
+    });
+  }
+  if (rows.length > 0) {
+    const { error } = await supabase
+      .from("inspection_action_ending_assignments")
+      .insert(rows);
+    if (error) throw new Error(error.message);
+  }
+}
 
 export async function saveGroup(data: {
   id: string;
@@ -305,14 +348,16 @@ export async function saveLetterWithActions(
     .eq("id", letterId);
   if (lErr) throw new Error(lErr.message);
   for (const a of actions) {
-    const { id: actionId, ...rest } = a;
+    const { id: actionId, ending_assignments, ...rest } = a;
     const { error } = await supabase
       .from("actions")
       .update(rest)
       .eq("id", actionId);
     if (error) throw new Error(error.message);
+    await replaceEndingAssignments(actionId, ending_assignments);
   }
   revalidatePath("/inspection/letters");
+  revalidatePath("/endings/frameworks");
 }
 
 /** Save just the inspection letter row — no actions touched. */
@@ -333,14 +378,16 @@ export async function saveLetterFields(letter: LetterPatch) {
 export async function saveLetterActionsOnly(actions: ActionPatch[]) {
   const supabase = await createSupabaseServerClient();
   for (const a of actions) {
-    const { id: actionId, ...rest } = a;
+    const { id: actionId, ending_assignments, ...rest } = a;
     const { error } = await supabase
       .from("actions")
       .update(rest)
       .eq("id", actionId);
     if (error) throw new Error(error.message);
+    await replaceEndingAssignments(actionId, ending_assignments);
   }
   revalidatePath("/inspection/letters");
+  revalidatePath("/endings/frameworks");
 }
 
 export async function addActionFromTemplate(

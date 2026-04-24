@@ -254,3 +254,56 @@ export interface PlaythroughVariables {
   pelico: number;
   combined_national: number;
 }
+
+export interface EndingVariable {
+  id: string;
+  name: string;
+  default_value_id: string | null;
+  sort_order: number;
+}
+
+export interface EndingVariableValue {
+  id: string;
+  variable_id: string;
+  value: string;
+  sort_order: number;
+}
+
+export interface EndingFramework {
+  id: string;
+  name: string;
+  sort_order: number;
+}
+
+export type EndingBlockType = "text" | "condition";
+
+export interface EndingFrameworkBlock {
+  id: string;
+  framework_id: string;
+  parent_block_id: string | null;
+  parent_value_id: string | null;
+  block_type: EndingBlockType;
+  variable_id: string | null;
+  text: string;
+  sort_order: number;
+}
+
+export interface EndingLogicRule {
+  id: string;
+  framework_id: string;
+  sort_order: number;
+}
+
+export interface EndingLogicRuleCondition {
+  id: string;
+  rule_id: string;
+  variable_id: string;
+  value_id: string;
+}
+
+export interface InspectionActionEndingAssignment {
+  id: string;
+  action_id: string;
+  variable_id: string;
+  value_id: string;
+}

@@ -18,6 +18,7 @@ import {
   Ruler,
   Package,
   PlayCircle,
+  ScrollText,
   Settings,
 } from "lucide-react";
 import { IconMailOpened } from "@tabler/icons-react";
@@ -42,6 +43,7 @@ const NAV_ITEMS: Array<{
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
+  { href: "/endings", label: "Endings", icon: ScrollText, section: "Data" },
   { href: "/playthroughs", label: "Playthroughs", icon: PlayCircle, section: "Run" },
   { href: "/graph", label: "Narrative Graph", icon: MapIcon, section: "Run" },
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },

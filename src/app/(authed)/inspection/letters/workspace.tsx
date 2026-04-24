@@ -32,6 +32,9 @@ import type {
   Citizen,
   City,
   Day,
+  EndingVariable,
+  EndingVariableValue,
+  InspectionActionEndingAssignment,
   InspectionLetterView,
   LetterGroup,
   Nation,
@@ -134,6 +137,8 @@ type ActionImpacts = {
   impact_pelico: number;
 };
 
+type EndingAssignmentState = { variable_id: string; value_id: string };
+
 type ActionState = ActionImpacts & {
   id: string;
   action_template_id: string | null;
@@ -143,6 +148,7 @@ type ActionState = ActionImpacts & {
   color_hex: string;
   report_segment_id: string | null;
   next_letter_variant: string | null;
+  ending_assignments: EndingAssignmentState[];
 };
 
 type LetterState = {
@@ -159,7 +165,8 @@ type LetterState = {
 
 function toLetterState(
   l: InspectionLetterView,
-  actions: ActionRow[]
+  actions: ActionRow[],
+  endingAssignments: InspectionActionEndingAssignment[]
 ): LetterState {
   return {
     id: l.id,
@@ -190,6 +197,12 @@ function toLetterState(
         impact_emberlyn: a.impact_emberlyn,
         impact_spokgrad: a.impact_spokgrad,
         impact_pelico: a.impact_pelico,
+        ending_assignments: endingAssignments
+          .filter((e) => e.action_id === a.id)
+          .map((e) => ({
+            variable_id: e.variable_id,
+            value_id: e.value_id,
+          })),
       })),
   };
 }
@@ -223,6 +236,9 @@ export function LettersWorkspace({
   cities,
   nations,
   segments: allSegments,
+  endingVariables,
+  endingValues,
+  endingAssignments,
   initialGroupId,
   initialLetterId,
   initialSegmentId,
@@ -238,6 +254,9 @@ export function LettersWorkspace({
   cities: City[];
   nations: Nation[];
   segments: ReportSegmentView[];
+  endingVariables: EndingVariable[];
+  endingValues: EndingVariableValue[];
+  endingAssignments: InspectionActionEndingAssignment[];
   initialGroupId: string | null;
   initialLetterId: string | null;
   initialSegmentId: string | null;
@@ -345,7 +364,7 @@ export function LettersWorkspace({
     const initId =
       initialLetterId ?? (initialSegmentId ? null : letters[0]?.id ?? null);
     const init = initId ? letters.find((l) => l.id === initId) : null;
-    return init ? toLetterState(init, actions) : null;
+    return init ? toLetterState(init, actions, endingAssignments) : null;
   });
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -460,7 +479,7 @@ export function LettersWorkspace({
     if (!ok) return;
     const server = letters.find((l) => l.id === letterState.id);
     if (server) {
-      const fresh = toLetterState(server, actions);
+      const fresh = toLetterState(server, actions, endingAssignments);
       setLetterState((s) => (s ? { ...s, actions: fresh.actions } : s));
     }
     setActionsDirty(false);
@@ -734,15 +753,17 @@ export function LettersWorkspace({
     if (!found) {
       // Deleted server-side; fall back to first.
       setSelectedId(letters[0]?.id ?? null);
-      setLetterState(letters[0] ? toLetterState(letters[0], actions) : null);
+      setLetterState(
+        letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
+      );
       setLetterDirty(false);
       return;
     }
     // Only overwrite if not dirty; otherwise preserve user edits.
     if (!(letterDirty || actionsDirty)) {
-      setLetterState(toLetterState(found, actions));
+      setLetterState(toLetterState(found, actions, endingAssignments));
     }
-  }, [letters, actions, selectedId, letterDirty, actionsDirty]);
+  }, [letters, actions, endingAssignments, selectedId, letterDirty, actionsDirty]);
 
   async function selectLetter(id: string) {
     if (id === selectedId) {
@@ -772,7 +793,7 @@ export function LettersWorkspace({
     const l = letters.find((x) => x.id === id);
     if (!l) return;
     setSelectedId(id);
-    setLetterState(toLetterState(l, actions));
+    setLetterState(toLetterState(l, actions, endingAssignments));
     setLetterDirty(false);
     setActionsDirty(false);
     setView("main");
@@ -963,6 +984,9 @@ export function LettersWorkspace({
       impact_emberlyn: a.impact_emberlyn,
       impact_spokgrad: a.impact_spokgrad,
       impact_pelico: a.impact_pelico,
+      ending_assignments: a.ending_assignments.filter(
+        (e) => e.variable_id && e.value_id
+      ),
     }));
   }
 
@@ -1851,6 +1875,8 @@ export function LettersWorkspace({
                 letterState.delivery_day_override_id ??
                 groupState.delivery_day_id
               }
+              endingVariables={endingVariables}
+              endingValues={endingValues}
               dirty={actionsDirty}
               pending={actionsPending}
               rowPending={rowPending}
@@ -2140,6 +2166,8 @@ function LetterActionsCard({
   groupId,
   days,
   currentLetterDayId,
+  endingVariables,
+  endingValues,
   dirty,
   pending,
   rowPending,
@@ -2162,6 +2190,8 @@ function LetterActionsCard({
   groupId: string;
   days: Day[];
   currentLetterDayId: string | null;
+  endingVariables: EndingVariable[];
+  endingValues: EndingVariableValue[];
   dirty: boolean;
   pending: boolean;
   rowPending: boolean;
@@ -2233,6 +2263,8 @@ function LetterActionsCard({
             groupId={groupId}
             days={days}
             currentLetterDayId={currentLetterDayId}
+            endingVariables={endingVariables}
+            endingValues={endingValues}
             onChange={(patch) => onActionChange(i, patch)}
             onDelete={() => onDeleteAction(a.id)}
             onOpenSegment={() => onOpenSegment(i)}
@@ -3529,6 +3561,8 @@ function ActionEditor({
   groupId,
   days,
   currentLetterDayId,
+  endingVariables,
+  endingValues,
   onChange,
   onDelete,
   onOpenSegment,
@@ -3544,6 +3578,8 @@ function ActionEditor({
   groupId: string;
   days: Day[];
   currentLetterDayId: string | null;
+  endingVariables: EndingVariable[];
+  endingValues: EndingVariableValue[];
   onChange: (patch: Partial<ActionState>) => void;
   onDelete: () => void;
   onOpenSegment: () => void;
@@ -3835,10 +3871,143 @@ function ActionEditor({
         </div>
       </div>
 
+      <EndingAssignmentsSection
+        assignments={action.ending_assignments}
+        variables={endingVariables}
+        values={endingValues}
+        onChange={(next) => onChange({ ending_assignments: next })}
+      />
+
       <div className="mt-3 flex justify-center">
         <DeleteButton onClick={onDelete} />
       </div>
     </div>
+  );
+}
+
+function EndingAssignmentsSection({
+  assignments,
+  variables,
+  values,
+  onChange,
+}: {
+  assignments: EndingAssignmentState[];
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  onChange: (next: EndingAssignmentState[]) => void;
+}) {
+  function setAt(idx: number, patch: Partial<EndingAssignmentState>) {
+    const next = assignments.slice();
+    next[idx] = { ...next[idx], ...patch };
+    onChange(next);
+  }
+  function removeAt(idx: number) {
+    const next = assignments.slice();
+    next.splice(idx, 1);
+    onChange(next);
+  }
+  function add() {
+    onChange([...assignments, { variable_id: "", value_id: "" }]);
+  }
+
+  const chosenVariableIds = new Set(
+    assignments.map((a) => a.variable_id).filter(Boolean)
+  );
+
+  return (
+    <>
+      <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+        Ending variables
+      </div>
+      <div className="mt-1 flex flex-col gap-1">
+        {assignments.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            None — this action doesn&apos;t set any ending variable.
+          </p>
+        ) : (
+          assignments.map((a, idx) => {
+            const valuesForVar = values.filter(
+              (v) => v.variable_id === a.variable_id
+            );
+            const availableVariables = variables.filter(
+              (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
+            );
+            return (
+              <div
+                key={idx}
+                className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+              >
+                <Select
+                  value={a.variable_id || ""}
+                  onChange={(e) =>
+                    setAt(idx, { variable_id: e.target.value, value_id: "" })
+                  }
+                  className="h-7 text-xs"
+                >
+                  <option value="">— variable —</option>
+                  {availableVariables.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  value={a.value_id || ""}
+                  onChange={(e) => setAt(idx, { value_id: e.target.value })}
+                  className="h-7 text-xs"
+                  disabled={!a.variable_id}
+                >
+                  <option value="">
+                    {a.variable_id ? "— value —" : "(pick var)"}
+                  </option>
+                  {valuesForVar.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.value}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  aria-label="Remove ending assignment"
+                  title="Remove"
+                  onClick={() => removeAt(idx)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+                >
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              </div>
+            );
+          })
+        )}
+        <div className="flex justify-start">
+          <button
+            type="button"
+            onClick={add}
+            disabled={variables.length === 0}
+            title={
+              variables.length === 0
+                ? "Create an ending variable first"
+                : undefined
+            }
+            className={MUTED_ADD_BTN}
+          >
+            + Ending
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
