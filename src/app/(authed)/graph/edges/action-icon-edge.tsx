@@ -62,15 +62,27 @@ function ActionIconEdgeComponent({
   // (e.g., report → next-letter continuations), draw a single smooth
   // bezier directly from source to target. Otherwise two segments joined
   // at the chip keep source/chip/target tangents all vertical.
+  // Higher curvature (default 0.25) extends the bezier control points
+  // further along the source/target tangent so the curve enters the
+  // arrowhead closer to vertical instead of cutting in at a shallow
+  // angle.
+  const CURVATURE = 0.5;
+  // Stop the path a couple px short of the actual target Y so the
+  // arrowhead's back edge lines up centered on the line. Without this,
+  // SVG's marker is placed with its TIP at the path endpoint and the
+  // line appears to enter the arrow off-center.
+  const ARROW_PULLBACK = 3;
+  const arrowTargetY = targetY - ARROW_PULLBACK;
   const single =
     hideChip && terminator === "arrow"
       ? getBezierPath({
           sourceX,
           sourceY,
           targetX,
-          targetY,
+          targetY: arrowTargetY,
           sourcePosition: Position.Bottom,
           targetPosition: Position.Top,
+          curvature: CURVATURE,
         })[0]
       : null;
   const [path1] = single
@@ -82,6 +94,7 @@ function ActionIconEdgeComponent({
         targetY: chipY,
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
+        curvature: CURVATURE,
       });
   const path2 =
     !single && terminator === "arrow"
@@ -89,9 +102,10 @@ function ActionIconEdgeComponent({
           sourceX: chipX,
           sourceY: chipY,
           targetX,
-          targetY,
+          targetY: arrowTargetY,
           sourcePosition: Position.Bottom,
           targetPosition: Position.Top,
+          curvature: CURVATURE,
         })[0]
       : null;
 

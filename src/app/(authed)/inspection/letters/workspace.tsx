@@ -1711,6 +1711,7 @@ export function LettersWorkspace({
 
   return (
     <div className="flex flex-col gap-6">
+      {isControlled ? null : (
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
         <BreadcrumbLink
           onClick={() => goToBreadcrumb("root")}
@@ -1783,6 +1784,7 @@ export function LettersWorkspace({
           </>
         ) : null}
       </div>
+      )}
 
       <div className="relative overflow-hidden">
         <div
@@ -5088,21 +5090,13 @@ function SaveRevert({
   onSave: () => void;
   onRevert: () => void;
 }) {
-  // Reserve the layout space whether or not the buttons are showing so
-  // panel headers don't shift when the dirty state flips. Visibility
-  // hidden preserves the box; aria-hidden + tabIndex -1 hides from a11y.
-  const inactive = !dirty && !pending;
+  if (!dirty && !pending) return null;
   return (
-    <div
-      className="flex items-center gap-1"
-      style={{ visibility: inactive ? "hidden" : "visible" }}
-      aria-hidden={inactive}
-    >
+    <div className="flex items-center gap-1">
       <button
         type="button"
         onClick={onRevert}
-        disabled={pending || inactive}
-        tabIndex={inactive ? -1 : 0}
+        disabled={pending}
         aria-label="Revert to saved"
         title="Revert to saved"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
@@ -5112,8 +5106,7 @@ function SaveRevert({
       <button
         type="button"
         onClick={onSave}
-        disabled={pending || inactive}
-        tabIndex={inactive ? -1 : 0}
+        disabled={pending}
         aria-label="Save"
         title="Save"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"

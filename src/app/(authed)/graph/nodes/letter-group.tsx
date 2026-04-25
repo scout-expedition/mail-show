@@ -23,7 +23,7 @@ function LetterGroupNode({ data }: NodeProps) {
     >
       <div
         className="absolute top-1/2 left-0 cursor-pointer"
-        style={{ transform: "translate(calc(-100% - 8px), -50%)" }}
+        style={{ transform: "translate(-50%, -50%)" }}
       >
         <LetterGroupPill
           storyline={{ abbreviation: d.abbr, color_hex: d.color }}

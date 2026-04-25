@@ -91,7 +91,7 @@ const GUTTER_W = 44; // left gutter for day labels
 const HEADER_H = 32; // top header for storyline labels
 const CELL_GAP = 22; // gap between sibling groups/reports inside a cell
 const CELL_VGAP = 40; // vertical gap between reports half and groups half
-const ROW_TOP_PAD = 32;
+const ROW_TOP_PAD = 56;
 const ROW_BOTTOM_PAD = 32;
 const MIN_ROW_CONTENT_H = 80;
 
@@ -102,8 +102,8 @@ const STORYLINE_COL_PAD_X = 16;
 // Report and letter pills share a fixed width so cells line up cleanly.
 const PILL_W = 110;
 
-const GROUP_PAD_LEADING = 25; // horizontal padding inside the group outline
-const GROUP_PAD_TRAILING = 25;
+const GROUP_PAD_LEADING = 44; // horizontal padding inside the group outline
+const GROUP_PAD_TRAILING = 44;
 const GROUP_PAD_TOP = 14; // vertical padding inside the group outline
 const GROUP_PAD_BOTTOM = 14;
 const VARIANT_GAP = 22; // horizontal gap between sibling variants in a group
@@ -998,10 +998,10 @@ export function GraphView({
       const isLetterTargetForChip = c.target.startsWith("letter:");
       const isSegmentToNextLetter = isReportSource && isLetterTargetForChip;
       const baseColor = resolved.color || "#ffffff";
-      const color = isSegmentToNextLetter ? "#373737" : baseColor;
+      const color = isSegmentToNextLetter ? "#5e5e5e" : baseColor;
       const converges = (incomingByTarget.get(c.target) ?? 0) > 1;
       const arrowColor = isSegmentToNextLetter
-        ? "#373737"
+        ? "#5e5e5e"
         : converges
           ? "#ffffff"
           : baseColor;
@@ -1472,11 +1472,14 @@ function StickyStorylineHeader({
 }) {
   return (
     <div
-      className="pointer-events-none absolute top-0 z-10 overflow-hidden"
+      className="pointer-events-none absolute top-0 z-20"
       style={{
         left: GUTTER_W,
         right: 0,
         height: HEADER_H,
+        // overflow stays visible so storyline pills (whose icon-square
+        // overhangs the pill's left edge) aren't clipped at the gutter
+        // boundary when their column happens to align there.
       }}
     >
       {cols.map((c) => {
