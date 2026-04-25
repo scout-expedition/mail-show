@@ -186,8 +186,7 @@ export function GraphSurface({
   return (
     <div>
       <PageHeader
-        title="Narrative graph"
-        description="Rows are days; columns are storylines. Letter groups sit in their delivery day; actions arrow downward to report segments and the next letter."
+        title="Narrative Graph"
         actions={
           <div className="flex items-center gap-2">
             <ImpactOverlayControls

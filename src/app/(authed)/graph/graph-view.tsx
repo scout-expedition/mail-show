@@ -992,9 +992,19 @@ export function GraphView({
     for (const p of placements) {
       const c = p.candidate;
       const resolved = resolveAction(c.action);
-      const color = resolved.color || "#ffffff";
+      // Segment → next-letter continuations render in a muted grey so the
+      // primary visual energy stays on the action chip → report leg.
+      const isReportSource = c.source.startsWith("report:");
+      const isLetterTargetForChip = c.target.startsWith("letter:");
+      const isSegmentToNextLetter = isReportSource && isLetterTargetForChip;
+      const baseColor = resolved.color || "#ffffff";
+      const color = isSegmentToNextLetter ? "#373737" : baseColor;
       const converges = (incomingByTarget.get(c.target) ?? 0) > 1;
-      const arrowColor = converges ? "#ffffff" : color;
+      const arrowColor = isSegmentToNextLetter
+        ? "#373737"
+        : converges
+          ? "#ffffff"
+          : baseColor;
       // Ending marker only on chips leading OUT of a letter (same rule as
       // impact badges) so the segment → next-letter follow-up doesn't
       // duplicate the indicator.

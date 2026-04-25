@@ -45,7 +45,7 @@ export default async function SortingLetterDetail({
             <Badge variant="secondary" className="font-mono">
               {letter.content_id}
             </Badge>
-            <span className="text-muted-foreground">Sorting letter</span>
+            <span className="text-muted-foreground">Sorting Letter</span>
           </span>
         }
         actions={
