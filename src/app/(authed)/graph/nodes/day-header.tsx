@@ -16,16 +16,16 @@ function DayHeaderNode({ data }: NodeProps) {
   return (
     <div
       style={{ width: d.width, height: d.height }}
-      className="flex flex-col items-center justify-center gap-0.5 rounded-md border border-border bg-card/80 px-2 text-center"
+      className="flex items-center justify-end gap-2 rounded-md border border-border bg-card/80 px-3 text-right"
     >
-      <span className="font-mono text-[11px] font-semibold tracking-widest text-foreground">
-        {d.identifier ?? (d.isUnscheduled ? "—" : "")}
-      </span>
       {d.label ? (
         <span className="truncate text-[10px] uppercase tracking-widest text-muted-foreground">
           {d.label}
         </span>
       ) : null}
+      <span className="font-mono text-[11px] font-semibold tracking-widest text-foreground">
+        {d.identifier ?? (d.isUnscheduled ? "—" : "")}
+      </span>
     </div>
   );
 }

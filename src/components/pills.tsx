@@ -68,11 +68,13 @@ export function LetterGroupPill({
   sequence,
   className,
   style,
+  selected,
 }: {
   storyline: Pick<Storyline, "abbreviation" | "color_hex"> | undefined;
   sequence: number;
   className?: string;
   style?: React.CSSProperties;
+  selected?: boolean;
 }) {
   const abbr = storyline?.abbreviation ?? "?";
   const color = storyline?.color_hex ?? "#888888";
@@ -80,6 +82,7 @@ export function LetterGroupPill({
     <span
       className={cn(
         "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
+        selected ? "ring-2 ring-ring ring-offset-1 ring-offset-background" : null,
         className
       )}
       style={{ borderColor: color, ...style }}
@@ -178,18 +181,21 @@ function PillCard({
   summary,
   widthPx,
   className,
+  selected,
 }: {
   borderColor: string;
   children: React.ReactNode;
   summary: string | null | undefined;
   widthPx?: number;
   className?: string;
+  selected?: boolean;
 }) {
   const trimmed = summary?.trim();
   return (
     <div
       className={cn(
         "flex flex-col overflow-hidden rounded-md border-[1.5px]",
+        selected ? "ring-2 ring-ring ring-offset-1 ring-offset-background" : null,
         className
       )}
       style={{
@@ -217,12 +223,14 @@ export function InspectionLetterCard({
   summary,
   widthPx,
   className,
+  selected,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   contentId: string;
   summary: string | null | undefined;
   widthPx?: number;
   className?: string;
+  selected?: boolean;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   return (
@@ -231,6 +239,7 @@ export function InspectionLetterCard({
       summary={summary}
       widthPx={widthPx}
       className={className}
+      selected={selected}
     >
       <InspectionLetterPill
         storyline={storyline}
@@ -252,12 +261,14 @@ export function ReportSegmentCard({
   summary,
   widthPx,
   className,
+  selected,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   reportId: string;
   summary: string | null | undefined;
   widthPx?: number;
   className?: string;
+  selected?: boolean;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   // The report pill is a 40% mix of storyline + card; the card border matches
@@ -269,6 +280,7 @@ export function ReportSegmentCard({
       summary={summary}
       widthPx={widthPx}
       className={className}
+      selected={selected}
     >
       <ReportSegmentPill
         storyline={storyline}

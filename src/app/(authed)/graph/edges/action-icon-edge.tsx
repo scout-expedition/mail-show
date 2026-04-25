@@ -21,15 +21,24 @@ export type ActionIconEdgeData = {
   actionName: string;
   /** Absolute X of the chip — also the via-point for the two bezier segments. */
   chipX: number;
-  /** Absolute Y of the chip. */
+  /** Absolute Y of the chip — also the via-point for the two bezier segments. */
   chipY: number;
   /** "arrow" connects through chip to a real target; "circle" terminates at the chip. */
   terminator?: "arrow" | "circle";
-  /** Optional impact badges shown stacked below the chip when the overlay is on. */
+  /** Optional impact badges shown beside the chip when the overlay is on. */
   impacts?: ActiveImpact[];
   /** True when this action sets an ending variable and the ending overlay is on. */
   hasEnding?: boolean;
+  /** True when this chip is the active inspector selection. */
+  selected?: boolean;
+  /** Click handler that opens the inspector panel for this action. */
+  onSelect?: () => void;
+  /** Hide the chip icon+badges (e.g., report → next-letter continuations); just draw the colored line. */
+  hideChip?: boolean;
 };
+
+const CHIP_PX = 20;
+const CHIP_TO_BADGES_GAP_PX = 3;
 
 function ActionIconEdgeComponent({
   id,
@@ -45,40 +54,66 @@ function ActionIconEdgeComponent({
   const terminator = d.terminator ?? "arrow";
   const chipX = d.chipX;
   const chipY = d.chipY;
+  const hideChip = !!d.hideChip;
 
   // Cubic bezier segments so the line leaves the source and arrives at the
-  // target perpendicular to the pill edges (horizontal exit / entry via
-  // sourcePosition=Right / targetPosition=Left). Full connections use two
-  // segments joined at the chip — each segment's endpoint tangents are
-  // horizontal, so the curve is C1-smooth across the chip AND perpendicular
-  // at source and target. For dangling, the chip itself terminates the line.
-  const [path1] = getBezierPath({
-    sourceX,
-    sourceY,
-    targetX: chipX,
-    targetY: chipY,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
-  });
+  // target perpendicular to the pill edges (vertical exit / entry via
+  // sourcePosition=Bottom / targetPosition=Top). When the chip is hidden
+  // (e.g., report → next-letter continuations), draw a single smooth
+  // bezier directly from source to target. Otherwise two segments joined
+  // at the chip keep source/chip/target tangents all vertical.
+  const single =
+    hideChip && terminator === "arrow"
+      ? getBezierPath({
+          sourceX,
+          sourceY,
+          targetX,
+          targetY,
+          sourcePosition: Position.Bottom,
+          targetPosition: Position.Top,
+        })[0]
+      : null;
+  const [path1] = single
+    ? [null]
+    : getBezierPath({
+        sourceX,
+        sourceY,
+        targetX: chipX,
+        targetY: chipY,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+      });
   const path2 =
-    terminator === "arrow"
+    !single && terminator === "arrow"
       ? getBezierPath({
           sourceX: chipX,
           sourceY: chipY,
           targetX,
           targetY,
-          sourcePosition: Position.Right,
-          targetPosition: Position.Left,
+          sourcePosition: Position.Bottom,
+          targetPosition: Position.Top,
         })[0]
       : null;
 
+  const hasImpacts = !hideChip && !!(d.impacts && d.impacts.length > 0);
+  const badgeAnchorX = chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX;
+
   return (
     <>
-      <BaseEdge
-        id={`${id}-a`}
-        path={path1}
-        style={{ stroke: color, strokeWidth: 1.75 }}
-      />
+      {single ? (
+        <BaseEdge
+          id={`${id}-s`}
+          path={single}
+          style={{ stroke: color, strokeWidth: 1.75 }}
+          markerEnd={markerEnd}
+        />
+      ) : path1 ? (
+        <BaseEdge
+          id={`${id}-a`}
+          path={path1}
+          style={{ stroke: color, strokeWidth: 1.75 }}
+        />
+      ) : null}
       {path2 ? (
         <BaseEdge
           id={`${id}-b`}
@@ -88,9 +123,10 @@ function ActionIconEdgeComponent({
         />
       ) : null}
 
+      {hideChip ? null : (
       <EdgeLabelRenderer>
         <div
-          className="nodrag nopan flex flex-col items-center"
+          className="nodrag nopan"
           style={{
             position: "absolute",
             transform: `translate(-50%, -50%) translate(${chipX}px, ${chipY}px)`,
@@ -99,9 +135,22 @@ function ActionIconEdgeComponent({
           }}
           title={d.actionName}
         >
-          <span
-            className="relative inline-flex h-5 w-5 items-center justify-center rounded-md"
-            style={{ background: color, color: readableOnHex(color) }}
+          <button
+            type="button"
+            onClick={d.onSelect}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={
+              "relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0" +
+              (d.selected
+                ? " ring-2 ring-ring ring-offset-1 ring-offset-background"
+                : "")
+            }
+            style={{
+              background: color,
+              color: readableOnHex(color),
+              pointerEvents: "auto",
+              cursor: d.onSelect ? "pointer" : "default",
+            }}
           >
             {d.iconValue ? (
               <IconDisplay
@@ -123,12 +172,23 @@ function ActionIconEdgeComponent({
                 <IconDisplay type="tabler" value="IconFlag" size={8} />
               </span>
             ) : null}
-          </span>
-          {d.impacts && d.impacts.length > 0 ? (
-            <BadgeStack impacts={d.impacts} />
-          ) : null}
+          </button>
         </div>
+        {hasImpacts ? (
+          <div
+            className="nodrag nopan"
+            style={{
+              position: "absolute",
+              transform: `translate(0, -50%) translate(${badgeAnchorX}px, ${chipY}px)`,
+              pointerEvents: "none",
+              zIndex: 10,
+            }}
+          >
+            <BadgeStack impacts={d.impacts as ActiveImpact[]} />
+          </div>
+        ) : null}
       </EdgeLabelRenderer>
+      )}
     </>
   );
 }
@@ -136,16 +196,16 @@ function ActionIconEdgeComponent({
 /**
  * World status + demerits share a top row (world-level impacts cluster);
  * class and nation affinities wrap below at 2 per row for ≤4 badges, 3 per
- * row otherwise.
+ * row otherwise. Rendered as a vertical column to the right of the chip.
  */
 function BadgeStack({ impacts }: { impacts: ActiveImpact[] }) {
   const world = impacts.filter((i) => i.key.startsWith("world:"));
   const others = impacts.filter((i) => !i.key.startsWith("world:"));
   const otherMaxW = others.length <= 4 ? 90 : 132;
   return (
-    <div className="mt-[3px] flex flex-col items-center gap-[2px]">
+    <div className="flex flex-col items-start gap-[2px]">
       {world.length > 0 ? (
-        <div className="flex flex-row justify-center gap-[2px]">
+        <div className="flex flex-row gap-[2px]">
           {world.map((imp) => (
             <ImpactBadge key={imp.key} impact={imp} />
           ))}
@@ -153,7 +213,7 @@ function BadgeStack({ impacts }: { impacts: ActiveImpact[] }) {
       ) : null}
       {others.length > 0 ? (
         <div
-          className="flex flex-row flex-wrap justify-center gap-[2px]"
+          className="flex flex-row flex-wrap gap-[2px]"
           style={{ maxWidth: otherMaxW }}
         >
           {others.map((imp) => (

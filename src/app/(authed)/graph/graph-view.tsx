@@ -1,15 +1,19 @@
 "use client";
 
 import "@xyflow/react/dist/style.css";
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
   MarkerType,
+  PanOnScrollMode,
+  Panel,
   ReactFlow,
   type Edge,
   type Node,
+  type ReactFlowInstance,
 } from "@xyflow/react";
+import { StorylinePill } from "@/components/pills";
 import type {
   ActionRow,
   ActionTemplate,
@@ -21,7 +25,6 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
-import { groupSlug } from "@/lib/letter-groups";
 import {
   extractActiveImpacts,
   type ActiveImpact,
@@ -29,12 +32,30 @@ import {
 } from "@/lib/graph-overlay";
 import { ActionIconEdge } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
-import DayHeaderNode from "./nodes/day-header";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
 import ReportNode from "./nodes/report-node";
-import StorylineRowNode from "./nodes/storyline-row";
 import StubTargetNode from "./nodes/stub-target";
+
+/**
+ * Selection on the graph. Mirrors the inspector panel's drill-down levels so
+ * a single value drives both the highlighted node and the panel state.
+ *   - "group": just the group is selected (panel opens to group detail).
+ *   - "letter": a specific variant within a group (panel → letter detail).
+ *   - "segment": a report segment (panel → segment detail).
+ *   - "actions": the actions list for a letter; optional actionId to scroll
+ *     the panel to that action.
+ */
+export type GraphSelection =
+  | { kind: "group"; groupId: string }
+  | { kind: "letter"; groupId: string; variantKey: string }
+  | { kind: "segment"; segmentId: string }
+  | {
+      kind: "actions";
+      groupId: string;
+      variantKey: string;
+      actionId?: string;
+    };
 
 type Props = {
   storylines: Storyline[];
@@ -47,38 +68,41 @@ type Props = {
   nations: Nation[];
   endingAssignments: InspectionActionEndingAssignment[];
   impactFilter: ImpactFilter;
+  selection?: GraphSelection | null;
+  onSelectionChange?: (sel: GraphSelection | null) => void;
 };
 
 // ------------------------------------------------------------------
-// Layout constants
+// Layout constants — vertical orientation
+//   rows = days (Y axis), columns = storylines (X axis), flow goes top→down.
 // ------------------------------------------------------------------
-const COL_W = 520;
-const GUTTER_W = 180;
-const HEADER_H = 56;
-const CELL_GAP = 22; // single gap used for both reports and letters stacks
-const ROW_TOP_PAD = 18;
-const ROW_BOTTOM_PAD = 18;
-const MIN_ROW_CONTENT_H = 48;
+const GUTTER_W = 44; // left gutter for day labels
+const HEADER_H = 32; // top header for storyline labels
+const CELL_GAP = 22; // gap between sibling groups/reports inside a cell
+const CELL_VGAP = 40; // vertical gap between reports half and groups half
+const ROW_TOP_PAD = 32;
+const ROW_BOTTOM_PAD = 32;
+const MIN_ROW_CONTENT_H = 80;
 
-// Report and letter pills share a fixed width so same-day stacks line up.
+// Storyline columns size to their content; this is the floor.
+const STORYLINE_COL_MIN_W = 320;
+const STORYLINE_COL_PAD_X = 16;
+
+// Report and letter pills share a fixed width so cells line up cleanly.
 const PILL_W = 110;
-// Group outline is padded generously beyond the card so the faded group
-// background gives the letters clear breathing room.
-const GROUP_W = PILL_W + 50;
 
-const GROUP_PAD_TOP = 18;
-const GROUP_PAD_BOTTOM = 10;
-const LETTER_GAP = 35;
+const GROUP_PAD_LEADING = 25; // horizontal padding inside the group outline
+const GROUP_PAD_TRAILING = 25;
+const GROUP_PAD_TOP = 14; // vertical padding inside the group outline
+const GROUP_PAD_BOTTOM = 14;
+const VARIANT_GAP = 22; // horizontal gap between sibling variants in a group
 
 // Card geometry — must match the PillCard layout in components/pills.tsx.
-// The pill is the card's heading, flush with the top border; there is no
-// extra padding or gap between the pill and the body.
 const PILL_H = 24; // h-6
 const CARD_BORDER_V = 3; // border-[1.5px] top + bottom
 const HEADING_ONLY_H = CARD_BORDER_V + PILL_H; // 27
-// Distance from card top to heading-row vertical center; used to anchor
-// edges and chips at heading center regardless of body height.
-const HEADING_CENTER_OFFSET = CARD_BORDER_V / 2 + PILL_H / 2;
+// Card width including the 1.5px borders on both sides.
+const CARD_W = PILL_W + CARD_BORDER_V;
 
 // Body text uses text-xs leading-snug (12px × 1.375 ≈ 16.5px per line).
 const BODY_LINE_H = 17;
@@ -102,20 +126,19 @@ function cardHeight(summary: string | null | undefined): number {
   return HEADING_ONLY_H + lines * BODY_LINE_H + BODY_PAD_V;
 }
 
-// Action chip geometry — chips on cross-column edges all share one X axis
-// (column boundary) and stack vertically with at least CHIP_PITCH between
+// Action chip geometry — chips on cross-row edges all share one Y axis
+// (row boundary) and stack horizontally with at least CHIP_PITCH between
 // adjacent chip centers, so they never overlap.
 const CHIP_H = 20;
 const CHIP_GAP = 4;
-const CHIP_PITCH = CHIP_H + CHIP_GAP;
+const CHIP_PITCH = 36;
 
-// Impact-overlay badge geometry — badges stack below the chip when the
-// overlay is on. The bucket collision pass grows the chip-to-chip pitch so
-// badge stacks never spill onto an adjacent chip's path. Up to 4 badges
-// wrap at 2 per row; 5+ wrap at 3 per row so very long impact lists don't
-// grow into a super-tall column.
-const BADGE_H = 16;
-const BADGE_V_GAP = 2;
+// Impact-overlay badge geometry — badges stack to the RIGHT of the chip when
+// the overlay is on. The bucket collision pass grows the chip-to-chip pitch
+// along X so badge stacks never spill onto an adjacent chip's path. Up to 4
+// badges wrap at 2 per row; 5+ wrap at 3 per row.
+const BADGE_W = 36;
+const BADGE_H_GAP = 2;
 const CHIP_TO_BADGES_GAP = 3;
 
 export function badgeColsFor(n: number): number {
@@ -123,40 +146,43 @@ export function badgeColsFor(n: number): number {
 }
 
 /**
- * Vertical extent of a badge stack drawn BELOW the chip, in px. World status
- * and demerits share a top row; class and nation affinities wrap beneath at
- * badgeColsFor().
+ * Horizontal extent of the badge stack drawn to the RIGHT of the chip, in
+ * px. World status and demerits share a top row; class and nation
+ * affinities wrap beneath at badgeColsFor(). The stack width is the widest
+ * row.
  */
-function badgeStackExtent(impacts: ActiveImpact[]): number {
+function badgeStackExtentRight(impacts: ActiveImpact[]): number {
   if (impacts.length === 0) return 0;
   const worldCount = impacts.filter((i) => i.key.startsWith("world:")).length;
   const others = impacts.length - worldCount;
-  const worldRow = worldCount > 0 ? 1 : 0;
-  const otherRows = others === 0 ? 0 : Math.ceil(others / badgeColsFor(others));
-  const rows = worldRow + otherRows;
-  if (rows === 0) return 0;
-  return CHIP_TO_BADGES_GAP + rows * BADGE_H + (rows - 1) * BADGE_V_GAP;
+  const worldRowW =
+    worldCount > 0
+      ? worldCount * BADGE_W + Math.max(0, worldCount - 1) * BADGE_H_GAP
+      : 0;
+  const otherCols = others === 0 ? 0 : Math.min(others, badgeColsFor(others));
+  const othersRowW =
+    otherCols > 0
+      ? otherCols * BADGE_W + Math.max(0, otherCols - 1) * BADGE_H_GAP
+      : 0;
+  const rowW = Math.max(worldRowW, othersRowW);
+  return rowW > 0 ? CHIP_TO_BADGES_GAP + rowW : 0;
 }
 
-// Reports center in the left half of the day column, letter groups center
-// in the right half.
-function columnLayout(colBaseX: number): {
-  reportX: number;
-  groupX: number;
-} {
-  const half = COL_W / 2;
-  const reportCenter = colBaseX + half / 2;
-  const groupCenter = colBaseX + half + half / 2;
-  return {
-    reportX: reportCenter - PILL_W / 2,
-    groupX: groupCenter - GROUP_W / 2,
-  };
+function groupWidth(variantCount: number): number {
+  return (
+    GROUP_PAD_LEADING +
+    variantCount * CARD_W +
+    Math.max(0, variantCount - 1) * VARIANT_GAP +
+    GROUP_PAD_TRAILING
+  );
+}
+
+function groupHeight(maxCardH: number): number {
+  return GROUP_PAD_TOP + maxCardH + GROUP_PAD_BOTTOM;
 }
 
 const nodeTypes = {
   columnBand: ColumnBandNode,
-  dayHeader: DayHeaderNode,
-  storylineRow: StorylineRowNode,
   letterGroup: LetterGroupNode,
   letter: LetterNode,
   report: ReportNode,
@@ -193,38 +219,42 @@ export function GraphView({
   nations,
   endingAssignments,
   impactFilter,
+  selection = null,
+  onSelectionChange,
 }: Props) {
-  const { nodes, edges } = useMemo(() => {
+  const select = useCallback(
+    (sel: GraphSelection | null) => onSelectionChange?.(sel),
+    [onSelectionChange]
+  );
+  const { nodes, edges, labelRows, labelCols, selectionCenter } = useMemo(() => {
     // -------------------------------------------------------------
-    // Columns (days + unscheduled bucket)
+    // Rows (days + unscheduled bucket) — flow top→down
     // -------------------------------------------------------------
-    const columnIds: string[] = [...days.map((d) => d.id), "unscheduled"];
+    const rowIds: string[] = [...days.map((d) => d.id), "unscheduled"];
     const dayById = new Map(days.map((d) => [d.id, d]));
-    const columnIndex = new Map<string, number>();
-    columnIds.forEach((id, i) => columnIndex.set(id, i));
-    function columnX(colId: string): number {
-      return (columnIndex.get(colId) ?? columnIds.length - 1) * COL_W;
-    }
+    const rowIndex = new Map<string, number>();
+    rowIds.forEach((id, i) => rowIndex.set(id, i));
 
     // -------------------------------------------------------------
-    // Storyline → row
+    // Storyline → column
     // -------------------------------------------------------------
     const orderedStorylines = storylines.slice().sort(
       (a, b) => a.sort_order - b.sort_order
     );
-    const rowIndex = new Map<string, number>();
-    orderedStorylines.forEach((s, i) => rowIndex.set(s.id, i));
+    const colIndex = new Map<string, number>();
+    orderedStorylines.forEach((s, i) => colIndex.set(s.id, i));
     const storylineById = new Map(storylines.map((s) => [s.id, s]));
 
     // -------------------------------------------------------------
-    // Group → variants
+    // Group → variants (variants stack horizontally inside the group)
     // -------------------------------------------------------------
     type GroupInfo = {
       group: LetterGroup;
       storyline: Storyline;
-      colId: string;
+      rowId: string;
       variants: string[]; // variant keys (may include "")
       variantHeights: number[]; // per-variant card height (summary-dependent)
+      width: number; // group outline width (horizontal variant stack)
       height: number; // group outline height
     };
 
@@ -265,47 +295,57 @@ export function GraphView({
         const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
         return cardHeight(primary?.summary);
       });
-      const sumVariantH = variantHeights.reduce((a, b) => a + b, 0);
-      const height =
-        GROUP_PAD_TOP +
-        sumVariantH +
-        Math.max(0, variants.length - 1) * LETTER_GAP +
-        GROUP_PAD_BOTTOM;
-      const colId = g.delivery_day_id ?? "unscheduled";
+      const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
+      const width = groupWidth(variants.length);
+      const height = groupHeight(maxCardH);
+      const rowId = g.delivery_day_id ?? "unscheduled";
       groupsById.set(g.id, {
         group: g,
         storyline,
-        colId,
+        rowId,
         variants,
         variantHeights,
+        width,
         height,
       });
     }
 
     // -------------------------------------------------------------
     // Per-cell stacks
+    //   Top half: reports stacked horizontally.
+    //   Bottom half: groups stacked horizontally.
     // -------------------------------------------------------------
     type Cell = {
-      colId: string;
+      rowId: string;
       storylineId: string;
       groupIds: string[];
       segmentIds: string[];
-      height: number; // content height (groups + segments + gaps)
+      width: number;
+      height: number;
+      topHalfH: number; // max(report cardHeight) across cell
+      bottomHalfH: number; // max(group height) across cell
+      topHalfW: number; // sum(report cardW) + gaps
+      bottomHalfW: number; // sum(group width) + gaps
     };
-    const cellKey = (colId: string, storylineId: string) =>
-      `${colId}:${storylineId}`;
+    const cellKey = (rowId: string, storylineId: string) =>
+      `${rowId}:${storylineId}`;
     const cells = new Map<string, Cell>();
 
-    function getCell(colId: string, storylineId: string): Cell {
-      const k = cellKey(colId, storylineId);
+    function getCell(rowId: string, storylineId: string): Cell {
+      const k = cellKey(rowId, storylineId);
       const existing = cells.get(k);
       if (existing) return existing;
       const cell: Cell = {
-        colId,
+        rowId,
         storylineId,
         groupIds: [],
         segmentIds: [],
+        width: 0,
         height: 0,
+        topHalfH: 0,
+        bottomHalfH: 0,
+        topHalfW: 0,
+        bottomHalfW: 0,
       };
       cells.set(k, cell);
       return cell;
@@ -318,67 +358,120 @@ export function GraphView({
     for (const g of orderedGroups) {
       const info = groupsById.get(g.id);
       if (!info) continue;
-      const cell = getCell(info.colId, g.storyline_id);
+      const cell = getCell(info.rowId, g.storyline_id);
       cell.groupIds.push(g.id);
     }
 
     // Segments into cells.
     const segmentById = new Map(segments.map((s) => [s.id, s]));
     for (const s of segments) {
-      const colId = s.effective_day_id ?? "unscheduled";
-      const cell = getCell(colId, s.storyline_id);
+      const rowId = s.effective_day_id ?? "unscheduled";
+      const cell = getCell(rowId, s.storyline_id);
       cell.segmentIds.push(s.id);
     }
 
-    // Cell height: reports stack in the left sub-column, groups stack in
-    // the right sub-column. Cell height is the max of the two stacks.
+    // Cell dimensions: top half = reports horizontally, bottom half = groups
+    // horizontally. Cell width is max(topHalfW, bottomHalfW); cell height is
+    // top + bottom + (both nonempty ? CELL_VGAP : 0).
     for (const cell of cells.values()) {
-      let groupsH = 0;
+      let bottomW = 0;
+      let bottomH = 0;
       for (const gid of cell.groupIds) {
         const gi = groupsById.get(gid);
         if (!gi) continue;
-        if (groupsH > 0) groupsH += CELL_GAP;
-        groupsH += gi.height;
+        if (bottomW > 0) bottomW += CELL_GAP;
+        bottomW += gi.width;
+        if (gi.height > bottomH) bottomH = gi.height;
       }
-      let reportsH = 0;
+      let topW = 0;
+      let topH = 0;
       cell.segmentIds.forEach((sid, i) => {
         const seg = segmentById.get(sid);
         if (!seg) return;
-        if (i > 0) reportsH += CELL_GAP;
-        reportsH += cardHeight(seg.summary);
+        if (i > 0) topW += CELL_GAP;
+        topW += CARD_W;
+        const ch = cardHeight(seg.summary);
+        if (ch > topH) topH = ch;
       });
-      cell.height = Math.max(groupsH, reportsH);
+      cell.topHalfW = topW;
+      cell.topHalfH = topH;
+      cell.bottomHalfW = bottomW;
+      cell.bottomHalfH = bottomH;
+      cell.width = Math.max(topW, bottomW);
+      const both = topH > 0 && bottomH > 0;
+      cell.height = topH + bottomH + (both ? CELL_VGAP : 0);
     }
 
     // -------------------------------------------------------------
-    // Row heights (max cell content across that row)
+    // Row half heights — per row, the top half is the max report-card
+    // height across all storyline columns in that row, and the bottom half
+    // is the max group height. This locks reports to the top half and
+    // groups to the bottom half across the entire row, even in cells where
+    // one half is empty.
     // -------------------------------------------------------------
-    const rowContentHeights = new Map<string, number>();
-    for (const s of orderedStorylines) rowContentHeights.set(s.id, 0);
+    const rowTopHalfHs = new Map<string, number>();
+    const rowBottomHalfHs = new Map<string, number>();
+    for (const rowId of rowIds) {
+      rowTopHalfHs.set(rowId, 0);
+      rowBottomHalfHs.set(rowId, 0);
+    }
     for (const cell of cells.values()) {
-      const cur = rowContentHeights.get(cell.storylineId) ?? 0;
-      if (cell.height > cur) rowContentHeights.set(cell.storylineId, cell.height);
+      const t = rowTopHalfHs.get(cell.rowId) ?? 0;
+      if (cell.topHalfH > t) rowTopHalfHs.set(cell.rowId, cell.topHalfH);
+      const b = rowBottomHalfHs.get(cell.rowId) ?? 0;
+      if (cell.bottomHalfH > b) rowBottomHalfHs.set(cell.rowId, cell.bottomHalfH);
     }
     const rowHeights = new Map<string, number>();
-    for (const s of orderedStorylines) {
+    for (const rowId of rowIds) {
+      const topH = rowTopHalfHs.get(rowId) ?? 0;
+      const bottomH = rowBottomHalfHs.get(rowId) ?? 0;
+      const both = topH > 0 && bottomH > 0;
       const content = Math.max(
-        rowContentHeights.get(s.id) ?? 0,
+        topH + bottomH + (both ? CELL_VGAP : 0),
         MIN_ROW_CONTENT_H
       );
-      rowHeights.set(s.id, content + ROW_TOP_PAD + ROW_BOTTOM_PAD);
+      rowHeights.set(rowId, content + ROW_TOP_PAD + ROW_BOTTOM_PAD);
     }
     const rowBaseY = new Map<string, number>();
     {
       let y = HEADER_H;
-      for (const s of orderedStorylines) {
-        rowBaseY.set(s.id, y);
-        y += rowHeights.get(s.id) ?? 0;
+      for (const rowId of rowIds) {
+        rowBaseY.set(rowId, y);
+        y += rowHeights.get(rowId) ?? 0;
       }
     }
-    const gridHeight = (() => {
-      let y = HEADER_H;
-      for (const s of orderedStorylines) y += rowHeights.get(s.id) ?? 0;
-      return y;
+    // -------------------------------------------------------------
+    // Storyline column widths (max cell content across that column, by row)
+    // -------------------------------------------------------------
+    const colContentWidths = new Map<string, number>();
+    for (const s of orderedStorylines) colContentWidths.set(s.id, 0);
+    for (const cell of cells.values()) {
+      const cur = colContentWidths.get(cell.storylineId) ?? 0;
+      if (cell.width > cur) colContentWidths.set(cell.storylineId, cell.width);
+    }
+    const colWidths = new Map<string, number>();
+    for (const s of orderedStorylines) {
+      const content = Math.max(
+        colContentWidths.get(s.id) ?? 0,
+        STORYLINE_COL_MIN_W
+      );
+      colWidths.set(s.id, content + STORYLINE_COL_PAD_X * 2);
+    }
+    // Shift content right by GUTTER_W so the sticky day-label overlay (which
+    // sits at left:0 of the surface, regardless of pan) doesn't cover the
+    // first storyline column at zoom 1 / pan 0.
+    const colBaseX = new Map<string, number>();
+    {
+      let x = GUTTER_W;
+      for (const s of orderedStorylines) {
+        colBaseX.set(s.id, x);
+        x += colWidths.get(s.id) ?? 0;
+      }
+    }
+    const gridWidth = (() => {
+      let x = GUTTER_W;
+      for (const s of orderedStorylines) x += colWidths.get(s.id) ?? 0;
+      return x;
     })();
 
     // -------------------------------------------------------------
@@ -387,17 +480,17 @@ export function GraphView({
     // -------------------------------------------------------------
     const n: Node[] = [];
 
-    // Column bands (alternating tint).
-    columnIds.forEach((colId, i) => {
+    // Row bands (alternating tint), spanning full grid width.
+    rowIds.forEach((rowId, i) => {
       n.push({
-        id: `band:${colId}`,
+        id: `band:${rowId}`,
         type: "columnBand",
-        position: { x: columnX(colId), y: 0 },
+        position: { x: 0, y: rowBaseY.get(rowId) ?? 0 },
         data: {
-          width: COL_W,
-          height: gridHeight,
+          width: gridWidth,
+          height: rowHeights.get(rowId) ?? 0,
           tinted: i % 2 === 1,
-          isUnscheduled: colId === "unscheduled",
+          isUnscheduled: rowId === "unscheduled",
         },
         draggable: false,
         selectable: false,
@@ -406,92 +499,99 @@ export function GraphView({
       });
     });
 
-    // Day headers.
-    for (const colId of columnIds) {
-      const day = colId === "unscheduled" ? null : dayById.get(colId);
-      n.push({
-        id: `head:${colId}`,
-        type: "dayHeader",
-        position: { x: columnX(colId) + 8, y: 4 },
-        data: {
-          width: COL_W - 16,
-          height: HEADER_H - 12,
-          identifier: day?.identifier ?? null,
-          label: day?.name ?? null,
-          isUnscheduled: colId === "unscheduled",
-        },
-        draggable: false,
-        selectable: false,
-        focusable: false,
-      });
-    }
+    // Day and storyline labels are rendered as sticky overlays outside of
+    // ReactFlow (see StickyDayGutter / StickyStorylineHeader below) so they
+    // remain pinned to the canvas edges as the user pans and zooms.
 
-    // Storyline row labels in the left gutter.
-    for (const s of orderedStorylines) {
-      n.push({
-        id: `row:${s.id}`,
-        type: "storylineRow",
-        position: {
-          x: -GUTTER_W,
-          y: rowBaseY.get(s.id) ?? 0,
-        },
-        data: {
-          width: GUTTER_W,
-          height: rowHeights.get(s.id) ?? 0,
-          storyline: s,
-        },
-        draggable: false,
-        selectable: false,
-        focusable: false,
-      });
-    }
+    // Absolute (x, y, h) for each card, keyed by node id, used later to
+    // anchor chips and stub terminators. (x, y) is the card's TOP-LEFT
+    // corner; h is the card's height so consumers can compute the bottom
+    // edge for source-target midpoint chip placement.
+    const letterAbsPos = new Map<string, { x: number; y: number; h: number }>();
+    const segmentAbsPos = new Map<string, { x: number; y: number; h: number }>();
 
-    // Absolute (x, y) positions keyed by node id, used later to anchor chips
-    // and stub terminators. Stored as the node's TOP-LEFT corner.
-    const letterAbsPos = new Map<string, { x: number; y: number }>();
-    const segmentAbsPos = new Map<string, { x: number; y: number }>();
-
-    // Groups + letters + segments per cell. Reports center in the left
-    // half, letter-groups center in the right half.
-    for (const s of orderedStorylines) {
-      const rowY = (rowBaseY.get(s.id) ?? 0) + ROW_TOP_PAD;
-      for (const colId of columnIds) {
-        const cell = cells.get(cellKey(colId, s.id));
+    // Groups + letters + segments per cell. Reports center horizontally in
+    // the top half, letter-groups center horizontally in the bottom half.
+    // The half boundaries are row-wide so groups always sit in the bottom
+    // half across the entire row, even in cells where one half is empty.
+    for (const rowId of rowIds) {
+      const rowY = (rowBaseY.get(rowId) ?? 0) + ROW_TOP_PAD;
+      const rowTopH = rowTopHalfHs.get(rowId) ?? 0;
+      const rowBothHalves = rowTopH > 0 && (rowBottomHalfHs.get(rowId) ?? 0) > 0;
+      for (const s of orderedStorylines) {
+        const cell = cells.get(cellKey(rowId, s.id));
         if (!cell) continue;
-        const colBaseX = columnX(colId);
-        const { reportX, groupX } = columnLayout(colBaseX);
+        const colX = colBaseX.get(s.id) ?? 0;
+        const colW = colWidths.get(s.id) ?? STORYLINE_COL_MIN_W;
+        const colCenterX = colX + colW / 2;
 
-        // Groups stack on the right.
-        let groupsY = rowY;
+        const topY = rowY;
+        const bottomY = rowY + rowTopH + (rowBothHalves ? CELL_VGAP : 0);
+
+        // Reports row in top half — stacked horizontally, centered in column.
+        let reportsX = colCenterX - cell.topHalfW / 2;
+        for (const sid of cell.segmentIds) {
+          const seg = segmentById.get(sid);
+          if (!seg) continue;
+          const storyline = storylineById.get(seg.storyline_id);
+          if (!storyline) continue;
+          const segNodeId = `report:${sid}`;
+          segmentAbsPos.set(segNodeId, {
+            x: reportsX,
+            y: topY,
+            h: cardHeight(seg.summary),
+          });
+          const segSelected =
+            selection?.kind === "segment" && selection.segmentId === sid;
+          n.push({
+            id: segNodeId,
+            type: "report",
+            position: { x: reportsX, y: topY },
+            data: {
+              reportId: seg.report_id,
+              storyline,
+              summary: seg.summary,
+              widthPx: PILL_W,
+              selected: segSelected,
+              onSelect: () => select({ kind: "segment", segmentId: sid }),
+            },
+            draggable: false,
+            selectable: false,
+            focusable: false,
+          });
+          reportsX += CARD_W + CELL_GAP;
+        }
+
+        // Groups row in bottom half — stacked horizontally, centered in column.
+        let groupsX = colCenterX - cell.bottomHalfW / 2;
         for (const gid of cell.groupIds) {
           const gi = groupsById.get(gid);
           if (!gi) continue;
           const abbr = gi.storyline.abbreviation;
           const groupNodeId = `group:${gid}`;
+          const groupSelected =
+            selection?.kind === "group" && selection.groupId === gid;
           n.push({
             id: groupNodeId,
             type: "letterGroup",
-            position: { x: groupX, y: groupsY },
+            position: { x: groupsX, y: bottomY },
             data: {
-              width: GROUP_W,
+              width: gi.width,
               height: gi.height,
               abbr,
               sequence: gi.group.sequence,
               color: gi.storyline.color_hex,
-              href: `/inspection/letters?group=${groupSlug(abbr, gi.group.sequence)}`,
+              selected: groupSelected,
+              onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: false,
             selectable: false,
             focusable: false,
-            style: { width: GROUP_W, height: gi.height },
+            style: { width: gi.width, height: gi.height },
           });
 
           const onlyVariant = gi.variants.length === 1;
-          // Center the card (pill + border, no internal padding) horizontally
-          // inside the group outline. Card width = PILL_W + border.
-          const cardW = PILL_W + CARD_BORDER_V;
-          const letterLeftInsideGroup = (GROUP_W - cardW) / 2;
-          let relY = GROUP_PAD_TOP;
+          let relX = GROUP_PAD_LEADING;
           gi.variants.forEach((vk, i) => {
             const letterNodeId = `letter:${gid}:${vk}`;
             const contentId = letterDisplayId(
@@ -500,14 +600,22 @@ export function GraphView({
               vk || null,
               onlyVariant
             );
-            const relX = letterLeftInsideGroup;
+            const cardH = gi.variantHeights[i];
+            // Align variant cards by their TOP edge inside the group so
+            // rows of variants read consistently even when summary lengths
+            // produce different card heights.
+            const relY = GROUP_PAD_TOP;
             const primary = primaryLetterByGroupVariant.get(`${gid}:${vk}`);
             const summary = primary?.summary ?? null;
-            const letterH = gi.variantHeights[i];
             letterAbsPos.set(letterNodeId, {
-              x: groupX + relX,
-              y: groupsY + relY,
+              x: groupsX + relX,
+              y: bottomY + relY,
+              h: cardH,
             });
+            const letterSelected =
+              selection?.kind === "letter" &&
+              selection.groupId === gid &&
+              selection.variantKey === vk;
             n.push({
               id: letterNodeId,
               type: "letter",
@@ -516,49 +624,21 @@ export function GraphView({
               position: { x: relX, y: relY },
               data: {
                 contentId,
-                href: vk
-                  ? `/inspection/letters?letter=${groupSlug(abbr, gi.group.sequence)}/${vk}`
-                  : `/inspection/letters?group=${groupSlug(abbr, gi.group.sequence)}`,
                 storyline: gi.storyline,
                 summary,
                 widthPx: PILL_W,
+                selected: letterSelected,
+                onSelect: () =>
+                  select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
               draggable: false,
               selectable: false,
               focusable: false,
             });
-            relY += letterH + LETTER_GAP;
+            relX += CARD_W + VARIANT_GAP;
           });
 
-          groupsY += gi.height + CELL_GAP;
-        }
-
-        // Reports stack on the left.
-        let reportsY = rowY;
-        for (const sid of cell.segmentIds) {
-          const seg = segmentById.get(sid);
-          if (!seg) continue;
-          const storyline = storylineById.get(seg.storyline_id);
-          if (!storyline) continue;
-          const abbr = storyline.abbreviation;
-          const segNodeId = `report:${sid}`;
-          segmentAbsPos.set(segNodeId, { x: reportX, y: reportsY });
-          n.push({
-            id: segNodeId,
-            type: "report",
-            position: { x: reportX, y: reportsY },
-            data: {
-              reportId: seg.report_id,
-              href: `/inspection/letters?report=${groupSlug(abbr, seg.group_sequence)}/${seg.variant}`,
-              storyline,
-              summary: seg.summary,
-              widthPx: PILL_W,
-            },
-            draggable: false,
-            selectable: false,
-            focusable: false,
-          });
-          reportsY += cardHeight(seg.summary) + CELL_GAP;
+          groupsX += gi.width + CELL_GAP;
         }
       }
     }
@@ -703,19 +783,28 @@ export function GraphView({
     // -------------------------------------------------------------
     // Chip placement
     // -------------------------------------------------------------
-    // chipX rule:
-    //   letter source → next column boundary (colX + COL_W)
-    //   report source → midpoint of the source's column (colX + COL_W/2)
     // chipY rule:
-    //   preferred Y is centered on the source's mid-Y, with siblings spaced
-    //   ±CHIP_PITCH apart. Then within each chipX bucket the chips are sorted
-    //   by preferred Y and walked forward, pushing later chips down to keep
-    //   ≥CHIP_PITCH between adjacent centers.
-    function nodeColumnId(nodeId: string): string | null {
+    //   chipY is the literal vertical midpoint between the source card's
+    //   bottom edge and the target card's top edge, so each chip sits halfway
+    //   between the two artifacts it connects regardless of row geometry.
+    //   For dangling actions (no real target), the chip drops a fixed
+    //   distance below the source.
+    // chipX rule:
+    //   preferred X is centered on the source's mid-X, with siblings spaced
+    //   ±CHIP_PITCH apart. Chips at near-equal Y (within COLLISION_Y_QUANTUM
+    //   px) are bucketed together; per-bucket they sort by preferred X and
+    //   the walk pushes later chips right so the previous chip's footprint
+    //   (chip + badge stack to its right) plus CHIP_GAP fits before the next.
+    const COLLISION_Y_QUANTUM = 8; // px — coarse Y bucket key for collision
+    const DANGLING_DROP = 60; // px — virtual target distance below dangling source
+    // The day row that contains a given source node — letter sources
+    // resolve to their group's delivery day; report sources resolve to
+    // the segment's effective day.
+    function nodeRowId(nodeId: string): string | null {
       if (nodeId.startsWith("letter:")) {
         const m = nodeId.match(/^letter:([^:]+):/);
         if (!m) return null;
-        return groupsById.get(m[1])?.colId ?? null;
+        return groupsById.get(m[1])?.rowId ?? null;
       }
       if (nodeId.startsWith("report:")) {
         const segId = nodeId.slice("report:".length);
@@ -723,28 +812,50 @@ export function GraphView({
       }
       return null;
     }
-    // Anchor chips / edge endpoints to the HEADING-row center of the card,
-    // not the card's vertical middle, so chips sit next to the pill even when
-    // the body box makes the card taller.
-    function nodeCenterY(nodeId: string): number | null {
+    // Anchor chips / edge endpoints to the horizontal center of the card's
+    // top-edge handle (target enters from top, source exits from bottom; both
+    // are pinned at left: 50% of the card width by xyflow defaults).
+    function nodeCenterX(nodeId: string): number | null {
       if (nodeId.startsWith("letter:")) {
         const p = letterAbsPos.get(nodeId);
-        return p ? p.y + HEADING_CENTER_OFFSET : null;
+        return p ? p.x + CARD_W / 2 : null;
       }
       if (nodeId.startsWith("report:")) {
         const p = segmentAbsPos.get(nodeId);
-        return p ? p.y + HEADING_CENTER_OFFSET : null;
+        return p ? p.x + CARD_W / 2 : null;
+      }
+      return null;
+    }
+    function nodeBottomY(nodeId: string): number | null {
+      if (nodeId.startsWith("letter:")) {
+        const p = letterAbsPos.get(nodeId);
+        return p ? p.y + p.h : null;
+      }
+      if (nodeId.startsWith("report:")) {
+        const p = segmentAbsPos.get(nodeId);
+        return p ? p.y + p.h : null;
+      }
+      return null;
+    }
+    function nodeTopY(nodeId: string): number | null {
+      if (nodeId.startsWith("letter:")) {
+        const p = letterAbsPos.get(nodeId);
+        return p ? p.y : null;
+      }
+      if (nodeId.startsWith("report:")) {
+        const p = segmentAbsPos.get(nodeId);
+        return p ? p.y : null;
       }
       return null;
     }
 
     type ChipPlacement = {
       candidate: Candidate;
-      chipX: number;
-      preferredY: number;
       chipY: number;
+      preferredX: number;
+      chipX: number;
       impacts: ActiveImpact[];
-      extentBelow: number;
+      extentRight: number;
     };
     const placements: ChipPlacement[] = [];
 
@@ -756,15 +867,19 @@ export function GraphView({
     }
 
     for (const [sourceId, list] of candidatesBySource) {
-      const colId = nodeColumnId(sourceId);
-      if (!colId) continue;
-      const colBaseX = columnX(colId);
       const isLetterSource = sourceId.startsWith("letter:");
-      const chipX = isLetterSource
-        ? colBaseX + COL_W
-        : colBaseX + COL_W / 2;
-      const srcCenterY = nodeCenterY(sourceId);
-      if (srcCenterY == null) continue;
+      const srcBottomY = nodeBottomY(sourceId);
+      const srcCenterX = nodeCenterX(sourceId);
+      if (srcBottomY == null || srcCenterX == null) continue;
+
+      // All chips for letter sources in the same day row share a single Y
+      // so they align horizontally at the row's bottom margin. Report
+      // sources (hideChip=true) use a midpoint Y — that value doesn't
+      // render a chip, but feeds the path via-point.
+      const sourceRowId = nodeRowId(sourceId);
+      const rowY = sourceRowId ? rowBaseY.get(sourceRowId) ?? 0 : 0;
+      const rowH = sourceRowId ? rowHeights.get(sourceRowId) ?? 0 : 0;
+      const uniformRowChipY = rowY + rowH - ROW_BOTTOM_PAD / 2;
 
       list.sort((a, b) => {
         const sa = a.action.sort_order ?? 0;
@@ -776,7 +891,17 @@ export function GraphView({
       const N = list.length;
       list.forEach((c, i) => {
         const offset = (i - (N - 1) / 2) * CHIP_PITCH;
-        const y = srcCenterY + offset;
+        const x = srcCenterX + offset;
+        let chipY: number;
+        if (isLetterSource) {
+          chipY = uniformRowChipY;
+        } else {
+          const targetTopY =
+            c.terminator === "circle"
+              ? srcBottomY + DANGLING_DROP
+              : (nodeTopY(c.target) ?? srcBottomY + DANGLING_DROP);
+          chipY = (srcBottomY + targetTopY) / 2;
+        }
         // Impact badges live only on chips leading OUT of a letter. The
         // follow-up chip from segment → next letter represents the same
         // action but should not duplicate its impact badges.
@@ -785,32 +910,32 @@ export function GraphView({
           : [];
         placements.push({
           candidate: c,
-          chipX,
-          preferredY: y,
-          chipY: y,
+          chipY,
+          preferredX: x,
+          chipX: x,
           impacts,
-          extentBelow: badgeStackExtent(impacts),
+          extentRight: badgeStackExtentRight(impacts),
         });
       });
     }
 
-    // Collision pass: per chipX bucket, push later chips down so that the
-    // previous chip's full vertical footprint (chip + badge stack below it)
-    // plus a gap fits before the next chip starts. With no impacts showing,
-    // this reduces to enforcing CHIP_PITCH between adjacent chip centers.
-    const placementsByX = new Map<number, ChipPlacement[]>();
+    // Collision pass: chips with near-equal Y are bucketed via a coarse
+    // Y-quantum and pushed apart along X. Chips at materially different Ys
+    // don't collide and stay at their preferred X.
+    const placementsByY = new Map<number, ChipPlacement[]>();
     for (const p of placements) {
-      const list = placementsByX.get(p.chipX) ?? [];
+      const key = Math.round(p.chipY / COLLISION_Y_QUANTUM);
+      const list = placementsByY.get(key) ?? [];
       list.push(p);
-      placementsByX.set(p.chipX, list);
+      placementsByY.set(key, list);
     }
-    for (const list of placementsByX.values()) {
-      list.sort((a, b) => a.preferredY - b.preferredY);
-      let prevBottom = -Infinity;
+    for (const list of placementsByY.values()) {
+      list.sort((a, b) => a.preferredX - b.preferredX);
+      let prevRight = -Infinity;
       for (const p of list) {
-        const minChipY = prevBottom + CHIP_GAP + CHIP_H / 2;
-        p.chipY = Math.max(p.preferredY, minChipY);
-        prevBottom = p.chipY + CHIP_H / 2 + p.extentBelow;
+        const minChipX = prevRight + CHIP_GAP + CHIP_H / 2;
+        p.chipX = Math.max(p.preferredX, minChipX);
+        prevRight = p.chipX + CHIP_H / 2 + p.extentRight;
       }
     }
 
@@ -858,6 +983,22 @@ export function GraphView({
         impactFilter.showEndings &&
         isLetterSource &&
         endingActionIds.has(c.action.id);
+      // Each chip click selects the action (panel opens to the source
+      // letter's actions view, scrolled to this action). Resolve the source
+      // letter's group + variant so the selection carries that breadcrumb.
+      const srcLetter = letterIndex.get(c.action.inspection_letter_id);
+      const chipSelected =
+        selection?.kind === "actions" &&
+        selection.actionId === c.action.id;
+      const onChipSelect = srcLetter
+        ? () =>
+            select({
+              kind: "actions",
+              groupId: srcLetter.groupId,
+              variantKey: srcLetter.variantKey,
+              actionId: c.action.id,
+            })
+        : undefined;
       e.push({
         id: c.id,
         source: c.source,
@@ -873,6 +1014,11 @@ export function GraphView({
           terminator: c.terminator,
           impacts: p.impacts,
           hasEnding,
+          selected: chipSelected,
+          onSelect: onChipSelect,
+          // Report → next-letter continuations show the colored line only
+          // (the chip/badges already live on the letter → report segment).
+          hideChip: !isLetterSource,
         },
         markerEnd:
           c.terminator === "arrow"
@@ -881,7 +1027,68 @@ export function GraphView({
       });
     }
 
-    return { nodes: n, edges: e };
+    const labelRows = rowIds.map((rowId) => {
+      const day = rowId === "unscheduled" ? null : dayById.get(rowId);
+      return {
+        rowId,
+        baseY: rowBaseY.get(rowId) ?? 0,
+        height: rowHeights.get(rowId) ?? 0,
+        identifier: day?.identifier ?? null,
+        label: day?.name ?? null,
+        isUnscheduled: rowId === "unscheduled",
+      };
+    });
+    const labelCols = orderedStorylines.map((s) => ({
+      id: s.id,
+      baseX: colBaseX.get(s.id) ?? 0,
+      width: colWidths.get(s.id) ?? 0,
+      storyline: s,
+    }));
+
+    // Center coordinates (graph coords) for each selectable entity, used
+    // to auto-pan the canvas when the selection changes.
+    function selectionCenter(sel: GraphSelection | null): {
+      x: number;
+      y: number;
+    } | null {
+      if (!sel) return null;
+      if (sel.kind === "group") {
+        const gi = groupsById.get(sel.groupId);
+        if (!gi) return null;
+        // Group's top-left is the position pushed onto n; recompute by
+        // looking up the first variant's letter position and walking back.
+        const firstVariant = gi.variants[0] ?? "";
+        const lp = letterAbsPos.get(`letter:${sel.groupId}:${firstVariant}`);
+        if (!lp) return null;
+        // Group spans from groupsX to groupsX + gi.width and from bottomY
+        // to bottomY + gi.height. The variant letter sits inside at
+        // (groupsX + GROUP_PAD_LEADING, centered Y).
+        const groupX = lp.x - GROUP_PAD_LEADING;
+        const groupY = lp.y - (gi.height - lp.h) / 2;
+        return { x: groupX + gi.width / 2, y: groupY + gi.height / 2 };
+      }
+      if (sel.kind === "letter" || sel.kind === "actions") {
+        const p = letterAbsPos.get(
+          `letter:${sel.groupId}:${sel.variantKey}`
+        );
+        if (!p) return null;
+        return { x: p.x + CARD_W / 2, y: p.y + p.h / 2 };
+      }
+      if (sel.kind === "segment") {
+        const p = segmentAbsPos.get(`report:${sel.segmentId}`);
+        if (!p) return null;
+        return { x: p.x + CARD_W / 2, y: p.y + p.h / 2 };
+      }
+      return null;
+    }
+
+    return {
+      nodes: n,
+      edges: e,
+      labelRows,
+      labelCols,
+      selectionCenter,
+    };
   }, [
     storylines,
     letterGroups,
@@ -893,10 +1100,38 @@ export function GraphView({
     nations,
     endingAssignments,
     impactFilter,
+    selection,
+    select,
   ]);
 
+  const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const rfRef = useRef<ReactFlowInstance | null>(null);
+
+  // Auto-pan to the selected entity so it's visible after a click on the
+  // panel's storylines list moves the selection somewhere off-screen. Use
+  // two RAFs so the graph container has reflowed (the inspector aside
+  // makes it narrower) before we recenter — otherwise setCenter centers
+  // in the old viewport and the target lands off-screen.
+  useEffect(() => {
+    const rf = rfRef.current;
+    if (!rf) return;
+    const c = selectionCenter(selection);
+    if (!c) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const z = rf.getViewport().zoom;
+        rf.setCenter(c.x, c.y, { zoom: z, duration: 350 });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+    };
+  }, [selection, selectionCenter]);
+
   return (
-    <div className="h-[75vh] rounded-md border border-border bg-background">
+    <div className="relative h-[75vh] overflow-hidden rounded-md border border-border bg-background">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -910,11 +1145,147 @@ export function GraphView({
         nodesConnectable={false}
         elementsSelectable={false}
         edgesFocusable={false}
+        panOnScroll
+        panOnScrollMode={PanOnScrollMode.Free}
+        zoomOnScroll
+        zoomActivationKeyCode="Meta"
+        panOnDrag={false}
+        onNodeClick={(_, node) => {
+          const d = node.data as { onSelect?: () => void } | undefined;
+          d?.onSelect?.();
+        }}
+        onMove={(_, v) => setVp(v)}
+        onMoveEnd={(_, v) => setVp(v)}
+        onInit={(rf) => {
+          rfRef.current = rf;
+          setVp(rf.getViewport());
+        }}
         proOptions={{ hideAttribution: true }}
       >
         <Background color="var(--border)" gap={24} />
-        <Controls showInteractive={false} />
+        <Controls position="bottom-right" showInteractive={false} />
+        <Panel position="bottom-right">
+          <div
+            className="pointer-events-none mb-[56px] mr-1 select-none rounded-md border border-border bg-card/80 px-2 py-1 font-mono text-[11px] tabular-nums text-foreground"
+            aria-label="Zoom level"
+          >
+            {Math.round(vp.zoom * 100)}%
+          </div>
+        </Panel>
       </ReactFlow>
+      <StickyStorylineHeader
+        cols={labelCols}
+        viewport={vp}
+        onSelectStoryline={(col) => {
+          const rf = rfRef.current;
+          if (!rf) return;
+          const cx = col.baseX + col.width / 2;
+          const cy = 120;
+          rf.setCenter(cx, cy, { zoom: 1, duration: 350 });
+        }}
+      />
+      <StickyDayGutter rows={labelRows} viewport={vp} />
+    </div>
+  );
+}
+
+type Viewport = { x: number; y: number; zoom: number };
+
+function StickyDayGutter({
+  rows,
+  viewport,
+}: {
+  rows: {
+    rowId: string;
+    baseY: number;
+    height: number;
+    identifier: string | null;
+    label: string | null;
+    isUnscheduled: boolean;
+  }[];
+  viewport: Viewport;
+}) {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute left-0 top-0 bottom-0 z-10 overflow-hidden"
+      style={{
+        width: GUTTER_W,
+      }}
+    >
+      {rows.map((r) => {
+        const top = r.baseY * viewport.zoom + viewport.y;
+        const height = Math.max(0, r.height * viewport.zoom - 6);
+        return (
+          <div
+            key={r.rowId}
+            className="absolute flex flex-col items-center justify-center gap-0.5 rounded-md border border-border bg-card/80 px-0.5"
+            style={{ top: top + 3, left: 2, right: 2, height }}
+          >
+            <span className="font-mono text-[11px] font-semibold tracking-widest text-foreground">
+              {r.identifier ?? (r.isUnscheduled ? "—" : "")}
+            </span>
+            {r.label ? (
+              <span className="truncate text-[9px] uppercase tracking-widest text-muted-foreground">
+                {r.label}
+              </span>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StickyStorylineHeader({
+  cols,
+  viewport,
+  onSelectStoryline,
+}: {
+  cols: {
+    id: string;
+    baseX: number;
+    width: number;
+    storyline: Storyline;
+  }[];
+  viewport: Viewport;
+  onSelectStoryline?: (col: {
+    id: string;
+    baseX: number;
+    width: number;
+  }) => void;
+}) {
+  return (
+    <div
+      className="pointer-events-none absolute top-0 z-10 overflow-hidden"
+      style={{
+        left: GUTTER_W,
+        right: 0,
+        height: HEADER_H,
+      }}
+    >
+      {cols.map((c) => {
+        const left = c.baseX * viewport.zoom + viewport.x - GUTTER_W;
+        const width = c.width * viewport.zoom;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            className="pointer-events-auto absolute flex cursor-pointer items-center justify-center bg-transparent p-0"
+            style={{ left, top: 0, width, height: HEADER_H }}
+            onClick={() =>
+              onSelectStoryline?.({
+                id: c.id,
+                baseX: c.baseX,
+                width: c.width,
+              })
+            }
+            title={`Focus ${c.storyline.name}`}
+          >
+            <StorylinePill storyline={c.storyline} />
+          </button>
+        );
+      })}
     </div>
   );
 }

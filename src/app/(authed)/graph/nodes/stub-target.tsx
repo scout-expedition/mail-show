@@ -13,7 +13,7 @@ function StubTargetNode(_props: NodeProps) {
     <div style={{ width: 1, height: 1 }}>
       <Handle
         type="target"
-        position={Position.Left}
+        position={Position.Top}
         isConnectable={false}
         className="!h-1 !w-1 !border-none !bg-transparent"
       />

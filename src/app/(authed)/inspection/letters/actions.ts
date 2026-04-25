@@ -117,7 +117,7 @@ export async function saveGroup(data: {
     .update({ name: rest.name })
     .eq("letter_group_id", id);
   revalidatePath("/inspection/letters");
-  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 export async function deleteGroup(groupId: string) {
@@ -353,6 +353,7 @@ export async function saveLetterWithActions(
   }
   revalidatePath("/inspection/letters");
   revalidatePath("/endings/frameworks");
+  revalidatePath("/graph");
 }
 
 /** Save just the inspection letter row — no actions touched. */
@@ -367,6 +368,7 @@ export async function saveLetterFields(letter: LetterPatch) {
     .eq("id", letterId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 /** Save only the action rows for a letter — letter row not touched. */
@@ -383,6 +385,7 @@ export async function saveLetterActionsOnly(actions: ActionPatch[]) {
   }
   revalidatePath("/inspection/letters");
   revalidatePath("/endings/frameworks");
+  revalidatePath("/graph");
 }
 
 export async function addActionFromTemplate(
@@ -601,6 +604,7 @@ export async function saveReportSegment(data: {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 function toRoman(n: number): string {

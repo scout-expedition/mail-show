@@ -19,7 +19,7 @@ function StorylineRowNode({ data }: NodeProps) {
   return (
     <div
       style={{ width: d.width, height: d.height }}
-      className="flex items-start justify-end pr-3 pt-2"
+      className="flex items-end justify-center pb-2"
     >
       <StorylinePill storyline={d.storyline} />
     </div>

@@ -2,7 +2,11 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   ActionRow,
   ActionTemplate,
+  Citizen,
+  City,
   Day,
+  EndingVariable,
+  EndingVariableValue,
   InspectionActionEndingAssignment,
   InspectionLetterView,
   LetterGroup,
@@ -24,16 +28,30 @@ export default async function GraphPage() {
     { data: tData },
     { data: nData },
     { data: eaData },
+    { data: heroesData },
+    { data: allCitizenIdsData },
+    { data: citiesData },
+    { data: endingVarData },
+    { data: endingValueData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
     supabase.from("letter_groups").select("*").order("sequence"),
-    supabase.from("inspection_letters_view").select("*"),
+    supabase
+      .from("inspection_letters_view")
+      .select("*")
+      .order("variant", { ascending: true, nullsFirst: true })
+      .order("piece", { ascending: true, nullsFirst: true }),
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("days").select("*").order("number"),
     supabase.from("report_segments_view").select("*"),
-    supabase.from("action_templates").select("*"),
+    supabase.from("action_templates").select("*").order("sort_order"),
     supabase.from("nations").select("*").order("sort_order"),
     supabase.from("inspection_action_ending_assignments").select("*"),
+    supabase.from("citizens").select("*").eq("type", "hero").order("name"),
+    supabase.from("citizens").select("citizen_id").not("citizen_id", "is", null),
+    supabase.from("cities").select("*"),
+    supabase.from("ending_variables").select("*").order("sort_order"),
+    supabase.from("ending_variable_values").select("*").order("sort_order"),
   ]);
   const storylines = (sData ?? []) as Storyline[];
   const letterGroups = (gData ?? []) as LetterGroup[];
@@ -44,6 +62,15 @@ export default async function GraphPage() {
   const actionTemplates = (tData ?? []) as ActionTemplate[];
   const nations = (nData ?? []) as Nation[];
   const endingAssignments = (eaData ?? []) as InspectionActionEndingAssignment[];
+  const heroes = (heroesData ?? []) as Citizen[];
+  const allCitizenIds = ((allCitizenIdsData ?? []) as Array<{
+    citizen_id: string | null;
+  }>)
+    .map((r) => r.citizen_id)
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const cities = (citiesData ?? []) as City[];
+  const endingVariables = (endingVarData ?? []) as EndingVariable[];
+  const endingValues = (endingValueData ?? []) as EndingVariableValue[];
 
   return (
     <GraphSurface
@@ -56,6 +83,11 @@ export default async function GraphPage() {
       segments={segments}
       nations={nations}
       endingAssignments={endingAssignments}
+      heroes={heroes}
+      allCitizenIds={allCitizenIds}
+      cities={cities}
+      endingVariables={endingVariables}
+      endingValues={endingValues}
     />
   );
 }

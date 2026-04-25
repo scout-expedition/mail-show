@@ -1,7 +1,6 @@
 "use client";
 
 import { memo } from "react";
-import Link from "next/link";
 import { type NodeProps } from "@xyflow/react";
 import { LetterGroupPill } from "@/components/pills";
 
@@ -11,7 +10,8 @@ export type LetterGroupData = {
   sequence: number; // group sequence (e.g., 2)
   abbr: string; // storyline abbreviation
   color: string; // storyline color hex
-  href: string;
+  selected?: boolean;
+  onSelect?: () => void;
 };
 
 function LetterGroupNode({ data }: NodeProps) {
@@ -21,17 +21,16 @@ function LetterGroupNode({ data }: NodeProps) {
       style={{ width: d.width, height: d.height }}
       className="relative rounded-md border border-transparent bg-white/5"
     >
-      <Link
-        href={d.href}
-        draggable={false}
-        onDragStart={(e) => e.preventDefault()}
-        className="absolute left-1/2 -top-3 -translate-x-1/2"
+      <div
+        className="absolute top-1/2 left-0 cursor-pointer"
+        style={{ transform: "translate(calc(-100% - 8px), -50%)" }}
       >
         <LetterGroupPill
           storyline={{ abbreviation: d.abbr, color_hex: d.color }}
           sequence={d.sequence}
+          selected={d.selected}
         />
-      </Link>
+      </div>
     </div>
   );
 }

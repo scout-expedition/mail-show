@@ -21,7 +21,7 @@ function ColumnBandNode({ data }: NodeProps) {
         background: d.tinted
           ? "color-mix(in srgb, var(--card) 50%, transparent)"
           : "transparent",
-        borderLeft: d.isUnscheduled
+        borderTop: d.isUnscheduled
           ? "1px dashed var(--border)"
           : "1px solid transparent",
         pointerEvents: "none",

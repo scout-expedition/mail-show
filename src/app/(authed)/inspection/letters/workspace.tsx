@@ -93,6 +93,22 @@ import {
 import { formatDistanceToNow } from "date-fns";
 
 /**
+ * Selection shape used when this workspace is embedded into another page
+ * (e.g., the narrative graph) and needs to be driven by an external
+ * parent. Mirrors the workspace's internal drill-down levels.
+ */
+export type ControlledSelection =
+  | { kind: "group"; groupId: string }
+  | { kind: "letter"; groupId: string; variantKey: string }
+  | { kind: "segment"; segmentId: string }
+  | {
+      kind: "actions";
+      groupId: string;
+      variantKey: string;
+      actionId?: string;
+    };
+
+/**
  * Entry-field look: a darker-than-panel fill that darkens further on
  * hover and shows a visible border on focus. The border stays
  * transparent at rest so the field blends with the panel edges.
@@ -243,6 +259,10 @@ export function LettersWorkspace({
   initialGroupId,
   initialLetterId,
   initialSegmentId,
+  controlledSelection,
+  onSelectionChange,
+  onClose,
+  forceNarrow,
 }: {
   storylines: Storyline[];
   groups: LetterGroup[];
@@ -261,6 +281,22 @@ export function LettersWorkspace({
   initialGroupId: string | null;
   initialLetterId: string | null;
   initialSegmentId: string | null;
+  /**
+   * Optional controlled selection from a parent (e.g., the narrative
+   * graph). When provided, the parent owns the URL and drives the
+   * workspace's selection state via useEffect; the workspace skips its
+   * internal router.replace sync. Internal selection changes bubble up
+   * via onSelectionChange. When undefined, the workspace stays
+   * uncontrolled and behaves exactly as on /inspection/letters.
+   */
+  controlledSelection?: ControlledSelection | null;
+  onSelectionChange?: (sel: ControlledSelection | null) => void;
+  onClose?: () => void;
+  /**
+   * When true, force the narrow slide layout (one panel visible at a
+   * time). Defaults to tracking the viewport width.
+   */
+  forceNarrow?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -391,8 +427,12 @@ export function LettersWorkspace({
     initialSegmentId
   );
 
-  // Keep URL in sync with the currently-focused entity.
+  const isControlled = !!onSelectionChange;
+
+  // Keep URL in sync with the currently-focused entity. Skipped in
+  // controlled mode (parent owns the URL).
   useEffect(() => {
+    if (isControlled) return;
     const currentAbbr = group
       ? storylineById.get(group.storyline_id)?.abbreviation ?? ""
       : "";
@@ -419,7 +459,97 @@ export function LettersWorkspace({
     }
     router.replace(target, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId, selectedId, selectedSegmentId]);
+  }, [selectedGroupId, selectedId, selectedSegmentId, isControlled]);
+
+  // Controlled mode: push the parent's selection into internal state.
+  // The ref guard suppresses the reciprocal bubble-up effect on the same
+  // tick to avoid loops.
+  const controlledApplyRef = useRef(false);
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    const sel = controlledSelection ?? null;
+    controlledApplyRef.current = true;
+    if (!sel) {
+      setSelectedGroupId(null);
+      setSelectedId(null);
+      setSelectedSegmentId(null);
+      setView("list");
+      return;
+    }
+    if (sel.kind === "group") {
+      setSelectedGroupId(sel.groupId);
+      setSelectedId(null);
+      setSelectedSegmentId(null);
+      setView("group");
+    } else if (sel.kind === "letter") {
+      const letter = allLetters.find(
+        (l) =>
+          l.letter_group_id === sel.groupId &&
+          (l.variant ?? "") === sel.variantKey
+      );
+      setSelectedGroupId(sel.groupId);
+      setSelectedId(letter?.id ?? null);
+      setSelectedSegmentId(null);
+      setView("main");
+    } else if (sel.kind === "segment") {
+      const seg = allSegments.find((s) => s.id === sel.segmentId);
+      setSelectedGroupId(seg?.letter_group_id ?? null);
+      setSelectedId(null);
+      setSelectedSegmentId(sel.segmentId);
+      setView("main");
+    } else if (sel.kind === "actions") {
+      const letter = allLetters.find(
+        (l) =>
+          l.letter_group_id === sel.groupId &&
+          (l.variant ?? "") === sel.variantKey
+      );
+      setSelectedGroupId(sel.groupId);
+      setSelectedId(letter?.id ?? null);
+      setSelectedSegmentId(null);
+      setView("actions");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlledSelection, onSelectionChange]);
+
+  // Controlled mode: bubble internal selection state up to the parent.
+  // Skipped on the same tick that controlledSelection just applied.
+  useEffect(() => {
+    if (!onSelectionChange) return;
+    if (controlledApplyRef.current) {
+      controlledApplyRef.current = false;
+      return;
+    }
+    if (!selectedGroupId && !selectedId && !selectedSegmentId) {
+      onSelectionChange(null);
+      return;
+    }
+    if (selectedSegmentId) {
+      onSelectionChange({ kind: "segment", segmentId: selectedSegmentId });
+      return;
+    }
+    if (selectedId && selectedGroupId) {
+      const letter = allLetters.find((l) => l.id === selectedId);
+      const variantKey = letter?.variant ?? "";
+      if (view === "actions") {
+        onSelectionChange({
+          kind: "actions",
+          groupId: selectedGroupId,
+          variantKey,
+        });
+      } else {
+        onSelectionChange({
+          kind: "letter",
+          groupId: selectedGroupId,
+          variantKey,
+        });
+      }
+      return;
+    }
+    if (selectedGroupId) {
+      onSelectionChange({ kind: "group", groupId: selectedGroupId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedGroupId, selectedId, selectedSegmentId, view, onSelectionChange]);
 
   async function revertGroup() {
     if (!group || !groupDirty) return;
@@ -1256,7 +1386,8 @@ export function LettersWorkspace({
     ? segments.find((s) => s.id === selectedSegmentId)
     : null;
 
-  const narrow = useIsNarrow();
+  const viewportNarrow = useIsNarrow();
+  const narrow = forceNarrow ?? viewportNarrow;
   /**
    * Transform offset (as a percentage of the slide container) that moves
    * the desired panels into the viewport. At wide viewports the slide
@@ -1492,7 +1623,8 @@ export function LettersWorkspace({
       <div className="relative overflow-hidden">
         <div
           className={cn(
-            "flex w-[600%] transition-transform duration-300 ease-out lg:w-[300%]"
+            "flex transition-transform duration-300 ease-out",
+            narrow ? "w-[600%]" : "w-[600%] lg:w-[300%]"
           )}
           style={{ transform: `translateX(${slideOffset}%)` }}
         >
