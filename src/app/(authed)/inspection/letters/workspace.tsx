@@ -71,6 +71,8 @@ import { IconPicker } from "@/components/icon-picker";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
+import { useUnsavedDialog } from "@/components/unsaved-dialog";
+import type { UnsavedOutcome } from "@/components/unsaved-dialog";
 import {
   ChevronLeft,
   ChevronRight,
@@ -263,6 +265,8 @@ export function LettersWorkspace({
   onSelectionChange,
   onClose,
   forceNarrow,
+  onDirtyChange,
+  saveAllRef,
 }: {
   storylines: Storyline[];
   groups: LetterGroup[];
@@ -297,6 +301,19 @@ export function LettersWorkspace({
    * time). Defaults to tracking the viewport width.
    */
   forceNarrow?: boolean;
+  /**
+   * Notifies the parent when the combined dirty state of any inner
+   * panel changes — so embedders (e.g. the narrative graph) can guard
+   * navigation and selection changes. Receives a user-facing label
+   * for what's dirty (e.g. "Inspection Letter") or null when clean.
+   */
+  onDirtyChange?: (kind: string | null) => void;
+  /**
+   * Optional ref the workspace populates with a `saveAll()` function so
+   * embedders can flush every dirty panel before applying a navigation
+   * change. Returns once all in-flight saves complete.
+   */
+  saveAllRef?: React.MutableRefObject<(() => Promise<void>) | null>;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -469,10 +486,44 @@ export function LettersWorkspace({
     if (!onSelectionChange) return;
     const sel = controlledSelection ?? null;
     controlledApplyRef.current = true;
+    // External selection changes are gated by the embedder's
+    // unsaved-changes prompt, so by the time we get here the user has
+    // already chosen Save / Discard / Cancel. Clear local dirty flags so
+    // the new selection comes up clean (Save already flushed; Discard
+    // means we drop pending edits; Cancel never reaches this effect).
+    setGroupDirty(false);
+    setLetterDirty(false);
+    setActionsDirty(false);
+    setStorylineDirty(false);
+    // Helper: hydrate letterState in the same render so the slot 3
+    // render doesn't see a stale letterState.id pointing into the old
+    // group's letter list.
+    function hydrateLetterState(
+      groupId: string,
+      variantKey: string
+    ): string | null {
+      const groupLetters = allLetters.filter(
+        (l) => l.letter_group_id === groupId
+      );
+      const letter = groupLetters.find(
+        (l) => (l.variant ?? "") === variantKey
+      );
+      if (!letter) {
+        setLetterState(null);
+        return null;
+      }
+      const groupLetterIds = new Set(groupLetters.map((l) => l.id));
+      const groupActions = allActions.filter((a) =>
+        groupLetterIds.has(a.inspection_letter_id)
+      );
+      setLetterState(toLetterState(letter, groupActions, endingAssignments));
+      return letter.id;
+    }
     if (!sel) {
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setLetterState(null);
       setView("list");
       return;
     }
@@ -480,36 +531,34 @@ export function LettersWorkspace({
       setSelectedGroupId(sel.groupId);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setLetterState(null);
       setView("group");
     } else if (sel.kind === "letter") {
-      const letter = allLetters.find(
-        (l) =>
-          l.letter_group_id === sel.groupId &&
-          (l.variant ?? "") === sel.variantKey
-      );
       setSelectedGroupId(sel.groupId);
-      setSelectedId(letter?.id ?? null);
+      const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
+      setSelectedId(letterId);
       setSelectedSegmentId(null);
       setView("main");
     } else if (sel.kind === "segment") {
       const seg = allSegments.find((s) => s.id === sel.segmentId);
       setSelectedGroupId(seg?.letter_group_id ?? null);
       setSelectedId(null);
+      setLetterState(null);
       setSelectedSegmentId(sel.segmentId);
       setView("main");
     } else if (sel.kind === "actions") {
-      const letter = allLetters.find(
-        (l) =>
-          l.letter_group_id === sel.groupId &&
-          (l.variant ?? "") === sel.variantKey
-      );
       setSelectedGroupId(sel.groupId);
-      setSelectedId(letter?.id ?? null);
+      const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
+      setSelectedId(letterId);
       setSelectedSegmentId(null);
       setView("actions");
     }
+    // Intentionally only depends on controlledSelection — onSelectionChange
+    // is a callback that may be re-created by the parent on every render,
+    // and re-firing this effect on identity churn would clobber the
+    // user's in-flight edits (resetting letterState + dirty flags).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlledSelection, onSelectionChange]);
+  }, [controlledSelection]);
 
   // Controlled mode: bubble internal selection state up to the parent.
   // Skipped on the same tick that controlledSelection just applied.
@@ -548,8 +597,10 @@ export function LettersWorkspace({
     if (selectedGroupId) {
       onSelectionChange({ kind: "group", groupId: selectedGroupId });
     }
+    // Intentionally omits onSelectionChange to avoid re-firing on
+    // callback identity churn — see the apply effect above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId, selectedId, selectedSegmentId, view, onSelectionChange]);
+  }, [selectedGroupId, selectedId, selectedSegmentId, view]);
 
   async function revertGroup() {
     if (!group || !groupDirty) return;
@@ -622,6 +673,76 @@ export function LettersWorkspace({
     null
   );
   const [storylineDirty, setStorylineDirty] = useState(false);
+  // Broadcast which panel (if any) is dirty so an embedder (e.g.
+  // /graph) can guard navigation and label its prompt.
+  const dirtyKind: string | null = actionsDirty
+    ? "Action"
+    : letterDirty
+      ? "Inspection Letter"
+      : groupDirty
+        ? "Letter Group"
+        : storylineDirty
+          ? "Storyline"
+          : null;
+  useEffect(() => {
+    onDirtyChange?.(dirtyKind);
+  }, [dirtyKind, onDirtyChange]);
+  const anyDirty = dirtyKind !== null;
+
+  // Block leaving the page while there are unsaved changes — both via
+  // browser-level navigation (refresh / close / type URL) AND via in-app
+  // <Link> clicks (e.g. switching pages from the nav). Skipped in
+  // controlled mode because the embedder owns the page-leave guard.
+  useEffect(() => {
+    if (isControlled) return;
+    if (!anyDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    function onClickCapture(e: MouseEvent) {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href || href.startsWith("#")) return;
+      if (
+        anchor.target &&
+        anchor.target !== "" &&
+        anchor.target !== "_self"
+      )
+        return;
+      const url = new URL(anchor.href, window.location.href);
+      const samePath =
+        url.pathname === window.location.pathname &&
+        url.search === window.location.search &&
+        url.hash === window.location.hash;
+      if (samePath) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        const ok = await confirmDiscardDirty();
+        if (!ok) return;
+        const sameOrigin = url.origin === window.location.origin;
+        if (sameOrigin) {
+          router.push(url.pathname + url.search + url.hash);
+        } else {
+          window.location.href = anchor.href;
+        }
+      })();
+    }
+    document.addEventListener("click", onClickCapture, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onClickCapture, true);
+    };
+    // confirmDiscardDirty closes over many fields but stays referenced
+    // via closure; we re-bind whenever dirty/router change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyDirty, isControlled, router]);
 
   // ----- Panel history: the mouse back/forward buttons navigate between
   // panels in this workspace instead of browser pages. We record a
@@ -794,17 +915,28 @@ export function LettersWorkspace({
     };
   }, []);
 
-  async function confirmDiscardDirty(message: string): Promise<boolean> {
+  async function confirmDiscardDirty(_message?: string): Promise<boolean> {
     if (!(groupDirty || anyLetterDirty || storylineDirty)) return true;
-    return onConfirmDiscard(message);
+    return onConfirmDiscard(_message);
   }
-  async function onConfirmDiscard(message: string): Promise<boolean> {
-    return confirmDialog({
-      title: "Discard unsaved changes?",
-      message,
-      confirmLabel: "Discard",
-      intent: "destructive",
-    });
+  async function onConfirmDiscard(_message?: string): Promise<boolean> {
+    const outcome = await askUnsaved(`Unsaved ${dirtyKind ?? ""}`.trim());
+    if (outcome === "cancel") return false;
+    if (outcome === "save") {
+      try {
+        await saveAllNow();
+      } catch {
+        return false;
+      }
+      return true;
+    }
+    // discard: drop edits inline so callers can proceed with their
+    // navigation against a clean slate.
+    setGroupDirty(false);
+    setLetterDirty(false);
+    setActionsDirty(false);
+    setStorylineDirty(false);
+    return true;
   }
 
   async function selectGroup(id: string | null) {
@@ -1136,6 +1268,42 @@ export function LettersWorkspace({
     );
   }
 
+  // Flush every dirty panel. Used internally by the workspace's own
+  // unsaved-changes prompt and re-exported via `saveAllRef` so embedders
+  // (e.g. the narrative graph inspector) can drive it on "Save".
+  const saveAllNow = useCallback(async () => {
+    // Group first (so a paired letter save can use the new group day).
+    if (groupDirty && group) {
+      await saveGroup({
+        id: group.id,
+        storyline_id: groupState.storyline_id,
+        name: groupState.name,
+        notes: groupState.notes,
+        delivery_day_id: groupState.delivery_day_id,
+      });
+      setGroupDirty(false);
+    }
+    if ((letterDirty || actionsDirty) && letterState) {
+      await saveLetterNow(letterState);
+      setLetterDirty(false);
+      setActionsDirty(false);
+    }
+  }, [
+    groupDirty,
+    group,
+    groupState,
+    letterDirty,
+    actionsDirty,
+    letterState,
+  ]);
+  useEffect(() => {
+    if (!saveAllRef) return;
+    saveAllRef.current = saveAllNow;
+    return () => {
+      if (saveAllRef.current) saveAllRef.current = null;
+    };
+  }, [saveAllRef, saveAllNow]);
+
   function handleSaveLetterFields() {
     if (!letterState) return;
     const state = letterState;
@@ -1438,9 +1606,8 @@ export function LettersWorkspace({
       if (actionsDirty) {
         closing.push({
           key: "actions",
-          title: "Save changes to actions?",
-          message:
-            "This letter's actions have unsaved edits.",
+          title: "Unsaved Action",
+          message: "Changes will be lost. Would you like to save first?",
           isDirty: () => actionsDirty,
           save: async () => {
             if (!letterState) return;
@@ -1455,8 +1622,8 @@ export function LettersWorkspace({
       if (letterDirty) {
         closing.push({
           key: "letter",
-          title: "Save changes to inspection letter?",
-          message: "This letter has unsaved edits.",
+          title: "Unsaved Inspection Letter",
+          message: "Changes will be lost. Would you like to save first?",
           isDirty: () => letterDirty,
           save: async () => {
             if (!letterState) return;
@@ -1473,8 +1640,8 @@ export function LettersWorkspace({
         const snap = { ...groupState };
         closing.push({
           key: "group",
-          title: "Save changes to letter group?",
-          message: "The open letter group has unsaved edits.",
+          title: "Unsaved Letter Group",
+          message: "Changes will be lost. Would you like to save first?",
           isDirty: () => groupDirty,
           save: async () => {
             await saveGroup({
@@ -1495,14 +1662,11 @@ export function LettersWorkspace({
     // here — fall back to a simple Discard/Cancel for now and ask the
     // user to save from the inspector if they want to keep edits.
     if (level === "root" && storylineDirty) {
-      const ok = await confirmDialog({
-        title: "Discard storyline changes?",
-        message:
-          "The open storyline has unsaved edits. Save them from the storyline panel first if you want to keep them.",
-        confirmLabel: "Discard",
-        intent: "destructive",
-      });
-      if (!ok) return;
+      const outcome = await askUnsaved("Unsaved Storyline");
+      if (outcome === "cancel") return;
+      // The storyline panel owns its own save flow; "save" here just
+      // proceeds without discarding (the user must save manually from
+      // the storyline panel before this navigation completes).
       setStorylineDirty(false);
     }
 
@@ -1623,7 +1787,7 @@ export function LettersWorkspace({
       <div className="relative overflow-hidden">
         <div
           className={cn(
-            "flex transition-transform duration-300 ease-out",
+            "flex transition-transform duration-150 ease-out",
             narrow ? "w-[600%]" : "w-[600%] lg:w-[300%]"
           )}
           style={{ transform: `translateX(${slideOffset}%)` }}
@@ -1936,9 +2100,8 @@ export function LettersWorkspace({
             opened a segment directly from the group panel, no letter
             selected). */}
         <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
-          {letterState ? (
+          {letterState && letters.find((l) => l.id === letterState.id) ? (
             <LetterFieldsCard
-              key={letterState.id}
               state={letterState}
               letterView={letters.find((l) => l.id === letterState.id)!}
               storyline={currentStoryline}
@@ -2185,8 +2348,18 @@ function LetterFieldsCard({
         />
       </div>
       <div className="grid grid-cols-6 gap-3">
-        <div className="col-span-4 flex flex-col gap-1">
-          <Label>Delivery day</Label>
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Group delivery</Label>
+          <div
+            className={cn(
+              "flex h-8 items-center rounded-md border border-transparent px-3 font-mono text-sm text-muted-foreground"
+            )}
+          >
+            {days.find((d) => d.id === groupDeliveryDayId)?.identifier ?? "—"}
+          </div>
+        </div>
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Delivery override</Label>
           <DaySelect
             value={currentDayId ?? ""}
             days={days}
@@ -2208,7 +2381,8 @@ function LetterFieldsCard({
             )}
           />
         </div>
-        <div className="col-span-2 flex flex-col items-end justify-end">
+        <div className="col-span-2 flex flex-col items-end gap-1">
+          <Label>Actions</Label>
           <button
             type="button"
             onClick={onShowActions}
@@ -4773,92 +4947,6 @@ function BreadcrumbPill({
  * the inline list headers (e.g. "Letters (N)"). Uppercase mono label on
  * a full-width border-b row.
  */
-type UnsavedOutcome = "save" | "discard" | "cancel";
-
-/**
- * Tri-state dialog for unsaved changes. Returns "save", "discard", or
- * "cancel". Used by the breadcrumb / leave flow to ask once per dirty
- * panel — pressing Cancel aborts the whole navigation, Save flushes
- * that panel and continues, Don't save drops its edits and continues.
- */
-function useUnsavedDialog(): {
-  ask: (title: string, message?: string) => Promise<UnsavedOutcome>;
-  dialog: React.ReactNode;
-} {
-  const [state, setState] = useState<{ title: string; message?: string } | null>(
-    null
-  );
-  const resolveRef = useRef<((v: UnsavedOutcome) => void) | null>(null);
-
-  const ask = useCallback(
-    (title: string, message?: string) =>
-      new Promise<UnsavedOutcome>((resolve) => {
-        resolveRef.current = resolve;
-        setState({ title, message });
-      }),
-    []
-  );
-
-  function settle(v: UnsavedOutcome) {
-    const r = resolveRef.current;
-    resolveRef.current = null;
-    setState(null);
-    r?.(v);
-  }
-
-  const dialog = state ? (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label={state.title}
-      onClick={() => settle("cancel")}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-md border border-border bg-card p-6 shadow-xl"
-      >
-        <h3 className="font-mono text-sm font-semibold uppercase tracking-widest text-muted-foreground">
-          {state.title}
-        </h3>
-        {state.message ? (
-          <p className="mt-3 text-sm text-foreground/90">{state.message}</p>
-        ) : null}
-        <div className="mt-6 flex items-center gap-2">
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            onClick={() => settle("discard")}
-          >
-            Don&rsquo;t save
-          </Button>
-          <div className="ml-auto flex gap-2">
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => settle("cancel")}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => settle("save")}
-              autoFocus
-            >
-              Save
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  ) : null;
-
-  return { ask, dialog };
-}
-
 function PanelHeader({
   title,
   dirty,
@@ -5000,13 +5088,21 @@ function SaveRevert({
   onSave: () => void;
   onRevert: () => void;
 }) {
-  if (!dirty && !pending) return null;
+  // Reserve the layout space whether or not the buttons are showing so
+  // panel headers don't shift when the dirty state flips. Visibility
+  // hidden preserves the box; aria-hidden + tabIndex -1 hides from a11y.
+  const inactive = !dirty && !pending;
   return (
-    <div className="flex items-center gap-1">
+    <div
+      className="flex items-center gap-1"
+      style={{ visibility: inactive ? "hidden" : "visible" }}
+      aria-hidden={inactive}
+    >
       <button
         type="button"
         onClick={onRevert}
-        disabled={pending}
+        disabled={pending || inactive}
+        tabIndex={inactive ? -1 : 0}
         aria-label="Revert to saved"
         title="Revert to saved"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
@@ -5016,7 +5112,8 @@ function SaveRevert({
       <button
         type="button"
         onClick={onSave}
-        disabled={pending}
+        disabled={pending || inactive}
+        tabIndex={inactive ? -1 : 0}
         aria-label="Save"
         title="Save"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"

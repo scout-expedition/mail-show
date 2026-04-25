@@ -4,7 +4,6 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  Controls,
   MarkerType,
   PanOnScrollMode,
   Panel,
@@ -13,6 +12,11 @@ import {
   type Node,
   type ReactFlowInstance,
 } from "@xyflow/react";
+import {
+  IconFocusCentered,
+  IconMinus,
+  IconPlus,
+} from "@tabler/icons-react";
 import { StorylinePill } from "@/components/pills";
 import type {
   ActionRow,
@@ -30,6 +34,13 @@ import {
   type ActiveImpact,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
+import {
+  batchMoveToDay,
+  moveLetterGroupToDay,
+  moveLetterToGroup,
+  moveReportSegmentToDay,
+  setActionNextLetter,
+} from "../inspection/letters/actions";
 import { ActionIconEdge } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
 import LetterGroupNode from "./nodes/letter-group";
@@ -226,7 +237,15 @@ export function GraphView({
     (sel: GraphSelection | null) => onSelectionChange?.(sel),
     [onSelectionChange]
   );
-  const { nodes, edges, labelRows, labelCols, selectionCenter } = useMemo(() => {
+  const {
+    nodes,
+    edges,
+    labelRows,
+    labelCols,
+    selectionCenter,
+    rowMeta,
+    groupMeta,
+  } = useMemo(() => {
     // -------------------------------------------------------------
     // Rows (days + unscheduled bucket) — flow top→down
     // -------------------------------------------------------------
@@ -555,7 +574,7 @@ export function GraphView({
               selected: segSelected,
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
-            draggable: false,
+            draggable: true,
             selectable: false,
             focusable: false,
           });
@@ -584,7 +603,7 @@ export function GraphView({
               selected: groupSelected,
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
-            draggable: false,
+            draggable: true,
             selectable: false,
             focusable: false,
             style: { width: gi.width, height: gi.height },
@@ -620,7 +639,8 @@ export function GraphView({
               id: letterNodeId,
               type: "letter",
               parentId: groupNodeId,
-              extent: "parent",
+              // extent stays unconstrained so the letter can be dragged out
+              // of its group and dropped onto a different one.
               position: { x: relX, y: relY },
               data: {
                 contentId,
@@ -631,7 +651,7 @@ export function GraphView({
                 onSelect: () =>
                   select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
-              draggable: false,
+              draggable: true,
               selectable: false,
               focusable: false,
             });
@@ -979,6 +999,7 @@ export function GraphView({
       // impact badges) so the segment → next-letter follow-up doesn't
       // duplicate the indicator.
       const isLetterSource = c.source.startsWith("letter:");
+      const isLetterTarget = c.target.startsWith("letter:");
       const hasEnding =
         impactFilter.showEndings &&
         isLetterSource &&
@@ -1016,9 +1037,11 @@ export function GraphView({
           hasEnding,
           selected: chipSelected,
           onSelect: onChipSelect,
-          // Report → next-letter continuations show the colored line only
-          // (the chip/badges already live on the letter → report segment).
-          hideChip: !isLetterSource,
+          // The chip only appears on letter → report segment connections
+          // (and on the letter → stub dangling terminator). Report →
+          // next-letter continuations AND letter → next-letter direct
+          // connections (no report) render as a colored line only.
+          hideChip: !isLetterSource || isLetterTarget,
         },
         markerEnd:
           c.terminator === "arrow"
@@ -1082,12 +1105,27 @@ export function GraphView({
       return null;
     }
 
+    // Compact metadata maps used by drag-drop handlers so they can
+    // translate a dropped node's position back to row / group ids.
+    const rowMeta = rowIds.map((rowId) => ({
+      rowId,
+      baseY: rowBaseY.get(rowId) ?? 0,
+      height: rowHeights.get(rowId) ?? 0,
+    }));
+    const groupMeta = Array.from(groupsById.entries()).map(([gid, gi]) => ({
+      gid,
+      rowId: gi.rowId,
+      storylineId: gi.storyline.id,
+    }));
+
     return {
       nodes: n,
       edges: e,
       labelRows,
       labelCols,
       selectionCenter,
+      rowMeta,
+      groupMeta,
     };
   }, [
     storylines,
@@ -1106,6 +1144,142 @@ export function GraphView({
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const rfRef = useRef<ReactFlowInstance | null>(null);
+
+  // Helpers used by drag-drop handlers. They close over the current
+  // memoized layout — recomputed on every render, which is fine because
+  // drag handlers are also recreated per render.
+  function rowAtFlowY(y: number): string | null {
+    for (const r of rowMeta) {
+      if (y >= r.baseY && y < r.baseY + r.height) return r.rowId;
+    }
+    return null;
+  }
+
+  const onNodeDragStop = useCallback(
+    (
+      event: React.MouseEvent | MouseEvent,
+      node: Node,
+      draggedNodes: Node[]
+    ) => {
+      const rf = rfRef.current;
+      if (!rf) return;
+      // Batch move: when the user drags more than one selected node,
+      // dispatch a single batchMoveToDay covering each entity's new day.
+      if (draggedNodes.length > 1) {
+        const flowPt = rf.screenToFlowPosition({
+          x: (event as MouseEvent).clientX,
+          y: (event as MouseEvent).clientY,
+        });
+        const targetRowId = rowAtFlowY(flowPt.y);
+        if (!targetRowId) return;
+        const moves: Parameters<typeof batchMoveToDay>[0] = [];
+        const seenGroups = new Set<string>();
+        for (const dn of draggedNodes) {
+          if (dn.id.startsWith("group:")) {
+            const gid = dn.id.slice("group:".length);
+            if (seenGroups.has(gid)) continue;
+            seenGroups.add(gid);
+            moves.push({
+              kind: "group",
+              id: gid,
+              targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
+            });
+          } else if (dn.id.startsWith("report:")) {
+            const sid = dn.id.slice("report:".length);
+            moves.push({
+              kind: "report",
+              id: sid,
+              targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
+            });
+          } else if (dn.id.startsWith("letter:")) {
+            // Letters follow their group; collapse to the group move.
+            const m = dn.id.match(/^letter:([^:]+):/);
+            if (!m) continue;
+            const gid = m[1];
+            if (seenGroups.has(gid)) continue;
+            seenGroups.add(gid);
+            moves.push({
+              kind: "group",
+              id: gid,
+              targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
+            });
+          }
+        }
+        if (moves.length > 0) void batchMoveToDay(moves);
+        return;
+      }
+
+      // Single-node drag.
+      if (node.id.startsWith("group:")) {
+        const gid = node.id.slice("group:".length);
+        const entry = groupMeta.find((g) => g.gid === gid);
+        if (!entry) return;
+        // Find the target row by asking where the pointer released.
+        const flowPt = rf.screenToFlowPosition({
+          x: (event as MouseEvent).clientX,
+          y: (event as MouseEvent).clientY,
+        });
+        const targetRowId = rowAtFlowY(flowPt.y);
+        if (!targetRowId || targetRowId === entry.rowId) return;
+        void moveLetterGroupToDay(
+          gid,
+          targetRowId === "unscheduled" ? null : targetRowId
+        );
+      } else if (node.id.startsWith("report:")) {
+        const sid = node.id.slice("report:".length);
+        const flowPt = rf.screenToFlowPosition({
+          x: (event as MouseEvent).clientX,
+          y: (event as MouseEvent).clientY,
+        });
+        const targetRowId = rowAtFlowY(flowPt.y);
+        if (!targetRowId) return;
+        void moveReportSegmentToDay(
+          sid,
+          targetRowId === "unscheduled" ? null : targetRowId
+        );
+      } else if (node.id.startsWith("letter:")) {
+        // Drop target: the letter-group node the pointer is over.
+        const m = node.id.match(/^letter:([^:]+):(.*)$/);
+        if (!m) return;
+        const sourceGid = m[1];
+        const sourceStoryline = groupMeta.find(
+          (g) => g.gid === sourceGid
+        )?.storylineId;
+        const intersecting = rf
+          .getIntersectingNodes(node)
+          .filter(
+            (nn) => nn.type === "letterGroup" && nn.id !== `group:${sourceGid}`
+          );
+        if (intersecting.length === 0) return;
+        const targetGroupNode = intersecting[0];
+        const targetGid = targetGroupNode.id.slice("group:".length);
+        const targetStoryline = groupMeta.find(
+          (g) => g.gid === targetGid
+        )?.storylineId;
+        if (
+          !sourceStoryline ||
+          !targetStoryline ||
+          sourceStoryline !== targetStoryline
+        ) {
+          return; // cross-storyline drops are silently ignored
+        }
+        const letterId = (node.data as { letterId?: string } | undefined)
+          ?.letterId;
+        // We don't have the letter row id in the node data yet; we get
+        // it from the letters prop by matching group + variant.
+        const variantKey = m[2];
+        const letter = letters.find(
+          (l) =>
+            l.letter_group_id === sourceGid &&
+            (l.variant ?? "") === variantKey
+        );
+        const resolvedLetterId = letterId ?? letter?.id;
+        if (!resolvedLetterId) return;
+        void moveLetterToGroup(resolvedLetterId, targetGid);
+      }
+    },
+    [rowMeta, groupMeta, letters]
+  );
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use
@@ -1141,9 +1315,10 @@ export function GraphView({
         fitViewOptions={{ padding: 0.1 }}
         minZoom={0.2}
         maxZoom={1.5}
-        nodesDraggable={false}
+        nodesDraggable={true}
         nodesConnectable={false}
-        elementsSelectable={false}
+        elementsSelectable={true}
+        selectionOnDrag={true}
         edgesFocusable={false}
         panOnScroll
         panOnScrollMode={PanOnScrollMode.Free}
@@ -1154,6 +1329,7 @@ export function GraphView({
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
         }}
+        onNodeDragStop={onNodeDragStop}
         onMove={(_, v) => setVp(v)}
         onMoveEnd={(_, v) => setVp(v)}
         onInit={(rf) => {
@@ -1163,13 +1339,42 @@ export function GraphView({
         proOptions={{ hideAttribution: true }}
       >
         <Background color="var(--border)" gap={24} />
-        <Controls position="bottom-right" showInteractive={false} />
         <Panel position="bottom-right">
-          <div
-            className="pointer-events-none mb-[56px] mr-1 select-none rounded-md border border-border bg-card/80 px-2 py-1 font-mono text-[11px] tabular-nums text-foreground"
-            aria-label="Zoom level"
-          >
-            {Math.round(vp.zoom * 100)}%
+          <div className="mr-1 flex flex-col items-center gap-1">
+            <div
+              className="select-none rounded-md border border-border bg-card px-2 py-1 font-mono text-[11px] tabular-nums text-foreground shadow"
+              aria-label="Zoom level"
+            >
+              {Math.round(vp.zoom * 100)}%
+            </div>
+            <div className="flex flex-col overflow-hidden rounded-md border border-border bg-card shadow">
+              <button
+                type="button"
+                aria-label="Zoom in"
+                className="flex h-8 w-8 items-center justify-center text-foreground hover:bg-accent"
+                onClick={() => rfRef.current?.zoomIn({ duration: 150 })}
+              >
+                <IconPlus size={16} stroke={2.4} />
+              </button>
+              <button
+                type="button"
+                aria-label="Zoom out"
+                className="flex h-8 w-8 items-center justify-center border-t border-border text-foreground hover:bg-accent"
+                onClick={() => rfRef.current?.zoomOut({ duration: 150 })}
+              >
+                <IconMinus size={16} stroke={2.4} />
+              </button>
+              <button
+                type="button"
+                aria-label="Fit view"
+                className="flex h-8 w-8 items-center justify-center border-t border-border text-foreground hover:bg-accent"
+                onClick={() =>
+                  rfRef.current?.fitView({ padding: 0.1, duration: 250 })
+                }
+              >
+                <IconFocusCentered size={16} stroke={2.4} />
+              </button>
+            </div>
           </div>
         </Panel>
       </ReactFlow>

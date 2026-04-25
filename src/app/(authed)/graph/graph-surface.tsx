@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
 } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
+import { useUnsavedDialog } from "@/components/unsaved-dialog";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
   DEFAULT_IMPACT_FILTER,
@@ -76,15 +78,110 @@ export function GraphSurface({
   );
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorDirtyKind, setInspectorDirtyKind] = useState<string | null>(
+    null
+  );
+  const inspectorDirty = inspectorDirtyKind !== null;
+  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog();
+  const saveAllRef = useRef<(() => Promise<void>) | null>(null);
+  const router = useRouter();
 
   const initial = selectionToInitial(selection);
 
-  // Any node click opens the inspector; explicit toggle lets the user
-  // collapse it without losing their selection.
-  const handleSelectionChange = (sel: GraphSelection | null) => {
-    setSelection(sel);
-    if (sel) setInspectorOpen(true);
-  };
+  // Resolve the unsaved-changes dialog by invoking the workspace's
+  // saveAll, dropping the dirty flag, or aborting per the user's pick.
+  // Returns true when the caller may proceed with its navigation.
+  const resolveUnsavedDirty = useCallback(async () => {
+    if (!(inspectorOpen && inspectorDirty)) return true;
+    const outcome = await askUnsaved(`Unsaved ${inspectorDirtyKind}`);
+    if (outcome === "cancel") return false;
+    if (outcome === "save") {
+      try {
+        await saveAllRef.current?.();
+      } catch {
+        return false;
+      }
+    }
+    setInspectorDirtyKind(null);
+    return true;
+  }, [askUnsaved, inspectorDirty, inspectorDirtyKind, inspectorOpen]);
+
+  // Any node click (or panel-driven selection change) opens the
+  // inspector. When the panel has unsaved changes, gate cross-selection
+  // navigation behind the unsaved-changes dialog.
+  const handleSelectionChange = useCallback(
+    async (sel: GraphSelection | null) => {
+      const ok = await resolveUnsavedDirty();
+      if (!ok) return;
+      setSelection(sel);
+      if (sel) setInspectorOpen(true);
+    },
+    [resolveUnsavedDirty]
+  );
+
+  const handleInspectorToggle = useCallback(async () => {
+    if (inspectorOpen) {
+      const ok = await resolveUnsavedDirty();
+      if (!ok) return;
+    }
+    setInspectorOpen((v) => !v);
+  }, [inspectorOpen, resolveUnsavedDirty]);
+
+  // Block leaving the page (browser nav / refresh) while there are
+  // unsaved inspector changes.
+  useEffect(() => {
+    if (!inspectorDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [inspectorDirty]);
+
+  // Intercept in-app link clicks (Next.js <Link> renders an <a>) so the
+  // unsaved-changes dialog also gates client-side navigation. We attach
+  // in the capture phase so we can preventDefault before Next.js's own
+  // click handler kicks off the route push. After the user resolves the
+  // prompt, we replay the navigation manually via router.push.
+  useEffect(() => {
+    if (!inspectorDirty) return;
+    function onClickCapture(e: MouseEvent) {
+      // Let modifier-clicks (open in new tab) through.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href) return;
+      // Skip in-page anchors and explicit new-tab targets.
+      if (href.startsWith("#")) return;
+      if (anchor.target && anchor.target !== "" && anchor.target !== "_self")
+        return;
+      const url = new URL(anchor.href, window.location.href);
+      const samePath =
+        url.pathname === window.location.pathname &&
+        url.search === window.location.search &&
+        url.hash === window.location.hash;
+      if (samePath) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        const ok = await resolveUnsavedDirty();
+        if (!ok) return;
+        const sameOrigin = url.origin === window.location.origin;
+        if (sameOrigin) {
+          router.push(url.pathname + url.search + url.hash);
+        } else {
+          window.location.href = anchor.href;
+        }
+      })();
+    }
+    document.addEventListener("click", onClickCapture, true);
+    return () =>
+      document.removeEventListener("click", onClickCapture, true);
+  }, [inspectorDirty, resolveUnsavedDirty, router]);
 
   return (
     <div>
@@ -105,7 +202,7 @@ export function GraphSurface({
               aria-pressed={inspectorOpen}
               aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
               title={inspectorOpen ? "Close inspector" : "Open inspector"}
-              onClick={() => setInspectorOpen((v) => !v)}
+              onClick={handleInspectorToggle}
             >
               {inspectorOpen ? (
                 <IconLayoutSidebarLeftExpand size={16} />
@@ -159,16 +256,25 @@ export function GraphSurface({
                 initialLetterId={initial.letterId}
                 initialSegmentId={initial.segmentId}
                 controlledSelection={selection as ControlledSelection}
-                onSelectionChange={(sel) =>
-                  setSelection(sel as GraphSelection | null)
-                }
-                onClose={() => setInspectorOpen(false)}
+                onSelectionChange={(sel) => {
+                  // Panel-driven selection changes (user clicking within
+                  // the inspector list) are already dirty-guarded inside
+                  // the workspace itself, so we mirror without
+                  // re-prompting from here.
+                  setSelection(sel as GraphSelection | null);
+                }}
+                onClose={() => {
+                  void handleInspectorToggle();
+                }}
                 forceNarrow
+                onDirtyChange={setInspectorDirtyKind}
+                saveAllRef={saveAllRef}
               />
             </aside>
           ) : null}
         </div>
       )}
+      {unsavedDialogEl}
     </div>
   );
 }

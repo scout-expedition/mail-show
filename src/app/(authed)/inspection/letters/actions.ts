@@ -120,6 +120,179 @@ export async function saveGroup(data: {
   revalidatePath("/graph");
 }
 
+/**
+ * Lightweight move used by the narrative graph drag-and-drop. Updates
+ * only `delivery_day_id` without touching name/notes (those are owned by
+ * the inspector panel). `sequence` is unique per storyline, not per day,
+ * so day changes don't require any re-sequencing.
+ */
+export async function moveLetterGroupToDay(
+  groupId: string,
+  dayId: string | null
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("letter_groups")
+    .update({ delivery_day_id: dayId })
+    .eq("id", groupId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/** Move a report segment's delivery-day override. */
+export async function moveReportSegmentToDay(
+  segmentId: string,
+  dayId: string | null
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("report_segments")
+    .update({ delivery_day_override_id: dayId, updated_by: updatedBy })
+    .eq("id", segmentId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Move an inspection letter to a different group within the same
+ * storyline. Re-slots variants in both groups, renumbers pieces in the
+ * old group, and nulls any `actions.next_letter_variant` refs on the
+ * old group's letters that pointed at the moved letter's previous
+ * variant (which is about to be reassigned). Rejects cross-storyline
+ * moves.
+ */
+export async function moveLetterToGroup(
+  letterId: string,
+  targetGroupId: string
+) {
+  const supabase = await createSupabaseServerClient();
+
+  // Resolve the source letter + groups.
+  const { data: letterRow, error: lErr } = await supabase
+    .from("inspection_letters")
+    .select("id, letter_group_id, variant")
+    .eq("id", letterId)
+    .single();
+  if (lErr || !letterRow) throw new Error(lErr?.message ?? "letter not found");
+  const sourceGroupId = letterRow.letter_group_id as string;
+  const oldVariant = (letterRow.variant as string | null) ?? null;
+  if (sourceGroupId === targetGroupId) return;
+
+  const { data: groups, error: gErr } = await supabase
+    .from("letter_groups")
+    .select("id, storyline_id")
+    .in("id", [sourceGroupId, targetGroupId]);
+  if (gErr) throw new Error(gErr.message);
+  const sourceGroup = groups?.find((g) => g.id === sourceGroupId);
+  const targetGroup = groups?.find((g) => g.id === targetGroupId);
+  if (!sourceGroup || !targetGroup) throw new Error("group not found");
+  if (sourceGroup.storyline_id !== targetGroup.storyline_id) {
+    throw new Error("cross-storyline letter move is not supported");
+  }
+
+  // Append into target group with a fresh sort_order slot.
+  const { data: targetLetters } = await supabase
+    .from("inspection_letters")
+    .select("sort_order")
+    .eq("letter_group_id", targetGroupId);
+  const nextSortOrder =
+    Math.max(0, ...((targetLetters ?? []).map((l) => l.sort_order ?? 0))) + 1;
+
+  const { error: mErr } = await supabase
+    .from("inspection_letters")
+    .update({ letter_group_id: targetGroupId, sort_order: nextSortOrder })
+    .eq("id", letterId);
+  if (mErr) throw new Error(mErr.message);
+
+  // Null out any next_letter_variant on the source group's letters that
+  // pointed at the old variant (those refs are no longer valid since the
+  // letter left the group and variants will re-slot).
+  if (oldVariant) {
+    const { data: sourceLetters } = await supabase
+      .from("inspection_letters")
+      .select("id")
+      .eq("letter_group_id", sourceGroupId);
+    const sourceLetterIds = (sourceLetters ?? []).map((l) => l.id as string);
+    if (sourceLetterIds.length > 0) {
+      await supabase
+        .from("actions")
+        .update({ next_letter_variant: null })
+        .in("inspection_letter_id", sourceLetterIds)
+        .eq("next_letter_variant", oldVariant);
+    }
+  }
+
+  // Re-slot variants in both groups (lowercase a, b, c, … by sort_order).
+  await reassignVariants(sourceGroupId);
+  await reassignVariants(targetGroupId);
+  // Renumber pieces for the old variant in the source group (in case
+  // multiple pieces shared that variant).
+  if (oldVariant) {
+    await reassignPiecesForVariant(sourceGroupId, oldVariant);
+  }
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Update a single action's next-letter link. Used by the narrative
+ * graph's edge-reconnect drag. Passing `null` clears the link (the
+ * action's arrow becomes dangling).
+ */
+export async function setActionNextLetter(
+  actionId: string,
+  nextVariantKey: string | null
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("actions")
+    .update({ next_letter_variant: nextVariantKey })
+    .eq("id", actionId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Batch apply a mix of day-moves in a single server roundtrip so the
+ * graph only revalidates once. Used by rubber-band multi-select.
+ */
+export async function batchMoveToDay(
+  moves: Array<
+    | { kind: "group"; id: string; targetDayId: string | null }
+    | { kind: "report"; id: string; targetDayId: string | null }
+  >
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  for (const m of moves) {
+    if (m.kind === "group") {
+      const { error } = await supabase
+        .from("letter_groups")
+        .update({ delivery_day_id: m.targetDayId })
+        .eq("id", m.id);
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await supabase
+        .from("report_segments")
+        .update({
+          delivery_day_override_id: m.targetDayId,
+          updated_by: updatedBy,
+        })
+        .eq("id", m.id);
+      if (error) throw new Error(error.message);
+    }
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
 export async function deleteGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase
