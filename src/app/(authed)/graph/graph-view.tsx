@@ -1408,6 +1408,12 @@ export function GraphView({
           </div>
         </Panel>
       </ReactFlow>
+      {/* dark scrim behind storyline pills, above day-gutter labels */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-0 right-0 top-0 z-[19] border-b border-border bg-card/80"
+        style={{ height: 30 }}
+      />
       <StickyStorylineHeader
         cols={labelCols}
         viewport={vp}
@@ -1443,7 +1449,7 @@ function StickyDayGutter({
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute left-0 top-0 bottom-0 z-10 overflow-hidden"
+      className="pointer-events-none absolute left-0 top-0 bottom-0 z-[22] overflow-hidden"
       style={{
         width: GUTTER_W,
       }}
@@ -1454,8 +1460,8 @@ function StickyDayGutter({
         return (
           <div
             key={r.rowId}
-            className="absolute flex flex-col items-center justify-center gap-0.5 rounded-md border border-border bg-card/80 px-0.5"
-            style={{ top: top + 3, left: 2, right: 2, height }}
+            className="absolute flex flex-col items-center justify-center gap-0.5 rounded-r-md border-y border-r border-border bg-card/80 px-0.5"
+            style={{ top: top + 3, left: 0, right: 2, height }}
           >
             <span className="font-mono text-[11px] font-semibold tracking-widest text-foreground">
               {r.identifier ?? (r.isUnscheduled ? "—" : "")}
@@ -1492,7 +1498,7 @@ function StickyStorylineHeader({
 }) {
   return (
     <div
-      className="pointer-events-none absolute top-0 z-20"
+      className="pointer-events-none absolute top-0 z-[21]"
       style={{
         left: GUTTER_W,
         right: 0,
