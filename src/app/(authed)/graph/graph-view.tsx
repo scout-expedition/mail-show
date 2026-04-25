@@ -16,6 +16,7 @@ import {
   IconFocusCentered,
   IconMinus,
   IconPlus,
+  IconZoomScan,
 } from "@tabler/icons-react";
 import { StorylinePill } from "@/components/pills";
 import type {
@@ -1304,8 +1305,7 @@ export function GraphView({
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
-        const z = rf.getViewport().zoom;
-        rf.setCenter(c.x, c.y, { zoom: z, duration: 350 });
+        rf.setCenter(c.x, c.y, { zoom: 1.2, duration: 350 });
       });
     });
     return () => {
@@ -1350,39 +1350,59 @@ export function GraphView({
       >
         <Background color="var(--border)" gap={24} />
         <Panel position="bottom-right">
-          <div className="mr-1 flex flex-col items-center gap-1">
+          <div className="mr-1 overflow-hidden rounded-md border border-border bg-card shadow">
             <div
-              className="select-none rounded-md border border-border bg-card px-2 py-1 font-mono text-[11px] tabular-nums text-foreground shadow"
+              className="flex select-none items-center justify-center border-b border-border px-2 py-1 font-mono text-[11px] tabular-nums text-foreground"
               aria-label="Zoom level"
             >
               {Math.round(vp.zoom * 100)}%
             </div>
-            <div className="flex flex-col overflow-hidden rounded-md border border-border bg-card shadow">
+            <div className="flex">
+              <button
+                type="button"
+                aria-label="Zoom to selection"
+                title="Zoom to selection"
+                disabled={!selectionCenter(selection)}
+                className="flex h-8 w-8 items-center justify-center text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-30"
+                onClick={() => {
+                  const rf = rfRef.current;
+                  const c = selectionCenter(selection);
+                  if (!rf || !c) return;
+                  rf.setCenter(c.x, c.y, { zoom: 1.2, duration: 350 });
+                }}
+              >
+                <IconZoomScan size={16} stroke={2.4} />
+              </button>
               <button
                 type="button"
                 aria-label="Zoom in"
-                className="flex h-8 w-8 items-center justify-center text-foreground hover:bg-accent"
+                title="Zoom in"
+                className="flex h-8 w-8 items-center justify-center border-l border-border text-foreground hover:bg-accent"
                 onClick={() => rfRef.current?.zoomIn({ duration: 150 })}
               >
                 <IconPlus size={16} stroke={2.4} />
               </button>
-              <button
-                type="button"
-                aria-label="Zoom out"
-                className="flex h-8 w-8 items-center justify-center border-t border-border text-foreground hover:bg-accent"
-                onClick={() => rfRef.current?.zoomOut({ duration: 150 })}
-              >
-                <IconMinus size={16} stroke={2.4} />
-              </button>
+            </div>
+            <div className="flex border-t border-border">
               <button
                 type="button"
                 aria-label="Fit view"
-                className="flex h-8 w-8 items-center justify-center border-t border-border text-foreground hover:bg-accent"
+                title="Fit view"
+                className="flex h-8 w-8 items-center justify-center text-foreground hover:bg-accent"
                 onClick={() =>
                   rfRef.current?.fitView({ padding: 0.1, duration: 250 })
                 }
               >
                 <IconFocusCentered size={16} stroke={2.4} />
+              </button>
+              <button
+                type="button"
+                aria-label="Zoom out"
+                title="Zoom out"
+                className="flex h-8 w-8 items-center justify-center border-l border-border text-foreground hover:bg-accent"
+                onClick={() => rfRef.current?.zoomOut({ duration: 150 })}
+              >
+                <IconMinus size={16} stroke={2.4} />
               </button>
             </div>
           </div>

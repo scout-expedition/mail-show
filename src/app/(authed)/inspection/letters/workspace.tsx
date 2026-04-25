@@ -5758,7 +5758,7 @@ function StorylinesListPanel({
             type="button"
             onClick={() => onSelectGroup(g.id)}
             className={cn(
-              "flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm",
+              "flex min-w-0 flex-1 items-center gap-2 pl-3 pr-1 py-1.5 text-left text-sm",
               !active && "hover:bg-accent/30"
             )}
           >
@@ -5778,7 +5778,7 @@ function StorylinesListPanel({
                 g.name
               )}
             </span>
-            <span className="flex w-8 shrink-0 items-center justify-end gap-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="flex w-10 shrink-0 items-center justify-end gap-0.5 font-mono text-[10px] text-muted-foreground">
               <MailOpen size={11} aria-hidden />
               {count}
             </span>
@@ -5788,7 +5788,7 @@ function StorylinesListPanel({
             onClick={() => toggle(groupKey)}
             aria-expanded={groupOpen}
             aria-label={groupOpen ? "Hide letters" : "Show letters"}
-            className="inline-flex w-7 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+            className="inline-flex w-8 shrink-0 items-center justify-center text-muted-foreground hover:bg-accent/30 hover:text-foreground"
           >
             <ChevronLeft
               size={12}
@@ -5887,7 +5887,7 @@ function StorylinesListPanel({
                     <Mails size={11} aria-hidden />
                     {bucket.length}
                   </span>
-                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                  <span className="flex w-10 shrink-0 items-center justify-end gap-0.5 font-mono text-[10px] text-muted-foreground">
                     <MailOpen size={11} aria-hidden />
                     {totalLetters}
                   </span>
@@ -5959,7 +5959,7 @@ function StorylinesListPanel({
                     <Mails size={11} aria-hidden />
                     {bucket.length}
                   </span>
-                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                  <span className="flex w-10 shrink-0 items-center justify-end gap-0.5 font-mono text-[10px] text-muted-foreground">
                     <MailOpen size={11} aria-hidden />
                     {totalLetters}
                   </span>
