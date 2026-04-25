@@ -5729,7 +5729,7 @@ function StorylinesListPanel({
     </div>
   );
 
-  function renderGroupRow(g: LetterGroup, opts: { showStoryline: boolean }) {
+  function renderGroupRow(g: LetterGroup, opts: { showStoryline: boolean; showDay: boolean }) {
     const s = storylineById.get(g.storyline_id);
     const active = g.id === selectedGroupId;
     const count = letterCountByGroup.get(g.id) ?? 0;
@@ -5762,6 +5762,11 @@ function StorylinesListPanel({
               !active && "hover:bg-accent/30"
             )}
           >
+            {opts.showDay && day ? (
+              <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                {day.identifier}
+              </span>
+            ) : null}
             <LetterGroupPill storyline={s} sequence={g.sequence} />
             <span className="min-w-0 flex-1 truncate">
               {opts.showStoryline && s ? (
@@ -5773,19 +5778,9 @@ function StorylinesListPanel({
                 g.name
               )}
             </span>
-            <span className="w-12 shrink-0 text-right font-mono text-[10px] text-muted-foreground">
-              {count} L
-            </span>
-            <span className="w-10 shrink-0 text-right">
-              {day ? (
-                <span className="inline-flex items-center rounded-full bg-foreground/15 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                  {day.identifier}
-                </span>
-              ) : (
-                <span className="font-mono text-[10px] text-muted-foreground/40">
-                  —
-                </span>
-              )}
+            <span className="flex w-8 shrink-0 items-center justify-end gap-0.5 font-mono text-[10px] text-muted-foreground">
+              <MailOpen size={11} aria-hidden />
+              {count}
             </span>
           </button>
           <button
@@ -5809,6 +5804,9 @@ function StorylinesListPanel({
           <div className="flex flex-col border-t border-border bg-black/20">
             {groupLetters.map((l) => {
               const letterActive = l.id === selectedLetterId;
+              const overrideDay = l.delivery_day_override_id
+                ? dayById.get(l.delivery_day_override_id)
+                : null;
               return (
                 <button
                   key={l.id}
@@ -5819,6 +5817,11 @@ function StorylinesListPanel({
                     letterActive ? "bg-accent/40" : "hover:bg-accent/30"
                   )}
                 >
+                  {overrideDay ? (
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                      {overrideDay.identifier}
+                    </span>
+                  ) : null}
                   <InspectionLetterPill
                     storyline={s}
                     contentId={l.content_id}
@@ -5848,115 +5851,148 @@ function StorylinesListPanel({
     <div className="flex flex-col gap-3">
       <div className="flex justify-end">{ModeToggle}</div>
 
-      {groupMode === "storyline"
-        ? storylines.map((s) => {
-            const bucket = groupsByStoryline.get(s.id) ?? [];
-            const open = openBuckets.has(s.id);
-            const headerActive = s.id === selectedStorylineId;
-            return (
+      <div className={groupMode === "storyline" ? "flex flex-col gap-3" : "hidden"}>
+        {storylines.map((s) => {
+          const bucket = groupsByStoryline.get(s.id) ?? [];
+          const open = openBuckets.has(s.id);
+          const headerActive = s.id === selectedStorylineId;
+          const totalLetters = bucket.reduce(
+            (sum, g) => sum + (letterCountByGroup.get(g.id) ?? 0),
+            0
+          );
+          return (
+            <div
+              key={s.id}
+              className={cn(
+                "overflow-hidden rounded-md border border-border bg-card",
+                headerActive && "border-foreground/40"
+              )}
+            >
               <div
-                key={s.id}
                 className={cn(
-                  "overflow-hidden rounded-md border border-border bg-card",
-                  headerActive && "border-foreground/40"
+                  "flex items-center text-left",
+                  headerActive ? "bg-accent/40" : "hover:bg-accent/20"
                 )}
-              >
-                <div
-                  className={cn(
-                    "flex items-center text-left",
-                    headerActive ? "bg-accent/40" : "hover:bg-accent/20"
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onOpenStoryline(headerActive ? null : s.id)
-                    }
-                    className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2 pr-1 text-left"
-                    title={headerActive ? `Close ${s.name}` : `Open ${s.name}`}
-                  >
-                    <StorylinePill storyline={s} className="min-w-0 flex-1" />
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                      {bucket.length}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => toggle(s.id)}
-                    aria-expanded={open}
-                    aria-label={open ? "Collapse" : "Expand"}
-                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
-                  >
-                    <ChevronLeft
-                      size={12}
-                      aria-hidden
-                      className={cn(
-                        "transition-transform",
-                        open && "-rotate-90"
-                      )}
-                    />
-                  </button>
-                </div>
-                {open ? (
-                  <div className="flex flex-col border-t border-border">
-                    {bucket.map((g) =>
-                      renderGroupRow(g, { showStoryline: false })
-                    )}
-                    {bucket.length === 0 ? (
-                      <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
-                        No groups yet.
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })
-        : dayBuckets.map(({ key, day, groups: bucket }) => {
-            const open = openBuckets.has(`day:${key}`);
-            return (
-              <div
-                key={key}
-                className="overflow-hidden rounded-md border border-border bg-card"
               >
                 <button
                   type="button"
-                  onClick={() => toggle(`day:${key}`)}
-                  aria-expanded={open}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent/30"
+                  onClick={() =>
+                    onOpenStoryline(headerActive ? null : s.id)
+                  }
+                  className="flex h-8 min-w-0 flex-1 items-center gap-2 pl-2 pr-1 text-left"
+                  title={headerActive ? `Close ${s.name}` : `Open ${s.name}`}
                 >
-                  <span className="flex-1 truncate text-sm font-semibold">
-                    {day
-                      ? `Day ${day.number}${day.identifier ? ` · ${day.identifier}` : ""}`
-                      : "Unscheduled"}
-                  </span>
-                  <span className="font-mono text-[10px] text-muted-foreground">
+                  <StorylinePill storyline={s} className="min-w-0 flex-1" />
+                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                    <Mails size={11} aria-hidden />
                     {bucket.length}
                   </span>
+                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                    <MailOpen size={11} aria-hidden />
+                    {totalLetters}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggle(s.id)}
+                  aria-expanded={open}
+                  aria-label={open ? "Collapse" : "Expand"}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                >
                   <ChevronLeft
                     size={12}
                     aria-hidden
                     className={cn(
-                      "text-muted-foreground transition-transform",
+                      "transition-transform",
                       open && "-rotate-90"
                     )}
                   />
                 </button>
-                {open ? (
-                  <div className="flex flex-col border-t border-border">
-                    {bucket.map((g) =>
-                      renderGroupRow(g, { showStoryline: true })
-                    )}
-                    {bucket.length === 0 ? (
-                      <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
-                        No groups.
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
-            );
-          })}
+              {open ? (
+                <div className="flex flex-col border-t border-border">
+                  {bucket.map((g) =>
+                    renderGroupRow(g, { showStoryline: false, showDay: true })
+                  )}
+                  {bucket.length === 0 ? (
+                    <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
+                      No groups yet.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className={groupMode === "day" ? "flex flex-col gap-3" : "hidden"}>
+        {dayBuckets.map(({ key, day, groups: bucket }) => {
+          const open = openBuckets.has(`day:${key}`);
+          const totalLetters = bucket.reduce(
+            (sum, g) => sum + (letterCountByGroup.get(g.id) ?? 0),
+            0
+          );
+          return (
+            <div
+              key={key}
+              className="overflow-hidden rounded-md border border-border bg-card"
+            >
+              <div className="flex items-center text-left hover:bg-accent/20">
+                <button
+                  type="button"
+                  onClick={() => toggle(`day:${key}`)}
+                  aria-expanded={open}
+                  className="flex h-8 min-w-0 flex-1 items-center gap-2 pl-2 pr-1 text-left"
+                >
+                  {day ? (
+                    <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                      {day.identifier}
+                    </span>
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {day
+                      ? `${day.until_qup != null ? day.until_qup : "—"} Days until QUP`
+                      : "Unscheduled"}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                    <Mails size={11} aria-hidden />
+                    {bucket.length}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                    <MailOpen size={11} aria-hidden />
+                    {totalLetters}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => toggle(`day:${key}`)}
+                  aria-label={open ? "Collapse" : "Expand"}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                >
+                  <ChevronLeft
+                    size={12}
+                    aria-hidden
+                    className={cn("transition-transform", open && "-rotate-90")}
+                  />
+                </button>
+              </div>
+              {open ? (
+                <div className="flex flex-col border-t border-border">
+                  {bucket.map((g) =>
+                    renderGroupRow(g, { showStoryline: true, showDay: false })
+                  )}
+                  {bucket.length === 0 ? (
+                    <p className="border-t border-border px-3 py-3 text-xs text-muted-foreground">
+                      No groups.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

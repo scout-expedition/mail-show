@@ -2,7 +2,6 @@ import Link from "next/link";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Table, TBody, TD, TH, THead } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { Day } from "@/lib/db/types";
 import { createDay } from "./actions";
@@ -25,11 +24,9 @@ export default async function DaysPage() {
       <Table>
         <THead>
           <tr>
-            <TH style={{ width: 80 }}>ID</TH>
-            <TH>Name</TH>
-            <TH>Date</TH>
-            <TH>Day of week</TH>
-            <TH>Until Q-up</TH>
+            <TH className="whitespace-nowrap text-center" style={{ width: 1 }}>ID</TH>
+            <TH className="whitespace-nowrap" style={{ width: 1 }}>Days Until QUP</TH>
+            <TH style={{ width: 180 }}>Name</TH>
             <TH>Notes</TH>
           </tr>
         </THead>
@@ -41,36 +38,11 @@ export default async function DaysPage() {
                 key={d.id}
                 className="group cursor-pointer transition-colors hover:bg-accent/40"
               >
-                <TD className="p-0">
+                <TD className="p-0 text-center">
                   <Link href={`/days/${slug}/overview`} className="block px-3 py-2">
-                    <Badge variant="secondary" className="font-mono">
+                    <span className="inline-flex items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
                       {d.identifier}
-                    </Badge>
-                  </Link>
-                </TD>
-                <TD className="p-0">
-                  <Link href={`/days/${slug}/overview`} className="block px-3 py-2">
-                    {d.name ?? <span className="text-muted-foreground">—</span>}
-                  </Link>
-                </TD>
-                <TD className="p-0">
-                  <Link href={`/days/${slug}/overview`} className="block px-3 py-2">
-                    {d.month && d.day_of_month && d.year ? (
-                      <span className="font-mono text-xs">
-                        {d.year}-{String(d.month).padStart(2, "0")}-
-                        {String(d.day_of_month).padStart(2, "0")}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </Link>
-                </TD>
-                <TD className="p-0">
-                  <Link
-                    href={`/days/${slug}/overview`}
-                    className="block px-3 py-2 capitalize"
-                  >
-                    {d.day_of_week ?? "—"}
+                    </span>
                   </Link>
                 </TD>
                 <TD className="p-0">
@@ -82,9 +54,14 @@ export default async function DaysPage() {
                   </Link>
                 </TD>
                 <TD className="p-0">
+                  <Link href={`/days/${slug}/overview`} className="block px-3 py-2">
+                    {d.name ?? <span className="text-muted-foreground">—</span>}
+                  </Link>
+                </TD>
+                <TD className="p-0">
                   <Link
                     href={`/days/${slug}/overview`}
-                    className="block max-w-sm truncate px-3 py-2 text-muted-foreground"
+                    className="block px-3 py-2 text-muted-foreground"
                   >
                     {d.notes ?? ""}
                   </Link>
@@ -94,7 +71,7 @@ export default async function DaysPage() {
           })}
           {days.length === 0 ? (
             <tr>
-              <TD colSpan={6} className="text-center text-muted-foreground">
+              <TD colSpan={4} className="text-center text-muted-foreground">
                 No days yet.
               </TD>
             </tr>
