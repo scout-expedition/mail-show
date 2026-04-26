@@ -90,7 +90,7 @@ type Props = {
 // ------------------------------------------------------------------
 const GUTTER_W = 44; // left gutter for day labels
 const HEADER_H = 40; // top header for storyline labels — matches PanelHeader min-h-10
-const CELL_GAP = 22; // gap between sibling groups/reports inside a cell
+const CELL_GAP = 60; // gap between sibling groups/reports inside a cell — matches VARIANT_GAP so reports and letter variants use the same horizontal pitch within a row
 const CELL_VGAP = 40; // vertical gap between reports half and groups half
 const ROW_TOP_PAD = 56;
 const ROW_BOTTOM_PAD = 32;
@@ -1027,10 +1027,6 @@ export function GraphView({
         targetOffsetByEdgeId.set(p.candidate.id, offset);
       });
     }
-    const incomingByTarget = new Map<string, number>();
-    for (const [target, list] of arrowsByTarget) {
-      incomingByTarget.set(target, list.length);
-    }
 
     for (const p of placements) {
       const c = p.candidate;
@@ -1042,18 +1038,16 @@ export function GraphView({
       const isSegmentToNextLetter = isReportSource && isLetterTargetForChip;
       const baseColor = resolved.color || "#ffffff";
       const color = isSegmentToNextLetter ? "#5e5e5e" : baseColor;
-      const converges = (incomingByTarget.get(c.target) ?? 0) > 1;
-      const arrowColor = isSegmentToNextLetter
-        ? "#5e5e5e"
-        : converges
-          ? "#ffffff"
-          : baseColor;
+      // Arrowhead always matches the line that draws into it — no
+      // override for converging targets or muted segment-source lines.
+      const arrowColor = color;
       // Ending marker only on chips leading OUT of a letter (same rule as
       // impact badges) so the segment → next-letter follow-up doesn't
       // duplicate the indicator.
       const isLetterSource = c.source.startsWith("letter:");
       const isLetterTarget = c.target.startsWith("letter:");
       const hasEnding =
+        impactFilter.masterEnabled !== false &&
         impactFilter.showEndings &&
         isLetterSource &&
         endingActionIds.has(c.action.id);

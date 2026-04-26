@@ -1134,12 +1134,9 @@ export function LettersWorkspace({
 
   async function closeActionsPanel() {
     if (actionsDirty) {
-      const ok = await confirmDialog({
-        title: "Save actions before closing?",
-        message: "Actions have unsaved changes.",
-        confirmLabel: "Save",
-      });
-      if (ok && letterState) {
+      const outcome = await askUnsaved("Unsaved Actions");
+      if (outcome === "cancel") return;
+      if (outcome === "save" && letterState) {
         const snap = letterState;
         startActionsSave(async () => {
           await saveLetterActionsOnly(letterActionsPatches(snap));
@@ -1148,6 +1145,8 @@ export function LettersWorkspace({
         });
         return;
       }
+      // discard: drop dirty flag and continue
+      setActionsDirty(false);
     }
     setView("main");
   }
@@ -1242,12 +1241,9 @@ export function LettersWorkspace({
             ? "actions"
             : "group";
     if (segmentDirty) {
-      const ok = await confirmDialog({
-        title: "Save segment before closing?",
-        message: "Segment has unsaved changes.",
-        confirmLabel: "Save",
-      });
-      if (ok) {
+      const outcome = await askUnsaved("Unsaved Report Segment");
+      if (outcome === "cancel") return;
+      if (outcome === "save") {
         startRowAction(async () => {
           await onSave();
           setView(targetView);
@@ -1256,6 +1252,7 @@ export function LettersWorkspace({
         });
         return;
       }
+      // discard: drop the dirty edits and continue with navigation
     }
     setView(targetView);
     setSelectedSegmentId(null);
@@ -1284,18 +1281,16 @@ export function LettersWorkspace({
       setView("actions");
     };
     if (segmentDirty) {
-      const ok = await confirmDialog({
-        title: "Save segment before jumping?",
-        message: "Segment has unsaved changes.",
-        confirmLabel: "Save",
-      });
-      if (ok) {
+      const outcome = await askUnsaved("Unsaved Report Segment");
+      if (outcome === "cancel") return;
+      if (outcome === "save") {
         startRowAction(async () => {
           await onSave();
           doJump();
         });
         return;
       }
+      // discard: drop pending edits and jump
     }
     doJump();
   }
@@ -1494,7 +1489,7 @@ export function LettersWorkspace({
     if (!l) return;
     const ok = await confirmDialog({
       title: "Delete letter?",
-      message: `${l.content_id} will be permanently removed.`,
+      message: `${l.content_id} will be permanently removed, along with all of its actions. Any other actions that reference this letter as their next-letter target will be cleared.`,
       confirmLabel: "Delete",
       intent: "destructive",
     });
@@ -1514,7 +1509,7 @@ export function LettersWorkspace({
     const groupId = group.id;
     const ok = await confirmDialog({
       title: "Delete letter group?",
-      message: `"${group.name}" and all of its letters will be permanently removed.`,
+      message: `"${group.name}" and everything inside it — all letters, report segments, and actions — will be permanently removed. Any actions in other groups that reference this group's letters will be cleared.`,
       confirmLabel: "Delete",
       intent: "destructive",
     });
@@ -1529,13 +1524,9 @@ export function LettersWorkspace({
     const groupId = group.id;
     if (!selectedId || !templateId) return;
     if (anyLetterDirty) {
-      const ok = await confirmDialog({
-        title: "Save letter before adding action?",
-        message:
-          "This letter has unsaved changes. Save them before adding an action? Cancel to discard them.",
-        confirmLabel: "Save",
-      });
-      if (ok && letterState) {
+      const outcome = await askUnsaved("Unsaved Letter");
+      if (outcome === "cancel") return;
+      if (outcome === "save" && letterState) {
         const snap = letterState;
         startRowAction(async () => {
           await saveLetterNow(snap);
@@ -1545,6 +1536,9 @@ export function LettersWorkspace({
         });
         return;
       }
+      // discard: clear dirty flags then add the action
+      setLetterDirty(false);
+      setActionsDirty(false);
     }
     startRowAction(async () => {
       await addActionFromTemplate(groupId, selectedId!, templateId);
@@ -3263,7 +3257,7 @@ function HeroSearch({
     const parts = addressParts(selected, cities, nations);
     return (
       <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex h-5 items-center justify-between gap-2">
           <span className="truncate text-[10px]">{selected.name}</span>
           <div className="flex items-center gap-1">
             <button
@@ -3271,7 +3265,7 @@ function HeroSearch({
               onClick={() => onEdit(selected)}
               aria-label="Edit citizen"
               title="Edit citizen"
-              className="text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+              className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
             >
               <svg
                 width="13"
@@ -3293,7 +3287,7 @@ function HeroSearch({
               onClick={() => onChange(null)}
               aria-label="Clear selection"
               title="Clear"
-              className="text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+              className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
             >
               <svg
                 width="13"
@@ -3322,7 +3316,7 @@ function HeroSearch({
           empty address row below — so selecting/clearing a citizen
           doesn't change the field's height. */}
       <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1 transition-colors focus-within:bg-black/50 hover:bg-black/50">
-        <div className="flex items-center gap-1">
+        <div className="flex h-5 items-center gap-1">
           <input
             type="text"
             value={query}
@@ -3331,7 +3325,7 @@ function HeroSearch({
               setOpen(true);
             }}
             onFocus={() => setOpen(true)}
-            className="min-w-0 flex-1 bg-transparent text-[10px] focus:outline-none"
+            className="h-5 min-w-0 flex-1 bg-transparent text-[10px] leading-5 focus:outline-none"
           />
           <button
             type="button"
@@ -6176,7 +6170,7 @@ function StorylinesListPanel({
   }
 
   const ModeToggle = (
-    <div className="flex h-7 items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[10px] font-mono uppercase tracking-wider">
+    <div className="flex h-6 items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[10px] font-mono uppercase tracking-wider">
       {(["storyline", "day"] as const).map((m) => (
         <button
           key={m}

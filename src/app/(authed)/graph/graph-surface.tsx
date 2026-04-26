@@ -211,8 +211,8 @@ export function GraphSurface({
               variant="outline"
               size="sm"
               aria-pressed={overlayOpen}
-              aria-label={overlayOpen ? "Close overlays" : "Open overlays"}
-              title={overlayOpen ? "Close overlays" : "Open overlays"}
+              aria-label={overlayOpen ? "Close impact overlays" : "Open impact overlays"}
+              title={overlayOpen ? "Close impact overlays" : "Open impact overlays"}
               onClick={() => void handleOverlayToggle()}
               className={overlayOpen ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
             >

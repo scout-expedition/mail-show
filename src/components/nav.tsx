@@ -34,6 +34,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
+  { href: "/graph", label: "Narrative Graph", icon: MapIcon, section: "Game" },
   { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
   { href: "/sorting/letters", label: "Letters", icon: Mail, section: "Sorting" },
   { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
@@ -45,7 +46,6 @@ const NAV_ITEMS: Array<{
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
   { href: "/endings", label: "Endings", icon: ScrollText, section: "Data" },
   { href: "/playthroughs", label: "Playthroughs", icon: PlayCircle, section: "Run" },
-  { href: "/graph", label: "Narrative Graph", icon: MapIcon, section: "Run" },
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
 ];
 

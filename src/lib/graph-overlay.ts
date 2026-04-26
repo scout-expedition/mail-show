@@ -25,6 +25,10 @@ export const NATION_IMPACT_KEYS: Record<string, keyof ActionRow> = {
 };
 
 export type ImpactFilter = {
+  /** Master switch — when false, all overlays are suppressed regardless
+   * of the per-section toggles. The per-section state is preserved so
+   * flipping the master back on restores the user's previous selection. */
+  masterEnabled: boolean;
   /** When on, chips whose action sets any ending variable get a flag marker. */
   showEndings: boolean;
   categories: Record<ImpactCategory, boolean>;
@@ -34,6 +38,7 @@ export type ImpactFilter = {
 };
 
 export const DEFAULT_IMPACT_FILTER: ImpactFilter = {
+  masterEnabled: true,
   showEndings: false,
   categories: { class: true, nation: true, world: true },
   classes: { proletariat: true, gentry: true },
@@ -74,6 +79,9 @@ export function extractActiveImpacts(
   nations: Nation[]
 ): ActiveImpact[] {
   const out: ActiveImpact[] = [];
+
+  // Treat missing field (legacy persisted state) as enabled.
+  if (filter.masterEnabled === false) return out;
 
   if (filter.categories.world) {
     for (const w of IMPACT_WORLD) {

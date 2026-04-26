@@ -1,15 +1,15 @@
 "use client";
 
-import { IconTagsFilled, IconTagsOff } from "@tabler/icons-react";
+import { IconCirclePlusMinus, IconTagsFilled, IconTagsOff } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { IconDisplay } from "@/components/icon-display";
+import { PanelHeader } from "@/components/panel";
 import type { Nation } from "@/lib/db/types";
 import {
   DEFAULT_IMPACT_FILTER,
   IMPACT_CLASSES,
   IMPACT_WORLD,
   NATION_IMPACT_KEYS,
-  type ImpactCategory,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
 
@@ -25,135 +25,162 @@ export function ImpactOverlayPanel({
   const nationsWithImpact = nations.filter(
     (n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]
   );
+  // Treat missing/legacy field as enabled.
+  const masterOn = filter.masterEnabled !== false;
 
   return (
-    <div className="flex flex-col gap-2">
-      <SectionBox
-        label="Endings"
-        visible={filter.showEndings}
-        onVisibilityChange={(v) =>
-          onFilterChange((prev) => ({ ...prev, showEndings: v }))
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader
+        title="Impact Overlays"
+        icon={
+          <IconCirclePlusMinus
+            size={14}
+            aria-hidden
+            className="text-muted-foreground/70"
+          />
+        }
+        menu={
+          <VisibilitySwitch
+            checked={masterOn}
+            onChange={(v) =>
+              onFilterChange((prev) => ({ ...prev, masterEnabled: v }))
+            }
+          />
         }
       />
-
-      <SectionBox
-        label="Player"
-        visible={filter.categories.world}
-        onVisibilityChange={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            categories: { ...prev.categories, world: v },
-          }))
-        }
-        onAll={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            world: Object.fromEntries(IMPACT_WORLD.map((w) => [w.id, v])),
-          }))
-        }
-        allOn={IMPACT_WORLD.every((w) => filter.world[w.id])}
-        allOff={IMPACT_WORLD.every((w) => !filter.world[w.id])}
+      <div
+        className={cn(
+          "flex flex-col gap-2 p-3 transition-opacity",
+          !masterOn && "pointer-events-none opacity-40"
+        )}
       >
-        <VariableGroup
-          items={IMPACT_WORLD.map((w) => ({
-            id: w.id,
-            label: w.label,
-            color: w.color,
-            iconType: "tabler" as const,
-            iconValue: w.iconValue,
-            checked: filter.world[w.id] ?? false,
-          }))}
-          onToggle={(id, v) =>
+        <SectionBox
+          label="Player"
+          visible={filter.categories.world}
+          onVisibilityChange={(v) =>
             onFilterChange((prev) => ({
               ...prev,
-              world: { ...prev.world, [id]: v },
+              categories: { ...prev.categories, world: v },
             }))
           }
-        />
-      </SectionBox>
-
-      <SectionBox
-        label="Class Affinity"
-        visible={filter.categories.class}
-        onVisibilityChange={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            categories: { ...prev.categories, class: v },
-          }))
-        }
-        onAll={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            classes: Object.fromEntries(IMPACT_CLASSES.map((c) => [c.id, v])),
-          }))
-        }
-        allOn={IMPACT_CLASSES.every((c) => filter.classes[c.id])}
-        allOff={IMPACT_CLASSES.every((c) => !filter.classes[c.id])}
-      >
-        <VariableGroup
-          items={IMPACT_CLASSES.map((c) => ({
-            id: c.id,
-            label: c.label,
-            color: c.color,
-            iconType: "tabler" as const,
-            iconValue: c.iconValue,
-            checked: filter.classes[c.id] ?? false,
-          }))}
-          onToggle={(id, v) =>
+          onAll={(v) =>
             onFilterChange((prev) => ({
               ...prev,
-              classes: { ...prev.classes, [id]: v },
+              world: Object.fromEntries(IMPACT_WORLD.map((w) => [w.id, v])),
             }))
           }
-        />
-      </SectionBox>
-
-      <SectionBox
-        label="Nation Affinity"
-        visible={filter.categories.nation}
-        onVisibilityChange={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            categories: { ...prev.categories, nation: v },
-          }))
-        }
-        onAll={(v) =>
-          onFilterChange((prev) => ({
-            ...prev,
-            nations: Object.fromEntries(
-              nationsWithImpact.map((n) => [n.name.toLowerCase(), v])
-            ),
-          }))
-        }
-        allOn={nationsWithImpact.every((n) => filter.nations[n.name.toLowerCase()])}
-        allOff={nationsWithImpact.every((n) => !filter.nations[n.name.toLowerCase()])}
-      >
-        <VariableGroup
-          items={nationsWithImpact.map((n) => ({
-            id: n.name.toLowerCase(),
-            label: n.name,
-            color: n.color_hex,
-            iconType: n.icon_type,
-            iconValue: n.icon_value,
-            checked: filter.nations[n.name.toLowerCase()] ?? false,
-          }))}
-          onToggle={(id, v) =>
-            onFilterChange((prev) => ({
-              ...prev,
-              nations: { ...prev.nations, [id]: v },
-            }))
-          }
-        />
-      </SectionBox>
-
-      <div className="flex justify-end pt-1">
-        <button
-          type="button"
-          className="text-[11px] text-muted-foreground hover:text-foreground"
-          onClick={() => onFilterChange(DEFAULT_IMPACT_FILTER)}
+          allOn={IMPACT_WORLD.every((w) => filter.world[w.id])}
+          allOff={IMPACT_WORLD.every((w) => !filter.world[w.id])}
         >
-          Reset all
-        </button>
+          <VariableGroup
+            items={IMPACT_WORLD.map((w) => ({
+              id: w.id,
+              label: w.label,
+              color: w.color,
+              iconType: "tabler" as const,
+              iconValue: w.iconValue,
+              checked: filter.world[w.id] ?? false,
+            }))}
+            onToggle={(id, v) =>
+              onFilterChange((prev) => ({
+                ...prev,
+                world: { ...prev.world, [id]: v },
+              }))
+            }
+          />
+        </SectionBox>
+
+        <SectionBox
+          label="Class Affinity"
+          visible={filter.categories.class}
+          onVisibilityChange={(v) =>
+            onFilterChange((prev) => ({
+              ...prev,
+              categories: { ...prev.categories, class: v },
+            }))
+          }
+          onAll={(v) =>
+            onFilterChange((prev) => ({
+              ...prev,
+              classes: Object.fromEntries(IMPACT_CLASSES.map((c) => [c.id, v])),
+            }))
+          }
+          allOn={IMPACT_CLASSES.every((c) => filter.classes[c.id])}
+          allOff={IMPACT_CLASSES.every((c) => !filter.classes[c.id])}
+        >
+          <VariableGroup
+            items={IMPACT_CLASSES.map((c) => ({
+              id: c.id,
+              label: c.label,
+              color: c.color,
+              iconType: "tabler" as const,
+              iconValue: c.iconValue,
+              checked: filter.classes[c.id] ?? false,
+            }))}
+            onToggle={(id, v) =>
+              onFilterChange((prev) => ({
+                ...prev,
+                classes: { ...prev.classes, [id]: v },
+              }))
+            }
+          />
+        </SectionBox>
+
+        <SectionBox
+          label="Nation Affinity"
+          visible={filter.categories.nation}
+          onVisibilityChange={(v) =>
+            onFilterChange((prev) => ({
+              ...prev,
+              categories: { ...prev.categories, nation: v },
+            }))
+          }
+          onAll={(v) =>
+            onFilterChange((prev) => ({
+              ...prev,
+              nations: Object.fromEntries(
+                nationsWithImpact.map((n) => [n.name.toLowerCase(), v])
+              ),
+            }))
+          }
+          allOn={nationsWithImpact.every((n) => filter.nations[n.name.toLowerCase()])}
+          allOff={nationsWithImpact.every((n) => !filter.nations[n.name.toLowerCase()])}
+        >
+          <VariableGroup
+            items={nationsWithImpact.map((n) => ({
+              id: n.name.toLowerCase(),
+              label: n.name,
+              color: n.color_hex,
+              iconType: n.icon_type,
+              iconValue: n.icon_value,
+              checked: filter.nations[n.name.toLowerCase()] ?? false,
+            }))}
+            onToggle={(id, v) =>
+              onFilterChange((prev) => ({
+                ...prev,
+                nations: { ...prev.nations, [id]: v },
+              }))
+            }
+          />
+        </SectionBox>
+
+        <SectionBox
+          label="Endings"
+          visible={filter.showEndings}
+          onVisibilityChange={(v) =>
+            onFilterChange((prev) => ({ ...prev, showEndings: v }))
+          }
+        />
+
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            className="text-[10px] text-muted-foreground hover:text-foreground"
+            onClick={() => onFilterChange(DEFAULT_IMPACT_FILTER)}
+          >
+            Reset all
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -179,7 +206,7 @@ function SectionBox({
   return (
     <div className={cn("rounded-md border border-border transition-colors", visible ? "bg-card" : "bg-black/30")}>
       <div className="flex items-center gap-1.5 px-3 py-2">
-        <span className="flex-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="flex-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
           {label}
         </span>
         {onAll ? (

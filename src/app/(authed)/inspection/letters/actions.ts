@@ -295,11 +295,49 @@ export async function batchMoveToDay(
 
 export async function deleteGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
+  // Capture the previous group in this storyline so we can clear stale
+  // next_letter_variant refs that pointed into the now-deleted group.
+  const { data: thisGroup } = await supabase
+    .from("letter_groups")
+    .select("storyline_id, sequence")
+    .eq("id", groupId)
+    .maybeSingle();
+  let prevLetterIds: string[] = [];
+  if (thisGroup) {
+    const { data: prev } = await supabase
+      .from("letter_groups")
+      .select("id")
+      .eq("storyline_id", thisGroup.storyline_id)
+      .lt("sequence", thisGroup.sequence)
+      .order("sequence", { ascending: false })
+      .limit(1);
+    const prevGroupId = prev?.[0]?.id as string | undefined;
+    if (prevGroupId) {
+      const { data: prevLetters } = await supabase
+        .from("inspection_letters")
+        .select("id")
+        .eq("letter_group_id", prevGroupId);
+      prevLetterIds = (prevLetters ?? []).map((r) => r.id as string);
+    }
+  }
+  // FK cascade handles report_groups, report_segments, inspection_letters,
+  // and (transitively) actions tied to this group's letters.
   const { error } = await supabase
     .from("letter_groups")
     .delete()
     .eq("id", groupId);
   if (error) throw new Error(error.message);
+  // Clear actions in the previous group whose next_letter_variant pointed
+  // into the now-deleted group.
+  if (prevLetterIds.length > 0) {
+    await supabase
+      .from("actions")
+      .update({ next_letter_variant: null })
+      .in("inspection_letter_id", prevLetterIds)
+      .not("next_letter_variant", "is", null);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
   redirect("/inspection/letters");
 }
 
@@ -348,6 +386,8 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
     .eq("id", letterId)
     .maybeSingle();
   const deletedVariant = (deleted?.variant ?? null) as string | null;
+  // FK cascade on actions.inspection_letter_id removes this letter's own
+  // actions automatically.
   const { error } = await supabase
     .from("inspection_letters")
     .delete()
@@ -355,7 +395,62 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
   if (error) throw new Error(error.message);
   await reassignVariants(groupId);
   if (deletedVariant) await reassignPiecesForVariant(groupId, deletedVariant);
+  // Clear orphaned next_letter_variant refs in the previous group: any
+  // action whose target variant key no longer exists in this group after
+  // the delete + reassign.
+  const { data: thisGroup } = await supabase
+    .from("letter_groups")
+    .select("storyline_id, sequence")
+    .eq("id", groupId)
+    .maybeSingle();
+  if (thisGroup) {
+    const { data: prev } = await supabase
+      .from("letter_groups")
+      .select("id")
+      .eq("storyline_id", thisGroup.storyline_id)
+      .lt("sequence", thisGroup.sequence)
+      .order("sequence", { ascending: false })
+      .limit(1);
+    const prevGroupId = prev?.[0]?.id as string | undefined;
+    if (prevGroupId) {
+      const { data: prevLetterRows } = await supabase
+        .from("inspection_letters")
+        .select("id")
+        .eq("letter_group_id", prevGroupId);
+      const prevLetterIds = (prevLetterRows ?? []).map((r) => r.id as string);
+      if (prevLetterIds.length > 0) {
+        const { data: currentLetters } = await supabase
+          .from("inspection_letters")
+          .select("variant")
+          .eq("letter_group_id", groupId);
+        const validVariants = new Set(
+          (currentLetters ?? [])
+            .map((r) => r.variant as string | null)
+            .filter((v): v is string => !!v)
+        );
+        const { data: stale } = await supabase
+          .from("actions")
+          .select("id, next_letter_variant")
+          .in("inspection_letter_id", prevLetterIds)
+          .not("next_letter_variant", "is", null);
+        const orphanIds = (stale ?? [])
+          .filter(
+            (a) =>
+              a.next_letter_variant &&
+              !validVariants.has(a.next_letter_variant as string)
+          )
+          .map((a) => a.id as string);
+        if (orphanIds.length > 0) {
+          await supabase
+            .from("actions")
+            .update({ next_letter_variant: null })
+            .in("id", orphanIds);
+        }
+      }
+    }
+  }
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 /**
