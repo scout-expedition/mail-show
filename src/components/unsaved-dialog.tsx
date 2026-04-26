@@ -15,10 +15,11 @@ const DEFAULT_MESSAGE =
  * right with Save as the default (autofocused) action. Click outside
  * resolves to "cancel".
  */
-export function useUnsavedDialog(): {
+export function useUnsavedDialog(options?: { scoped?: boolean }): {
   ask: (title?: string, message?: string) => Promise<UnsavedOutcome>;
   dialog: React.ReactNode;
 } {
+  const scoped = !!options?.scoped;
   const [state, setState] = useState<{
     title: string;
     message: string;
@@ -46,7 +47,10 @@ export function useUnsavedDialog(): {
 
   const dialog = state ? (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className={
+        (scoped ? "absolute" : "fixed") +
+        " inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      }
       role="dialog"
       aria-modal="true"
       aria-label={state.title}

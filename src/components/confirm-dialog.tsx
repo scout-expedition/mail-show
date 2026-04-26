@@ -19,10 +19,11 @@ type ConfirmOptions = {
  * that resolves to `true` or `false`, and a `<ConfirmDialog />` element to
  * mount once anywhere in the subtree.
  */
-export function useConfirm(): {
+export function useConfirm(options?: { scoped?: boolean }): {
   confirm: (options: ConfirmOptions) => Promise<boolean>;
   dialog: React.ReactNode;
 } {
+  const scoped = !!options?.scoped;
   const [state, setState] = useState<ConfirmOptions | null>(null);
   const resolverRef = useRef<((v: boolean) => void) | null>(null);
 
@@ -42,7 +43,10 @@ export function useConfirm(): {
 
   const dialog = state ? (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className={
+        (scoped ? "absolute" : "fixed") +
+        " inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      }
       role="dialog"
       aria-modal="true"
       aria-label={state.title}

@@ -59,6 +59,7 @@ import {
   quickCreateCitizen,
   reorderInspectionLetters,
   reorderLetterGroups,
+  reorderReportSegments,
   saveGroup,
   saveLetterActionsOnly,
   saveLetterFields,
@@ -66,7 +67,10 @@ import {
   saveReportSegment,
   updateCitizen,
 } from "./actions";
-import { updateStorylineFields } from "../storylines/actions";
+import {
+  deleteStoryline,
+  updateStorylineFields,
+} from "../storylines/actions";
 import { IconPicker } from "@/components/icon-picker";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
@@ -74,6 +78,7 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { useUnsavedDialog } from "@/components/unsaved-dialog";
 import type { UnsavedOutcome } from "@/components/unsaved-dialog";
 import {
+  BookOpen,
   ChevronLeft,
   ChevronRight,
   MailOpen,
@@ -126,12 +131,12 @@ const CLASS_AFFINITY: Array<{
   {
     key: "impact_proletariat",
     label: "Working",
-    icon: <IconHammer size={14} aria-hidden />,
+    icon: <IconHammer size={14} aria-hidden className="text-amber-500" />,
   },
   {
     key: "impact_gentry",
     label: "Gentry",
-    icon: <IconDiamond size={14} aria-hidden />,
+    icon: <IconDiamond size={14} aria-hidden className="text-fuchsia-500" />,
   },
 ];
 
@@ -317,8 +322,12 @@ export function LettersWorkspace({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog();
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
+    scoped: true,
+  });
+  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog({
+    scoped: true,
+  });
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -361,15 +370,24 @@ export function LettersWorkspace({
 
   const nextGroupLetters = useMemo(() => {
     if (!nextGroup) return [] as InspectionLetterView[];
-    return allLetters
-      .filter((l) => l.letter_group_id === nextGroup.id)
-      .slice()
-      .sort((a, b) => {
-        const va = a.variant ?? "";
-        const vb = b.variant ?? "";
-        if (va !== vb) return va.localeCompare(vb);
-        return (a.piece ?? 0) - (b.piece ?? 0);
-      });
+    // The action's `next_letter_variant` references a variant key, not a
+    // piece id. Collapse multi-piece letters to one row per variant
+    // (lowest piece) so the picker doesn't show "L-U3/a", "L-U3/a2",
+    // "L-U3/a3" as three separate next-letter targets.
+    const seen = new Map<string, InspectionLetterView>();
+    for (const l of allLetters) {
+      if (l.letter_group_id !== nextGroup.id) continue;
+      const k = l.variant ?? "";
+      const existing = seen.get(k);
+      if (!existing || (l.piece ?? 0) < (existing.piece ?? 0)) {
+        seen.set(k, l);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => {
+      const va = a.variant ?? "";
+      const vb = b.variant ?? "";
+      return va.localeCompare(vb);
+    });
   }, [allLetters, nextGroup]);
 
   // ----- Group state -----
@@ -423,6 +441,22 @@ export function LettersWorkspace({
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
+  const [segmentListLocked, setSegmentListLocked] = useState(true);
+  const [segmentDragIndex, setSegmentDragIndex] = useState<number | null>(null);
+  const [segmentOrderOverride, setSegmentOrderOverride] = useState<
+    string[] | null
+  >(null);
+  // Records which surface opened the currently-selected report segment so the
+  // segment's back button returns to that surface (actions panel vs. letter
+  // group panel) regardless of intermediate state changes.
+  const segmentOpenedFromRef = useRef<"actions" | "group" | null>(null);
+  // Records the action panel that opened the currently-displayed letter via
+  // an action's "open next letter" arrow. The letter's back button reads
+  // this to return to the source letter's actions panel.
+  const openedNextLetterFromRef = useRef<{
+    sourceGroupId: string;
+    sourceLetterId: string;
+  } | null>(null);
   const [letterDirty, setLetterDirty] = useState(false);
   const [letterPending, startLetterSave] = useTransition();
   const [actionsDirty, setActionsDirty] = useState(false);
@@ -758,6 +792,10 @@ export function LettersWorkspace({
   const panelHistory = useRef<PanelSnapshot[]>([]);
   const panelIndex = useRef(-1);
   const applyingPanelSnapshot = useRef(false);
+  // Guard fired by mouse-back / browser-back panel navigation. Re-bound
+  // each render so the ref carries the latest dirty flags + save logic.
+  // Returns true when the navigation should proceed; false to abort.
+  const panelNavGuardRef = useRef<() => Promise<boolean>>(async () => true);
 
   useEffect(() => {
     if (applyingPanelSnapshot.current) {
@@ -810,14 +848,18 @@ export function LettersWorkspace({
       setGroupDirty(false);
       setStorylineDirty(false);
     }
-    function goPanelBack() {
+    async function goPanelBack() {
       if (panelIndex.current > 0) {
+        const ok = await panelNavGuardRef.current();
+        if (!ok) return;
         panelIndex.current -= 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
     }
-    function goPanelForward() {
+    async function goPanelForward() {
       if (panelIndex.current < panelHistory.current.length - 1) {
+        const ok = await panelNavGuardRef.current();
+        if (!ok) return;
         panelIndex.current += 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
@@ -848,8 +890,8 @@ export function LettersWorkspace({
       e.preventDefault();
       e.stopPropagation();
       if (!bump()) return;
-      if (e.button === 3) goPanelBack();
-      else goPanelForward();
+      if (e.button === 3) void goPanelBack();
+      else void goPanelForward();
     }
     function navigateKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -871,8 +913,8 @@ export function LettersWorkspace({
       e.preventDefault();
       e.stopPropagation();
       if (!bump()) return;
-      if (isBack) goPanelBack();
-      else goPanelForward();
+      if (isBack) void goPanelBack();
+      else void goPanelForward();
     }
 
     // History sandwich. Build the back / mid / forward entries and park
@@ -893,11 +935,11 @@ export function LettersWorkspace({
       if (trap === "back") {
         restoring = true;
         history.forward();
-        if (bump()) goPanelBack();
+        if (bump()) void goPanelBack();
       } else if (trap === "forward") {
         restoring = true;
         history.back();
-        if (bump()) goPanelForward();
+        if (bump()) void goPanelForward();
       }
     }
 
@@ -938,6 +980,10 @@ export function LettersWorkspace({
     setStorylineDirty(false);
     return true;
   }
+
+  // Re-bind each render so the popstate / mouse-back handlers always see
+  // the latest dirty state and save closures.
+  panelNavGuardRef.current = confirmDiscardDirty;
 
   async function selectGroup(id: string | null) {
     if (id === selectedGroupId || id === null) {
@@ -1109,8 +1155,43 @@ export function LettersWorkspace({
   function openSegmentForAction(actionIdx: number) {
     const segId = letterState?.actions[actionIdx]?.report_segment_id ?? null;
     if (!segId) return;
+    segmentOpenedFromRef.current = "actions";
     setSelectedSegmentId(segId);
     setView("segment");
+  }
+
+  function openLetterForAction(actionIdx: number) {
+    const action = letterState?.actions[actionIdx];
+    if (!action?.next_letter_variant) return;
+    const letter = nextGroupLetters.find(
+      (l) => l.variant === action.next_letter_variant
+    );
+    if (!letter) return;
+    // Snapshot the source so the next letter's back button can return to
+    // the action panel that initiated this navigation.
+    if (selectedGroupId && selectedId) {
+      openedNextLetterFromRef.current = {
+        sourceGroupId: selectedGroupId,
+        sourceLetterId: selectedId,
+      };
+    }
+    // Hydrate letterState synchronously — without this, slot 3 renders
+    // null briefly while the old letterState's id no longer matches the
+    // new group's letters, producing a flash before the next letter
+    // shows.
+    const newGroupLetterIds = new Set(
+      allLetters
+        .filter((l) => l.letter_group_id === letter.letter_group_id)
+        .map((l) => l.id)
+    );
+    const newGroupActions = allActions.filter((a) =>
+      newGroupLetterIds.has(a.inspection_letter_id)
+    );
+    setLetterState(toLetterState(letter, newGroupActions, endingAssignments));
+    setSelectedGroupId(letter.letter_group_id);
+    setSelectedId(letter.id);
+    setSelectedSegmentId(null);
+    setView("main");
   }
 
   /**
@@ -1136,6 +1217,7 @@ export function LettersWorkspace({
     }
     // Clear the letter detail slot as well — otherwise the letter form stays
     // rendered underneath and the segment detail pane never shows.
+    segmentOpenedFromRef.current = "group";
     setSelectedId(null);
     setLetterState(null);
     setSelectedSegmentId(segmentId);
@@ -1146,12 +1228,19 @@ export function LettersWorkspace({
     segmentDirty: boolean,
     onSave: () => Promise<void>
   ) {
-    // Segments opened from the group panel live in slot 3 (view="main");
-    // segments opened from an action live in slot 5 (view="segment"). Back
-    // returns to the panel that brought us here.
-    const targetView: "main" | "actions" | "group" = letterState
-      ? "actions"
-      : "group";
+    // Always return to the surface that opened the segment. The ref is set
+    // by openSegmentForAction / openSegmentFromGroup. When unknown (e.g.,
+    // the graph picks a segment directly), fall back based on whether a
+    // letter is loaded — matches "Back to actions" when the deep
+    // letter→actions path led here, or "Back to group" otherwise.
+    const targetView: "main" | "actions" | "group" =
+      segmentOpenedFromRef.current === "group"
+        ? "group"
+        : segmentOpenedFromRef.current === "actions"
+          ? "actions"
+          : letterState
+            ? "actions"
+            : "group";
     if (segmentDirty) {
       const ok = await confirmDialog({
         title: "Save segment before closing?",
@@ -1163,12 +1252,14 @@ export function LettersWorkspace({
           await onSave();
           setView(targetView);
           setSelectedSegmentId(null);
+          segmentOpenedFromRef.current = null;
         });
         return;
       }
     }
     setView(targetView);
     setSelectedSegmentId(null);
+    segmentOpenedFromRef.current = null;
   }
 
   /**
@@ -1366,6 +1457,16 @@ export function LettersWorkspace({
       if (ids[0]) setSelectedId(ids[0]);
       setLetterDirty(false);
       setActionsDirty(false);
+    });
+  }
+
+  async function handleAddSegments(count: number) {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      for (let i = 0; i < count; i++) {
+        await createReportSegmentForGroup(groupId);
+      }
     });
   }
 
@@ -1710,7 +1811,7 @@ export function LettersWorkspace({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="relative flex flex-col gap-6">
       {isControlled ? null : (
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
         <BreadcrumbLink
@@ -1789,13 +1890,17 @@ export function LettersWorkspace({
       <div className="relative overflow-hidden">
         <div
           className={cn(
-            "flex transition-transform duration-150 ease-out",
+            "flex",
+            // Snap (no transition) when embedded in the graph — sliding
+            // across intermediate slots would briefly expose their
+            // dashed empty-state placeholders.
+            forceNarrow ? null : "transition-transform duration-150 ease-out",
             narrow ? "w-[600%]" : "w-[600%] lg:w-[300%]"
           )}
           style={{ transform: `translateX(${slideOffset}%)` }}
         >
         {/* Slot 0 — storylines list (always). */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 pr-3">
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           <StorylinesListPanel
             storylines={storylines}
             groups={allGroups}
@@ -1812,7 +1917,7 @@ export function LettersWorkspace({
 
         {/* Slot 1 — storyline inspector (for selectedStorylineId, or the
             parent of the currently-open letter group). */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {inspectorStoryline ? (
             <StorylineInspector
               key={inspectorStoryline.id}
@@ -1836,25 +1941,18 @@ export function LettersWorkspace({
               }
               onConfirmDialog={confirmDialog}
             />
-          ) : (
-            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-              Pick a storyline or a letter group to begin.
-            </div>
-          )}
+          ) : null}
         </div>
 
         {/* Slot 2 — letter group card (letters list + report segments
             list). Hidden placeholder when no group is selected. */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
-          {!group ? (
-            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-              Pick a letter group from the inspector.
-            </div>
-          ) : (
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
+          {!group ? null : (
           <>
           <div className="rounded-md border border-border bg-card">
             <PanelHeader
               title="Letter Group"
+              icon={<Mails size={14} aria-hidden className="text-muted-foreground/70" />}
               dirty={groupDirty || !!orderOverride}
               showSaved={!!group}
               saveRevert={
@@ -1869,7 +1967,7 @@ export function LettersWorkspace({
                 <OverflowMenu
                   items={[
                     {
-                      label: "Delete letter group",
+                      label: "Delete Letter Group",
                       intent: "destructive",
                       icon: <Trash2 size={12} aria-hidden />,
                       onClick: handleDeleteGroup,
@@ -1916,20 +2014,26 @@ export function LettersWorkspace({
                 </div>
               </div>
 
-              <div className="mt-4 overflow-hidden rounded-md border border-border">
-            <div className="flex items-center justify-between border-b border-border bg-white/[0.04] px-3 py-2">
+              <div className="mt-4 rounded-md border border-border">
+            <div className="flex h-10 items-center gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3">
+              <MailOpen
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
               <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                Letters ({letters.length})
+                Letters
               </span>
-              <div className="flex items-center gap-2">
-                {orderOverride ? (
-                  <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
-                    • Unsaved
-                  </span>
-                ) : null}
-                <SaveRevert
+              <div className="ml-auto flex items-center gap-2">
+                <ReorderControls
+                  locked={listLocked}
                   dirty={!!orderOverride}
                   pending={rowPending}
+                  onUnlock={() => setListLocked(false)}
+                  onCancel={() => {
+                    setListLocked(true);
+                    setOrderOverride(null);
+                  }}
                   onSave={() => {
                     if (!orderOverride) return;
                     const final = orderOverride;
@@ -1937,22 +2041,25 @@ export function LettersWorkspace({
                     startRowAction(async () => {
                       await reorderInspectionLetters(groupId, final);
                       setOrderOverride(null);
+                      setListLocked(true);
                     });
                   }}
-                  onRevert={() => setOrderOverride(null)}
                 />
-                <button
-                  type="button"
-                  onClick={() => setListLocked((v) => !v)}
-                  title={listLocked ? "Unlock to reorder" : "Lock"}
-                  aria-label={listLocked ? "Unlock to reorder" : "Lock reordering"}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <ReorderIcon active={!listLocked} />
-                </button>
+                <OverflowMenu
+                  items={[1, 2, 3].map((n) => ({
+                    label: n === 1 ? "Letter" : `${n} Letters`,
+                    icon: (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span aria-hidden>+</span>
+                        <MailOpen size={11} aria-hidden />
+                      </span>
+                    ),
+                    onClick: () => handleAddLetters(n),
+                  }))}
+                />
               </div>
             </div>
-            <div className="flex flex-col">
+            <div className="flex flex-col overflow-hidden rounded-b-md">
               {(orderOverride
                 ? (orderOverride
                     .map((id) => letters.find((x) => x.id === id))
@@ -2036,53 +2143,120 @@ export function LettersWorkspace({
                 </p>
               ) : null}
             </div>
-            <div className="flex justify-center border-t border-border px-3 py-2">
-              <AddLetterMenu
-                pending={rowPending}
-                onPick={(n) => handleAddLetters(n)}
-              />
-            </div>
               </div>
 
-              <div className="mt-3 overflow-hidden rounded-md border border-border">
-            <div className="flex items-center gap-2 border-b border-border bg-white/[0.04] px-3 py-2">
+              <div className="mt-3 rounded-md border border-border">
+            <div className="flex h-10 items-center gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3">
               <Megaphone
                 size={14}
                 aria-hidden
                 className="text-muted-foreground/70"
               />
               <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                Report segments ({segments.length})
+                Report segments
               </span>
+              <div className="ml-auto flex items-center gap-2">
+                <ReorderControls
+                  locked={segmentListLocked}
+                  dirty={!!segmentOrderOverride}
+                  pending={rowPending}
+                  onUnlock={() => setSegmentListLocked(false)}
+                  onCancel={() => {
+                    setSegmentListLocked(true);
+                    setSegmentOrderOverride(null);
+                  }}
+                  onSave={() => {
+                    if (!segmentOrderOverride) return;
+                    const final = segmentOrderOverride;
+                    startRowAction(async () => {
+                      await reorderReportSegments(final);
+                      setSegmentOrderOverride(null);
+                      setSegmentListLocked(true);
+                    });
+                  }}
+                />
+                <OverflowMenu
+                  items={[1, 2, 3].map((n) => ({
+                    label:
+                      n === 1 ? "Report Segment" : `${n} Report Segments`,
+                    icon: (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span aria-hidden>+</span>
+                        <Megaphone size={11} aria-hidden />
+                      </span>
+                    ),
+                    onClick: () => handleAddSegments(n),
+                  }))}
+                />
+              </div>
             </div>
-            <div className="flex flex-col">
-              {segments.map((seg) => {
+            <div className="flex flex-col overflow-hidden rounded-b-md">
+              {(segmentOrderOverride
+                ? (segmentOrderOverride
+                    .map((id) => segments.find((x) => x.id === id))
+                    .filter(Boolean) as ReportSegmentView[])
+                : segments
+              ).map((seg, i) => {
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
                 return (
-                  <button
+                  <div
                     key={seg.id}
-                    type="button"
-                    onClick={() => openSegmentFromGroup(seg.id)}
+                    draggable={!segmentListLocked}
+                    onDragStart={() => setSegmentDragIndex(i)}
+                    onDragOver={(e) => {
+                      if (
+                        segmentListLocked ||
+                        segmentDragIndex === null ||
+                        segmentDragIndex === i
+                      )
+                        return;
+                      e.preventDefault();
+                      const current =
+                        segmentOrderOverride ?? segments.map((x) => x.id);
+                      const next = current.slice();
+                      const [moved] = next.splice(segmentDragIndex, 1);
+                      next.splice(i, 0, moved);
+                      setSegmentOrderOverride(next);
+                      setSegmentDragIndex(i);
+                    }}
+                    onDragEnd={() => setSegmentDragIndex(null)}
                     className={cn(
-                      "flex items-center gap-2 border-t border-border px-3 py-2 text-left first:border-t-0",
-                      active ? "bg-accent/40" : "hover:bg-accent/15"
+                      "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                      active ? "bg-accent/40" : "hover:bg-accent/15",
+                      !segmentListLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    <ReportSegmentPill
-                      storyline={currentStoryline}
-                      reportId={seg.report_id}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-xs">
-                      {preview ? (
-                        preview
-                      ) : (
-                        <span className="text-muted-foreground italic">
-                          (empty)
-                        </span>
-                      )}
-                    </span>
-                  </button>
+                    {!segmentListLocked ? (
+                      <span
+                        aria-hidden
+                        className="text-muted-foreground"
+                        title="Drag to reorder"
+                      >
+                        ⋮⋮
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => openSegmentFromGroup(seg.id)}
+                      disabled={!segmentListLocked}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                    >
+                      <ReportSegmentPill
+                        storyline={currentStoryline}
+                        reportId={seg.report_id}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-xs">
+                        {preview ? (
+                          preview
+                        ) : (
+                          <span className="text-muted-foreground italic">
+                            (empty)
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  </div>
                 );
               })}
               {segments.length === 0 ? (
@@ -2101,7 +2275,7 @@ export function LettersWorkspace({
         {/* Slot 3 — letter fields OR a segment card (when the user
             opened a segment directly from the group panel, no letter
             selected). */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {letterState && letters.find((l) => l.id === letterState.id) ? (
             <LetterFieldsCard
               state={letterState}
@@ -2123,11 +2297,44 @@ export function LettersWorkspace({
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
-                // it toggles the letter off.
+                // it toggles the letter off — unless the letter was
+                // opened via an action's "open next letter" arrow, in
+                // which case back returns to the source action panel.
                 if (view === "actions" || view === "segment") {
                   setView("main");
                   setSelectedSegmentId(null);
                   return;
+                }
+                const fromAction = openedNextLetterFromRef.current;
+                if (fromAction) {
+                  openedNextLetterFromRef.current = null;
+                  const sourceLetter = allLetters.find(
+                    (l) => l.id === fromAction.sourceLetterId
+                  );
+                  if (sourceLetter) {
+                    const sourceGroupLetterIds = new Set(
+                      allLetters
+                        .filter(
+                          (l) => l.letter_group_id === fromAction.sourceGroupId
+                        )
+                        .map((l) => l.id)
+                    );
+                    const sourceGroupActions = allActions.filter((a) =>
+                      sourceGroupLetterIds.has(a.inspection_letter_id)
+                    );
+                    setLetterState(
+                      toLetterState(
+                        sourceLetter,
+                        sourceGroupActions,
+                        endingAssignments
+                      )
+                    );
+                    setSelectedGroupId(fromAction.sourceGroupId);
+                    setSelectedId(fromAction.sourceLetterId);
+                    setSelectedSegmentId(null);
+                    setView("actions");
+                    return;
+                  }
                 }
                 selectLetter(letterState.id);
               }}
@@ -2161,15 +2368,11 @@ export function LettersWorkspace({
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
             />
-          ) : (
-            <div className="rounded-md border border-dashed border-border p-10 text-center text-sm text-muted-foreground">
-              Select a letter to edit, or add one.
-            </div>
-          )}
+          ) : null}
         </div>
 
         {/* Slot 4 — action editors for the currently-open letter. */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 px-3">
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {letterState ? (
             <LetterActionsCard
               key={letterState.id}
@@ -2178,6 +2381,7 @@ export function LettersWorkspace({
               nations={nations}
               segments={segments}
               storyline={currentStoryline}
+              letterContentId={selectedLetter?.content_id ?? ""}
               nextGroup={nextGroup}
               nextGroupLetters={nextGroupLetters}
               groupId={group?.id ?? ""}
@@ -2196,6 +2400,10 @@ export function LettersWorkspace({
               onDeleteAction={handleDeleteAction}
               onOpenSegment={openSegmentForAction}
               openSegmentId={selectedSegmentId}
+              onOpenLetter={openLetterForAction}
+              openLetterId={
+                selectedGroupId === nextGroup?.id ? selectedId : null
+              }
               onSave={handleSaveActions}
               onRevert={revertActions}
               onBack={closeActionsPanel}
@@ -2204,7 +2412,7 @@ export function LettersWorkspace({
         </div>
 
         {/* Slot 5 — report segment opened from an action. */}
-        <div className="flex w-1/6 shrink-0 flex-col gap-4 pl-3">
+        <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {selectedSegmentId ? (
             <LetterSegmentCard
               key={selectedSegmentId}
@@ -2318,6 +2526,7 @@ function LetterFieldsCard({
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Inspection Letter"
+        icon={<MailOpen size={14} aria-hidden className="text-muted-foreground/70" />}
         dirty={dirty}
         showSaved
         saveRevert={
@@ -2332,7 +2541,7 @@ function LetterFieldsCard({
           <OverflowMenu
             items={[
               {
-                label: "Delete inspection letter",
+                label: "Delete Inspection Letter",
                 intent: "destructive",
                 icon: <Trash2 size={12} aria-hidden />,
                 onClick: onDelete,
@@ -2431,7 +2640,6 @@ function LetterFieldsCard({
             heroes={heroes}
             cities={cities}
             nations={nations}
-            placeholder="Add sender"
             onChange={(v) => onChange({ sender_citizen_id: v })}
             onCreate={() => onQuickCreateHero("sender")}
             onEdit={onEditCitizen}
@@ -2444,7 +2652,6 @@ function LetterFieldsCard({
             heroes={heroes}
             cities={cities}
             nations={nations}
-            placeholder="Add receiver"
             onChange={(v) => onChange({ receiver_citizen_id: v })}
             onCreate={() => onQuickCreateHero("receiver")}
             onEdit={onEditCitizen}
@@ -2483,6 +2690,7 @@ function LetterActionsCard({
   nations,
   segments,
   storyline,
+  letterContentId,
   nextGroup,
   nextGroupLetters,
   groupId,
@@ -2498,6 +2706,8 @@ function LetterActionsCard({
   onDeleteAction,
   onOpenSegment,
   openSegmentId,
+  onOpenLetter,
+  openLetterId,
   onSave,
   onRevert,
   onBack,
@@ -2507,6 +2717,7 @@ function LetterActionsCard({
   nations: Nation[];
   segments: ReportSegmentView[];
   storyline: Storyline | undefined;
+  letterContentId: string;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
   nextGroupLetters: InspectionLetterView[];
   groupId: string;
@@ -2522,6 +2733,8 @@ function LetterActionsCard({
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
+  onOpenLetter: (actionIdx: number) => void;
+  openLetterId: string | null;
   onSave: () => void;
   onRevert: () => void;
   onBack: () => void;
@@ -2532,6 +2745,7 @@ function LetterActionsCard({
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Letter Actions"
+        icon={<Milestone size={14} aria-hidden className="text-muted-foreground/70" />}
         dirty={dirty}
         showSaved
         saveRevert={
@@ -2542,34 +2756,50 @@ function LetterActionsCard({
             onRevert={onRevert}
           />
         }
+        menu={
+          <OverflowMenu
+            items={[
+              {
+                label: "Action",
+                icon: (
+                  <span className="inline-flex items-center gap-1.5">
+                    <span aria-hidden>+</span>
+                    <Milestone size={11} aria-hidden />
+                  </span>
+                ),
+                submenu: pickerEntries(templates).map((entry) => {
+                  const tpl = templates.find((t) => t.id === entry.id);
+                  return {
+                    label: entry.label,
+                    icon: (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span aria-hidden>+</span>
+                        {tpl?.icon_value ? (
+                          <IconDisplay
+                            type={tpl.icon_type}
+                            value={tpl.icon_value}
+                            size={12}
+                          />
+                        ) : (
+                          <Milestone size={11} aria-hidden />
+                        )}
+                      </span>
+                    ),
+                    onClick: () => onAddAction(entry.id),
+                  };
+                }),
+              },
+            ]}
+          />
+        }
       />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="Back to letter"
-          title="Back to letter"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M15 6l-6 6 6 6" />
-          </svg>
-        </button>
-        <h4 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          <Milestone size={14} aria-hidden className="text-muted-foreground/70" />
-          Actions ({actions.length})
-        </h4>
+        <BackLink onNavigate={onBack} label="Back to letter" />
+        <InspectionLetterPill
+          storyline={storyline}
+          contentId={letterContentId}
+        />
       </div>
       <div className="flex flex-col gap-3">
         {actions.map((a, i) => (
@@ -2592,6 +2822,12 @@ function LetterActionsCard({
             onOpenSegment={() => onOpenSegment(i)}
             segmentOpen={
               !!a.report_segment_id && a.report_segment_id === openSegmentId
+            }
+            onOpenLetter={() => onOpenLetter(i)}
+            letterOpen={
+              !!a.next_letter_variant &&
+              (nextGroupLetters.find((l) => l.variant === a.next_letter_variant)
+                ?.id ?? null) === openLetterId
             }
           />
         ))}
@@ -2767,6 +3003,7 @@ function LetterSegmentCard({
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Report Segment"
+        icon={<Megaphone size={14} aria-hidden className="text-muted-foreground/70" />}
         dirty={dirty}
         showSaved
         saveRevert={
@@ -2797,7 +3034,7 @@ function LetterSegmentCard({
           <OverflowMenu
             items={[
               {
-                label: "Delete report segment",
+                label: "Delete Report Segment",
                 intent: "destructive",
                 icon: <Trash2 size={12} aria-hidden />,
                 onClick: async () => {
@@ -2817,33 +3054,14 @@ function LetterSegmentCard({
       />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onBack(dirty, saveNow)}
-          aria-label="Back to actions"
-          title="Back to actions"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <path d="M15 6l-6 6 6 6" />
-          </svg>
-        </button>
-        <h3 className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-          <ReportSegmentPill
-            storyline={storylines.find((s) => s.id === segment.storyline_id)}
-            reportId={segment.report_id}
-          />
-        </h3>
+        <BackLink
+          onNavigate={() => onBack(dirty, saveNow)}
+          label="Back to actions"
+        />
+        <ReportSegmentPill
+          storyline={storylines.find((s) => s.id === segment.storyline_id)}
+          reportId={segment.report_id}
+        />
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
@@ -2960,11 +3178,16 @@ function addressParts(
 
 function AddressLine({
   parts,
+  compact,
+  wrap,
 }: {
   parts: ReturnType<typeof addressParts>;
+  /** No left padding — the row sits flush with its container. */
+  compact?: boolean;
+  /** Allow the address to wrap to multiple lines instead of truncating. */
+  wrap?: boolean;
 }) {
   const hasAny = parts.citizenId || parts.cityName || parts.nation;
-  if (!hasAny) return null;
   const pieces: React.ReactNode[] = [];
   if (parts.citizenId)
     pieces.push(<span key="cid">{parts.citizenId}</span>);
@@ -2977,13 +3200,21 @@ function AddressLine({
       </span>
     );
   return (
-    <span className="truncate pl-3 text-[10px] text-muted-foreground">
-      {pieces.map((el, i) => (
-        <span key={i}>
-          {i > 0 ? <span className="mx-1 opacity-60">·</span> : null}
-          {el}
-        </span>
-      ))}
+    <span
+      className={cn(
+        "block text-[10px] leading-[14px] text-muted-foreground",
+        compact ? null : "pl-3",
+        wrap ? null : "h-[14px] truncate"
+      )}
+    >
+      {hasAny
+        ? pieces.map((el, i) => (
+            <span key={i}>
+              {i > 0 ? <span className="mx-1 opacity-60">·</span> : null}
+              {el}
+            </span>
+          ))
+        : null}
     </span>
   );
 }
@@ -2993,7 +3224,6 @@ function HeroSearch({
   heroes,
   cities,
   nations,
-  placeholder,
   onChange,
   onCreate,
   onEdit,
@@ -3002,7 +3232,6 @@ function HeroSearch({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
-  placeholder?: string;
   onChange: (v: string | null) => void;
   onCreate: () => void;
   onEdit: (citizen: Citizen) => void;
@@ -3033,9 +3262,9 @@ function HeroSearch({
   if (selected) {
     const parts = addressParts(selected, cities, nations);
     return (
-      <div className="group flex flex-col gap-0.5">
-        <div className="flex items-center justify-between gap-2 rounded-full bg-muted/40 px-3 py-1">
-          <span className="truncate font-mono text-sm">{selected.name}</span>
+      <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-[10px]">{selected.name}</span>
           <div className="flex items-center gap-1">
             <button
               type="button"
@@ -3082,39 +3311,45 @@ function HeroSearch({
             </button>
           </div>
         </div>
-        <AddressLine parts={parts} />
+        <AddressLine parts={parts} compact />
       </div>
     );
   }
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="group flex gap-1">
-        <Input
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder={placeholder ?? "Search citizens"}
-          className={cn(
-            "h-8 flex-1 placeholder:italic",
-            GHOST_FIELD
-          )}
+      {/* Same chrome as the selected state — input on the top row, an
+          empty address row below — so selecting/clearing a citizen
+          doesn't change the field's height. */}
+      <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1 transition-colors focus-within:bg-black/50 hover:bg-black/50">
+        <div className="flex items-center gap-1">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            className="min-w-0 flex-1 bg-transparent text-[10px] focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={onCreate}
+            aria-label="Create new hero"
+            title="Create new hero"
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            +
+          </button>
+        </div>
+        <AddressLine
+          parts={{ citizenId: null, cityName: null, nation: null }}
+          compact
         />
-        <button
-          type="button"
-          onClick={onCreate}
-          aria-label="Create new hero"
-          title="Create new hero"
-          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          +
-        </button>
       </div>
       {open && matches.length > 0 ? (
-        <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border border-border bg-card shadow-md">
+        <div className="absolute left-0 right-0 top-full z-10 mt-1 overflow-hidden rounded-md border border-border bg-card shadow-md">
           {matches.map((h) => {
             const parts = addressParts(h, cities, nations);
             return (
@@ -3126,10 +3361,10 @@ function HeroSearch({
                   setQuery("");
                   setOpen(false);
                 }}
-                className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left hover:bg-accent/40"
+                className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-accent/40"
               >
-                <span className="text-sm">{h.name}</span>
-                <AddressLine parts={parts} />
+                <span className="text-[10px]">{h.name}</span>
+                <AddressLine parts={parts} compact wrap />
               </button>
             );
           })}
@@ -3225,7 +3460,7 @@ function CitizenDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onCancel}
       role="dialog"
       aria-modal="true"
@@ -3921,6 +4156,8 @@ function ActionEditor({
   onDelete,
   onOpenSegment,
   segmentOpen,
+  onOpenLetter,
+  letterOpen,
 }: {
   action: ActionState;
   templates: ActionTemplate[];
@@ -3938,6 +4175,8 @@ function ActionEditor({
   onDelete: () => void;
   onOpenSegment: () => void;
   segmentOpen: boolean;
+  onOpenLetter: () => void;
+  letterOpen: boolean;
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
@@ -3962,7 +4201,7 @@ function ActionEditor({
 
   return (
     <div className="rounded-md border border-border bg-black/20 p-3">
-      {/* Header row: icon + name only. */}
+      {/* Header row: icon + name + overflow menu. */}
       <div className="mb-2 flex items-center gap-2">
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
@@ -3972,7 +4211,17 @@ function ActionEditor({
             <IconDisplay type={iconType} value={iconValue} size={16} />
           ) : null}
         </span>
-        <span className="truncate font-semibold">{name}</span>
+        <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
+        <OverflowMenu
+          items={[
+            {
+              label: "Delete Action",
+              intent: "destructive",
+              icon: <Trash2 size={12} aria-hidden />,
+              onClick: onDelete,
+            },
+          ]}
+        />
       </div>
 
       {/* Links row: Next letter and Report each take half the row; the
@@ -3983,7 +4232,7 @@ function ActionEditor({
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
             Next letter
           </span>
-          <div className="flex h-7 w-full items-center">
+          <div className="flex h-7 w-full items-center gap-1">
             {creatingLetter ? (
               <CreatingPill />
             ) : (
@@ -4070,7 +4319,41 @@ function ActionEditor({
                 ]}
               />
             )}
+            {action.next_letter_variant ? (
+              <button
+                type="button"
+                onClick={onOpenLetter}
+                aria-label="Open next letter"
+                title="Open next letter"
+                className={cn(
+                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
+                  letterOpen
+                    ? "border-foreground/60 bg-accent text-foreground"
+                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M9 6l6 6-6 6" />
+                </svg>
+              </button>
+            ) : null}
           </div>
+          <p className="mt-0.5 min-h-[2lh] text-[10px] italic leading-snug text-muted-foreground/60">
+            {action.next_letter_variant
+              ? nextGroupLetters.find((l) => l.variant === action.next_letter_variant)
+                  ?.summary ?? ""
+              : ""}
+          </p>
         </div>
         <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
@@ -4165,12 +4448,20 @@ function ActionEditor({
               </button>
             ) : null}
           </div>
+          <p className="mt-0.5 min-h-[2lh] text-[10px] italic leading-snug text-muted-foreground/60">
+            {action.report_segment_id
+              ? segments.find((s) => s.id === action.report_segment_id)?.summary ?? ""
+              : ""}
+          </p>
         </div>
       </div>
 
-      {/* Impact variables label. */}
-      <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-        Impact variables
+      {/* Divider between summaries and Impact. */}
+      <div className="mt-3 border-t border-border" />
+
+      {/* Impact label. */}
+      <div className="mt-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+        Impact
       </div>
 
       {/* Three grouped boxes: [class affinities] [nation affinities]
@@ -4243,10 +4534,6 @@ function ActionEditor({
         values={endingValues}
         onChange={(next) => onChange({ ending_assignments: next })}
       />
-
-      <div className="mt-3 flex justify-center">
-        <DeleteButton onClick={onDelete} />
-      </div>
     </div>
   );
 }
@@ -4283,7 +4570,7 @@ function EndingAssignmentsSection({
   return (
     <>
       <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-        Ending variables
+        Endings
       </div>
       <div className="mt-1 flex flex-col gap-1">
         {assignments.length === 0 ? (
@@ -4443,12 +4730,15 @@ function ClassTile({
 }) {
   return (
     <div className="flex flex-col items-center gap-1" title={label}>
-      <span
-        aria-label={label}
-        className="flex h-6 items-center text-muted-foreground"
+      <button
+        type="button"
+        onClick={() => onChange(0)}
+        aria-label={`Reset ${label} to 0`}
+        title={`${label} — click to reset`}
+        className="flex h-6 items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         {icon ?? <span className="text-[10px]">{label}</span>}
-      </span>
+      </button>
       <CounterInput value={value} onChange={onChange} orientation="vertical" />
     </div>
   );
@@ -4465,10 +4755,13 @@ function NationTile({
 }) {
   return (
     <div className="flex flex-col items-center gap-1" title={nation.name}>
-      <span
-        className="flex h-6 w-6 items-center justify-center"
+      <button
+        type="button"
+        onClick={() => onChange(0)}
+        aria-label={`Reset ${nation.name} to 0`}
+        title={`${nation.name} — click to reset`}
+        className="flex h-6 w-6 items-center justify-center rounded-sm transition-opacity hover:opacity-80"
         style={{ color: nation.color_hex }}
-        aria-label={nation.name}
       >
         {nation.icon_value ? (
           <IconDisplay
@@ -4481,19 +4774,25 @@ function NationTile({
             {nation.abbreviation ?? nation.name.slice(0, 1)}
           </span>
         )}
-      </span>
+      </button>
       <CounterInput value={value} onChange={onChange} orientation="vertical" />
     </div>
   );
 }
 
-function BackLink({ onNavigate }: { onNavigate: () => void }) {
+function BackLink({
+  onNavigate,
+  label = "Back to inspection letters",
+}: {
+  onNavigate: () => void;
+  label?: string;
+}) {
   return (
     <button
       type="button"
       onClick={onNavigate}
-      aria-label="Back to inspection letters"
-      title="Back to inspection letters"
+      aria-label={label}
+      title={label}
       className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <svg
@@ -4567,6 +4866,93 @@ function pickerEntries(
     }
   }
   return entries;
+}
+
+/**
+ * Reorder mode controls for a list section header. Locked: shows the
+ * reorder icon (clicking enters reorder mode). Unlocked: shows
+ * Saved/Unsaved + Save (when dirty) + Cancel — same pattern as panel
+ * header SaveRevert but specific to drag-reorder.
+ */
+function ReorderControls({
+  locked,
+  dirty,
+  pending,
+  onUnlock,
+  onCancel,
+  onSave,
+}: {
+  locked: boolean;
+  dirty: boolean;
+  pending: boolean;
+  onUnlock: () => void;
+  onCancel: () => void;
+  onSave: () => void;
+}) {
+  if (locked) {
+    return (
+      <button
+        type="button"
+        onClick={onUnlock}
+        title="Reorder"
+        aria-label="Reorder"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <ReorderIcon active={false} />
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      {dirty ? (
+        <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
+          • Unsaved
+        </span>
+      ) : (
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+          Reordering
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={pending}
+        aria-label="Cancel reorder"
+        title="Cancel reorder"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M6 6l12 12M18 6L6 18" />
+        </svg>
+      </button>
+      {dirty ? (
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={pending}
+          aria-label="Save order"
+          title="Save order"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {pending ? (
+            <Spinner />
+          ) : (
+            <Save size={14} aria-hidden />
+          )}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function ReorderIcon({ active }: { active: boolean }) {
@@ -4951,12 +5337,14 @@ function BreadcrumbPill({
  */
 function PanelHeader({
   title,
+  icon,
   dirty,
   showSaved,
   saveRevert,
   menu,
 }: {
   title: string;
+  icon?: ReactNode;
   dirty?: boolean;
   showSaved?: boolean;
   /** Optional Save / Revert pair; renders between the dirty indicator
@@ -4965,8 +5353,9 @@ function PanelHeader({
   menu?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-1.5">
-      <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <div className="flex min-h-10 items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-1.5">
+      <span className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        {icon}
         {title}
       </span>
       <div className="flex items-center gap-2">
@@ -4988,27 +5377,50 @@ function PanelHeader({
 
 type OverflowMenuItem = {
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
   intent?: "default" | "destructive";
   icon?: React.ReactNode;
+  /** When provided, the item opens a nested submenu instead of firing
+   * onClick. The submenu replaces the current items with a Back row at
+   * the top. */
+  submenu?: OverflowMenuItem[];
 };
 
 function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   const [open, setOpen] = useState(false);
+  const [path, setPath] = useState<number[]>([]);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
+      if (!ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setPath([]);
+      }
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+
+  const currentItems = useMemo(() => {
+    let cur: OverflowMenuItem[] = items;
+    for (const idx of path) {
+      const next = cur[idx]?.submenu;
+      if (!next) break;
+      cur = next;
+    }
+    return cur;
+  }, [items, path]);
+  const inSubmenu = path.length > 0;
+
   return (
     <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setOpen((o) => !o);
+          setPath([]);
+        }}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="More actions"
@@ -5019,26 +5431,49 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
         >
-          {items.map((item, i) => (
+          {inSubmenu ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => setPath((p) => p.slice(0, -1))}
+              className="flex w-full items-center gap-2 whitespace-nowrap border-b border-border px-3 py-1 text-left font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+            >
+              <ChevronLeft size={11} aria-hidden />
+              Back
+            </button>
+          ) : null}
+          {currentItems.map((item, i) => (
             <button
               key={i}
               type="button"
               role="menuitem"
               onClick={() => {
-                item.onClick();
+                if (item.submenu) {
+                  setPath((p) => [...p, i]);
+                  return;
+                }
+                item.onClick?.();
                 setOpen(false);
+                setPath([]);
               }}
               className={cn(
-                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-accent/40",
+                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
                 item.intent === "destructive"
-                  ? "text-destructive"
-                  : "text-foreground"
+                  ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                  : "text-foreground hover:bg-accent/40"
               )}
             >
               {item.icon}
-              {item.label}
+              <span className="flex-1">{item.label}</span>
+              {item.submenu ? (
+                <ChevronRight
+                  size={11}
+                  aria-hidden
+                  className="text-muted-foreground"
+                />
+              ) : null}
             </button>
           ))}
         </div>
@@ -5281,6 +5716,22 @@ function StorylineInspector({
     });
   }
 
+  async function handleDeleteStoryline() {
+    const ok = await onConfirmDialog({
+      title: "Delete storyline?",
+      message: `${storyline.name} will be permanently removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    startRowAction(async () => {
+      const fd = new FormData();
+      fd.set("id", storyline.id);
+      await deleteStoryline(fd);
+      onBack();
+    });
+  }
+
   const letterCountByGroup = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of allLetters)
@@ -5366,6 +5817,7 @@ function StorylineInspector({
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Storyline"
+        icon={<BookOpen size={14} aria-hidden className="text-muted-foreground/70" />}
         dirty={dirty || orderDirty}
         showSaved
         saveRevert={
@@ -5375,6 +5827,28 @@ function StorylineInspector({
             onSave={() => startSave(saveNow)}
             onRevert={revert}
           />
+        }
+        menu={
+          groups.length === 0 ? (
+            <OverflowMenu
+              items={[
+                {
+                  label: "Delete Storyline",
+                  intent: "destructive",
+                  icon: <Trash2 size={12} aria-hidden />,
+                  onClick: handleDeleteStoryline,
+                },
+              ]}
+            />
+          ) : (
+            <span
+              aria-hidden
+              className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground/30"
+              title="Delete unavailable: storyline has letter groups"
+            >
+              <MoreVertical size={14} />
+            </span>
+          )
         }
       />
       <div className="p-4">
@@ -5472,36 +5946,41 @@ function StorylineInspector({
       ) : null}
 
       <div className="mt-4 rounded-md border border-border">
-        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="flex h-10 items-center gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3">
+          <Mails
+            size={14}
+            aria-hidden
+            className="text-muted-foreground/70"
+          />
           <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            Letter groups ({sortedGroups.length})
+            Letter Groups
           </span>
-          <div className="flex items-center gap-2">
-            {orderDirty ? (
-              <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
-                • Unsaved
-              </span>
-            ) : null}
-            <SaveRevert
+          <div className="ml-auto flex items-center gap-2">
+            <ReorderControls
+              locked={!reorderMode}
               dirty={orderDirty}
               pending={reorderPending}
+              onUnlock={beginReorder}
+              onCancel={cancelReorder}
               onSave={saveReorder}
-              onRevert={() => setPendingOrder(sortedGroups.map((g) => g.id))}
             />
-            <button
-              type="button"
-              onClick={() => (reorderMode ? cancelReorder() : beginReorder())}
-              disabled={sortedGroups.length < 2}
-              aria-pressed={reorderMode}
-              aria-label={reorderMode ? "Lock order" : "Unlock to reorder"}
-              title={reorderMode ? "Lock order" : "Unlock to reorder"}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"
-            >
-              <ReorderIcon active={reorderMode} />
-            </button>
+            <OverflowMenu
+              items={[
+                {
+                  label: "Letter Group",
+                  icon: (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span aria-hidden>+</span>
+                      <Mails size={11} aria-hidden />
+                    </span>
+                  ),
+                  onClick: handleAddGroup,
+                },
+              ]}
+            />
           </div>
         </div>
-        <div className="flex flex-col">
+        <div className="flex flex-col overflow-hidden rounded-b-md">
           {viewOrderedGroups.map((g, i) => {
             const count = letterCountByGroup.get(g.id) ?? 0;
             const day = g.delivery_day_id
@@ -5594,18 +6073,6 @@ function StorylineInspector({
             </p>
           ) : null}
         </div>
-        {!reorderMode ? (
-          <div className="flex justify-center border-t border-border px-3 py-2">
-            <button
-              type="button"
-              onClick={handleAddGroup}
-              disabled={rowPending}
-              className={MUTED_ADD_BTN}
-            >
-              {rowPending ? <Spinner /> : "+ Letter group"}
-            </button>
-          </div>
-        ) : null}
       </div>
       </div>
     </div>
@@ -5709,7 +6176,7 @@ function StorylinesListPanel({
   }
 
   const ModeToggle = (
-    <div className="flex items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[10px] font-mono uppercase tracking-wider">
+    <div className="flex h-7 items-center gap-1 rounded-md border border-border bg-card p-0.5 text-[10px] font-mono uppercase tracking-wider">
       {(["storyline", "day"] as const).map((m) => (
         <button
           key={m}
@@ -5717,7 +6184,7 @@ function StorylinesListPanel({
           onClick={() => setGroupMode(m)}
           aria-pressed={groupMode === m}
           className={cn(
-            "rounded px-2 py-1 transition-colors",
+            "inline-flex h-full items-center rounded px-2 transition-colors",
             groupMode === m
               ? "bg-accent text-foreground"
               : "text-muted-foreground hover:text-foreground"
@@ -5848,8 +6315,13 @@ function StorylinesListPanel({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex justify-end">{ModeToggle}</div>
+    <div className="rounded-md border border-border bg-card">
+      <PanelHeader
+        title="All Letters"
+        icon={<MailOpen size={14} aria-hidden className="text-muted-foreground/70" />}
+        menu={ModeToggle}
+      />
+      <div className="flex flex-col gap-3 p-4">
 
       <div className={groupMode === "storyline" ? "flex flex-col gap-3" : "hidden"}>
         {storylines.map((s) => {
@@ -5992,6 +6464,7 @@ function StorylinesListPanel({
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

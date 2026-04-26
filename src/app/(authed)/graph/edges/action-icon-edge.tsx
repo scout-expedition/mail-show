@@ -27,6 +27,11 @@ export type ActionIconEdgeData = {
   terminator?: "arrow" | "circle";
   /** Optional impact badges shown beside the chip when the overlay is on. */
   impacts?: ActiveImpact[];
+  /** Which side of the chip the impact badges stack on. Defaults to "right". */
+  badgeSide?: "left" | "right";
+  /** Horizontal nudge applied to the path's target endpoint so converging
+   * arrowheads on the same letter/report don't stack at one point. */
+  targetXOffset?: number;
   /** True when this action sets an ending variable and the ending overlay is on. */
   hasEnding?: boolean;
   /** True when this chip is the active inspector selection. */
@@ -73,12 +78,14 @@ function ActionIconEdgeComponent({
   // line appears to enter the arrow off-center.
   const ARROW_PULLBACK = 3;
   const arrowTargetY = targetY - ARROW_PULLBACK;
+  // Spread converging arrowheads across the target's top edge.
+  const arrowTargetX = targetX + (d.targetXOffset ?? 0);
   const single =
     hideChip && terminator === "arrow"
       ? getBezierPath({
           sourceX,
           sourceY,
-          targetX,
+          targetX: arrowTargetX,
           targetY: arrowTargetY,
           sourcePosition: Position.Bottom,
           targetPosition: Position.Top,
@@ -101,7 +108,7 @@ function ActionIconEdgeComponent({
       ? getBezierPath({
           sourceX: chipX,
           sourceY: chipY,
-          targetX,
+          targetX: arrowTargetX,
           targetY: arrowTargetY,
           sourcePosition: Position.Bottom,
           targetPosition: Position.Top,
@@ -110,7 +117,11 @@ function ActionIconEdgeComponent({
       : null;
 
   const hasImpacts = !hideChip && !!(d.impacts && d.impacts.length > 0);
-  const badgeAnchorX = chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX;
+  const badgeSide = d.badgeSide ?? "right";
+  const badgeAnchorX =
+    badgeSide === "right"
+      ? chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX
+      : chipX - CHIP_PX / 2 - CHIP_TO_BADGES_GAP_PX;
 
   return (
     <>
@@ -193,12 +204,18 @@ function ActionIconEdgeComponent({
             className="nodrag nopan"
             style={{
               position: "absolute",
-              transform: `translate(0, -50%) translate(${badgeAnchorX}px, ${chipY}px)`,
+              // Right-side badges grow rightward from the chip; left-side
+              // badges grow leftward — translate(-100%, …) right-aligns
+              // the wrapper so its right edge sits at the anchor.
+              transform: `translate(${badgeSide === "left" ? "-100%" : "0"}, -50%) translate(${badgeAnchorX}px, ${chipY}px)`,
               pointerEvents: "none",
               zIndex: 10,
             }}
           >
-            <BadgeStack impacts={d.impacts as ActiveImpact[]} />
+            <BadgeStack
+              impacts={d.impacts as ActiveImpact[]}
+              align={badgeSide === "left" ? "end" : "start"}
+            />
           </div>
         ) : null}
       </EdgeLabelRenderer>
@@ -212,14 +229,22 @@ function ActionIconEdgeComponent({
  * class and nation affinities wrap below at 2 per row for ≤4 badges, 3 per
  * row otherwise. Rendered as a vertical column to the right of the chip.
  */
-function BadgeStack({ impacts }: { impacts: ActiveImpact[] }) {
+function BadgeStack({
+  impacts,
+  align = "start",
+}: {
+  impacts: ActiveImpact[];
+  align?: "start" | "end";
+}) {
   const world = impacts.filter((i) => i.key.startsWith("world:"));
   const others = impacts.filter((i) => !i.key.startsWith("world:"));
   const otherMaxW = others.length <= 4 ? 90 : 132;
+  const colAlign = align === "end" ? "items-end" : "items-start";
+  const rowJustify = align === "end" ? "justify-end" : "justify-start";
   return (
-    <div className="flex flex-col items-start gap-[2px]">
+    <div className={`flex flex-col gap-[2px] ${colAlign}`}>
       {world.length > 0 ? (
-        <div className="flex flex-row gap-[2px]">
+        <div className={`flex flex-row gap-[2px] ${rowJustify}`}>
           {world.map((imp) => (
             <ImpactBadge key={imp.key} impact={imp} />
           ))}
@@ -227,7 +252,7 @@ function BadgeStack({ impacts }: { impacts: ActiveImpact[] }) {
       ) : null}
       {others.length > 0 ? (
         <div
-          className="flex flex-row flex-wrap gap-[2px]"
+          className={`flex flex-row flex-wrap gap-[2px] ${rowJustify}`}
           style={{ maxWidth: otherMaxW }}
         >
           {others.map((imp) => (

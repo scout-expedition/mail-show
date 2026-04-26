@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  IconCirclePlusMinus,
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
 } from "@tabler/icons-react";
@@ -30,7 +31,7 @@ import type {
   Storyline,
 } from "@/lib/db/types";
 import { GraphView, type GraphSelection } from "./graph-view";
-import { ImpactOverlayControls } from "./impact-overlay-controls";
+import { ImpactOverlayPanel } from "./impact-overlay-panel";
 import {
   LettersWorkspace,
   type ControlledSelection,
@@ -76,6 +77,7 @@ export function GraphSurface({
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
   );
+  const [overlayOpen, setOverlayOpen] = useState(false);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorDirtyKind, setInspectorDirtyKind] = useState<string | null>(
@@ -86,7 +88,7 @@ export function GraphSurface({
   const saveAllRef = useRef<(() => Promise<void>) | null>(null);
   const router = useRouter();
 
-  const initial = selectionToInitial(selection);
+  const initial = selectionToInitial(selection, letters, segments);
 
   // Resolve the unsaved-changes dialog by invoking the workspace's
   // saveAll, dropping the dirty flag, or aborting per the user's pick.
@@ -114,7 +116,10 @@ export function GraphSurface({
       const ok = await resolveUnsavedDirty();
       if (!ok) return;
       setSelection(sel);
-      if (sel) setInspectorOpen(true);
+      if (sel) {
+        setOverlayOpen(false);
+        setInspectorOpen(true);
+      }
     },
     [resolveUnsavedDirty]
   );
@@ -123,9 +128,21 @@ export function GraphSurface({
     if (inspectorOpen) {
       const ok = await resolveUnsavedDirty();
       if (!ok) return;
+      setInspectorOpen(false);
+    } else {
+      setOverlayOpen(false);
+      setInspectorOpen(true);
     }
-    setInspectorOpen((v) => !v);
   }, [inspectorOpen, resolveUnsavedDirty]);
+
+  const handleOverlayToggle = useCallback(async () => {
+    if (!overlayOpen) {
+      const ok = await resolveUnsavedDirty();
+      if (!ok) return;
+      setInspectorOpen(false);
+    }
+    setOverlayOpen((v) => !v);
+  }, [overlayOpen, resolveUnsavedDirty]);
 
   // Block leaving the page (browser nav / refresh) while there are
   // unsaved inspector changes.
@@ -184,16 +201,23 @@ export function GraphSurface({
   }, [inspectorDirty, resolveUnsavedDirty, router]);
 
   return (
-    <div>
+    <div className="flex h-[calc(100dvh-3.5rem)] flex-col">
       <PageHeader
         title="Narrative Graph"
         actions={
           <div className="flex items-center gap-2">
-            <ImpactOverlayControls
-              nations={nations}
-              filter={filter}
-              onFilterChange={setFilter}
-            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-pressed={overlayOpen}
+              aria-label={overlayOpen ? "Close overlays" : "Open overlays"}
+              title={overlayOpen ? "Close overlays" : "Open overlays"}
+              onClick={() => void handleOverlayToggle()}
+              className={overlayOpen ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
+            >
+              <IconCirclePlusMinus size={16} />
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -202,6 +226,7 @@ export function GraphSurface({
               aria-label={inspectorOpen ? "Close inspector" : "Open inspector"}
               title={inspectorOpen ? "Close inspector" : "Open inspector"}
               onClick={handleInspectorToggle}
+              className={inspectorOpen ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
             >
               {inspectorOpen ? (
                 <IconLayoutSidebarLeftExpand size={16} />
@@ -217,8 +242,8 @@ export function GraphSurface({
           Create some storylines and letter groups to see the graph.
         </p>
       ) : (
-        <div className="flex gap-3">
-          <div className="min-w-0 flex-1">
+        <div className="flex min-h-0 flex-1 gap-3">
+          <div className="min-h-0 min-w-0 flex-1">
             <GraphView
               storylines={storylines}
               letterGroups={letterGroups}
@@ -234,6 +259,15 @@ export function GraphSurface({
               onSelectionChange={handleSelectionChange}
             />
           </div>
+          {overlayOpen ? (
+            <aside className="w-[380px] shrink-0 lg:w-[420px]">
+              <ImpactOverlayPanel
+                nations={nations}
+                filter={filter}
+                onFilterChange={setFilter}
+              />
+            </aside>
+          ) : null}
           {inspectorOpen ? (
             <aside className="w-[380px] shrink-0 lg:w-[420px]">
               <LettersWorkspace
@@ -278,7 +312,11 @@ export function GraphSurface({
   );
 }
 
-function selectionToInitial(sel: GraphSelection | null): {
+function selectionToInitial(
+  sel: GraphSelection | null,
+  letters: InspectionLetterView[],
+  segments: ReportSegmentView[]
+): {
   groupId: string | null;
   letterId: string | null;
   segmentId: string | null;
@@ -288,7 +326,28 @@ function selectionToInitial(sel: GraphSelection | null): {
     return { groupId: sel.groupId, letterId: null, segmentId: null };
   }
   if (sel.kind === "letter" || sel.kind === "actions") {
-    return { groupId: sel.groupId, letterId: null, segmentId: null };
+    // Resolve the variant key to a real letter id at mount time so the
+    // workspace starts on the "main" view with letterState already
+    // hydrated — otherwise the first render shows the dashed
+    // "Select a letter…" empty state until the controlled-selection
+    // effect catches up.
+    const letter = letters.find(
+      (l) =>
+        l.letter_group_id === sel.groupId &&
+        (l.variant ?? "") === sel.variantKey
+    );
+    return {
+      groupId: sel.groupId,
+      letterId: letter?.id ?? null,
+      segmentId: null,
+    };
   }
-  return { groupId: null, letterId: null, segmentId: sel.segmentId };
+  // Segment selections: resolve the parent group too so its segment list
+  // is non-empty on the first render.
+  const seg = segments.find((s) => s.id === sel.segmentId);
+  return {
+    groupId: seg?.letter_group_id ?? null,
+    letterId: null,
+    segmentId: sel.segmentId,
+  };
 }

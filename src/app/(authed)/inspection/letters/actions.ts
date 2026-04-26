@@ -483,6 +483,26 @@ export async function reorderInspectionLetters(
   revalidatePath("/inspection/letters");
 }
 
+/**
+ * Reorder report segments within a report group, then reassign Roman-numeral
+ * variants by new sort order so display IDs (R-W2/i, R-W2/ii…) line up with
+ * the user-chosen sequence. Segment IDs are stable, so action references
+ * (`report_segment_id`) are unaffected.
+ */
+export async function reorderReportSegments(orderedIds: string[]) {
+  const supabase = await createSupabaseServerClient();
+  for (let i = 0; i < orderedIds.length; i++) {
+    const variant = toRoman(i + 1);
+    const { error } = await supabase
+      .from("report_segments")
+      .update({ sort_order: i + 1, variant })
+      .eq("id", orderedIds[i]);
+    if (error) throw new Error(error.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
 /** Reorder letter groups within a storyline by passing the new order of group ids. */
 export async function reorderLetterGroups(
   storylineId: string,

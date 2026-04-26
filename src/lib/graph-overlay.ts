@@ -5,14 +5,14 @@ export type ImpactCategory = "class" | "nation" | "world";
 
 /** Fixed class list (no DB table yet). */
 export const IMPACT_CLASSES = [
-  { key: "impact_proletariat", id: "proletariat", label: "Working" },
-  { key: "impact_gentry", id: "gentry", label: "Gentry" },
+  { key: "impact_proletariat", id: "proletariat", label: "Working", iconValue: "IconHammer", color: "#f59e0b" },
+  { key: "impact_gentry", id: "gentry", label: "Gentry", iconValue: "IconDiamond", color: "#d946ef" },
 ] as const;
 
 /** Fixed world-level variables. */
 export const IMPACT_WORLD = [
-  { key: "impact_world_status", id: "world_status", label: "World Status" },
-  { key: "impact_demerits", id: "demerits", label: "Demerits" },
+  { key: "impact_world_status", id: "world_status", label: "World Status", iconValue: "IconWorldBolt", color: "#22d3ee", valueColor: "#ffffff" },
+  { key: "impact_demerits", id: "demerits", label: "Demerits", iconValue: "IconCircleMinus", color: "#ef4444" },
 ] as const;
 
 /** Nation name (lowercase) → impact column on actions. */
@@ -25,7 +25,6 @@ export const NATION_IMPACT_KEYS: Record<string, keyof ActionRow> = {
 };
 
 export type ImpactFilter = {
-  showImpacts: boolean;
   /** When on, chips whose action sets any ending variable get a flag marker. */
   showEndings: boolean;
   categories: Record<ImpactCategory, boolean>;
@@ -35,7 +34,6 @@ export type ImpactFilter = {
 };
 
 export const DEFAULT_IMPACT_FILTER: ImpactFilter = {
-  showImpacts: false,
   showEndings: false,
   categories: { class: true, nation: true, world: true },
   classes: { proletariat: true, gentry: true },
@@ -75,7 +73,6 @@ export function extractActiveImpacts(
   filter: ImpactFilter,
   nations: Nation[]
 ): ActiveImpact[] {
-  if (!filter.showImpacts) return [];
   const out: ActiveImpact[] = [];
 
   if (filter.categories.world) {
@@ -83,17 +80,14 @@ export function extractActiveImpacts(
       if (!filter.world[w.id]) continue;
       const v = action[w.key] as number;
       if (!v) continue;
-      // World Status stays all-white (border, icon, and value), demerits
-      // stays full-red.
-      const isDemerits = w.id === "demerits";
-      const color = isDemerits ? "#ef4444" : "#ffffff";
       out.push({
         key: `world:${w.id}`,
         label: w.label,
-        color,
+        color: w.color,
+        valueColor: "valueColor" in w ? w.valueColor : undefined,
         value: v,
         iconType: "tabler",
-        iconValue: isDemerits ? "IconMinus" : "IconWorldBolt",
+        iconValue: w.iconValue,
       });
     }
   }
@@ -106,10 +100,10 @@ export function extractActiveImpacts(
       out.push({
         key: `class:${c.id}`,
         label: c.label,
-        color: c.id === "gentry" ? "#d946ef" : "#f59e0b",
+        color: c.color,
         value: v,
         iconType: "tabler",
-        iconValue: c.id === "gentry" ? "IconDiamond" : "IconHammer",
+        iconValue: c.iconValue,
       });
     }
   }

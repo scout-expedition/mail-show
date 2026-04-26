@@ -89,7 +89,7 @@ type Props = {
 //   rows = days (Y axis), columns = storylines (X axis), flow goes top→down.
 // ------------------------------------------------------------------
 const GUTTER_W = 44; // left gutter for day labels
-const HEADER_H = 32; // top header for storyline labels
+const HEADER_H = 40; // top header for storyline labels — matches PanelHeader min-h-10
 const CELL_GAP = 22; // gap between sibling groups/reports inside a cell
 const CELL_VGAP = 40; // vertical gap between reports half and groups half
 const ROW_TOP_PAD = 56;
@@ -107,7 +107,7 @@ const GROUP_PAD_LEADING = 44; // horizontal padding inside the group outline
 const GROUP_PAD_TRAILING = 44;
 const GROUP_PAD_TOP = 14; // vertical padding inside the group outline
 const GROUP_PAD_BOTTOM = 14;
-const VARIANT_GAP = 22; // horizontal gap between sibling variants in a group
+const VARIANT_GAP = 60; // horizontal gap between sibling variants in a group — wide enough that impact-overlay badges between adjacent variants don't collide
 
 // Card geometry — must match the PillCard layout in components/pills.tsx.
 const PILL_H = 24; // h-6
@@ -310,13 +310,20 @@ export function GraphView({
         seen.add(k);
         variants.push(k);
       }
-      if (variants.length === 0) variants.push(""); // empty group placeholder
-      const variantHeights = variants.map((vk) => {
-        const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
-        return cardHeight(primary?.summary);
-      });
+      // Empty groups (no letters yet) keep their slot in the layout but
+      // don't render a phantom letter card — earlier code pushed an "" key
+      // to size the group, which leaked through letterDisplayId as
+      // "L-{abbr}{sequence}". Size as if one variant exists; render zero
+      // letter nodes.
+      const variantHeights =
+        variants.length === 0
+          ? [HEADING_ONLY_H]
+          : variants.map((vk) => {
+              const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
+              return cardHeight(primary?.summary);
+            });
       const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
-      const width = groupWidth(variants.length);
+      const width = groupWidth(Math.max(1, variants.length));
       const height = groupHeight(maxCardH);
       const rowId = g.delivery_day_id ?? "unscheduled";
       groupsById.set(g.id, {
@@ -876,6 +883,11 @@ export function GraphView({
       preferredX: number;
       chipX: number;
       impacts: ActiveImpact[];
+      // Left-half siblings render their impact-overlay badges to the
+      // LEFT of the chip; right-half siblings to the RIGHT. With 4
+      // chips, indices 0–1 are left-side, 2–3 are right-side.
+      badgeSide: "left" | "right";
+      extentLeft: number;
       extentRight: number;
     };
     const placements: ChipPlacement[] = [];
@@ -929,13 +941,21 @@ export function GraphView({
         const impacts = isLetterSource
           ? extractActiveImpacts(c.action, impactFilter, nations)
           : [];
+        // Left-half siblings push their badge stack outward (left of the
+        // chip); right-half siblings push outward to the right. With one
+        // chip, default to right.
+        const badgeSide: "left" | "right" =
+          N >= 2 && i < Math.ceil(N / 2) ? "left" : "right";
+        const stackWidth = badgeStackExtentRight(impacts);
         placements.push({
           candidate: c,
           chipY,
           preferredX: x,
           chipX: x,
           impacts,
-          extentRight: badgeStackExtentRight(impacts),
+          badgeSide,
+          extentLeft: badgeSide === "left" ? stackWidth : 0,
+          extentRight: badgeSide === "right" ? stackWidth : 0,
         });
       });
     }
@@ -954,7 +974,9 @@ export function GraphView({
       list.sort((a, b) => a.preferredX - b.preferredX);
       let prevRight = -Infinity;
       for (const p of list) {
-        const minChipX = prevRight + CHIP_GAP + CHIP_H / 2;
+        // Account for the next chip's LEFT badge extent: a left-side
+        // chip needs room to the left of its chip center too.
+        const minChipX = prevRight + CHIP_GAP + CHIP_H / 2 + p.extentLeft;
         p.chipX = Math.max(p.preferredX, minChipX);
         prevRight = p.chipX + CHIP_H / 2 + p.extentRight;
       }
@@ -981,13 +1003,33 @@ export function GraphView({
     //   - multiple arrows converging on one target → white, so the stacked
     //     arrowheads read as a single unified arrow
     //   - single arrow → the action's own color
-    const incomingByTarget = new Map<string, number>();
+    // Arrowhead spacing: when multiple edges land on the same target, give
+    // each its own arrowhead spread horizontally across the target's top
+    // edge instead of stacking them at the same point.
+    const arrowsByTarget = new Map<string, ChipPlacement[]>();
     for (const p of placements) {
       if (p.candidate.terminator !== "arrow") continue;
-      incomingByTarget.set(
-        p.candidate.target,
-        (incomingByTarget.get(p.candidate.target) ?? 0) + 1
-      );
+      const list = arrowsByTarget.get(p.candidate.target) ?? [];
+      list.push(p);
+      arrowsByTarget.set(p.candidate.target, list);
+    }
+    for (const list of arrowsByTarget.values()) {
+      // Stable left-to-right order keyed by the chip's X position so the
+      // visual ordering matches the source layout.
+      list.sort((a, b) => a.chipX - b.chipX);
+    }
+    const ARROW_TARGET_PITCH = 20; // px between arrowheads at the same target
+    const targetOffsetByEdgeId = new Map<string, number>();
+    for (const list of arrowsByTarget.values()) {
+      const N = list.length;
+      list.forEach((p, i) => {
+        const offset = N > 1 ? (i - (N - 1) / 2) * ARROW_TARGET_PITCH : 0;
+        targetOffsetByEdgeId.set(p.candidate.id, offset);
+      });
+    }
+    const incomingByTarget = new Map<string, number>();
+    for (const [target, list] of arrowsByTarget) {
+      incomingByTarget.set(target, list.length);
     }
 
     for (const p of placements) {
@@ -1045,6 +1087,8 @@ export function GraphView({
           chipY: p.chipY,
           terminator: c.terminator,
           impacts: p.impacts,
+          badgeSide: p.badgeSide,
+          targetXOffset: targetOffsetByEdgeId.get(c.id) ?? 0,
           hasEnding,
           selected: chipSelected,
           onSelect: onChipSelect,
@@ -1315,7 +1359,7 @@ export function GraphView({
   }, [selection, selectionCenter]);
 
   return (
-    <div className="relative h-[75vh] overflow-hidden rounded-md border border-border bg-background">
+    <div className="relative h-full overflow-hidden rounded-md border border-border bg-background">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1408,11 +1452,12 @@ export function GraphView({
           </div>
         </Panel>
       </ReactFlow>
-      {/* dark scrim behind storyline pills, above day-gutter labels */}
+      {/* dark scrim behind storyline pills, above day-gutter labels —
+          matches the inspector PanelHeader's 40px height. */}
       <div
         aria-hidden
         className="pointer-events-none absolute left-0 right-0 top-0 z-[19] border-b border-border bg-card/80"
-        style={{ height: 30 }}
+        style={{ height: HEADER_H }}
       />
       <StickyStorylineHeader
         cols={labelCols}

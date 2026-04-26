@@ -80,20 +80,23 @@ export function Spinner({ className }: { className?: string }) {
 
 export function PanelHeader({
   title,
+  icon,
   dirty,
   showSaved,
   saveRevert,
   menu,
 }: {
   title: React.ReactNode;
+  icon?: React.ReactNode;
   dirty?: boolean;
   showSaved?: boolean;
   saveRevert?: React.ReactNode;
   menu?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-1.5">
-      <span className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <div className="flex min-h-10 items-center justify-between gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3 py-1.5">
+      <span className="flex items-center gap-2 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        {icon}
         {title}
       </span>
       <div className="flex items-center gap-2">
@@ -189,7 +192,7 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
         >
           {items.map((item, i) => (
             <button
@@ -201,10 +204,10 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
                 setOpen(false);
               }}
               className={cn(
-                "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors hover:bg-accent/40",
+                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
                 item.intent === "destructive"
-                  ? "text-destructive"
-                  : "text-foreground"
+                  ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                  : "text-foreground hover:bg-accent/40"
               )}
             >
               {item.icon}

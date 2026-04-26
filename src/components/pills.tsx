@@ -200,13 +200,17 @@ function PillCard({
       )}
       style={{
         borderColor,
+        // Match the card fill to the border color so any subpixel sliver
+        // between the 1.5px border and the heading pill renders as the
+        // same color instead of letting bg-card peek through at zoom.
+        backgroundColor: borderColor,
         width: widthPx ? widthPx + PILL_CARD_EXTRA : undefined,
       }}
     >
       {children}
       {trimmed ? (
         <div
-          className="px-1.5 py-1 text-xs leading-snug text-white/70"
+          className="bg-card px-1.5 py-1 text-xs leading-snug text-white/70"
           style={{ wordBreak: "break-word" }}
         >
           {trimmed}
