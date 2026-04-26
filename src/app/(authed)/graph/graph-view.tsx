@@ -89,7 +89,7 @@ type Props = {
 //   rows = days (Y axis), columns = storylines (X axis), flow goes top→down.
 // ------------------------------------------------------------------
 const GUTTER_W = 44; // left gutter for day labels
-const HEADER_H = 40; // top header for storyline labels — matches PanelHeader min-h-10
+const HEADER_H = 33; // top header for storyline labels — visually matches the inspector PanelHeader (the panel's min-h-10 plus border-b reads thicker than its CSS height because of the body bg contrast; the scrim's bg-card/80 has no such contrast, so a smaller height matches the perceived weight)
 const CELL_GAP = 60; // gap between sibling groups/reports inside a cell — matches VARIANT_GAP so reports and letter variants use the same horizontal pitch within a row
 const CELL_VGAP = 40; // vertical gap between reports half and groups half
 const ROW_TOP_PAD = 56;

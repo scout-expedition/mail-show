@@ -4233,15 +4233,48 @@ function ActionEditor({
               <PillSelect
                 pill={
                   action.next_letter_variant && storyline ? (
-                    <InspectionLetterPill
-                      storyline={storyline}
-                      contentId={(() => {
-                        const match = nextGroupLetters.find(
-                          (l) => l.variant === action.next_letter_variant
+                    (() => {
+                      const match = nextGroupLetters.find(
+                        (l) => l.variant === action.next_letter_variant
+                      );
+                      // Broken / orphaned ref — the variant the action
+                      // points at no longer exists in the next group
+                      // (likely the target letter was deleted before
+                      // delete-cascade cleanup landed). Surface as a
+                      // destructive-tinted pill so the user can re-pick
+                      // or clear it.
+                      if (!match) {
+                        return (
+                          <span
+                            className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-destructive bg-destructive/15 px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-destructive"
+                            title="This action's next-letter target no longer exists. Pick a new one or set to (Unset)."
+                          >
+                            <svg
+                              width="11"
+                              height="11"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2.2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              aria-hidden
+                            >
+                              <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                            </svg>
+                            <span className="whitespace-nowrap">
+                              {action.next_letter_variant} (missing)
+                            </span>
+                          </span>
                         );
-                        return match?.content_id ?? action.next_letter_variant;
-                      })()}
-                    />
+                      }
+                      return (
+                        <InspectionLetterPill
+                          storyline={storyline}
+                          contentId={match.content_id}
+                        />
+                      );
+                    })()
                   ) : null
                 }
                 items={[
