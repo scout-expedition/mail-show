@@ -4,6 +4,7 @@ import {
   addAction,
   addGroup,
   addLetters,
+  addReportSegment,
   cleanupTestData,
   makeTestClient,
   seedStoryline,
@@ -23,7 +24,12 @@ vi.mock("@/lib/supabase/server", async () => {
 });
 
 // Imports of the action MUST come after the mocks above.
-import { moveLetterGroupToDay, moveLetterToGroup } from "./actions";
+import {
+  moveLetterGroupToDay,
+  moveLetterToGroup,
+  moveReportSegmentToDay,
+  saveGroup,
+} from "./actions";
 
 describe("moveLetterGroupToDay", () => {
   const sb = makeTestClient();
@@ -210,5 +216,147 @@ describe("moveLetterToGroup", () => {
       .single();
 
     expect(action?.next_letter_variant).toBeNull();
+  });
+});
+
+describe("saveGroup", () => {
+  const sb = makeTestClient();
+
+  beforeAll(async () => {
+    await cleanupTestData(sb);
+  });
+
+  beforeEach(() => {
+    vi.mocked(revalidatePath).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestData(sb);
+  });
+
+  it("should update the letter_group row and revalidate both paths", async () => {
+    const seed = await seedStoryline(sb, { suffix: "save", days: 1 });
+
+    await saveGroup({
+      id: seed.groupId,
+      storyline_id: seed.storylineId,
+      name: "renamed",
+      notes: "freshly noted",
+      delivery_day_id: seed.dayIds[0],
+    });
+
+    const { data } = await sb
+      .from("letter_groups")
+      .select("name, notes, delivery_day_id")
+      .eq("id", seed.groupId)
+      .single();
+
+    expect(data).toEqual({
+      name: "renamed",
+      notes: "freshly noted",
+      delivery_day_id: seed.dayIds[0],
+    });
+    expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
+    expect(revalidatePath).toHaveBeenCalledWith("/graph");
+  });
+
+  it("should keep report_groups.name in sync with letter_groups.name", async () => {
+    const seed = await seedStoryline(sb, { suffix: "sync-name", days: 1 });
+
+    await saveGroup({
+      id: seed.groupId,
+      storyline_id: seed.storylineId,
+      name: "synced",
+      notes: null,
+      delivery_day_id: null,
+    });
+
+    const { data } = await sb
+      .from("report_groups")
+      .select("name")
+      .eq("letter_group_id", seed.groupId)
+      .single();
+
+    expect(data?.name).toBe("synced");
+  });
+});
+
+describe("moveReportSegmentToDay", () => {
+  const sb = makeTestClient();
+
+  beforeAll(async () => {
+    await cleanupTestData(sb);
+  });
+
+  beforeEach(() => {
+    vi.mocked(revalidatePath).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestData(sb);
+  });
+
+  it("should set delivery_day_override_id to the target day and revalidate", async () => {
+    const seed = await seedStoryline(sb, { suffix: "rs-move", days: 2 });
+    const segId = await addReportSegment(sb, {
+      reportGroupId: seed.reportGroupId,
+      variant: "i",
+    });
+    const targetDay = seed.dayIds[1];
+
+    await moveReportSegmentToDay(segId, targetDay);
+
+    const { data } = await sb
+      .from("report_segments")
+      .select("delivery_day_override_id")
+      .eq("id", segId)
+      .single();
+
+    expect(data?.delivery_day_override_id).toBe(targetDay);
+    expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
+    expect(revalidatePath).toHaveBeenCalledWith("/graph");
+  });
+
+  it("should clear delivery_day_override_id when called with null", async () => {
+    const seed = await seedStoryline(sb, { suffix: "rs-clear", days: 1 });
+    const segId = await addReportSegment(sb, {
+      reportGroupId: seed.reportGroupId,
+      variant: "i",
+      deliveryDayOverrideId: seed.dayIds[0],
+    });
+
+    await moveReportSegmentToDay(segId, null);
+
+    const { data } = await sb
+      .from("report_segments")
+      .select("delivery_day_override_id")
+      .eq("id", segId)
+      .single();
+
+    expect(data?.delivery_day_override_id).toBeNull();
+  });
+
+  it("should leave updated_by null when no auth user is present", async () => {
+    // The mocked createSupabaseServerClient returns a service-role client
+    // with no session — supabase.auth.getUser() resolves { user: null }, so
+    // the action's `userData.user?.email ?? null` falls through to null.
+    // A separate test would be needed to pin the populated path; that
+    // requires injecting a real session, which is outside the integration
+    // harness today.
+    const seed = await seedStoryline(sb, { suffix: "rs-updated-by", days: 1 });
+    const segId = await addReportSegment(sb, {
+      reportGroupId: seed.reportGroupId,
+      variant: "i",
+    });
+
+    await moveReportSegmentToDay(segId, seed.dayIds[0]);
+
+    const { data } = await sb
+      .from("report_segments")
+      .select("updated_by")
+      .eq("id", segId)
+      .single();
+
+    expect(data?.updated_by).toBeNull();
   });
 });
