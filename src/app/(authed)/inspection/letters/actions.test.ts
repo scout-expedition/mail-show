@@ -1,6 +1,9 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { revalidatePath } from "next/cache";
 import {
+  addAction,
+  addGroup,
+  addLetters,
   cleanupTestData,
   makeTestClient,
   seedStoryline,
@@ -20,7 +23,7 @@ vi.mock("@/lib/supabase/server", async () => {
 });
 
 // Imports of the action MUST come after the mocks above.
-import { moveLetterGroupToDay } from "./actions";
+import { moveLetterGroupToDay, moveLetterToGroup } from "./actions";
 
 describe("moveLetterGroupToDay", () => {
   const sb = makeTestClient();
@@ -81,5 +84,131 @@ describe("moveLetterGroupToDay", () => {
     await expect(
       moveLetterGroupToDay("not-a-uuid", null)
     ).rejects.toThrow();
+  });
+});
+
+describe("moveLetterToGroup", () => {
+  const sb = makeTestClient();
+
+  beforeAll(async () => {
+    await cleanupTestData(sb);
+  });
+
+  beforeEach(() => {
+    vi.mocked(revalidatePath).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestData(sb);
+  });
+
+  it("should move a letter into a sibling group and re-slot variants in both groups", async () => {
+    const seed = await seedStoryline(sb, { suffix: "move-sibling", days: 1 });
+    const sourceGroup = seed.groupId;
+    const { groupId: targetGroup } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 2,
+      suffix: "move-sibling",
+      deliveryDayId: seed.dayIds[0],
+    });
+
+    // Source group has two letters (a, b). Target group is empty.
+    const [letterA, letterB] = await addLetters(sb, {
+      groupId: sourceGroup,
+      count: 2,
+    });
+
+    await moveLetterToGroup(letterA, targetGroup);
+
+    const { data: movedA } = await sb
+      .from("inspection_letters")
+      .select("letter_group_id, variant")
+      .eq("id", letterA)
+      .single();
+    const { data: remainingB } = await sb
+      .from("inspection_letters")
+      .select("letter_group_id, variant")
+      .eq("id", letterB)
+      .single();
+
+    expect(movedA).toEqual({ letter_group_id: targetGroup, variant: "a" });
+    expect(remainingB).toEqual({ letter_group_id: sourceGroup, variant: "a" });
+
+    expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
+    expect(revalidatePath).toHaveBeenCalledWith("/graph");
+  });
+
+  it("should no-op when source and target group ids are the same", async () => {
+    const seed = await seedStoryline(sb, { suffix: "noop", days: 1 });
+    const [letterId] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
+
+    const before = await sb
+      .from("inspection_letters")
+      .select("variant, sort_order, updated_at")
+      .eq("id", letterId)
+      .single();
+
+    await moveLetterToGroup(letterId, seed.groupId);
+
+    const after = await sb
+      .from("inspection_letters")
+      .select("variant, sort_order, updated_at")
+      .eq("id", letterId)
+      .single();
+
+    expect(after.data).toEqual(before.data);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("should reject cross-storyline moves", async () => {
+    const seedT = await seedStoryline(sb, {
+      suffix: "cross-source",
+      abbreviation: "T",
+      days: 1,
+    });
+    const seedU = await seedStoryline(sb, {
+      suffix: "cross-target",
+      abbreviation: "U",
+      days: 1,
+      dayNumberBase: 9100,
+    });
+    const [letterId] = await addLetters(sb, { groupId: seedT.groupId, count: 1 });
+
+    await expect(
+      moveLetterToGroup(letterId, seedU.groupId)
+    ).rejects.toThrow(/cross-storyline/);
+  });
+
+  it("should clear dangling next_letter_variant refs on remaining source-group letters", async () => {
+    // Source group: letters a, b, c. An action on letter `a` points at
+    // variant 'b'. Moving letter `b` should null that ref because
+    // re-slotting will reassign variants in source.
+    const seed = await seedStoryline(sb, { suffix: "dangling", days: 1 });
+    const [letterA, letterB] = await addLetters(sb, {
+      groupId: seed.groupId,
+      count: 3,
+    });
+    const actionId = await addAction(sb, { letterId: letterA });
+    await sb
+      .from("actions")
+      .update({ next_letter_variant: "b" })
+      .eq("id", actionId);
+
+    const { groupId: targetGroup } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 2,
+      suffix: "dangling",
+      deliveryDayId: seed.dayIds[0],
+    });
+
+    await moveLetterToGroup(letterB, targetGroup);
+
+    const { data: action } = await sb
+      .from("actions")
+      .select("next_letter_variant")
+      .eq("id", actionId)
+      .single();
+
+    expect(action?.next_letter_variant).toBeNull();
   });
 });

@@ -13,7 +13,8 @@ pnpm test:int
 The runner refuses to start without two env vars set:
 
 - `SUPABASE_TEST_URL` — API URL of the test Supabase instance.
-- `SUPABASE_TEST_SERVICE_KEY` — service-role key for that instance (bypasses RLS).
+- `SUPABASE_TEST_SERVICE_KEY` — service-role / "Secret" key for that instance (bypasses RLS).
+- `SUPABASE_TEST_ANON_KEY` — publishable / anon key (only required by `rls.test.ts`).
 
 It also refuses to start if `SUPABASE_TEST_URL` matches `NEXT_PUBLIC_SUPABASE_URL`
 (belt-and-braces against pointing at the dev project).
@@ -35,7 +36,8 @@ supabase start               # boots Postgres + GoTrue + PostgREST in Docker
 
 ```
 SUPABASE_TEST_URL=http://127.0.0.1:54321
-SUPABASE_TEST_SERVICE_KEY=eyJhbGciOiJIUzI1Ni...   # printed by supabase start
+SUPABASE_TEST_SERVICE_KEY=sb_secret_...        # "Secret" from supabase start
+SUPABASE_TEST_ANON_KEY=sb_publishable_...      # "Publishable" (RLS tests only)
 ```
 
 Apply migrations (re-run after every new migration):

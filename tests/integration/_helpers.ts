@@ -22,6 +22,22 @@ export function makeTestClient(): SupabaseClient {
   return createServerClient(url, key, { cookies: noopCookies });
 }
 
+/**
+ * Build an anon (publishable-key) client. Used only by RLS tests to verify
+ * unauthenticated reads/writes are blocked. Requires SUPABASE_TEST_ANON_KEY
+ * in the env (the "Publishable" key from `supabase start` output).
+ */
+export function makeAnonClient(): SupabaseClient {
+  const url = process.env.SUPABASE_TEST_URL;
+  const key = process.env.SUPABASE_TEST_ANON_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "Missing SUPABASE_TEST_URL / SUPABASE_TEST_ANON_KEY (see tests/integration/README.md)."
+    );
+  }
+  return createServerClient(url, key, { cookies: noopCookies });
+}
+
 const TEST_PREFIX = "__INT_TEST__";
 
 /** Marker prepended to every storyline name we seed, so cleanup is safe even
@@ -52,21 +68,29 @@ export interface SeededStoryline {
 
 /**
  * Insert a deterministic storyline + one letter group + N days with the
- * test marker, returning ids the test can act on. Uses `abbreviation = 'T'`
- * because storylines.abbreviation is char(1) and unique — only one of these
- * can exist at a time, which is fine because cleanup runs between every test.
+ * test marker, returning ids the test can act on. Defaults to
+ * `abbreviation = 'T'`; cross-storyline tests pass an explicit abbreviation.
+ * storylines.abbreviation is char(1) and unique, so distinct test storylines
+ * must use distinct single chars.
  */
 export async function seedStoryline(
   sb: SupabaseClient,
-  opts: { suffix: string; days?: number } = { suffix: "default" }
+  opts: {
+    suffix: string;
+    days?: number;
+    abbreviation?: string;
+    dayNumberBase?: number;
+  } = { suffix: "default" }
 ): Promise<SeededStoryline> {
   const days = opts.days ?? 2;
+  const abbreviation = opts.abbreviation ?? "T";
+  const dayBase = opts.dayNumberBase ?? 9000;
 
   const { data: storyline, error: sErr } = await sb
     .from("storylines")
     .insert({
       name: testName(opts.suffix),
-      abbreviation: "T",
+      abbreviation,
       sort_order: 9999,
     })
     .select("id, abbreviation")
@@ -75,7 +99,7 @@ export async function seedStoryline(
 
   const dayRows = Array.from({ length: days }, (_, i) => ({
     // Use a high `number` slot to avoid colliding with seeded production days.
-    number: 9000 + i,
+    number: dayBase + i,
     notes: testName(opts.suffix),
   }));
   const { data: insertedDays, error: dErr } = await sb
@@ -113,6 +137,39 @@ export async function seedStoryline(
   };
 }
 
+/** Insert an additional letter_group into an existing storyline. The
+ *  trigger creates a matching report_group automatically. Returns both ids. */
+export async function addGroup(
+  sb: SupabaseClient,
+  opts: {
+    storylineId: string;
+    sequence: number;
+    suffix: string;
+    deliveryDayId?: string | null;
+  }
+): Promise<{ groupId: string; reportGroupId: string }> {
+  const { data: group, error: gErr } = await sb
+    .from("letter_groups")
+    .insert({
+      storyline_id: opts.storylineId,
+      name: testName(`${opts.suffix}-g${opts.sequence}`),
+      sequence: opts.sequence,
+      delivery_day_id: opts.deliveryDayId ?? null,
+    })
+    .select("id")
+    .single();
+  if (gErr || !group) throw new Error(`addGroup: ${gErr?.message}`);
+  const { data: rg } = await sb
+    .from("report_groups")
+    .select("id")
+    .eq("letter_group_id", group.id)
+    .single();
+  return {
+    groupId: group.id as string,
+    reportGroupId: (rg?.id as string) ?? "",
+  };
+}
+
 /** Insert a single test-marked day at an explicit number. Returns the new id. */
 export async function addDay(
   sb: SupabaseClient,
@@ -140,6 +197,7 @@ export async function addLetters(
     count: number;
     pieces?: Array<number | null>;
     deliveryOverrides?: Array<string | null>;
+    sortOrders?: number[];
   }
 ): Promise<string[]> {
   const rows = Array.from({ length: opts.count }, (_, i) => ({
@@ -147,6 +205,7 @@ export async function addLetters(
     variant: String.fromCharCode(97 + i),
     piece: opts.pieces?.[i] ?? null,
     delivery_day_override_id: opts.deliveryOverrides?.[i] ?? null,
+    sort_order: opts.sortOrders?.[i] ?? i,
   }));
   const { data, error } = await sb
     .from("inspection_letters")
