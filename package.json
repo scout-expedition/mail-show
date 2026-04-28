@@ -11,7 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:int": "bash scripts/test-int.sh",
-    "test:e2e": "playwright test",
+    "test:e2e": "bash scripts/test-e2e.sh",
     "test:all": "pnpm test && pnpm test:int && pnpm test:e2e",
     "db:migrate": "tsx scripts/apply-migration.ts"
   },
@@ -36,6 +36,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^20",

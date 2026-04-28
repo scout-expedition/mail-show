@@ -21,6 +21,8 @@ export default defineConfig({
       "tests/**",
       // Server-action tests need the integration harness; run via `pnpm test:int`.
       "src/app/**/actions.test.ts",
+      // Playwright owns its own runner + spec files.
+      "tests/e2e/**",
     ],
     setupFiles: ["./tests/setup.ts"],
     coverage: {
