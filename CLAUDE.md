@@ -47,8 +47,8 @@ nations / cities / citizens (reference data)
 
 ### Database views generate display IDs
 Don't compute these in app code — they come from views and are the truth across the UI:
-- `inspection_letters_view.content_id` → `IL-W2/b3`
-- `report_segments_view.report_id` + `effective_day_id` → `R-W2/ii`, day = triggering letter day + 1
+- `inspection_letters_view.content_id` → `L-W2/b3` (single-letter groups hide the variant suffix; piece is omitted when 0)
+- `report_segments_view.report_id` + `effective_day_id` → `R-W2/ii`, day = min(letter delivery_day_override) + 1, falling back to letter_groups.delivery_day_id + 1, and overridden by report_segments.delivery_day_override_id when set
 - `sorting_letters_view.content_id` → `S2-09`
 - `playthrough_variables` → 9-column impact tally + `combined_national` (excludes Epicenter by design)
 
