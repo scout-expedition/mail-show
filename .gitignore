@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/test-results
+/playwright-report
 
 # next.js
 /.next/
@@ -37,6 +39,10 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# claude code runtime state (configs/agents/commands stay tracked)
+/.claude/scheduled_tasks.lock
+/.claude/settings.local.json
 
 # typescript
 *.tsbuildinfo
