@@ -21,10 +21,14 @@ function ReportNode({ data }: NodeProps) {
       <Handle
         type="target"
         position={Position.Top}
-        isConnectable={false}
+        // Drop-only: receives drag-to-attach drops from a "report"
+        // connect-source handle on an action chip. Never initiates a
+        // connection (we don't connect from reports).
+        isConnectable={true}
+        isConnectableStart={false}
         className="!h-2 !w-2 !border-none !bg-transparent"
       />
-      <div className="cursor-pointer">
+      <div className="cursor-grab active:cursor-grabbing">
         <ReportSegmentCard
           storyline={d.storyline}
           reportId={d.reportId}

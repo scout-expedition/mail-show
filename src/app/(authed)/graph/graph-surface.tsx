@@ -3,10 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  IconArrowBackUp,
   IconCirclePlusMinus,
   IconLayoutSidebarLeftExpand,
   IconLayoutSidebarRightExpand,
+  IconLock,
+  IconLockOpen,
 } from "@tabler/icons-react";
+import {
+  batchMoveToDay,
+  moveLetterGroupToDay,
+  moveLetterToGroup,
+  moveReportSegmentToDay,
+  setActionNextLetterByLetterId,
+  setActionReportSegment,
+} from "../inspection/letters/actions";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
 import { useUnsavedDialog } from "@/components/unsaved-dialog";
@@ -30,7 +41,7 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
-import { GraphView, type GraphSelection } from "./graph-view";
+import { GraphView, type GraphSelection, type UndoEntry } from "./graph-view";
 import { ImpactOverlayPanel } from "./impact-overlay-panel";
 import {
   LettersWorkspace,
@@ -77,7 +88,73 @@ export function GraphSurface({
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
   );
+  // Default-locked: graph reads as a static map until the user explicitly
+  // unlocks editing. Prevents accidental day-moves / reconnects while
+  // panning around. Persists across reloads so power users don't have to
+  // re-click on every visit.
+  const [editingEnabled, setEditingEnabled] = useLocalStorage<boolean>(
+    "graph.editingEnabled",
+    false
+  );
   const [overlayOpen, setOverlayOpen] = useState(false);
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  // Replay an undo entry by calling the same server action that produced
+  // it in reverse. Recursive for batch entries (multi-select drags). No
+  // "redo" — applying an undo doesn't push the inverse back onto the
+  // stack, since today's flows don't need it.
+  const dispatchUndo = useCallback(async (entry: UndoEntry): Promise<void> => {
+    switch (entry.kind) {
+      case "moveLetterGroup":
+        await moveLetterGroupToDay(entry.groupId, entry.previousDayId);
+        return;
+      case "moveLetter":
+        await moveLetterToGroup(entry.letterId, entry.previousGroupId);
+        return;
+      case "moveReport":
+        await moveReportSegmentToDay(entry.segmentId, entry.previousDayId);
+        return;
+      case "setNextLetter":
+        await setActionNextLetterByLetterId(
+          entry.actionId,
+          entry.previousLetterId
+        );
+        return;
+      case "setReport":
+        await setActionReportSegment(
+          entry.actionId,
+          entry.previousReportSegmentId
+        );
+        return;
+      case "batch":
+        for (let i = entry.entries.length - 1; i >= 0; i--) {
+          await dispatchUndo(entry.entries[i]);
+        }
+        return;
+    }
+  }, []);
+  const recordUndo = useCallback((entry: UndoEntry) => {
+    // Cap the stack so a long session doesn't accumulate forever.
+    setUndoStack((prev) => {
+      const next = [...prev, entry];
+      return next.length > 100 ? next.slice(next.length - 100) : next;
+    });
+  }, []);
+  const undo = useCallback(async () => {
+    let popped: UndoEntry | undefined;
+    setUndoStack((prev) => {
+      if (prev.length === 0) return prev;
+      popped = prev[prev.length - 1];
+      return prev.slice(0, -1);
+    });
+    if (popped) {
+      try {
+        await dispatchUndo(popped);
+      } catch {
+        // Server rejected the inverse (e.g., target row was deleted). Drop
+        // silently — pushing the failed entry back would just loop.
+      }
+    }
+  }, [dispatchUndo]);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorDirtyKind, setInspectorDirtyKind] = useState<string | null>(
@@ -143,6 +220,34 @@ export function GraphSurface({
     }
     setOverlayOpen((v) => !v);
   }, [overlayOpen, resolveUnsavedDirty]);
+
+  // Cmd/Ctrl+Z anywhere on /graph triggers an undo. We skip when an
+  // editable element is focused so typing in the inspector still gets
+  // native undo. Shift+Z is reserved for a future redo.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey || e.altKey) return;
+      if (e.key !== "z" && e.key !== "Z") return;
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          tag === "SELECT" ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      if (undoStack.length === 0) return;
+      e.preventDefault();
+      void undo();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undoStack.length, undo]);
 
   // Block leaving the page (browser nav / refresh) while there are
   // unsaved inspector changes.
@@ -210,6 +315,33 @@ export function GraphSurface({
               type="button"
               variant="outline"
               size="sm"
+              disabled={undoStack.length === 0}
+              aria-label="Undo last graph change"
+              title={
+                undoStack.length === 0
+                  ? "Nothing to undo"
+                  : `Undo last graph change (⌘/Ctrl+Z) · ${undoStack.length} step${undoStack.length === 1 ? "" : "s"}`
+              }
+              onClick={() => void undo()}
+            >
+              <IconArrowBackUp size={16} />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-pressed={editingEnabled}
+              aria-label={editingEnabled ? "Lock graph (read-only)" : "Unlock graph (allow edits)"}
+              title={editingEnabled ? "Lock graph (read-only)" : "Unlock graph (allow edits)"}
+              onClick={() => setEditingEnabled((v) => !v)}
+              className={editingEnabled ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
+            >
+              {editingEnabled ? <IconLockOpen size={16} /> : <IconLock size={16} />}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
               aria-pressed={overlayOpen}
               aria-label={overlayOpen ? "Close impact overlays" : "Open impact overlays"}
               title={overlayOpen ? "Close impact overlays" : "Open impact overlays"}
@@ -255,6 +387,8 @@ export function GraphSurface({
               nations={nations}
               endingAssignments={endingAssignments}
               impactFilter={filter}
+              editingEnabled={editingEnabled}
+              recordUndo={recordUndo}
               selection={inspectorOpen ? selection : null}
               onSelectionChange={handleSelectionChange}
             />

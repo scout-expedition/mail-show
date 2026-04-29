@@ -202,9 +202,19 @@ export async function moveLetterToGroup(
   const nextSortOrder =
     Math.max(0, ...((targetLetters ?? []).map((l) => l.sort_order ?? 0))) + 1;
 
+  // Null the variant in the same UPDATE so the move never collides with
+  // the (letter_group_id, variant) unique constraint when the target group
+  // already has a letter at the moved letter's old variant. reassignVariants
+  // below repopulates a fresh slot from sort_order. Without this, dragging
+  // a letter back to a group it once lived in fails the constraint and the
+  // drop silently no-ops on revalidation.
   const { error: mErr } = await supabase
     .from("inspection_letters")
-    .update({ letter_group_id: targetGroupId, sort_order: nextSortOrder })
+    .update({
+      letter_group_id: targetGroupId,
+      sort_order: nextSortOrder,
+      variant: null,
+    })
     .eq("id", letterId);
   if (mErr) throw new Error(mErr.message);
 
@@ -240,18 +250,123 @@ export async function moveLetterToGroup(
 }
 
 /**
- * Update a single action's next-letter link. Used by the narrative
- * graph's edge-reconnect drag. Passing `null` clears the link (the
- * action's arrow becomes dangling).
+ * Set or clear an action's next-letter link by the target letter id. Used
+ * by the narrative graph's edge-reconnect drag.
+ *
+ * - Passing `null` clears the link (the action's arrow becomes dangling).
+ * - Passing a `letterId` validates the target sits in the next adjacent
+ *   group of the source action's storyline (same storyline_id, sequence +
+ *   1). Promotes the target letter's variant from null → 'a' if needed so
+ *   `next_letter_variant` always points at a stable, non-null variant.
+ *
+ * Invalid links (cross-storyline, non-adjacent, missing rows) are silently
+ * ignored — the graph snaps back on revalidation.
  */
-export async function setActionNextLetter(
+export async function setActionNextLetterByLetterId(
   actionId: string,
-  nextVariantKey: string | null
+  letterId: string | null
 ) {
   const supabase = await createSupabaseServerClient();
+  if (letterId === null) {
+    const { error } = await supabase
+      .from("actions")
+      .update({ next_letter_variant: null })
+      .eq("id", actionId);
+    if (error) throw new Error(error.message);
+    revalidatePath("/inspection/letters");
+    revalidatePath("/graph");
+    return;
+  }
+  const { data: act } = await supabase
+    .from("actions")
+    .select("inspection_letter_id")
+    .eq("id", actionId)
+    .maybeSingle();
+  if (!act) return;
+  const { data: srcLetter } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id")
+    .eq("id", act.inspection_letter_id as string)
+    .maybeSingle();
+  const { data: tgtLetter } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id, variant")
+    .eq("id", letterId)
+    .maybeSingle();
+  if (!srcLetter || !tgtLetter) return;
+  const sourceGroupId = srcLetter.letter_group_id as string;
+  const targetGroupId = tgtLetter.letter_group_id as string;
+  const { data: groups } = await supabase
+    .from("letter_groups")
+    .select("id, storyline_id, sequence")
+    .in("id", [sourceGroupId, targetGroupId]);
+  const srcGroup = groups?.find((g) => g.id === sourceGroupId);
+  const tgtGroup = groups?.find((g) => g.id === targetGroupId);
+  if (!srcGroup || !tgtGroup) return;
+  if (srcGroup.storyline_id !== tgtGroup.storyline_id) return;
+  if (Number(tgtGroup.sequence) !== Number(srcGroup.sequence) + 1) return;
+  let variant = (tgtLetter.variant as string | null) ?? null;
+  if (!variant) {
+    variant = await ensureLetterVariant(letterId);
+  }
   const { error } = await supabase
     .from("actions")
-    .update({ next_letter_variant: nextVariantKey })
+    .update({ next_letter_variant: variant })
+    .eq("id", actionId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Set or clear an action's report-segment link by segment id. Used by the
+ * narrative graph's drag-to-attach handle. Validates the target segment
+ * belongs to the report group of the action's source letter; otherwise
+ * silently no-ops so cross-group drops snap back on revalidation.
+ */
+export async function setActionReportSegment(
+  actionId: string,
+  reportSegmentId: string | null
+) {
+  const supabase = await createSupabaseServerClient();
+  if (reportSegmentId === null) {
+    const { error } = await supabase
+      .from("actions")
+      .update({ report_segment_id: null })
+      .eq("id", actionId);
+    if (error) throw new Error(error.message);
+    revalidatePath("/inspection/letters");
+    revalidatePath("/graph");
+    return;
+  }
+  const { data: act } = await supabase
+    .from("actions")
+    .select("inspection_letter_id")
+    .eq("id", actionId)
+    .maybeSingle();
+  if (!act) return;
+  const { data: srcLetter } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id")
+    .eq("id", act.inspection_letter_id as string)
+    .maybeSingle();
+  if (!srcLetter) return;
+  const { data: rg } = await supabase
+    .from("report_groups")
+    .select("id")
+    .eq("letter_group_id", srcLetter.letter_group_id as string)
+    .maybeSingle();
+  if (!rg) return;
+  const { data: seg } = await supabase
+    .from("report_segments")
+    .select("report_group_id")
+    .eq("id", reportSegmentId)
+    .maybeSingle();
+  if (!seg) return;
+  if (seg.report_group_id !== rg.id) return;
+  const { error } = await supabase
+    .from("actions")
+    .update({ report_segment_id: reportSegmentId })
     .eq("id", actionId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");

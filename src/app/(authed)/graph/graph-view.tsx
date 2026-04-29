@@ -8,7 +8,9 @@ import {
   PanOnScrollMode,
   Panel,
   ReactFlow,
+  type Connection,
   type Edge,
+  type FinalConnectionState,
   type Node,
   type ReactFlowInstance,
 } from "@xyflow/react";
@@ -40,10 +42,12 @@ import {
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
-  setActionNextLetter,
+  setActionNextLetterByLetterId,
+  setActionReportSegment,
 } from "../inspection/letters/actions";
 import { ActionIconEdge } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
+import ConnectionSourceNode from "./nodes/connection-source";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
 import ReportNode from "./nodes/report-node";
@@ -69,6 +73,28 @@ export type GraphSelection =
       actionId?: string;
     };
 
+/**
+ * Inverse of a single graph mutation, captured at dispatch time so the
+ * Undo button / Cmd+Z can revert without round-tripping fresh state. The
+ * client only stores ids + previous values — applying an entry calls the
+ * same server action that produced the change in reverse.
+ */
+export type UndoEntry =
+  | { kind: "moveLetterGroup"; groupId: string; previousDayId: string | null }
+  | { kind: "moveLetter"; letterId: string; previousGroupId: string }
+  | { kind: "moveReport"; segmentId: string; previousDayId: string | null }
+  | {
+      kind: "setNextLetter";
+      actionId: string;
+      previousLetterId: string | null;
+    }
+  | {
+      kind: "setReport";
+      actionId: string;
+      previousReportSegmentId: string | null;
+    }
+  | { kind: "batch"; entries: UndoEntry[] };
+
 type Props = {
   storylines: Storyline[];
   letterGroups: LetterGroup[];
@@ -80,6 +106,18 @@ type Props = {
   nations: Nation[];
   endingAssignments: InspectionActionEndingAssignment[];
   impactFilter: ImpactFilter;
+  /**
+   * When false, the graph is locked: nodes don't drag, edges don't
+   * reconnect, no new connections start. Pan/zoom + node click still
+   * work. Header toggle in graph-surface flips this.
+   */
+  editingEnabled?: boolean;
+  /**
+   * Capture an inverse op before each mutating dispatch so the surface's
+   * Undo button can replay it. Optional — when omitted, mutations still
+   * happen, just without an undo entry.
+   */
+  recordUndo?: (entry: UndoEntry) => void;
   selection?: GraphSelection | null;
   onSelectionChange?: (sel: GraphSelection | null) => void;
 };
@@ -199,6 +237,7 @@ const nodeTypes = {
   letter: LetterNode,
   report: ReportNode,
   stubTarget: StubTargetNode,
+  connectionSource: ConnectionSourceNode,
 };
 
 const edgeTypes = {
@@ -231,6 +270,8 @@ export function GraphView({
   nations,
   endingAssignments,
   impactFilter,
+  editingEnabled = false,
+  recordUndo,
   selection = null,
   onSelectionChange,
 }: Props) {
@@ -238,6 +279,15 @@ export function GraphView({
     (sel: GraphSelection | null) => onSelectionChange?.(sel),
     [onSelectionChange]
   );
+
+  // Optimistic next-letter overrides for in-flight edge reconnects. The
+  // layout useMemo reads from this map first, so the dragged edge snaps
+  // to the new target the instant the user drops — no flash of the old
+  // edge between drop and server revalidation. Each entry is cleared in
+  // a finally{} after its server action completes.
+  const [optimisticNextByAction, setOptimisticNextByAction] = useState<
+    Record<string, string | null>
+  >({});
   const {
     nodes,
     edges,
@@ -729,6 +779,14 @@ export function GraphView({
       target: string;
       action: ActionRow;
       terminator: "arrow" | "circle";
+      /**
+       * Edge subtype, used to decide which arrowhead is reconnectable:
+       *   - "ls": letter → segment (intrinsic; not reconnectable)
+       *   - "sn": segment → next-letter (reconnect to retarget the next letter)
+       *   - "ln": letter → next-letter direct, no segment (reconnect to retarget)
+       *   - "stub": dangling action with no real target (reconnect to attach)
+       */
+      kind: "ls" | "sn" | "ln" | "stub";
       /** Synthetic id used to mint the stub-target node for dangling edges. */
       stubNodeId?: string;
     };
@@ -751,15 +809,21 @@ export function GraphView({
         ? segmentAbsPos.has(segmentNodeId)
         : false;
 
+      // Optimistic overrides win over server state during in-flight
+      // reconnects so the edge follows the drop without round-tripping.
+      const effectiveNextVariant =
+        a.id in optimisticNextByAction
+          ? optimisticNextByAction[a.id]
+          : a.next_letter_variant;
       let nextLetterId: string | null = null;
-      if (a.next_letter_variant) {
+      if (effectiveNextVariant !== null && effectiveNextVariant !== undefined) {
         const nextGroupId = groupByStorySeq.get(
           `${src.storylineId}:${src.groupSequence + 1}`
         );
         if (nextGroupId) {
           const vset = variantsInGroup.get(nextGroupId);
-          if (vset?.has(a.next_letter_variant)) {
-            nextLetterId = `letter:${nextGroupId}:${a.next_letter_variant}`;
+          if (vset?.has(effectiveNextVariant)) {
+            nextLetterId = `letter:${nextGroupId}:${effectiveNextVariant}`;
           }
         }
       }
@@ -771,6 +835,7 @@ export function GraphView({
           target: segmentNodeId!,
           action: a,
           terminator: "arrow",
+          kind: "ls",
         });
         candidates.push({
           id: `a:${a.id}:sn`,
@@ -778,6 +843,7 @@ export function GraphView({
           target: nextLetterId,
           action: a,
           terminator: "arrow",
+          kind: "sn",
         });
       } else if (segmentExists) {
         candidates.push({
@@ -786,6 +852,7 @@ export function GraphView({
           target: segmentNodeId!,
           action: a,
           terminator: "arrow",
+          kind: "ls",
         });
       } else if (nextLetterId) {
         candidates.push({
@@ -794,6 +861,7 @@ export function GraphView({
           target: nextLetterId,
           action: a,
           terminator: "arrow",
+          kind: "ln",
         });
       } else {
         const stubNodeId = `stub:${a.id}`;
@@ -803,6 +871,7 @@ export function GraphView({
           target: stubNodeId,
           action: a,
           terminator: "circle",
+          kind: "stub",
           stubNodeId,
         });
       }
@@ -999,6 +1068,52 @@ export function GraphView({
       });
     }
 
+    // Mint connection-source nodes (Phase 4 followup): tiny draggable
+    // circles next to a chip when the action is missing a report and/or a
+    // next-letter, so the user can drag-to-create those links the same
+    // way they drag-to-retarget existing edges. Only emitted when editing
+    // is unlocked, and only on chips whose source is a letter (one chip
+    // per action — sn continuation chips are not augmented).
+    if (editingEnabled) {
+      const CONNECT_OFFSET_Y = 16; // chip half-height (10) + gap (6)
+      const CONNECT_OFFSET_X = 8;
+      for (const p of placements) {
+        if (!p.candidate.source.startsWith("letter:")) continue;
+        const a = p.candidate.action;
+        const resolved = resolveAction(a);
+        if (!a.report_segment_id) {
+          n.push({
+            id: `connect:${a.id}:report`,
+            type: "connectionSource",
+            position: {
+              x: p.chipX - CONNECT_OFFSET_X - 6, // -6: center the 12px circle
+              y: p.chipY - CONNECT_OFFSET_Y - 6,
+            },
+            data: { kind: "report", color: resolved.color || "#ffffff" },
+            draggable: false,
+            selectable: false,
+            focusable: false,
+            zIndex: 11,
+          });
+        }
+        if (!a.next_letter_variant) {
+          n.push({
+            id: `connect:${a.id}:next`,
+            type: "connectionSource",
+            position: {
+              x: p.chipX + CONNECT_OFFSET_X - 6,
+              y: p.chipY - CONNECT_OFFSET_Y - 6,
+            },
+            data: { kind: "next", color: resolved.color || "#ffffff" },
+            draggable: false,
+            selectable: false,
+            focusable: false,
+            zIndex: 11,
+          });
+        }
+      }
+    }
+
     // Arrow color rule:
     //   - multiple arrows converging on one target → white, so the stacked
     //     arrowheads read as a single unified arrow
@@ -1067,11 +1182,19 @@ export function GraphView({
               actionId: c.action.id,
             })
         : undefined;
+      // ls (letter → segment) is the action's intrinsic report and is not
+      // reconnectable. The arrowhead end of every other edge subtype can be
+      // dragged to retarget the action's `next_letter_variant`, or dropped on
+      // empty space to clear it. When the graph is locked (read-only), no
+      // edge accepts reconnect drags, regardless of subtype.
+      const reconnectable: boolean | "target" =
+        editingEnabled && c.kind !== "ls" ? "target" : false;
       e.push({
         id: c.id,
         source: c.source,
         target: c.target,
         type: "actionIcon",
+        reconnectable,
         data: {
           color,
           iconType: resolved.iconType,
@@ -1089,8 +1212,17 @@ export function GraphView({
           // The chip only appears on letter → report segment connections
           // (and on the letter → stub dangling terminator). Report →
           // next-letter continuations AND letter → next-letter direct
-          // connections (no report) render as a colored line only.
-          hideChip: !isLetterSource || isLetterTarget,
+          // connections (no report) render as a colored line only — UNLESS
+          // we're in edit mode and the action is missing a report or
+          // next-letter, in which case we surface the chip so the
+          // connection-source circles have something to anchor to.
+          hideChip:
+            (!isLetterSource || isLetterTarget) &&
+            !(
+              editingEnabled &&
+              isLetterSource &&
+              (!c.action.report_segment_id || !c.action.next_letter_variant)
+            ),
         },
         markerEnd:
           c.terminator === "arrow"
@@ -1189,10 +1321,20 @@ export function GraphView({
     impactFilter,
     selection,
     select,
+    optimisticNextByAction,
+    editingEnabled,
   ]);
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const rfRef = useRef<ReactFlowInstance | null>(null);
+
+  // Phase 6 — drag-pointer feedback:
+  //   hoveredRowId  → tints the day-row band currently under the pointer.
+  //   hoveredGroupId → rings the letter-group a letter is being dragged onto.
+  //   isDragging     → forces grabbing cursor on the whole canvas.
+  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Helpers used by drag-drop handlers. They close over the current
   // memoized layout — recomputed on every render, which is fine because
@@ -1204,12 +1346,63 @@ export function GraphView({
     return null;
   }
 
+  const onNodeDragStart = useCallback(() => {
+    setIsDragging(true);
+    setHoveredRowId(null);
+    setHoveredGroupId(null);
+  }, []);
+
+  // Update hovered row + (for letter drags) hovered target group on every
+  // pointer move during drag. Both lookups are cheap closures over rowMeta
+  // / groupMeta and reuse xyflow's intersection probe; React only
+  // re-renders when the resolved id actually changes (state setter dedupe).
+  const onNodeDrag = useCallback(
+    (event: React.MouseEvent | MouseEvent, node: Node) => {
+      const rf = rfRef.current;
+      if (!rf) return;
+      const flowPt = rf.screenToFlowPosition({
+        x: (event as MouseEvent).clientX,
+        y: (event as MouseEvent).clientY,
+      });
+      setHoveredRowId(rowAtFlowY(flowPt.y));
+      if (node.id.startsWith("letter:")) {
+        const m = node.id.match(/^letter:([^:]+):/);
+        if (m) {
+          const sourceGid = m[1];
+          const sourceStoryline = groupMeta.find(
+            (g) => g.gid === sourceGid
+          )?.storylineId;
+          const intersecting = rf
+            .getIntersectingNodes(node)
+            .filter(
+              (nn) => nn.type === "letterGroup" && nn.id !== `group:${sourceGid}`
+            );
+          if (intersecting.length > 0) {
+            const targetGid = intersecting[0].id.slice("group:".length);
+            const targetStoryline = groupMeta.find(
+              (g) => g.gid === targetGid
+            )?.storylineId;
+            if (sourceStoryline && sourceStoryline === targetStoryline) {
+              setHoveredGroupId(targetGid);
+              return;
+            }
+          }
+        }
+      }
+      setHoveredGroupId(null);
+    },
+    [groupMeta]
+  );
+
   const onNodeDragStop = useCallback(
     (
       event: React.MouseEvent | MouseEvent,
       node: Node,
       draggedNodes: Node[]
     ) => {
+      setIsDragging(false);
+      setHoveredRowId(null);
+      setHoveredGroupId(null);
       const rf = rfRef.current;
       if (!rf) return;
       // Batch move: when the user drags more than one selected node,
@@ -1222,39 +1415,55 @@ export function GraphView({
         const targetRowId = rowAtFlowY(flowPt.y);
         if (!targetRowId) return;
         const moves: Parameters<typeof batchMoveToDay>[0] = [];
+        const undoEntries: UndoEntry[] = [];
         const seenGroups = new Set<string>();
+        const recordGroupMove = (gid: string) => {
+          if (seenGroups.has(gid)) return;
+          seenGroups.add(gid);
+          const meta = groupMeta.find((g) => g.gid === gid);
+          const previousDayId =
+            !meta || meta.rowId === "unscheduled" ? null : meta.rowId;
+          moves.push({
+            kind: "group",
+            id: gid,
+            targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
+          });
+          undoEntries.push({
+            kind: "moveLetterGroup",
+            groupId: gid,
+            previousDayId,
+          });
+        };
         for (const dn of draggedNodes) {
           if (dn.id.startsWith("group:")) {
-            const gid = dn.id.slice("group:".length);
-            if (seenGroups.has(gid)) continue;
-            seenGroups.add(gid);
-            moves.push({
-              kind: "group",
-              id: gid,
-              targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
-            });
+            recordGroupMove(dn.id.slice("group:".length));
           } else if (dn.id.startsWith("report:")) {
             const sid = dn.id.slice("report:".length);
+            const seg = segments.find((s) => s.id === sid);
+            const previousDayId = seg?.delivery_day_override_id ?? null;
             moves.push({
               kind: "report",
               id: sid,
               targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
             });
+            undoEntries.push({
+              kind: "moveReport",
+              segmentId: sid,
+              previousDayId,
+            });
           } else if (dn.id.startsWith("letter:")) {
             // Letters follow their group; collapse to the group move.
             const m = dn.id.match(/^letter:([^:]+):/);
             if (!m) continue;
-            const gid = m[1];
-            if (seenGroups.has(gid)) continue;
-            seenGroups.add(gid);
-            moves.push({
-              kind: "group",
-              id: gid,
-              targetDayId: targetRowId === "unscheduled" ? null : targetRowId,
-            });
+            recordGroupMove(m[1]);
           }
         }
-        if (moves.length > 0) void batchMoveToDay(moves);
+        if (moves.length > 0) {
+          if (undoEntries.length > 0) {
+            recordUndo?.({ kind: "batch", entries: undoEntries });
+          }
+          void batchMoveToDay(moves);
+        }
         return;
       }
 
@@ -1270,6 +1479,13 @@ export function GraphView({
         });
         const targetRowId = rowAtFlowY(flowPt.y);
         if (!targetRowId || targetRowId === entry.rowId) return;
+        const previousDayId =
+          entry.rowId === "unscheduled" ? null : entry.rowId;
+        recordUndo?.({
+          kind: "moveLetterGroup",
+          groupId: gid,
+          previousDayId,
+        });
         void moveLetterGroupToDay(
           gid,
           targetRowId === "unscheduled" ? null : targetRowId
@@ -1282,6 +1498,13 @@ export function GraphView({
         });
         const targetRowId = rowAtFlowY(flowPt.y);
         if (!targetRowId) return;
+        const seg = segments.find((s) => s.id === sid);
+        const previousDayId = seg?.delivery_day_override_id ?? null;
+        recordUndo?.({
+          kind: "moveReport",
+          segmentId: sid,
+          previousDayId,
+        });
         void moveReportSegmentToDay(
           sid,
           targetRowId === "unscheduled" ? null : targetRowId
@@ -1324,11 +1547,266 @@ export function GraphView({
         );
         const resolvedLetterId = letterId ?? letter?.id;
         if (!resolvedLetterId) return;
+        recordUndo?.({
+          kind: "moveLetter",
+          letterId: resolvedLetterId,
+          previousGroupId: sourceGid,
+        });
         void moveLetterToGroup(resolvedLetterId, targetGid);
       }
     },
-    [rowMeta, groupMeta, letters]
+    [rowMeta, groupMeta, letters, segments, recordUndo]
   );
+
+  // -----------------------------------------------------------------
+  // Edge reconnect (Phase 4) — drag the arrowhead end of an action's
+  // next-letter edge to retarget it (drop on a letter card) or clear it
+  // (drop on empty space). xyflow fires onReconnect for valid drops and
+  // always fires onReconnectEnd; the boolean ref distinguishes the two
+  // cases so a retarget doesn't also clear.
+  // -----------------------------------------------------------------
+  const edgeReconnectSuccessful = useRef(true);
+
+  const onReconnectStart = useCallback(() => {
+    edgeReconnectSuccessful.current = false;
+  }, []);
+
+  // Resolve the current letter id an action's next_letter_variant points
+  // at, walking through the source action's storyline/group_sequence to
+  // find the adjacent group. Returns null when the action has no next
+  // letter linked or the variant doesn't resolve cleanly. Used to
+  // capture undo entries before mutating the link.
+  const resolveCurrentNextLetterId = useCallback(
+    (actionId: string): string | null => {
+      const action = actions.find((a) => a.id === actionId);
+      if (!action || !action.next_letter_variant) return null;
+      const srcLetter = letters.find(
+        (l) => l.id === action.inspection_letter_id
+      );
+      if (!srcLetter) return null;
+      const adjacentGroup = letterGroups.find(
+        (g) =>
+          g.storyline_id === srcLetter.storyline_id &&
+          g.sequence === srcLetter.group_sequence + 1
+      );
+      if (!adjacentGroup) return null;
+      const prev = letters.find(
+        (l) =>
+          l.letter_group_id === adjacentGroup.id &&
+          l.variant === action.next_letter_variant
+      );
+      return prev?.id ?? null;
+    },
+    [actions, letters, letterGroups]
+  );
+
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      const m = oldEdge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
+      if (!m) return;
+      const [, actionId] = m;
+      const target = newConnection.target;
+      if (!target?.startsWith("letter:")) return;
+      const tm = target.match(/^letter:([^:]+):(.*)$/);
+      if (!tm) return;
+      const targetGid = tm[1];
+      const targetVariantKey = tm[2];
+      // Resolve the dropped variant slot back to a concrete letter id so
+      // the server action can ensure-variant (single-letter groups have
+      // null variants and need promoting before they can be linked).
+      const tgtLetter = letters.find(
+        (l) =>
+          l.letter_group_id === targetGid &&
+          (l.variant ?? "") === targetVariantKey
+      );
+      if (!tgtLetter) return;
+      // Mirror the server-side same-storyline + adjacent-group check so
+      // we don't paint an optimistic edge for drops the server will
+      // silently reject. tgtGroup is the dropped target's group; srcLetter
+      // is the action's source letter (one storyline + group sequence).
+      const tgtGroup = letterGroups.find((g) => g.id === targetGid);
+      const action = actions.find((a) => a.id === actionId);
+      const srcLetter = action
+        ? letters.find((l) => l.id === action.inspection_letter_id)
+        : null;
+      if (!tgtGroup || !srcLetter) return;
+      if (tgtGroup.storyline_id !== srcLetter.storyline_id) return;
+      if (Number(tgtGroup.sequence) !== Number(srcLetter.group_sequence) + 1)
+        return;
+
+      edgeReconnectSuccessful.current = true;
+      const previousLetterId = resolveCurrentNextLetterId(actionId);
+      recordUndo?.({
+        kind: "setNextLetter",
+        actionId,
+        previousLetterId,
+      });
+      const optimisticVariant = tgtLetter.variant ?? "";
+      setOptimisticNextByAction((prev) => ({
+        ...prev,
+        [actionId]: optimisticVariant,
+      }));
+      void (async () => {
+        try {
+          await setActionNextLetterByLetterId(actionId, tgtLetter.id);
+        } finally {
+          setOptimisticNextByAction((prev) => {
+            if (!(actionId in prev)) return prev;
+            const next = { ...prev };
+            delete next[actionId];
+            return next;
+          });
+        }
+      })();
+    },
+    [letters, letterGroups, actions, recordUndo, resolveCurrentNextLetterId]
+  );
+
+  const onReconnectEnd = useCallback(
+    (
+      _evt: MouseEvent | TouchEvent,
+      edge: Edge,
+      _handleType: "source" | "target",
+      _state: FinalConnectionState
+    ) => {
+      if (!edgeReconnectSuccessful.current) {
+        const m = edge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
+        if (m) {
+          const actionId = m[1];
+          const previousLetterId = resolveCurrentNextLetterId(actionId);
+          recordUndo?.({
+            kind: "setNextLetter",
+            actionId,
+            previousLetterId,
+          });
+          setOptimisticNextByAction((prev) => ({ ...prev, [actionId]: null }));
+          void (async () => {
+            try {
+              await setActionNextLetterByLetterId(actionId, null);
+            } finally {
+              setOptimisticNextByAction((prev) => {
+                if (!(actionId in prev)) return prev;
+                const next = { ...prev };
+                delete next[actionId];
+                return next;
+              });
+            }
+          })();
+        }
+      }
+      edgeReconnectSuccessful.current = true;
+    },
+    [recordUndo, resolveCurrentNextLetterId]
+  );
+
+  // Live drop-target validation. Three reconnect/connect flows share
+  // this filter:
+  //   • reconnect of an action edge (source = letter:* or report:*) → must drop on a letter card
+  //   • new connection from a "next" connect-source handle           → must drop on a letter card
+  //   • new connection from a "report" connect-source handle         → must drop on a report card
+  // The strict same-storyline / adjacent-group / same-report-group
+  // validations run server-side; invalid drops are silent no-ops.
+  const isValidConnection = useCallback((conn: Edge | Connection) => {
+    const src = conn.source;
+    const tgt = conn.target;
+    if (!src || !tgt) return false;
+    if (src.startsWith("connect:")) {
+      const m = src.match(/^connect:[^:]+:(report|next)$/);
+      if (m?.[1] === "report") return tgt.startsWith("report:");
+      if (m?.[1] === "next") return tgt.startsWith("letter:");
+      return false;
+    }
+    return tgt.startsWith("letter:");
+  }, []);
+
+  // New connection (from a connect-source handle): create a brand-new
+  // report or next-letter link on an action that didn't have one.
+  const onConnect = useCallback(
+    (conn: Connection) => {
+      const src = conn.source;
+      const tgt = conn.target;
+      if (!src || !tgt) return;
+      const m = src.match(/^connect:([^:]+):(report|next)$/);
+      if (!m) return;
+      const [, actionId, kind] = m;
+      if (kind === "report") {
+        if (!tgt.startsWith("report:")) return;
+        const segmentId = tgt.slice("report:".length);
+        const action = actions.find((a) => a.id === actionId);
+        recordUndo?.({
+          kind: "setReport",
+          actionId,
+          previousReportSegmentId: action?.report_segment_id ?? null,
+        });
+        void setActionReportSegment(actionId, segmentId);
+        return;
+      }
+      // kind === "next"
+      if (!tgt.startsWith("letter:")) return;
+      const tm = tgt.match(/^letter:([^:]+):(.*)$/);
+      if (!tm) return;
+      const targetGid = tm[1];
+      const targetVariantKey = tm[2];
+      const tgtLetter = letters.find(
+        (l) =>
+          l.letter_group_id === targetGid &&
+          (l.variant ?? "") === targetVariantKey
+      );
+      if (!tgtLetter) return;
+      // Same client-side adjacency guard as onReconnect so we paint an
+      // optimistic edge only for moves the server will accept.
+      const tgtGroup = letterGroups.find((g) => g.id === targetGid);
+      const action = actions.find((a) => a.id === actionId);
+      const srcLetter = action
+        ? letters.find((l) => l.id === action.inspection_letter_id)
+        : null;
+      if (!tgtGroup || !srcLetter) return;
+      if (tgtGroup.storyline_id !== srcLetter.storyline_id) return;
+      if (Number(tgtGroup.sequence) !== Number(srcLetter.group_sequence) + 1)
+        return;
+      const previousLetterId = resolveCurrentNextLetterId(actionId);
+      recordUndo?.({
+        kind: "setNextLetter",
+        actionId,
+        previousLetterId,
+      });
+      const optimisticVariant = tgtLetter.variant ?? "";
+      setOptimisticNextByAction((prev) => ({
+        ...prev,
+        [actionId]: optimisticVariant,
+      }));
+      void (async () => {
+        try {
+          await setActionNextLetterByLetterId(actionId, tgtLetter.id);
+        } finally {
+          setOptimisticNextByAction((prev) => {
+            if (!(actionId in prev)) return prev;
+            const next = { ...prev };
+            delete next[actionId];
+            return next;
+          });
+        }
+      })();
+    },
+    [letters, letterGroups, actions, recordUndo, resolveCurrentNextLetterId]
+  );
+
+  // Decorate the static layout with the current drag-pointer feedback
+  // (hovered row band + hovered drop-target group). Kept as a thin map
+  // outside the layout useMemo so per-frame hover updates don't trigger
+  // the heavy O(nodes+edges) recompute.
+  const decoratedNodes = useMemo<Node[]>(() => {
+    if (!hoveredRowId && !hoveredGroupId) return nodes;
+    return nodes.map((n) => {
+      if (hoveredRowId && n.id === `band:${hoveredRowId}`) {
+        return { ...n, data: { ...n.data, hovered: true } };
+      }
+      if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
+        return { ...n, data: { ...n.data, hovered: true } };
+      }
+      return n;
+    });
+  }, [nodes, hoveredRowId, hoveredGroupId]);
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use
@@ -1353,9 +1831,23 @@ export function GraphView({
   }, [selection, selectionCenter]);
 
   return (
-    <div className="relative h-full overflow-hidden rounded-md border border-border bg-background">
+    <div
+      className={
+        "relative h-full overflow-hidden rounded-md border border-border bg-background" +
+        // While a node drag is in progress, force grabbing on every child
+        // so the cursor stays consistent even when xyflow's pointer
+        // capture pulls focus away from the dragged node element.
+        (isDragging ? " [&_*]:!cursor-grabbing" : "") +
+        // When the graph is locked, downgrade the per-node cursor-grab
+        // styles to pointer so cards read as click-to-inspect, not
+        // drag-to-move.
+        (!editingEnabled
+          ? " [&_.cursor-grab]:!cursor-pointer [&_.cursor-grab]:active:!cursor-pointer"
+          : "")
+      }
+    >
       <ReactFlow
-        nodes={nodes}
+        nodes={decoratedNodes}
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -1363,20 +1855,35 @@ export function GraphView({
         fitViewOptions={{ padding: 0.1 }}
         minZoom={0.2}
         maxZoom={1.5}
-        nodesDraggable={true}
-        nodesConnectable={false}
+        nodesDraggable={editingEnabled}
+        // Required for the reconnect-drag connection line to render. New
+        // connections from arbitrary handles are still blocked: every
+        // handle is either drop-only (letter targets) or fully
+        // unconnectable (letter sources, report nodes, stub targets).
+        // When locked, also drop the global flag so even rogue handles
+        // can't initiate fresh drags.
+        nodesConnectable={editingEnabled}
         elementsSelectable={true}
-        selectionOnDrag={true}
+        // Editing on → rubber-band multi-select; editing off → drag the
+        // canvas to pan, since there's nothing to multi-select against.
+        selectionOnDrag={editingEnabled}
         edgesFocusable={false}
+        isValidConnection={isValidConnection}
+        onConnect={editingEnabled ? onConnect : undefined}
+        onReconnectStart={editingEnabled ? onReconnectStart : undefined}
+        onReconnect={editingEnabled ? onReconnect : undefined}
+        onReconnectEnd={editingEnabled ? onReconnectEnd : undefined}
         panOnScroll
         panOnScrollMode={PanOnScrollMode.Free}
         zoomOnScroll
         zoomActivationKeyCode="Meta"
-        panOnDrag={false}
+        panOnDrag={!editingEnabled}
         onNodeClick={(_, node) => {
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
         }}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
         onMove={(_, v) => setVp(v)}
         onMoveEnd={(_, v) => setVp(v)}

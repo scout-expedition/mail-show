@@ -21,10 +21,14 @@ function LetterNode({ data }: NodeProps) {
       <Handle
         type="target"
         position={Position.Top}
-        isConnectable={false}
+        // Drop-only: accepts edge-reconnect drops (Phase 4) but never
+        // initiates a fresh connection drag, since that would let users
+        // create unrelated edges with no semantics in our graph.
+        isConnectable={true}
+        isConnectableStart={false}
         className="!h-2 !w-2 !border-none !bg-transparent"
       />
-      <div className="cursor-pointer">
+      <div className="cursor-grab active:cursor-grabbing">
         <InspectionLetterCard
           storyline={d.storyline}
           contentId={d.contentId}

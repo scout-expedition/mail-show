@@ -4,10 +4,7 @@
 
 The narrative graph at `src/app/(authed)/graph/` is becoming a direct-manipulation surface so users can re-plumb their data straight from the graph instead of round-tripping through the inspector. Drag gestures trigger server actions; revalidation re-renders positions; the layout stays grid-snapped (no free-form chart).
 
-Phases 1–3, 5, and the surrounding polish/inspector work have shipped. Two pieces remain:
-
-- **Phase 4** — drag the arrowhead end of an action's next-letter edge to retarget or clear.
-- **Phase 6** — drop-zone affordances during drag (cursor + tinted target row/group).
+Phases 1–6 (excluding the per-panel save modal followup) have shipped. The only piece still open is the per-panel save modal scoping followup below.
 
 ## Status by phase
 
@@ -20,19 +17,10 @@ Phases 1–3, 5, and the surrounding polish/inspector work have shipped. Two pie
 ### ✅ Phase 3 — drag report segments between days
 **Done.** `report` nodes draggable. Same `onNodeDragStop` row resolution; calls `moveReportSegmentToDay(segmentId, dayId | null)` to update `delivery_day_override_id`.
 
-### ⬜ Phase 4 — reconnect action → next-letter edges
-**Not started.** Plan:
-- Mark relevant edges as reconnectable in the emit loop:
-  - `sn` (segment → next-letter): `reconnectable: "target"`.
-  - `ln` (letter → next-letter, no report): `reconnectable: "target"`.
-  - `stub` (dangling, circle terminator): `reconnectable: "target"` so users can drag a dangling endpoint onto a letter to create a link.
-  - `ls` (letter → segment): not reconnectable (segment is the action's intrinsic report).
-- Verify `<BaseEdge>` in `action-icon-edge.tsx` plays nicely with xyflow's reconnect overlay; add a small visible drag-handle near the arrowhead endpoint if the default doesn't render on custom edges.
-- On `<ReactFlow>` add `onReconnect` and `onReconnectEnd`:
-  - `onReconnect(oldEdge, newConn)`: parse `oldEdge.id` → `a:<actionId>:<kind>`. Resolve `newConn.target` to a letter (must be in the source action's storyline AND the next group by sequence). Call `setActionNextLetter(actionId, targetVariantKey)`.
-  - `onReconnectEnd(_, edge, handleType, state)`: if `state.isValid === false` (dropped on empty), call `setActionNextLetter(actionId, null)` to clear the link.
-- Server action `setActionNextLetter` already exists (added in Phase 1's batch). It calls `ensureInspectionLetterVariant` when needed and `revalidatePath("/inspection/letters")` + `"/graph"`.
-- Cross-storyline / non-adjacent reconnects should silently snap back, mirroring Phase 2's behavior.
+### ✅ Phase 4 — reconnect action → next-letter edges
+**Done.** Edges now mark `reconnectable: "target"` per subtype: `sn`, `ln`, `stub` are draggable from the arrowhead end; `ls` (letter → segment) is intrinsic and stays fixed. Letter-node target handles flipped to drop-only (`isConnectable={true}`, `isConnectableStart={false}`); other handles stay fully unconnectable. `<ReactFlow nodesConnectable>` flipped to `true` so the reconnect-drag connection line actually renders, since the drag-line wrapper short-circuits when that store flag is false. `onReconnectStart`/`onReconnect`/`onReconnectEnd` use a `edgeReconnectSuccessful` ref to distinguish a successful retarget from a clear: dropping on a letter calls `setActionNextLetterByLetterId(actionId, letterId)`; dropping in empty space calls it with `null`. `isValidConnection` filters drop targets to letter nodes.
+
+Server side: `setActionNextLetterByLetterId` replaces the old variant-key-based `setActionNextLetter`. It validates same-storyline + adjacent (`sequence + 1`) and promotes the target letter's variant from null → `'a'` via `ensureLetterVariant` so a single-letter group can be linked without going through the inspector first. Invalid targets are silent no-ops; the next render snaps back from props.
 
 ### ✅ Phase 5 — rubber-band multi-select + batch move
 **Done.** `elementsSelectable={true}` and `selectionOnDrag={true}` on `<ReactFlow>`. `onNodeDragStop` branches on `draggedNodes.length > 1` and dispatches `batchMoveToDay(moves)`. Letters in the selection collapse to their parent groups (deduped); reports stay reports; action chips are excluded from move ops since they follow their letter.
@@ -43,12 +31,8 @@ Phases 1–3, 5, and the surrounding polish/inspector work have shipped. Two pie
 - When multiple panels are dirty during one navigation, render a modal over **each** dirty panel simultaneously — Save / Don't Save / Cancel per panel. Cancel on any aborts the whole navigation; the others stay open until resolved.
 - Implementation sketch: each panel exposes a `useUnsavedDialog({ scoped: true })` instance + a `relative` container ref; a workspace-level orchestrator collects dirty panels at navigation time, fires each panel's `ask()` in parallel, and proceeds only when all resolve to save/discard.
 
-### ⬜ Phase 6 — drop-zone affordances + cursor polish
-**Not started.** Plan:
-- During drag (`onNodeDragStart` → set state, `onNodeDrag` → update hovered target, `onNodeDragStop` → clear), highlight the row that's currently under the pointer. Easiest path: bump the column-band node's data with a `hovered: boolean` flag and tint when true (`bg-accent/20` or similar).
-- For letter-cross-group drag, ring the intersecting target group while hovering (use `getIntersectingNodes` in `onNodeDrag`).
-- `cursor-grab` on `letter`, `report`, and `letter-group` nodes; `cursor-grabbing` on the wrapper while a drag is in progress (track via `onNodeDragStart` / `onNodeDragStop`).
-- Optional stretch: keyboard nudge — Arrow Up / Arrow Down on a selected entity moves it to the adjacent day.
+### ✅ Phase 6 — drop-zone affordances + cursor polish
+**Done.** `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop` now drive three state slices: `hoveredRowId` (day band under the pointer), `hoveredGroupId` (letter-group a letter is being dragged onto, validated for same-storyline before highlighting), and `isDragging` (cursor). The hovered overlay is applied via a thin `decoratedNodes` `useMemo` that maps over the static layout — keeping per-frame hover updates out of the heavy O(nodes+edges) layout memo. Column-band nodes accept a `hovered` prop and switch to a `--ring`-tinted background + dashed outline; letter-group nodes accept a `hovered` prop and ring with `ring-2 ring-ring`. Letter, report, and letter-group nodes carry `cursor-grab active:cursor-grabbing`; while `isDragging` is true the wrapper sets `[&_*]:!cursor-grabbing` so the cursor stays consistent through xyflow's pointer-capture transitions. Keyboard nudge stayed out of scope.
 
 ## Snap-back mechanics (already in place)
 xyflow v12 with controlled `nodes` prop never persists drag positions on its own. After a server action succeeds → `revalidatePath("/graph")` → `page.tsx` re-fetches → `useMemo` recomputes → the node lands at its new snapped grid position. If a drop isn't a valid target, no action fires and the next render snaps the node back from props.
@@ -86,7 +70,37 @@ xyflow v12 with controlled `nodes` prop never persists drag positions on its own
 3. **Phase 4 unit**: dragging the arrowhead of an `sn`/`ln` edge onto another letter retargets `actions.next_letter_variant`. Dropping in empty space clears it. Dragging from a `stub` endpoint onto a valid next-letter creates a fresh link.
 4. **Phase 6 unit**: while dragging, the row under the pointer tints; `cursor-grab` on idle, `cursor-grabbing` on active drag. For letter cross-group drag, the hovered target group rings up.
 
-## Sequencing for the remainder
+## Post-phase iteration (2026-04-26)
 
-- Phase 4 first (mostly server-action + xyflow API wiring; smaller blast radius).
-- Phase 6 last (CSS + state plumbing; pure UX polish).
+Five items shipped on top of phases 1–6. Notes here so future sessions don't re-derive the design.
+
+### ✅ U2↔U1 letter-move variant collision
+**Fixed.** `moveLetterToGroup` now nulls the moved letter's variant in the same UPDATE that switches `letter_group_id`, so the (letter_group_id, variant) unique constraint never fires when the target group already has a letter at the source's old variant. `reassignVariants(targetGroupId)` repopulates a fresh slot from sort_order. Symptom before fix: dragging worked U2→U1 only because U1 happened not to have the conflicting variant; the reverse silently failed and snapped back.
+
+### ✅ Reconnect flicker (optimistic edge state)
+**Fixed.** `optimisticNextByAction: Record<actionId, string | null>` lives in `GraphView` and is consulted by the layout `useMemo` before reading `a.next_letter_variant`. `onReconnect` and `onConnect` set the override, await the server action, and clear the entry in a `finally{}`. Each entry is independently cleared so back-to-back reconnects don't trample each other. Also added a client-side same-storyline + adjacent-group guard before painting the optimistic edge — an invalid drop is a no-op so the optimistic edge never points somewhere the server would reject.
+
+### ✅ Edit-mode toggle
+**Shipped.** Lock/Unlock button in the graph header (`graph-surface.tsx`) persists to `localStorage["graph.editingEnabled"]`, defaults to **locked**. Gating in `GraphView`:
+- `nodesDraggable`, `nodesConnectable`, `selectionOnDrag` all flip with the toggle.
+- `panOnDrag` flips inverse so locked mode pans on canvas drag.
+- Per-edge `reconnectable` is forced to `false` when locked.
+- `onConnect` / `onReconnect*` handlers go `undefined` when locked.
+- Wrapper applies `[&_.cursor-grab]:!cursor-pointer` so cards read as click-to-inspect, not drag-to-move, while locked.
+
+### ✅ Connection-source handles for missing report / next-letter
+**Shipped.** In edit mode, the layout mints a `connectionSource` node next to each letter-source chip whose action lacks a report (color circle in the action's color) and/or a next-letter (grey circle). Each circle is an xyflow `Handle` with `isConnectableStart`. `onConnect` receives the drop, parses the source `connect:<actionId>:report|next`, and dispatches:
+- `setActionReportSegment(actionId, segmentId)` — new server action, validates the segment belongs to the source letter's report group.
+- `setActionNextLetterByLetterId(actionId, letterId)` — same path Phase 4 used; applies the optimistic-override pattern.
+
+Additional changes:
+- `report-node.tsx` target handle flipped to drop-only (`isConnectable={true}, isConnectableStart={false}`).
+- `hideChip` logic in the edge build now also keeps the chip visible for `ln` edges in edit mode when the action is missing a report or next, so the new circles have something to anchor to. `sn` continuation chips stay hidden (one chip per action).
+- `isValidConnection` filters drop targets per source: `connect:*:report` requires a `report:*` target; `connect:*:next` (and reconnect drags) require a `letter:*` target.
+
+### ✅ Undo button + Cmd/Ctrl+Z
+**Shipped.** `UndoEntry` union exported from `graph-view.tsx`; `recordUndo` callback prop is fired before each mutating dispatch (single drag, batch drag, reconnect retarget, reconnect clear, new connection from a connect-source). Stack lives in `graph-surface.tsx` (capped at 100). Header button is disabled when empty. Global `keydown` listener on `Cmd/Ctrl+Z` (skips when an `<input>`/`<textarea>`/`contentEditable` element is focused so the inspector still gets native undo). No redo. `dispatchUndo` calls the same server actions in reverse — moves snap back to `previousDayId`, letter moves snap back to `previousGroupId`, action links restore from `previousLetterId` / `previousReportSegmentId`. Batch entries replay in reverse insertion order.
+
+## Still open
+
+Per-panel save modal scoping (the original ⬜ followup). UX polish for the workspace's unsaved-changes dialog, not the graph itself — can be picked up alongside the next Letters Workspace pass.

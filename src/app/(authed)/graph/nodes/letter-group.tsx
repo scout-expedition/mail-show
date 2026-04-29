@@ -11,6 +11,8 @@ export type LetterGroupData = {
   abbr: string; // storyline abbreviation
   color: string; // storyline color hex
   selected?: boolean;
+  /** Phase 6: ring this group while a letter is being dragged over it. */
+  hovered?: boolean;
   onSelect?: () => void;
 };
 
@@ -19,7 +21,12 @@ function LetterGroupNode({ data }: NodeProps) {
   return (
     <div
       style={{ width: d.width, height: d.height }}
-      className="relative rounded-md border border-transparent bg-white/5"
+      className={
+        "relative cursor-grab rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow] duration-100 active:cursor-grabbing" +
+        (d.hovered
+          ? " bg-[color-mix(in_srgb,var(--ring)_15%,transparent)] ring-2 ring-ring ring-offset-1 ring-offset-background"
+          : "")
+      }
     >
       <div
         className="absolute top-1/2 left-0 cursor-pointer"
