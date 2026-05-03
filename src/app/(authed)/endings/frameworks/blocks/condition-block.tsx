@@ -12,7 +12,7 @@ import type {
 import type { EndingVariableValue } from "@/lib/db/types";
 import { addChip, addRow, removeChip, removeRow } from "../actions";
 import { useDrag } from "../lib/drag";
-import { AddChipButton, ChipPill } from "./chip";
+import { AddChipButton, ChipPill, type AddChipInput } from "./chip";
 
 export function ConditionBlock({
   block,
@@ -102,13 +102,14 @@ export function ConditionBlock({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
-              onAddChip={(variable_id, text_value_id) =>
+              onAddChip={(input) =>
                 startTransition(async () => {
                   await addChip({
                     row_id: row.id,
-                    variable_id,
-                    text_value_id,
-                    operator: "=",
+                    variable_id: input.variable_id,
+                    operator: input.operator,
+                    text_value_id: input.text_value_id,
+                    number_value: input.number_value,
                   });
                 })
               }
@@ -163,7 +164,7 @@ function ConditionRow({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
-  onAddChip: (variable_id: string, text_value_id: string) => void;
+  onAddChip: (input: AddChipInput) => void;
   onRemoveChip: (chipId: string) => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   onRemoveRow: () => void;
@@ -183,9 +184,7 @@ function ConditionRow({
               chip={chip}
               variable={variableIndex.get(chip.variable_id) ?? null}
               values={values}
-              onChangeValue={(text_value_id) =>
-                onChangeChip(chip.id, { text_value_id })
-              }
+              onChange={(patch) => onChangeChip(chip.id, patch)}
               onRemove={() => onRemoveChip(chip.id)}
             />
           ))

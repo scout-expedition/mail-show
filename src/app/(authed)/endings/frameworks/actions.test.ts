@@ -345,4 +345,99 @@ describe("frameworks actions / v3", () => {
       ).rejects.toThrow(/cannot be empty/i);
     });
   });
+
+  describe("addChip / number_ref", () => {
+    it("persists number_value for a number_ref variable", async () => {
+      const fwId = await seedFramework();
+      const { row_id } = await createConditionBlock({
+        framework_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+      });
+
+      const { data: numVar, error: vErr } = await sb
+        .from("ending_variables")
+        .insert({
+          name: `${TEST_PREFIX}numchip`,
+          kind: "number_ref",
+          number_ref: "world_status",
+          sort_order: 9999,
+        })
+        .select("id")
+        .single();
+      if (vErr || !numVar) throw new Error(`seed numVar: ${vErr?.message}`);
+
+      const { id: chipId } = await addChip({
+        row_id,
+        variable_id: numVar.id as string,
+        operator: "≥",
+        number_value: 0,
+      });
+
+      const { data: chip } = await sb
+        .from("ending_condition_row_chips")
+        .select("*")
+        .eq("id", chipId)
+        .single();
+      expect(chip).toMatchObject({
+        row_id,
+        variable_id: numVar.id,
+        operator: "≥",
+        text_value_id: null,
+        number_value: 0,
+      });
+    });
+
+    it("saveFramework round-trips a numeric chip's value + operator", async () => {
+      const fwId = await seedFramework();
+      const { id: condId, row_id } = await createConditionBlock({
+        framework_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+      });
+      const { data: numVar } = await sb
+        .from("ending_variables")
+        .insert({
+          name: `${TEST_PREFIX}save_num`,
+          kind: "number_ref",
+          number_ref: "world_status",
+          sort_order: 9999,
+        })
+        .select("id")
+        .single();
+      if (!numVar) throw new Error("seed numVar");
+      const { id: chipId } = await addChip({
+        row_id,
+        variable_id: numVar.id as string,
+        operator: "<",
+        number_value: -5,
+      });
+
+      await saveFramework({
+        id: fwId,
+        name: `${TEST_PREFIX}numsave`,
+        blocks: [],
+        rows: [{ id: row_id, condition_block_id: condId, sort_order: 0 }],
+        chips: [
+          {
+            id: chipId,
+            row_id,
+            variable_id: numVar.id as string,
+            operator: "≤",
+            text_value_id: null,
+            number_value: -10,
+            sort_order: 0,
+          },
+        ],
+      });
+
+      const { data: chip } = await sb
+        .from("ending_condition_row_chips")
+        .select("operator, number_value")
+        .eq("id", chipId)
+        .single();
+      expect(chip?.operator).toBe("≤");
+      expect(Number(chip?.number_value)).toBe(-10);
+    });
+  });
 });

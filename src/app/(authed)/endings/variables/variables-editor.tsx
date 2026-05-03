@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { Trash2 } from "lucide-react";
+import { ChevronDown, Hash, Trash2, Type } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { useConfirm } from "@/components/confirm-dialog";
 import {
   GHOST_FIELD,
@@ -21,6 +22,8 @@ import type {
   EndingVariable,
   EndingVariableValue,
 } from "@/lib/db/types";
+import type { EndingVariableKind } from "@/lib/db/enums";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import {
   createEndingVariable,
   createEndingVariableValue,
@@ -34,6 +37,8 @@ type ValueState = { id: string; value: string; sort_order: number };
 type VariableState = {
   id: string;
   name: string;
+  kind: EndingVariableKind;
+  number_ref: string | null;
   default_value_id: string | null;
   sort_order: number;
   color_index: number;
@@ -66,6 +71,8 @@ export function VariablesEditor({
     return variables.map((v) => ({
       id: v.id,
       name: v.name,
+      kind: v.kind,
+      number_ref: v.number_ref,
       default_value_id: v.default_value_id,
       sort_order: v.sort_order,
       color_index: v.color_index,
@@ -251,14 +258,78 @@ export function VariablesEditor({
           : null}
       </div>
 
-      <div className="mt-4 flex justify-center">
+      <div className="mt-4 flex justify-center gap-2">
         <form action={createEndingVariable}>
+          <input type="hidden" name="kind" value="text" />
           <Button type="submit" variant="outline" size="sm">
-            + Variable
+            <Type size={12} aria-hidden /> Text variable
           </Button>
         </form>
+        <NumberRefAdder />
       </div>
     </>
+  );
+}
+
+function NumberRefAdder() {
+  const [open, setOpen] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const refKeys = Object.keys(VARIABLE_LABELS) as Array<
+    keyof typeof VARIABLE_LABELS
+  >;
+
+  function pick(ref: string) {
+    const fd = new FormData();
+    fd.set("kind", "number_ref");
+    fd.set("number_ref", ref);
+    startTransition(async () => {
+      await createEndingVariable(fd);
+      setOpen(false);
+    });
+  }
+
+  if (!open) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setOpen(true)}
+        disabled={pending}
+      >
+        <Hash size={12} aria-hidden /> Number ref
+        <ChevronDown size={12} aria-hidden />
+      </Button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1">
+      <Select
+        autoFocus
+        defaultValue=""
+        onChange={(e) => {
+          if (e.target.value) pick(e.target.value);
+        }}
+        disabled={pending}
+        className="h-7 !min-w-0 border-0 bg-transparent px-1 text-xs focus:!ring-0"
+      >
+        <option value="">Choose impact column…</option>
+        {refKeys.map((k) => (
+          <option key={k} value={k}>
+            {VARIABLE_LABELS[k]}
+          </option>
+        ))}
+      </Select>
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        aria-label="Cancel"
+        className="text-muted-foreground hover:text-foreground"
+      >
+        ✕
+      </button>
+    </div>
   );
 }
 
@@ -375,13 +446,27 @@ function VariableCard({
         </button>
       </div>
 
-      <div className="grid grid-cols-[60px_1fr_36px] items-center gap-2 border-b border-border/40 bg-muted/10 px-3 py-1">
-        <Label className="!text-xs">Default</Label>
-        <Label className="!text-xs">Value</Label>
-        <span />
-      </div>
+      {row.kind === "number_ref" ? (
+        <div className="border-b border-border/40 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+          Tracks{" "}
+          <span className="font-mono uppercase tracking-wider text-foreground">
+            {row.number_ref &&
+            row.number_ref in VARIABLE_LABELS
+              ? VARIABLE_LABELS[row.number_ref as keyof typeof VARIABLE_LABELS]
+              : (row.number_ref ?? "—")}
+          </span>{" "}
+          — preview takes a numeric input; chips compare with =, ≠, &lt;, ≤,
+          &gt;, ≥.
+        </div>
+      ) : (
+        <div className="grid grid-cols-[60px_1fr_36px] items-center gap-2 border-b border-border/40 bg-muted/10 px-3 py-1">
+          <Label className="!text-xs">Default</Label>
+          <Label className="!text-xs">Value</Label>
+          <span />
+        </div>
+      )}
 
-      {row.values.length === 0 ? (
+      {row.kind === "number_ref" ? null : row.values.length === 0 ? (
         <p className="px-3 py-3 text-center text-xs text-muted-foreground">
           No values yet.
         </p>
@@ -424,23 +509,25 @@ function VariableCard({
         ))
       )}
 
-      <div className="flex justify-center border-t border-border/40 bg-muted/5 px-3 py-1.5">
-        <button
-          type="button"
-          onClick={addValue}
-          disabled={pending}
-          className={MUTED_ADD_BTN}
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              …
-            </>
-          ) : (
-            "+ Value"
-          )}
-        </button>
-      </div>
+      {row.kind === "number_ref" ? null : (
+        <div className="flex justify-center border-t border-border/40 bg-muted/5 px-3 py-1.5">
+          <button
+            type="button"
+            onClick={addValue}
+            disabled={pending}
+            className={MUTED_ADD_BTN}
+          >
+            {pending ? (
+              <>
+                <Spinner />
+                …
+              </>
+            ) : (
+              "+ Value"
+            )}
+          </button>
+        </div>
+      )}
       {confirmDialogEl}
     </div>
   );

@@ -116,18 +116,19 @@ test("create multi-variable condition, save + reload, preview matches", async ({
     timeout: 20000,
   });
 
-  // Add the first chip: PERFORMER = WINTER.
+  // Add the first chip: PERFORMER = WINTER. Picker exposes 3 dropdowns
+  // (var, operator, value) plus a ✓ confirm.
   await page.getByRole("button", { name: "+ chip" }).first().click();
-  // The picker exposes two select dropdowns + a confirm button.
   await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
-  await page.getByRole("combobox").nth(1).selectOption({ label: "WINTER" });
+  // operator defaults to '='
+  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText(performerName)).toBeVisible();
 
   // Add the second chip: MOOD = STORMY.
   await page.getByRole("button", { name: "+ chip" }).first().click();
   await page.getByRole("combobox").nth(0).selectOption({ label: moodName });
-  await page.getByRole("combobox").nth(1).selectOption({ label: "STORMY" });
+  await page.getByRole("combobox").nth(2).selectOption({ label: "STORMY" });
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText(moodName)).toBeVisible();
 
@@ -167,4 +168,79 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   await expect(
     page.getByText("the winter rose blooms in the storm")
   ).toHaveCount(0);
+});
+
+test("number_ref variable + numeric operator drives preview", async ({
+  page,
+}) => {
+  const admin = makeAdmin();
+
+  const numVarName = `${PREFIX}WORLD_STATUS_REF`;
+  const { data: numVar } = await admin
+    .from("ending_variables")
+    .insert({
+      name: numVarName,
+      kind: "number_ref",
+      number_ref: "world_status",
+      sort_order: 9999,
+    })
+    .select("id")
+    .single();
+  if (!numVar) throw new Error("seed numVar");
+
+  const frameworkName = `${PREFIX}numfw-${Date.now()}`;
+  const { data: fw } = await admin
+    .from("ending_frameworks")
+    .insert({ name: frameworkName, sort_order: 9999 })
+    .select("id")
+    .single();
+  if (!fw) throw new Error("seed framework");
+
+  await page.goto(`/endings/frameworks?framework=${fw.id}`);
+  await expect(page.getByPlaceholder("Framework name")).toHaveValue(
+    frameworkName
+  );
+
+  // Add condition block.
+  await page.getByRole("button", { name: "condition", exact: true }).click();
+  await expect(page.getByText(/Condition · 1 row/i)).toBeVisible({
+    timeout: 20000,
+  });
+
+  // Add a numeric chip: WORLD_STATUS_REF ≥ 0. The picker swaps the value
+  // dropdown for a numeric input when the variable is number_ref.
+  await page.getByRole("button", { name: "+ chip" }).first().click();
+  await page
+    .getByRole("combobox")
+    .nth(0)
+    .selectOption({ label: `${numVarName} #` });
+  await page.getByRole("combobox").nth(1).selectOption("≥");
+  // The numeric input replaces the value dropdown — find the placeholder=0 input.
+  await page.locator('input[placeholder="0"]').fill("0");
+  await page.getByRole("button", { name: "✓" }).click();
+  await expect(page.getByText(numVarName)).toBeVisible();
+
+  // Add row content.
+  await page.getByRole("button", { name: "text", exact: true }).first().click();
+  const rowTextarea = page.getByPlaceholder("Paragraph text…").first();
+  await expect(rowTextarea).toBeVisible();
+  await rowTextarea.fill("the world holds together");
+
+  // Save.
+  await page.getByRole("button", { name: /^Save$/ }).click();
+  await page.waitForTimeout(1500);
+
+  // Preview.
+  await page.getByRole("button", { name: "Preview" }).click();
+  // For number_ref, the preview control is a number Input with aria-label
+  // = the variable name.
+  const numInput = page.getByLabel(numVarName);
+
+  // Positive number → ≥ 0 fires.
+  await numInput.fill("5");
+  await expect(page.getByText("the world holds together")).toBeVisible();
+
+  // Negative number → row doesn't match.
+  await numInput.fill("-1");
+  await expect(page.getByText("the world holds together")).toHaveCount(0);
 });
