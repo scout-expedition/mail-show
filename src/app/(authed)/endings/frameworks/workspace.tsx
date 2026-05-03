@@ -10,6 +10,7 @@ import type {
   EndingFrameworkBlock,
   EndingVariable,
   EndingVariableValue,
+  Nation,
 } from "@/lib/db/types";
 import { FrameworkEditor, type EditorHandle } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
@@ -21,6 +22,7 @@ export function FrameworksWorkspace({
   chips,
   variables,
   values,
+  nations,
   selectedFrameworkId,
 }: {
   frameworks: EndingFramework[];
@@ -29,6 +31,7 @@ export function FrameworksWorkspace({
   chips: EndingConditionRowChip[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex">[];
   selectedFrameworkId: string | null;
 }) {
   const router = useRouter();
@@ -100,6 +103,7 @@ export function FrameworksWorkspace({
           chips={editorData.editorChips}
           variables={variables}
           values={values}
+          nations={nations}
           onDeleted={() => navigateTo(null)}
           registerHandle={(h) => {
             editorHandleRef.current = h;

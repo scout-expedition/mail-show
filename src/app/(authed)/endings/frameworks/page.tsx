@@ -6,6 +6,7 @@ import type {
   EndingFrameworkBlock,
   EndingVariable,
   EndingVariableValue,
+  Nation,
 } from "@/lib/db/types";
 import { FrameworksWorkspace } from "./workspace";
 
@@ -24,6 +25,7 @@ export default async function FrameworksPage({
     { data: chipData },
     { data: varData },
     { data: valueData },
+    { data: nationData },
   ] = await Promise.all([
     supabase.from("ending_frameworks").select("*").order("sort_order"),
     supabase.from("ending_framework_blocks").select("*").order("sort_order"),
@@ -34,6 +36,7 @@ export default async function FrameworksPage({
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    supabase.from("nations").select("name, color_hex"),
   ]);
 
   return (
@@ -44,6 +47,7 @@ export default async function FrameworksPage({
       chips={(chipData ?? []) as EndingConditionRowChip[]}
       variables={(varData ?? []) as EndingVariable[]}
       values={(valueData ?? []) as EndingVariableValue[]}
+      nations={(nationData ?? []) as Pick<Nation, "name" | "color_hex">[]}
       selectedFrameworkId={selectedId ?? null}
     />
   );

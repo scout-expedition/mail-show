@@ -221,3 +221,18 @@ After Phase 2:
 After Phase 3:
 - Manual: collapse a condition block, save, reload — collapse state is UI-only and does not persist (intentional; it's not on the schema).
 - Manual: build two rows that overlap on (PERFORMER=WINTER ROSE), confirm the second row gets a warning badge.
+
+## Followups
+
+### Autosave + collaborative editing
+
+Frameworks should eventually be a collaborative document — multiple authors editing one framework simultaneously, no explicit Save button, conflict-free merges. That's a separate effort, not part of Phases 1–3.
+
+What's worth knowing now:
+
+- **Keep current save plumbing minimal.** `dirty` state, `useUnsavedDialog`, `mergeServer` reconciliation, the picker-open save guard, and most of `saveFramework`'s UPDATE-only logic all come out wholesale when autosave lands. Don't sink time into save UX polish that won't survive — fix data-loss bugs the cheap way and stop there.
+- **Push toward eager commit when natural.** Today, chip create / row create / block create eager-commit through server actions. Chip operator/value edits and text-block edits stay local until Save. The natural endpoint is autosave-on-change for those too. We could land it incrementally (debounced autosave on chip + text edits, drop the Save button entirely) but that picks the autosave race-handling shape early — better as its own focused task.
+- **The collaboration primitive is bigger than autosave.** Multi-author concurrent editing wants CRDT or OT semantics: an immutable event log + a derived snapshot, not "UPDATE these N rows in place". When this work lands, the schema almost certainly grows an events table and reads come from a derived view. Avoid making schema decisions today that assume the current single-writer model is permanent.
+- **Don't pre-build for it.** Phase 3 polish (collapse chevron, overlap detection) and any further authoring work should ship under the existing save model. The migration path is clean: replace the editor-side state machine; keep the chip-row data shape; rewrite `saveFramework` into an event applier.
+
+When you're ready to start: the recommended first cut is autosave-on-blur for chip + text edits behind a feature flag, then deletion of `dirty`/`Save`/`Revert`/`useUnsavedDialog` once the autosave path is trusted. Real-time multi-author edits are a follow-on after that.

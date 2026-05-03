@@ -1,7 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { colorIndexFor } from "@/lib/endings/color-palette";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -45,18 +47,32 @@ async function uniqueValueForVariable(
   }
 }
 
+/**
+ * Create a text variable. The 10 impact-column number_ref variables are
+ * pre-seeded by migration 0016 and never created through this path.
+ */
 export async function createEndingVariable() {
   const supabase = await createSupabaseServerClient();
+
+  // Take the next sort_order ignoring the seeded number_ref slots (which
+  // sit at 10000+ to keep them at the bottom of the chip-picker list).
   const { data: existing } = await supabase
     .from("ending_variables")
     .select("sort_order")
+    .eq("kind", "text")
     .order("sort_order", { ascending: false })
     .limit(1);
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
   const name = await uniqueName(supabase, "ending_variables", "New variable");
-  const { error } = await supabase
-    .from("ending_variables")
-    .insert({ name, sort_order: nextSort });
+  const id = randomUUID();
+  const { error } = await supabase.from("ending_variables").insert({
+    id,
+    name,
+    kind: "text",
+    number_ref: null,
+    color_index: colorIndexFor(id),
+    sort_order: nextSort,
+  });
   if (error) throw new Error(error.message);
   revalidateEndings();
 }
@@ -65,6 +81,18 @@ export async function createEndingVariableValue(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const variable_id = String(formData.get("variable_id") ?? "");
   if (!variable_id) throw new Error("variable_id is required");
+
+  // Reject for number_ref variables — they have no stored values, only
+  // user-supplied numeric inputs at preview time.
+  const { data: variable } = await supabase
+    .from("ending_variables")
+    .select("kind")
+    .eq("id", variable_id)
+    .single();
+  if (variable?.kind === "number_ref") {
+    throw new Error("Number-reference variables don't have stored values.");
+  }
+
   const { data: existing } = await supabase
     .from("ending_variable_values")
     .select("sort_order")

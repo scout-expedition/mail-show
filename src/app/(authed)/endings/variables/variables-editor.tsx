@@ -63,14 +63,18 @@ export function VariablesEditor({
     for (const list of byVar.values()) {
       list.sort((a, b) => a.sort_order - b.sort_order);
     }
-    return variables.map((v) => ({
-      id: v.id,
-      name: v.name,
-      default_value_id: v.default_value_id,
-      sort_order: v.sort_order,
-      color_index: v.color_index,
-      values: byVar.get(v.id) ?? [],
-    }));
+    // Hide number_ref variables — they're seeded by migration 0016 and
+    // surfaced only inside the frameworks chip picker.
+    return variables
+      .filter((v) => v.kind === "text")
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        default_value_id: v.default_value_id,
+        sort_order: v.sort_order,
+        color_index: v.color_index,
+        values: byVar.get(v.id) ?? [],
+      }));
   }, [variables, values]);
 
   const [rows, setRows] = useState<VariableState[]>(initial);

@@ -116,18 +116,19 @@ test("create multi-variable condition, save + reload, preview matches", async ({
     timeout: 20000,
   });
 
-  // Add the first chip: PERFORMER = WINTER.
+  // Add the first chip: PERFORMER = WINTER. Picker exposes 3 dropdowns
+  // (var, operator, value) plus a ✓ confirm.
   await page.getByRole("button", { name: "+ chip" }).first().click();
-  // The picker exposes two select dropdowns + a confirm button.
   await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
-  await page.getByRole("combobox").nth(1).selectOption({ label: "WINTER" });
+  // operator defaults to '='
+  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText(performerName)).toBeVisible();
 
   // Add the second chip: MOOD = STORMY.
   await page.getByRole("button", { name: "+ chip" }).first().click();
   await page.getByRole("combobox").nth(0).selectOption({ label: moodName });
-  await page.getByRole("combobox").nth(1).selectOption({ label: "STORMY" });
+  await page.getByRole("combobox").nth(2).selectOption({ label: "STORMY" });
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText(moodName)).toBeVisible();
 
@@ -167,4 +168,71 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   await expect(
     page.getByText("the winter rose blooms in the storm")
   ).toHaveCount(0);
+});
+
+test("seeded impact variable + numeric operator drives preview", async ({
+  page,
+}) => {
+  // Migration 0016 seeds the 10 impact-column variables. The chip picker
+  // shows them automatically alongside text variables — no manual creation.
+  const numVarLabel = "World Status";
+
+  const admin = makeAdmin();
+  const frameworkName = `${PREFIX}numfw-${Date.now()}`;
+  const { data: fw } = await admin
+    .from("ending_frameworks")
+    .insert({ name: frameworkName, sort_order: 9999 })
+    .select("id")
+    .single();
+  if (!fw) throw new Error("seed framework");
+
+  await page.goto(`/endings/frameworks?framework=${fw.id}`);
+  await expect(page.getByPlaceholder("Framework name")).toHaveValue(
+    frameworkName
+  );
+
+  // Add condition block.
+  await page.getByRole("button", { name: "condition", exact: true }).click();
+  await expect(page.getByText(/Condition · 1 row/i)).toBeVisible({
+    timeout: 20000,
+  });
+
+  // Pick the seeded "World Status" number_ref variable from the chip picker.
+  // It lives in the "Impact" optgroup; selecting by exact label still works.
+  await page.getByRole("button", { name: "+ chip" }).first().click();
+  await page
+    .getByRole("combobox")
+    .nth(0)
+    .selectOption({ label: numVarLabel });
+  await page.getByRole("combobox").nth(1).selectOption("≥");
+  // Variable is number_ref, so comparison value auto-fills to 0; no need
+  // to type one. Confirm.
+  await page.getByRole("button", { name: "✓" }).click();
+  await expect(
+    page.getByText(numVarLabel.toUpperCase()).first()
+  ).toBeVisible();
+
+  // Add row content.
+  await page.getByRole("button", { name: "text", exact: true }).first().click();
+  const rowTextarea = page.getByPlaceholder("Paragraph text…").first();
+  await expect(rowTextarea).toBeVisible();
+  await rowTextarea.fill("the world holds together");
+
+  // Save.
+  await page.getByRole("button", { name: /^Save$/ }).click();
+  await page.waitForTimeout(1500);
+
+  // Preview.
+  await page.getByRole("button", { name: "Preview" }).click();
+  // For number_ref, the preview control is a number Input with aria-label
+  // = the variable name.
+  const numInput = page.getByLabel(numVarLabel);
+
+  // Positive number → ≥ 0 fires.
+  await numInput.fill("5");
+  await expect(page.getByText("the world holds together")).toBeVisible();
+
+  // Negative number → row doesn't match.
+  await numInput.fill("-1");
+  await expect(page.getByText("the world holds together")).toHaveCount(0);
 });

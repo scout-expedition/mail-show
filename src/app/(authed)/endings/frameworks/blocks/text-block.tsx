@@ -54,6 +54,9 @@ export function TextBlock({
         value={block.text}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Paragraph text…"
+        // Disable programming ligatures so authors see the characters they
+        // typed (e.g. `<=` doesn't auto-combine into `⩽`).
+        style={{ fontVariantLigatures: "none" }}
         className={cn("flex-1 min-h-[2.25rem] !text-sm", GHOST_FIELD)}
       />
       <button
