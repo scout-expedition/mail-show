@@ -4,13 +4,6 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
-import type { EndingVariableKind } from "@/lib/db/enums";
-import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
-
-const NUMBER_REF_COLUMNS = Object.keys(VARIABLE_LABELS) as Array<
-  keyof typeof VARIABLE_LABELS
->;
-const NUMBER_REF_SET = new Set<string>(NUMBER_REF_COLUMNS);
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -55,45 +48,28 @@ async function uniqueValueForVariable(
 }
 
 /**
- * Create a variable. Accepts an optional FormData with:
- *   - kind: 'text' (default) or 'number_ref'
- *   - number_ref: required when kind='number_ref'; one of the 10 impact columns
+ * Create a text variable. The 10 impact-column number_ref variables are
+ * pre-seeded by migration 0016 and never created through this path.
  */
-export async function createEndingVariable(formData?: FormData) {
+export async function createEndingVariable() {
   const supabase = await createSupabaseServerClient();
-  const rawKind = formData ? String(formData.get("kind") ?? "text") : "text";
-  if (rawKind !== "text" && rawKind !== "number_ref") {
-    throw new Error(`createEndingVariable: invalid kind "${rawKind}"`);
-  }
-  const kind: EndingVariableKind = rawKind;
-  let numberRef: string | null = null;
-  if (kind === "number_ref") {
-    const ref = formData ? String(formData.get("number_ref") ?? "") : "";
-    if (!NUMBER_REF_SET.has(ref)) {
-      throw new Error(
-        `createEndingVariable: number_ref must be one of ${NUMBER_REF_COLUMNS.join(", ")}`
-      );
-    }
-    numberRef = ref;
-  }
 
+  // Take the next sort_order ignoring the seeded number_ref slots (which
+  // sit at 10000+ to keep them at the bottom of the chip-picker list).
   const { data: existing } = await supabase
     .from("ending_variables")
     .select("sort_order")
+    .eq("kind", "text")
     .order("sort_order", { ascending: false })
     .limit(1);
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
-  const baseName =
-    kind === "number_ref"
-      ? VARIABLE_LABELS[numberRef as keyof typeof VARIABLE_LABELS]
-      : "New variable";
-  const name = await uniqueName(supabase, "ending_variables", baseName);
+  const name = await uniqueName(supabase, "ending_variables", "New variable");
   const id = randomUUID();
   const { error } = await supabase.from("ending_variables").insert({
     id,
     name,
-    kind,
-    number_ref: numberRef,
+    kind: "text",
+    number_ref: null,
     color_index: colorIndexFor(id),
     sort_order: nextSort,
   });

@@ -23,7 +23,7 @@ import {
 
 const TEST_PREFIX = "__INT_TEST_VARS__";
 
-describe("variables actions / number_ref", () => {
+describe("variables actions", () => {
   const sb = makeTestClient();
 
   beforeEach(() => {
@@ -32,82 +32,45 @@ describe("variables actions / number_ref", () => {
 
   afterEach(async () => {
     await sb.from("ending_variables").delete().like("name", `${TEST_PREFIX}%`);
-    // Wipe number-ref vars by name pattern too — the action defaults their
-    // name to the impact column label (e.g. "World Status"), so add a sweep
-    // for those by querying recently created rows. Anything matching one of
-    // the impact labels with `kind='number_ref'` is fair game in this suite.
+    // Cleanup any auto-created "New variable" rows we made.
     await sb
       .from("ending_variables")
       .delete()
-      .eq("kind", "number_ref")
-      .like("name", "World Status%");
+      .eq("kind", "text")
+      .like("name", "New variable%");
   });
 
   describe("createEndingVariable", () => {
-    it("defaults to kind=text when called without form data", async () => {
-      // Prefix the unique-name pool with a marker the cleanup picks up.
-      await sb
-        .from("ending_variables")
-        .insert({
-          name: `${TEST_PREFIX}seed`,
-          kind: "text",
-          sort_order: 9990,
-        });
-
+    it("creates a kind='text' variable named 'New variable' (or a numbered suffix)", async () => {
       await createEndingVariable();
-
       const { data } = await sb
         .from("ending_variables")
-        .select("kind, number_ref")
-        .eq("name", "New variable")
-        .maybeSingle();
-      // Cleanup the auto-named "New variable" row.
-      if (data) await sb.from("ending_variables").delete().eq("name", "New variable");
-      expect(data?.kind).toBe("text");
-      expect(data?.number_ref).toBeNull();
-    });
-
-    it("creates a number_ref variable bound to an impact column", async () => {
-      const fd = new FormData();
-      fd.set("kind", "number_ref");
-      fd.set("number_ref", "world_status");
-      await createEndingVariable(fd);
-
-      const { data } = await sb
-        .from("ending_variables")
-        .select("name, kind, number_ref")
-        .eq("kind", "number_ref")
-        .eq("number_ref", "world_status")
+        .select("kind, number_ref, color_index")
+        .eq("kind", "text")
+        .like("name", "New variable%")
         .order("sort_order", { ascending: false })
         .limit(1)
         .single();
-      expect(data?.kind).toBe("number_ref");
-      expect(data?.number_ref).toBe("world_status");
-      expect(data?.name).toMatch(/World Status/);
+      expect(data?.kind).toBe("text");
+      expect(data?.number_ref).toBeNull();
+      expect(data?.color_index).toBeGreaterThanOrEqual(0);
+      expect(data?.color_index).toBeLessThan(12);
     });
 
-    it("rejects an invalid number_ref column", async () => {
-      const fd = new FormData();
-      fd.set("kind", "number_ref");
-      fd.set("number_ref", "made_up_column");
-      await expect(createEndingVariable(fd)).rejects.toThrow(
-        /number_ref must be one of/i
-      );
-    });
-
-    it("rejects number_ref kind without a number_ref param", async () => {
-      const fd = new FormData();
-      fd.set("kind", "number_ref");
-      // no number_ref set
-      await expect(createEndingVariable(fd)).rejects.toThrow(
-        /number_ref must be one of/i
-      );
-    });
-
-    it("rejects an unknown kind", async () => {
-      const fd = new FormData();
-      fd.set("kind", "alien");
-      await expect(createEndingVariable(fd)).rejects.toThrow(/invalid kind/i);
+    it("ignores number_ref sort_order slots when picking the next sort", async () => {
+      // The seeded number_ref rows sit at sort_order 10000+. Inserting a
+      // text variable should land at the next text-slot sort_order, not
+      // sort_order 10010+.
+      await createEndingVariable();
+      const { data } = await sb
+        .from("ending_variables")
+        .select("sort_order")
+        .eq("kind", "text")
+        .like("name", "New variable%")
+        .order("sort_order", { ascending: false })
+        .limit(1)
+        .single();
+      expect(data?.sort_order).toBeLessThan(10000);
     });
   });
 
@@ -115,15 +78,11 @@ describe("variables actions / number_ref", () => {
     it("rejects creating a value on a number_ref variable", async () => {
       const { data: numVar } = await sb
         .from("ending_variables")
-        .insert({
-          name: `${TEST_PREFIX}num1`,
-          kind: "number_ref",
-          number_ref: "world_status",
-          sort_order: 9999,
-        })
         .select("id")
+        .eq("kind", "number_ref")
+        .eq("number_ref", "world_status")
         .single();
-      if (!numVar) throw new Error("seed numVar");
+      if (!numVar) throw new Error("expected seeded world_status variable");
 
       const fd = new FormData();
       fd.set("variable_id", numVar.id as string);

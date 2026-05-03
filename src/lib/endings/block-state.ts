@@ -42,6 +42,9 @@ export interface VariableState {
   number_ref: string | null;
   default_value_id: string | null;
   color_index: number;
+  /** Optional hex override (e.g. nation color, impact-column color).
+   *  Falls back to the `color_index` palette when null. */
+  color_hex: string | null;
   sort_order: number;
 }
 

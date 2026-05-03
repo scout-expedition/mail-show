@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { paletteColor } from "@/lib/endings/color-palette";
+import { AFFINITY_NUMBER_REFS } from "@/lib/endings/impact-colors";
 import {
   ENDING_CHIP_OPERATORS,
   ENDING_OPERATORS_BY_KIND,
@@ -12,6 +13,37 @@ import {
 } from "@/lib/db/enums";
 import type { ChipState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
+import { PickerCtx } from "../lib/picker";
+
+function chipColor(variable: VariableState): string {
+  return variable.color_hex ?? paletteColor(variable.color_index);
+}
+
+function chipDisplayName(variable: VariableState): string {
+  if (
+    variable.kind === "number_ref" &&
+    variable.number_ref &&
+    AFFINITY_NUMBER_REFS.has(variable.number_ref)
+  ) {
+    return `${variable.name} Affinity`;
+  }
+  return variable.name;
+}
+
+/**
+ * Grouped layout for the chip-picker variable dropdown. Text variables
+ * render first (ungrouped); the seeded number_ref impact columns are
+ * grouped semantically. Combined Nat'l is excluded — it's a derived
+ * meta-variable, not authoring-facing.
+ */
+const NUMBER_REF_GROUPS: Array<{ label: string; columns: string[] }> = [
+  { label: "Impact", columns: ["world_status", "demerits"] },
+  { label: "Class Affinity", columns: ["proletariat", "gentry"] },
+  {
+    label: "Nation Affinity",
+    columns: ["epicenter", "folos", "emberlyn", "spokgrad", "pelico"],
+  },
+];
 
 export interface AddChipInput {
   variable_id: string;
@@ -55,7 +87,7 @@ export function ChipPill({
     );
   }
 
-  const color = paletteColor(variable.color_index);
+  const color = chipColor(variable);
   const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
   const valueLabel =
     variable.kind === "text"
@@ -73,7 +105,7 @@ export function ChipPill({
         backgroundColor: `${color}1a`,
       }}
     >
-      <span className="font-mono uppercase">{variable.name}</span>
+      <span className="font-mono uppercase">{chipDisplayName(variable)}</span>
 
       {editing === "op" ? (
         <Select
@@ -180,6 +212,15 @@ export function AddChipButton({
   const [operator, setOperator] = useState<EndingChipOperator>("=");
   const [textValueId, setTextValueId] = useState<string>("");
   const [numberValue, setNumberValue] = useState<string>("");
+  const picker = useContext(PickerCtx);
+
+  // Track this picker's open state with the editor so Save knows whether
+  // any picker is mid-pick (and stays disabled until ✓ or ✕).
+  useEffect(() => {
+    if (!open) return;
+    picker.register();
+    return () => picker.unregister();
+  }, [open, picker]);
 
   function reset() {
     setOpen(false);
@@ -229,35 +270,63 @@ export function AddChipButton({
     );
   }
 
+  const textVariables = variables.filter((v) => v.kind === "text");
+  const numberVariablesByRef = new Map<string, VariableState>();
+  for (const v of variables) {
+    if (v.kind === "number_ref" && v.number_ref) {
+      numberVariablesByRef.set(v.number_ref, v);
+    }
+  }
+
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-[11px]">
+    <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px]">
       <Select
         value={variableId}
         onChange={(e) => {
           const next = e.target.value;
           setVariableId(next);
-          // Reset op/value when the variable changes — operator allowed-set
-          // and value control depend on it.
+          // Reset op when the variable changes — allowed-ops depend on kind.
           setOperator("=");
           setTextValueId("");
-          setNumberValue("");
+          // For number_ref vars seed the comparison value to 0 so authors
+          // get a usable default and don't have to type one.
+          const picked = variables.find((v) => v.id === next);
+          setNumberValue(picked?.kind === "number_ref" ? "0" : "");
         }}
-        className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
       >
-        <option value="">var…</option>
-        {variables.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.name}
-            {v.kind === "number_ref" ? " #" : ""}
-          </option>
-        ))}
+        <option value="">variable…</option>
+        {textVariables.length > 0 ? (
+          <optgroup label="Ending Variables">
+            {textVariables.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+        {NUMBER_REF_GROUPS.map((group) => {
+          const opts = group.columns
+            .map((col) => numberVariablesByRef.get(col))
+            .filter((v): v is VariableState => Boolean(v));
+          if (opts.length === 0) return null;
+          return (
+            <optgroup key={group.label} label={group.label}>
+              {opts.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
       </Select>
 
       <Select
         value={operator}
         onChange={(e) => setOperator(e.target.value as EndingChipOperator)}
         disabled={!variableId}
-        className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 w-12 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
       >
         {allowedOps.map((op) => (
           <option key={op} value={op}>
@@ -272,14 +341,14 @@ export function AddChipButton({
           value={numberValue}
           onChange={(e) => setNumberValue(e.target.value)}
           placeholder="0"
-          className="h-5 w-16 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+          className="h-7 w-20 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
         />
       ) : (
         <Select
           value={textValueId}
           onChange={(e) => setTextValueId(e.target.value)}
           disabled={!variableId}
-          className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+          className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
         >
           <option value="">value…</option>
           {eligibleValues.map((v) => (
@@ -299,7 +368,7 @@ export function AddChipButton({
           (variable.kind === "number_ref" &&
             (numberValue === "" || Number.isNaN(Number(numberValue))))
         }
-        className="rounded px-1 text-[11px] text-primary disabled:opacity-50"
+        className="ml-auto rounded px-1 text-[11px] text-primary disabled:opacity-50"
       >
         ✓
       </button>

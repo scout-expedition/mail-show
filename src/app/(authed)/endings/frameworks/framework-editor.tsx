@@ -25,6 +25,7 @@ import type {
   EndingFrameworkBlock,
   EndingVariable,
   EndingVariableValue,
+  Nation,
 } from "@/lib/db/types";
 import {
   buildByParentBlock,
@@ -35,10 +36,12 @@ import {
   type RowState,
   type VariableState,
 } from "@/lib/endings/block-state";
+import { IMPACT_CHIP_COLORS } from "@/lib/endings/impact-colors";
 import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
 import { BlockList } from "./blocks/block-list";
 import { PreviewView } from "./preview-view";
 import { DragCtx, moveBlock, type DragContext } from "./lib/drag";
+import { PickerCtx, type PickerContext } from "./lib/picker";
 import { deleteEndingFramework, saveFramework } from "./actions";
 
 export type EditorHandle = {
@@ -53,6 +56,7 @@ export function FrameworkEditor({
   chips,
   variables,
   values,
+  nations,
   onDeleted,
   registerHandle,
 }: {
@@ -62,6 +66,7 @@ export function FrameworkEditor({
   chips: EndingConditionRowChip[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex">[];
   onDeleted: () => void;
   registerHandle: (h: EditorHandle) => void;
 }) {
@@ -138,19 +143,50 @@ export function FrameworkEditor({
     );
   }, [initial, dirty]);
 
+  // Open chip-picker count — Save is disabled while any picker is mid-pick
+  // so authors can't lose a half-built chip by clicking Save before ✓.
+  const [openPickerCount, setOpenPickerCount] = useState(0);
+  const pickerCtx: PickerContext = useMemo(
+    () => ({
+      openCount: openPickerCount,
+      register: () => setOpenPickerCount((n) => n + 1),
+      unregister: () => setOpenPickerCount((n) => Math.max(0, n - 1)),
+    }),
+    [openPickerCount]
+  );
+
+  // Resolve the chip color override for each variable: impact map for
+  // class/world_status/demerits, nations.color_hex by name match for
+  // nation-affinity, else null (chip uses the palette).
+  const nationColorByName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of nations) m.set(n.name.toLowerCase(), n.color_hex);
+    return m;
+  }, [nations]);
+
   // Indexed views.
   const variableState: VariableState[] = useMemo(
     () =>
-      variables.map((v) => ({
-        id: v.id,
-        name: v.name,
-        kind: v.kind,
-        number_ref: v.number_ref,
-        default_value_id: v.default_value_id,
-        color_index: v.color_index,
-        sort_order: v.sort_order,
-      })),
-    [variables]
+      variables.map((v) => {
+        let color_hex: string | null = null;
+        if (v.kind === "number_ref" && v.number_ref) {
+          color_hex =
+            IMPACT_CHIP_COLORS[v.number_ref] ??
+            nationColorByName.get(v.name.toLowerCase()) ??
+            null;
+        }
+        return {
+          id: v.id,
+          name: v.name,
+          kind: v.kind,
+          number_ref: v.number_ref,
+          default_value_id: v.default_value_id,
+          color_index: v.color_index,
+          color_hex,
+          sort_order: v.sort_order,
+        };
+      }),
+    [variables, nationColorByName]
   );
   const variableIndex = useMemo(() => {
     const m = new Map<string, VariableState>();
@@ -403,22 +439,26 @@ export function FrameworkEditor({
         </div>
 
         <DragCtx.Provider value={dragCtx}>
-          <BlockList
-            parent={{ parent_block_id: null, parent_row_id: null }}
-            byParent={byParent}
-            rowsByConditionBlock={rowsByConditionBlock}
-            chipsByRow={chipsByRow}
-            variableIndex={variableIndex}
-            variables={variableState}
-            values={values}
-            framework_id={framework.id}
-            onUpdateBlock={updateBlock}
-            onChangeChip={updateChip}
-          />
+          <PickerCtx.Provider value={pickerCtx}>
+            <BlockList
+              parent={{ parent_block_id: null, parent_row_id: null }}
+              byParent={byParent}
+              rowsByConditionBlock={rowsByConditionBlock}
+              chipsByRow={chipsByRow}
+              variableIndex={variableIndex}
+              variables={variableState}
+              values={values}
+              framework_id={framework.id}
+              onUpdateBlock={updateBlock}
+              onChangeChip={updateChip}
+            />
+          </PickerCtx.Provider>
         </DragCtx.Provider>
       </div>
     );
   }
+
+  const saveDisabled = openPickerCount > 0;
 
   return (
     <section className="overflow-hidden rounded-md border border-border bg-card">
@@ -428,7 +468,7 @@ export function FrameworkEditor({
         showSaved
         saveRevert={
           <SaveRevert
-            dirty={dirty && !nameInvalid}
+            dirty={dirty && !nameInvalid && !saveDisabled}
             pending={pending}
             onSave={handleSave}
             onRevert={handleRevert}

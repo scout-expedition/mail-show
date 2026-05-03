@@ -170,24 +170,14 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   ).toHaveCount(0);
 });
 
-test("number_ref variable + numeric operator drives preview", async ({
+test("seeded impact variable + numeric operator drives preview", async ({
   page,
 }) => {
+  // Migration 0016 seeds the 10 impact-column variables. The chip picker
+  // shows them automatically alongside text variables — no manual creation.
+  const numVarLabel = "World Status";
+
   const admin = makeAdmin();
-
-  const numVarName = `${PREFIX}WORLD_STATUS_REF`;
-  const { data: numVar } = await admin
-    .from("ending_variables")
-    .insert({
-      name: numVarName,
-      kind: "number_ref",
-      number_ref: "world_status",
-      sort_order: 9999,
-    })
-    .select("id")
-    .single();
-  if (!numVar) throw new Error("seed numVar");
-
   const frameworkName = `${PREFIX}numfw-${Date.now()}`;
   const { data: fw } = await admin
     .from("ending_frameworks")
@@ -207,18 +197,20 @@ test("number_ref variable + numeric operator drives preview", async ({
     timeout: 20000,
   });
 
-  // Add a numeric chip: WORLD_STATUS_REF ≥ 0. The picker swaps the value
-  // dropdown for a numeric input when the variable is number_ref.
+  // Pick the seeded "World Status" number_ref variable from the chip picker.
+  // It lives in the "Impact" optgroup; selecting by exact label still works.
   await page.getByRole("button", { name: "+ chip" }).first().click();
   await page
     .getByRole("combobox")
     .nth(0)
-    .selectOption({ label: `${numVarName} #` });
+    .selectOption({ label: numVarLabel });
   await page.getByRole("combobox").nth(1).selectOption("≥");
-  // The numeric input replaces the value dropdown — find the placeholder=0 input.
-  await page.locator('input[placeholder="0"]').fill("0");
+  // Variable is number_ref, so comparison value auto-fills to 0; no need
+  // to type one. Confirm.
   await page.getByRole("button", { name: "✓" }).click();
-  await expect(page.getByText(numVarName)).toBeVisible();
+  await expect(
+    page.getByText(numVarLabel.toUpperCase()).first()
+  ).toBeVisible();
 
   // Add row content.
   await page.getByRole("button", { name: "text", exact: true }).first().click();
@@ -234,7 +226,7 @@ test("number_ref variable + numeric operator drives preview", async ({
   await page.getByRole("button", { name: "Preview" }).click();
   // For number_ref, the preview control is a number Input with aria-label
   // = the variable name.
-  const numInput = page.getByLabel(numVarName);
+  const numInput = page.getByLabel(numVarLabel);
 
   // Positive number → ≥ 0 fires.
   await numInput.fill("5");
