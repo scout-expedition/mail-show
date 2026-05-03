@@ -14,9 +14,9 @@ import {
   Spinner,
 } from "@/components/panel";
 import { cn } from "@/lib/utils";
+import { paletteColor } from "@/lib/endings/color-palette";
 import type {
   EndingFramework,
-  EndingFrameworkBlock,
   EndingLogicRuleCondition,
   EndingVariable,
   EndingVariableValue,
@@ -36,6 +36,7 @@ type VariableState = {
   name: string;
   default_value_id: string | null;
   sort_order: number;
+  color_index: number;
   values: ValueState[];
 };
 
@@ -43,15 +44,13 @@ export function VariablesEditor({
   variables,
   values,
   frameworks,
-  frameworkBlocks,
+  frameworkVariableRefs,
   logicConditions,
 }: {
   variables: EndingVariable[];
   values: EndingVariableValue[];
   frameworks: EndingFramework[];
-  frameworkBlocks: Array<
-    Pick<EndingFrameworkBlock, "framework_id" | "variable_id" | "block_type">
-  >;
+  frameworkVariableRefs: Array<{ framework_id: string; variable_id: string }>;
   logicConditions: Array<Pick<EndingLogicRuleCondition, "variable_id">>;
 }) {
   const initial = useMemo<VariableState[]>(() => {
@@ -69,6 +68,7 @@ export function VariablesEditor({
       name: v.name,
       default_value_id: v.default_value_id,
       sort_order: v.sort_order,
+      color_index: v.color_index,
       values: byVar.get(v.id) ?? [],
     }));
   }, [variables, values]);
@@ -164,17 +164,16 @@ export function VariablesEditor({
   // Index of variable_id → which panels it appears in.
   const variableRefs = useMemo(() => {
     const byFramework = new Map<string, Set<string>>();
-    for (const b of frameworkBlocks) {
-      if (b.block_type !== "condition" || !b.variable_id) continue;
-      const set = byFramework.get(b.framework_id) ?? new Set<string>();
-      set.add(b.variable_id);
-      byFramework.set(b.framework_id, set);
+    for (const ref of frameworkVariableRefs) {
+      const set = byFramework.get(ref.framework_id) ?? new Set<string>();
+      set.add(ref.variable_id);
+      byFramework.set(ref.framework_id, set);
     }
     const logicIds = new Set(
       logicConditions.map((c) => c.variable_id).filter(Boolean)
     );
     return { byFramework, logicIds };
-  }, [frameworkBlocks, logicConditions]);
+  }, [frameworkVariableRefs, logicConditions]);
 
   const allReferencedIds = useMemo(() => {
     const ids = new Set<string>();
@@ -348,6 +347,12 @@ function VariableCard({
   return (
     <div className="rounded-md border border-border bg-background/40">
       <div className="flex items-center gap-2 border-b border-border/60 bg-muted/10 px-3 py-1.5">
+        <span
+          aria-label="Variable color"
+          title="Auto-assigned color (used for chips in the frameworks editor)"
+          className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-border/60"
+          style={{ backgroundColor: paletteColor(row.color_index) }}
+        />
         <Input
           value={row.name}
           onChange={(e) => onChangeName(e.target.value)}

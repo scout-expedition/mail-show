@@ -33,7 +33,19 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    // Signs in once via the Supabase admin API and writes
+    // tests/e2e/.auth/storage.json. The chromium project depends on this
+    // and reuses the cookies for every spec, so individual tests start
+    // already authenticated.
+    { name: "setup", testMatch: /auth\.setup\.ts/ },
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "tests/e2e/.auth/storage.json",
+      },
+      dependencies: ["setup"],
+    },
   ],
   webServer: {
     // Map our SUPABASE_TEST_* vars into the names the app reads. Next bakes
