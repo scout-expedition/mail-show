@@ -3,6 +3,8 @@ import type {
   CitizenType,
   ContentRefType,
   DayOfWeek,
+  EndingChipOperator,
+  EndingVariableKind,
   IconType,
   Phase,
   RuleMatchMode,
@@ -261,6 +263,9 @@ export interface EndingVariable {
   name: string;
   default_value_id: string | null;
   sort_order: number;
+  kind: EndingVariableKind;
+  number_ref: string | null;
+  color_index: number;
 }
 
 export interface EndingVariableValue {
@@ -282,10 +287,25 @@ export interface EndingFrameworkBlock {
   id: string;
   framework_id: string;
   parent_block_id: string | null;
-  parent_value_id: string | null;
+  parent_row_id: string | null;
   block_type: EndingBlockType;
-  variable_id: string | null;
   text: string;
+  sort_order: number;
+}
+
+export interface EndingConditionRow {
+  id: string;
+  condition_block_id: string;
+  sort_order: number;
+}
+
+export interface EndingConditionRowChip {
+  id: string;
+  row_id: string;
+  variable_id: string;
+  operator: EndingChipOperator;
+  text_value_id: string | null;
+  number_value: number | null;
   sort_order: number;
 }
 

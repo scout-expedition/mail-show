@@ -166,3 +166,28 @@ export const VALID_OPERATOR_REFERENCES: Record<RuleOperator, RuleReferenceType[]
 
 /** Targets that never take a reference value (is_counterfeit only pairs with true/false). */
 export const BOOLEAN_TARGETS: RuleTarget[] = ["is_counterfeit"];
+
+// Endings — chip operator + variable kind. Mirrored from
+// supabase/migrations/0014_endings_v3.sql CHECK constraints.
+
+export const ENDING_CHIP_OPERATORS = [
+  "=",
+  "≠",
+  "<",
+  "≤",
+  ">",
+  "≥",
+] as const;
+export type EndingChipOperator = (typeof ENDING_CHIP_OPERATORS)[number];
+
+export const ENDING_VARIABLE_KINDS = ["text", "number_ref"] as const;
+export type EndingVariableKind = (typeof ENDING_VARIABLE_KINDS)[number];
+
+/** Operators allowed for each variable kind. Phase 1 only writes '='. */
+export const ENDING_OPERATORS_BY_KIND: Record<
+  EndingVariableKind,
+  EndingChipOperator[]
+> = {
+  text: ["=", "≠"],
+  number_ref: ["=", "≠", "<", "≤", ">", "≥"],
+};

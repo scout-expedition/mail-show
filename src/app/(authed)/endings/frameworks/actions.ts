@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { colorIndexFor } from "@/lib/endings/color-palette";
+import type { EndingChipOperator } from "@/lib/db/enums";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -60,23 +63,22 @@ export async function deleteEndingFramework(formData: FormData) {
 export async function createTextBlock(input: {
   framework_id: string;
   parent_block_id: string | null;
-  parent_value_id: string | null;
+  parent_row_id: string | null;
 }): Promise<{ id: string }> {
   const supabase = await createSupabaseServerClient();
   const nextSort = await nextSiblingSort(
     supabase,
     input.framework_id,
     input.parent_block_id,
-    input.parent_value_id
+    input.parent_row_id
   );
   const { data, error } = await supabase
     .from("ending_framework_blocks")
     .insert({
       framework_id: input.framework_id,
       parent_block_id: input.parent_block_id,
-      parent_value_id: input.parent_value_id,
+      parent_row_id: input.parent_row_id,
       block_type: "text",
-      variable_id: null,
       text: "",
       sort_order: nextSort,
     })
@@ -87,42 +89,53 @@ export async function createTextBlock(input: {
   return { id: data.id as string };
 }
 
+/**
+ * Create an empty condition block and seed exactly one empty row so the
+ * authoring surface has something to draw. Variables are derived from the
+ * row's chips — there is no chip yet.
+ */
 export async function createConditionBlock(input: {
   framework_id: string;
   parent_block_id: string | null;
-  parent_value_id: string | null;
-  variable_id: string;
-}): Promise<{ id: string }> {
+  parent_row_id: string | null;
+}): Promise<{ id: string; row_id: string }> {
   const supabase = await createSupabaseServerClient();
   const nextSort = await nextSiblingSort(
     supabase,
     input.framework_id,
     input.parent_block_id,
-    input.parent_value_id
+    input.parent_row_id
   );
-  const { data, error } = await supabase
+  const { data: block, error } = await supabase
     .from("ending_framework_blocks")
     .insert({
       framework_id: input.framework_id,
       parent_block_id: input.parent_block_id,
-      parent_value_id: input.parent_value_id,
+      parent_row_id: input.parent_row_id,
       block_type: "condition",
-      variable_id: input.variable_id,
       text: "",
       sort_order: nextSort,
     })
     .select("id")
     .single();
   if (error) throw new Error(error.message);
+
+  const { data: row, error: rowErr } = await supabase
+    .from("ending_condition_rows")
+    .insert({ condition_block_id: block.id, sort_order: 0 })
+    .select("id")
+    .single();
+  if (rowErr) throw new Error(rowErr.message);
+
   revalidateEndings();
-  return { id: data.id as string };
+  return { id: block.id as string, row_id: row.id as string };
 }
 
 async function nextSiblingSort(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   frameworkId: string,
   parentBlockId: string | null,
-  parentValueId: string | null
+  parentRowId: string | null
 ): Promise<number> {
   let q = supabase
     .from("ending_framework_blocks")
@@ -131,50 +144,13 @@ async function nextSiblingSort(
   q = parentBlockId
     ? q.eq("parent_block_id", parentBlockId)
     : q.is("parent_block_id", null);
-  q = parentValueId
-    ? q.eq("parent_value_id", parentValueId)
-    : q.is("parent_value_id", null);
+  q = parentRowId
+    ? q.eq("parent_row_id", parentRowId)
+    : q.is("parent_row_id", null);
   const { data } = await q
     .order("sort_order", { ascending: false })
     .limit(1);
   return (data?.[0]?.sort_order ?? 0) + 1;
-}
-
-/**
- * Change a condition block's variable, purging any descendants along the
- * way since their parent_value_id is tied to the old variable's values.
- * Caller should confirm with the user first when `descendant_count > 0`.
- */
-export async function changeConditionBlockVariable(input: {
-  block_id: string;
-  variable_id: string;
-}) {
-  const supabase = await createSupabaseServerClient();
-  // Collect the full descendant set by BFS.
-  const toDelete: string[] = [];
-  let frontier = [input.block_id];
-  while (frontier.length > 0) {
-    const { data } = await supabase
-      .from("ending_framework_blocks")
-      .select("id")
-      .in("parent_block_id", frontier);
-    const next = (data ?? []).map((r) => r.id as string);
-    toDelete.push(...next);
-    frontier = next;
-  }
-  if (toDelete.length > 0) {
-    const { error: delErr } = await supabase
-      .from("ending_framework_blocks")
-      .delete()
-      .in("id", toDelete);
-    if (delErr) throw new Error(delErr.message);
-  }
-  const { error } = await supabase
-    .from("ending_framework_blocks")
-    .update({ variable_id: input.variable_id })
-    .eq("id", input.block_id);
-  if (error) throw new Error(error.message);
-  revalidateEndings();
 }
 
 export async function deleteBlock(formData: FormData) {
@@ -189,6 +165,105 @@ export async function deleteBlock(formData: FormData) {
   revalidateEndings();
 }
 
+// --- Rows ----------------------------------------------------------------
+
+export async function addRow(input: {
+  condition_block_id: string;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("ending_condition_rows")
+    .select("sort_order")
+    .eq("condition_block_id", input.condition_block_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+  const { data, error } = await supabase
+    .from("ending_condition_rows")
+    .insert({
+      condition_block_id: input.condition_block_id,
+      sort_order: nextSort,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+  return { id: data.id as string };
+}
+
+export async function removeRow(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  const { error } = await supabase
+    .from("ending_condition_rows")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+}
+
+// --- Chips ---------------------------------------------------------------
+
+export async function addChip(input: {
+  row_id: string;
+  variable_id: string;
+  operator?: EndingChipOperator;
+  text_value_id?: string | null;
+  number_value?: number | null;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("ending_condition_row_chips")
+    .select("sort_order")
+    .eq("row_id", input.row_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+
+  const operator: EndingChipOperator = input.operator ?? "=";
+  const text_value_id = input.text_value_id ?? null;
+  const number_value = input.number_value ?? null;
+  if (
+    (text_value_id == null && number_value == null) ||
+    (text_value_id != null && number_value != null)
+  ) {
+    throw new Error(
+      "addChip: exactly one of text_value_id or number_value is required."
+    );
+  }
+
+  const { data, error } = await supabase
+    .from("ending_condition_row_chips")
+    .insert({
+      row_id: input.row_id,
+      variable_id: input.variable_id,
+      operator,
+      text_value_id,
+      number_value,
+      sort_order: nextSort,
+    })
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+  return { id: data.id as string };
+}
+
+export async function removeChip(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  const { error } = await supabase
+    .from("ending_condition_row_chips")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+}
+
+// --- Inline variable + value creation ------------------------------------
+
 export async function createVariableInline(input: {
   name: string;
 }): Promise<{ id: string }> {
@@ -201,9 +276,19 @@ export async function createVariableInline(input: {
     .order("sort_order", { ascending: false })
     .limit(1);
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+  // Pre-generate the id so the deterministic color hash is anchored to the
+  // identity we know we're about to insert.
+  const id = randomUUID();
   const { data, error } = await supabase
     .from("ending_variables")
-    .insert({ name, sort_order: nextSort })
+    .insert({
+      id,
+      name,
+      kind: "text",
+      number_ref: null,
+      color_index: colorIndexFor(id),
+      sort_order: nextSort,
+    })
     .select("id")
     .single();
   if (error) throw new Error(error.message);
@@ -252,13 +337,30 @@ export async function createValueInline(input: {
   return { id: data.id as string };
 }
 
+// --- saveFramework: UPDATE-only across blocks + rows + chips -------------
+
 type BlockPayload = {
   id: string;
   parent_block_id: string | null;
-  parent_value_id: string | null;
+  parent_row_id: string | null;
   block_type: "text" | "condition";
-  variable_id: string | null;
   text: string;
+  sort_order: number;
+};
+
+type RowPayload = {
+  id: string;
+  condition_block_id: string;
+  sort_order: number;
+};
+
+type ChipPayload = {
+  id: string;
+  row_id: string;
+  variable_id: string;
+  operator: EndingChipOperator;
+  text_value_id: string | null;
+  number_value: number | null;
   sort_order: number;
 };
 
@@ -266,6 +368,8 @@ export async function saveFramework(input: {
   id: string;
   name: string;
   blocks: BlockPayload[];
+  rows: RowPayload[];
+  chips: ChipPayload[];
 }) {
   const supabase = await createSupabaseServerClient();
   const name = input.name.trim();
@@ -277,20 +381,48 @@ export async function saveFramework(input: {
     .eq("id", input.id);
   if (fwErr) throw new Error(fwErr.message);
 
-  for (const b of input.blocks) {
+  // Three batches of UPDATEs in parallel — no inserts, no deletes.
+  const blockUpdates = input.blocks.map(async (b) => {
     const { error } = await supabase
       .from("ending_framework_blocks")
       .update({
         parent_block_id: b.parent_block_id,
-        parent_value_id: b.parent_value_id,
+        parent_row_id: b.parent_row_id,
         block_type: b.block_type,
-        variable_id: b.block_type === "condition" ? b.variable_id : null,
         text: b.block_type === "text" ? b.text : "",
         sort_order: b.sort_order,
       })
       .eq("id", b.id);
-    if (error) throw new Error(error.message);
-  }
+    if (error) throw new Error(`block ${b.id}: ${error.message}`);
+  });
+
+  const rowUpdates = input.rows.map(async (r) => {
+    const { error } = await supabase
+      .from("ending_condition_rows")
+      .update({
+        condition_block_id: r.condition_block_id,
+        sort_order: r.sort_order,
+      })
+      .eq("id", r.id);
+    if (error) throw new Error(`row ${r.id}: ${error.message}`);
+  });
+
+  const chipUpdates = input.chips.map(async (c) => {
+    const { error } = await supabase
+      .from("ending_condition_row_chips")
+      .update({
+        row_id: c.row_id,
+        variable_id: c.variable_id,
+        operator: c.operator,
+        text_value_id: c.text_value_id,
+        number_value: c.number_value,
+        sort_order: c.sort_order,
+      })
+      .eq("id", c.id);
+    if (error) throw new Error(`chip ${c.id}: ${error.message}`);
+  });
+
+  await Promise.all([...blockUpdates, ...rowUpdates, ...chipUpdates]);
 
   revalidateEndings();
 }

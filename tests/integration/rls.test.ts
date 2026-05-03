@@ -26,6 +26,8 @@ const PROTECTED_TABLES = [
   "cities",
   "citizens",
   "days",
+  "ending_condition_rows",
+  "ending_condition_row_chips",
 ] as const;
 
 describe("RLS via anon client", () => {
@@ -56,6 +58,33 @@ describe("RLS via anon client", () => {
         storyline_id: "00000000-0000-0000-0000-000000000000",
         name: "anon-attempt",
         sequence: 9999,
+      })
+      .select();
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+  });
+
+  it("should reject anon inserts into ending_condition_rows", async () => {
+    const { data, error } = await anon
+      .from("ending_condition_rows")
+      .insert({
+        condition_block_id: "00000000-0000-0000-0000-000000000000",
+        sort_order: 9999,
+      })
+      .select();
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+  });
+
+  it("should reject anon inserts into ending_condition_row_chips", async () => {
+    const { data, error } = await anon
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: "00000000-0000-0000-0000-000000000000",
+        variable_id: "00000000-0000-0000-0000-000000000000",
+        operator: "=",
+        text_value_id: "00000000-0000-0000-0000-000000000000",
+        sort_order: 0,
       })
       .select();
     expect(data).toBeNull();

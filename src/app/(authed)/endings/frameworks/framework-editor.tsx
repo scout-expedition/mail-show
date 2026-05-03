@@ -1,0 +1,487 @@
+"use client";
+
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
+import { Eye, EyeOff, Trash2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { useConfirm } from "@/components/confirm-dialog";
+import {
+  GHOST_FIELD,
+  PanelHeader,
+  SaveRevert,
+} from "@/components/panel";
+import { cn } from "@/lib/utils";
+import type {
+  EndingConditionRow,
+  EndingConditionRowChip,
+  EndingFramework,
+  EndingFrameworkBlock,
+  EndingVariable,
+  EndingVariableValue,
+} from "@/lib/db/types";
+import {
+  buildByParentBlock,
+  buildChipsByRow,
+  buildRowsByConditionBlock,
+  type BlockState,
+  type ChipState,
+  type RowState,
+  type VariableState,
+} from "@/lib/endings/block-state";
+import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
+import { BlockList } from "./blocks/block-list";
+import { PreviewView } from "./preview-view";
+import { DragCtx, moveBlock, type DragContext } from "./lib/drag";
+import { deleteEndingFramework, saveFramework } from "./actions";
+
+export type EditorHandle = {
+  dirty: boolean;
+  save: () => Promise<void>;
+};
+
+export function FrameworkEditor({
+  framework,
+  blocks,
+  rows,
+  chips,
+  variables,
+  values,
+  onDeleted,
+  registerHandle,
+}: {
+  framework: EndingFramework;
+  blocks: EndingFrameworkBlock[];
+  rows: EndingConditionRow[];
+  chips: EndingConditionRowChip[];
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  onDeleted: () => void;
+  registerHandle: (h: EditorHandle) => void;
+}) {
+  const initial = useMemo(
+    () => ({
+      name: framework.name,
+      blocks: blocks.map(
+        (b): BlockState => ({
+          id: b.id,
+          framework_id: b.framework_id,
+          parent_block_id: b.parent_block_id,
+          parent_row_id: b.parent_row_id,
+          block_type: b.block_type,
+          text: b.text,
+          sort_order: b.sort_order,
+        })
+      ),
+      rows: rows.map(
+        (r): RowState => ({
+          id: r.id,
+          condition_block_id: r.condition_block_id,
+          sort_order: r.sort_order,
+        })
+      ),
+      chips: chips.map(
+        (c): ChipState => ({
+          id: c.id,
+          row_id: c.row_id,
+          variable_id: c.variable_id,
+          operator: c.operator,
+          text_value_id: c.text_value_id,
+          number_value: c.number_value,
+          sort_order: c.sort_order,
+        })
+      ),
+    }),
+    [framework.name, blocks, rows, chips]
+  );
+
+  const [name, setName] = useState(initial.name);
+  const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
+  const [rowState, setRowState] = useState<RowState[]>(initial.rows);
+  const [chipState, setChipState] = useState<ChipState[]>(initial.chips);
+  const [dirty, setDirty] = useState(false);
+  const [pending, startSave] = useTransition();
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+
+  const [previewOn, setPreviewOn] = useState(false);
+  const [previewSelections, setPreviewSelections] =
+    useState<PreviewSelections>(EMPTY_SELECTIONS);
+
+  // Reconcile incoming server state with local edits.
+  useEffect(() => {
+    if (!dirty) {
+      setName(initial.name);
+      setBlockState(initial.blocks);
+      setRowState(initial.rows);
+      setChipState(initial.chips);
+      return;
+    }
+    // Drop locally-deleted ids; fold in server-only additions; preserve
+    // local edits to ids the server still has.
+    setBlockState((prev) =>
+      mergeServer(prev, initial.blocks, (a, b) => a.id === b.id)
+    );
+    setRowState((prev) =>
+      mergeServer(prev, initial.rows, (a, b) => a.id === b.id)
+    );
+    setChipState((prev) =>
+      mergeServer(prev, initial.chips, (a, b) => a.id === b.id)
+    );
+  }, [initial, dirty]);
+
+  // Indexed views.
+  const variableState: VariableState[] = useMemo(
+    () =>
+      variables.map((v) => ({
+        id: v.id,
+        name: v.name,
+        kind: v.kind,
+        number_ref: v.number_ref,
+        default_value_id: v.default_value_id,
+        color_index: v.color_index,
+        sort_order: v.sort_order,
+      })),
+    [variables]
+  );
+  const variableIndex = useMemo(() => {
+    const m = new Map<string, VariableState>();
+    for (const v of variableState) m.set(v.id, v);
+    return m;
+  }, [variableState]);
+  const byParent = useMemo(() => buildByParentBlock(blockState), [blockState]);
+  const rowsByConditionBlock = useMemo(
+    () => buildRowsByConditionBlock(rowState),
+    [rowState]
+  );
+  const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
+
+  // Variables actually referenced by any chip (for the preview UI).
+  const referencedVariables = useMemo(() => {
+    const ids = new Set<string>();
+    for (const c of chipState) ids.add(c.variable_id);
+    return variableState.filter((v) => ids.has(v.id));
+  }, [chipState, variableState]);
+
+  // Seed preview selection defaults when the referenced set changes.
+  useEffect(() => {
+    setPreviewSelections((prev) => {
+      const next: PreviewSelections = {
+        textValueIds: { ...prev.textValueIds },
+        numbers: { ...prev.numbers },
+      };
+      for (const v of referencedVariables) {
+        if (v.kind === "text" && next.textValueIds[v.id] === undefined) {
+          next.textValueIds[v.id] = v.default_value_id ?? null;
+        }
+        if (v.kind === "number_ref" && next.numbers[v.id] === undefined) {
+          next.numbers[v.id] = null;
+        }
+      }
+      return next;
+    });
+  }, [referencedVariables]);
+
+  // Local edits ----------------------------------------------------------
+  function updateBlock(id: string, patch: Partial<BlockState>) {
+    setBlockState((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, ...patch } : b))
+    );
+    setDirty(true);
+  }
+  function updateChip(id: string, patch: Partial<ChipState>) {
+    setChipState((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+    );
+    setDirty(true);
+  }
+
+  // Drag context --------------------------------------------------------
+  const dragCtx: DragContext = {
+    dragId,
+    dragHeight,
+    start: (blockId, height) => {
+      setDragId(blockId);
+      setDragHeight(height);
+    },
+    end: () => {
+      setDragId(null);
+      setDragHeight(null);
+    },
+    overBlock: (target, overId) => {
+      if (!dragId || dragId === overId) return;
+      setBlockState((prev) => moveBlock(prev, dragId, target, overId));
+      setDirty(true);
+    },
+    overEmpty: (target) => {
+      if (!dragId) return;
+      const dragged = blockState.find((b) => b.id === dragId);
+      if (!dragged) return;
+      if (
+        dragged.parent_block_id === target.parent_block_id &&
+        dragged.parent_row_id === target.parent_row_id
+      ) {
+        return;
+      }
+      setBlockState((prev) => moveBlock(prev, dragId, target, null));
+      setDirty(true);
+    },
+  };
+
+  // Save ----------------------------------------------------------------
+  async function doSave() {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    // Walk the tree to assign deterministic sort_orders (0..n at each level).
+    const blockPayload: Array<{
+      id: string;
+      parent_block_id: string | null;
+      parent_row_id: string | null;
+      block_type: "text" | "condition";
+      text: string;
+      sort_order: number;
+    }> = [];
+    function walk(parentBlockId: string | null, parentRowId: string | null) {
+      const list =
+        byParent.get(
+          `${parentBlockId ?? "root"}:${parentRowId ?? "root"}`
+        ) ?? [];
+      list.forEach((b, i) => {
+        blockPayload.push({
+          id: b.id,
+          parent_block_id: parentBlockId,
+          parent_row_id: parentRowId,
+          block_type: b.block_type,
+          text: b.text,
+          sort_order: i,
+        });
+        if (b.block_type === "condition") {
+          for (const r of rowsByConditionBlock.get(b.id) ?? []) {
+            walk(b.id, r.id);
+          }
+        }
+      });
+    }
+    walk(null, null);
+
+    const rowPayload = rowState.map((r, i) => ({
+      id: r.id,
+      condition_block_id: r.condition_block_id,
+      sort_order: i,
+    }));
+
+    const chipPayload = chipState.map((c, i) => ({
+      id: c.id,
+      row_id: c.row_id,
+      variable_id: c.variable_id,
+      operator: c.operator,
+      text_value_id: c.text_value_id,
+      number_value: c.number_value,
+      sort_order: i,
+    }));
+
+    await saveFramework({
+      id: framework.id,
+      name: trimmedName,
+      blocks: blockPayload,
+      rows: rowPayload,
+      chips: chipPayload,
+    });
+    setDirty(false);
+  }
+
+  function handleSave() {
+    startSave(doSave);
+  }
+  function handleRevert() {
+    setName(initial.name);
+    setBlockState(initial.blocks);
+    setRowState(initial.rows);
+    setChipState(initial.chips);
+    setDirty(false);
+  }
+
+  const doSaveRef = useRef(doSave);
+  useEffect(() => {
+    doSaveRef.current = doSave;
+  });
+  useEffect(() => {
+    registerHandle({ dirty, save: () => doSaveRef.current() });
+  }, [dirty, registerHandle]);
+
+  async function handleDelete() {
+    const ok = await confirmDialog({
+      title: "Delete framework?",
+      message: `"${framework.name}" and all of its blocks will be permanently removed. Logic rules that target this framework will also be removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    const fd = new FormData();
+    fd.set("id", framework.id);
+    startSave(async () => {
+      await deleteEndingFramework(fd);
+      onDeleted();
+    });
+  }
+
+  const nameInvalid = !name.trim();
+
+  useEffect(() => {
+    if (!dirty) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  let body: ReactNode;
+  if (previewOn) {
+    body = (
+      <PreviewView
+        name={name}
+        blocks={blockState}
+        rows={rowState}
+        chips={chipState}
+        variables={variableState}
+        referencedVariables={referencedVariables}
+        values={values}
+        selections={previewSelections}
+        onChangeText={(variableId, valueId) =>
+          setPreviewSelections((prev) => ({
+            ...prev,
+            textValueIds: { ...prev.textValueIds, [variableId]: valueId },
+          }))
+        }
+        onChangeNumber={(variableId, value) =>
+          setPreviewSelections((prev) => ({
+            ...prev,
+            numbers: { ...prev.numbers, [variableId]: value },
+          }))
+        }
+      />
+    );
+  } else {
+    body = (
+      <div className="flex flex-col gap-4 p-3">
+        <div className="flex items-start gap-2">
+          <div className="flex-1">
+            <Label className="!text-xs">Framework name</Label>
+            <Input
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setDirty(true);
+              }}
+              placeholder="Framework name"
+              className={cn(
+                "mt-1 h-9",
+                GHOST_FIELD,
+                nameInvalid && "ring-2 ring-destructive"
+              )}
+            />
+          </div>
+          <button
+            type="button"
+            aria-label="Delete framework"
+            title="Delete framework"
+            onClick={handleDelete}
+            className="mt-6 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+          >
+            <Trash2 size={14} aria-hidden />
+          </button>
+        </div>
+
+        <DragCtx.Provider value={dragCtx}>
+          <BlockList
+            parent={{ parent_block_id: null, parent_row_id: null }}
+            byParent={byParent}
+            rowsByConditionBlock={rowsByConditionBlock}
+            chipsByRow={chipsByRow}
+            variableIndex={variableIndex}
+            variables={variableState}
+            values={values}
+            framework_id={framework.id}
+            onUpdateBlock={updateBlock}
+            onChangeChip={updateChip}
+          />
+        </DragCtx.Provider>
+      </div>
+    );
+  }
+
+  return (
+    <section className="overflow-hidden rounded-md border border-border bg-card">
+      <PanelHeader
+        title={framework.name}
+        dirty={dirty}
+        showSaved
+        saveRevert={
+          <SaveRevert
+            dirty={dirty && !nameInvalid}
+            pending={pending}
+            onSave={handleSave}
+            onRevert={handleRevert}
+          />
+        }
+        menu={
+          <button
+            type="button"
+            onClick={() => setPreviewOn((v) => !v)}
+            aria-label={previewOn ? "Exit preview" : "Preview"}
+            title={previewOn ? "Exit preview" : "Preview"}
+            className={cn(
+              "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+              previewOn
+                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            {previewOn ? (
+              <EyeOff size={14} aria-hidden />
+            ) : (
+              <Eye size={14} aria-hidden />
+            )}
+          </button>
+        }
+      />
+      {body}
+      {confirmDialogEl}
+    </section>
+  );
+}
+
+/**
+ * Reconcile a locally-edited list with an authoritative server list.
+ *  - Drop local items the server no longer has.
+ *  - Keep local edits where ids overlap.
+ *  - Append items the server has that local didn't.
+ */
+function mergeServer<T extends { id: string }>(
+  local: T[],
+  server: T[],
+  eq: (a: T, b: T) => boolean
+): T[] {
+  const serverIds = new Set(server.map((s) => s.id));
+  const localIds = new Set(local.map((l) => l.id));
+  const kept = local.filter((l) => serverIds.has(l.id));
+  const additions = server.filter((s) => !localIds.has(s.id));
+  if (
+    additions.length === 0 &&
+    kept.length === local.length &&
+    kept.every((k, i) => eq(k, local[i]))
+  ) {
+    return local;
+  }
+  return [...kept, ...additions];
+}

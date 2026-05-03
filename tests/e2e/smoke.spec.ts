@@ -5,6 +5,10 @@ import { test, expect } from "@playwright/test";
 // to /sign-in, and the page renders. Real auth-required flows live in the
 // other specs in this directory.
 
+// Drop the storageState the chromium project applies by default — this
+// spec specifically tests the unauthenticated path through the proxy.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test("unauthenticated visit to / should redirect to /sign-in and render the page", async ({ page }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/sign-in/);
