@@ -265,6 +265,7 @@ export interface EndingVariable {
   sort_order: number;
   kind: EndingVariableKind;
   number_ref: string | null;
+  aggregate_ref: string | null;
   color_index: number;
 }
 
@@ -306,6 +307,7 @@ export interface EndingConditionRowChip {
   operator: EndingChipOperator;
   text_value_id: string | null;
   number_value: number | null;
+  aggregate_value: string | null;
   sort_order: number;
 }
 

@@ -211,6 +211,7 @@ export async function addChip(input: {
   operator?: EndingChipOperator;
   text_value_id?: string | null;
   number_value?: number | null;
+  aggregate_value?: string | null;
 }): Promise<{ id: string }> {
   const supabase = await createSupabaseServerClient();
   const { data: existing } = await supabase
@@ -224,12 +225,13 @@ export async function addChip(input: {
   const operator: EndingChipOperator = input.operator ?? "=";
   const text_value_id = input.text_value_id ?? null;
   const number_value = input.number_value ?? null;
-  if (
-    (text_value_id == null && number_value == null) ||
-    (text_value_id != null && number_value != null)
-  ) {
+  const aggregate_value = input.aggregate_value ?? null;
+  const filled = [text_value_id, number_value, aggregate_value].filter(
+    (v) => v != null
+  ).length;
+  if (filled !== 1) {
     throw new Error(
-      "addChip: exactly one of text_value_id or number_value is required."
+      "addChip: exactly one of text_value_id, number_value, or aggregate_value is required."
     );
   }
 
@@ -241,6 +243,7 @@ export async function addChip(input: {
       operator,
       text_value_id,
       number_value,
+      aggregate_value,
       sort_order: nextSort,
     })
     .select("id")
@@ -361,6 +364,7 @@ type ChipPayload = {
   operator: EndingChipOperator;
   text_value_id: string | null;
   number_value: number | null;
+  aggregate_value: string | null;
   sort_order: number;
 };
 
@@ -416,6 +420,7 @@ export async function saveFramework(input: {
         operator: c.operator,
         text_value_id: c.text_value_id,
         number_value: c.number_value,
+        aggregate_value: c.aggregate_value,
         sort_order: c.sort_order,
       })
       .eq("id", c.id);

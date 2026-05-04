@@ -28,3 +28,13 @@ export const AFFINITY_NUMBER_REFS = new Set<string>([
   ...NATION_NUMBER_REFS,
   ...CLASS_NUMBER_REFS,
 ]);
+
+/**
+ * Chip colors for aggregate variables. We pick a neutral hue per aggregate
+ * ref rather than borrowing from a single underlying column — the chip
+ * represents the *competition* across columns, not any one of them.
+ */
+export const AGGREGATE_CHIP_COLORS: Record<string, string> = {
+  class_affinity: "#f59e0b", // amber-500 — ties to the class-axis hue
+  nation_affinity: "#10b981", // emerald-500 — distinct from any nation color
+};
