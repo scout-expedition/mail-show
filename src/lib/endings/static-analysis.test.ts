@@ -843,6 +843,49 @@ describe("uncoveredAssignmentsByBlock / edges", () => {
     expect(Number.isFinite(MAX_ENUMERATION)).toBe(true);
   });
 
+  it("Phase 6: enumerates over header-declared variables when blockVariables supplied", () => {
+    // Mimics user's "Performer (4 values), Bathrooms (2 values)" example
+    // where row 2 has only a Performer chip. With chip-derived variable
+    // sets, Bathrooms isn't enumerated → 1 uncovered. With header-
+    // declared {Performer, Bathrooms}, the cartesian is 4×2=8 and rows
+    // that don't constrain Bathrooms cover both bathroom values.
+    const performer = textVar("VAR_P");
+    const bathrooms = textVar("VAR_B");
+    const sd = textValue("VAL_SD", performer.id);
+    const wr = textValue("VAL_WR", performer.id);
+    const enough = textValue("VAL_E", bathrooms.id);
+    const notEnough = textValue("VAL_NE", bathrooms.id);
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const inputs: StaticInputs = {
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1a", r1.id, performer.id, sd.id),
+        textChip("c1b", r1.id, bathrooms.id, enough.id),
+        textChip("c2", r2.id, performer.id, wr.id),
+      ],
+      variables: [performer, bathrooms],
+      values: [sd, wr, enough, notEnough],
+      blockVariables: [
+        { condition_block_id: cb.id, variable_id: performer.id },
+        { condition_block_id: cb.id, variable_id: bathrooms.id },
+      ],
+    };
+    const out = uncoveredAssignmentsByBlock(inputs);
+    const block = out.get(cb.id);
+    // Total assignments = 2 × 2 = 4. Row 1 covers (SD,Enough). Row 2 has
+    // no Bathrooms chip so it covers (WR,Enough) and (WR,NotEnough).
+    // Uncovered: (SD, NotEnough) → 1.
+    expect(block?.status).toBe("has_uncovered");
+    expect(block?.uncovered.length).toBe(1);
+    expect(block?.uncovered[0]).toEqual({
+      [performer.id]: sd.id,
+      [bathrooms.id]: notEnough.id,
+    });
+  });
+
   it("scopes uncovered analysis per condition block (no cross-block bleed)", () => {
     const performer = textVar("VAR_PERFORMER");
     const a = textValue("VAL_A", performer.id);

@@ -1,5 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
+  EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
   EndingFramework,
@@ -23,6 +24,7 @@ export default async function FrameworksPage({
     { data: blockData },
     { data: rowData },
     { data: chipData },
+    { data: blockVarData },
     { data: varData },
     { data: valueData },
     { data: nationData },
@@ -32,6 +34,10 @@ export default async function FrameworksPage({
     supabase.from("ending_condition_rows").select("*").order("sort_order"),
     supabase
       .from("ending_condition_row_chips")
+      .select("*")
+      .order("sort_order"),
+    supabase
+      .from("ending_condition_block_variables")
       .select("*")
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
@@ -45,6 +51,9 @@ export default async function FrameworksPage({
       blocks={(blockData ?? []) as EndingFrameworkBlock[]}
       rows={(rowData ?? []) as EndingConditionRow[]}
       chips={(chipData ?? []) as EndingConditionRowChip[]}
+      blockVariables={
+        (blockVarData ?? []) as EndingConditionBlockVariable[]
+      }
       variables={(varData ?? []) as EndingVariable[]}
       values={(valueData ?? []) as EndingVariableValue[]}
       nations={(nationData ?? []) as Pick<Nation, "name" | "color_hex">[]}

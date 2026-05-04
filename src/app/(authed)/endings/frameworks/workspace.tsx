@@ -4,6 +4,7 @@ import { useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUnsavedDialog } from "@/components/panel";
 import type {
+  EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
   EndingFramework,
@@ -20,6 +21,7 @@ export function FrameworksWorkspace({
   blocks,
   rows,
   chips,
+  blockVariables,
   variables,
   values,
   nations,
@@ -29,6 +31,7 @@ export function FrameworksWorkspace({
   blocks: EndingFrameworkBlock[];
   rows: EndingConditionRow[];
   chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
   nations: Pick<Nation, "name" | "color_hex">[];
@@ -54,8 +57,11 @@ export function FrameworksWorkspace({
     const editorRows = rows.filter((r) => blockIds.has(r.condition_block_id));
     const rowIds = new Set(editorRows.map((r) => r.id));
     const editorChips = chips.filter((c) => rowIds.has(c.row_id));
-    return { editorBlocks, editorRows, editorChips };
-  }, [selected, blocks, rows, chips]);
+    const editorBlockVariables = blockVariables.filter((bv) =>
+      blockIds.has(bv.condition_block_id)
+    );
+    return { editorBlocks, editorRows, editorChips, editorBlockVariables };
+  }, [selected, blocks, rows, chips, blockVariables]);
 
   const editorHandleRef = useRef<EditorHandle>({
     dirty: false,
@@ -101,6 +107,7 @@ export function FrameworksWorkspace({
           blocks={editorData.editorBlocks}
           rows={editorData.editorRows}
           chips={editorData.editorChips}
+          blockVariables={editorData.editorBlockVariables}
           variables={variables}
           values={values}
           nations={nations}

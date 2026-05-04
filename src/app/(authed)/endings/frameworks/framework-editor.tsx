@@ -20,6 +20,7 @@ import {
 } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type {
+  EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
   EndingFramework,
@@ -31,8 +32,10 @@ import type {
 import {
   buildByParentBlock,
   buildChipsByRow,
+  buildDeclaredByBlock,
   buildRowsByConditionBlock,
   type BlockState,
+  type BlockVariableState,
   type ChipState,
   type RowState,
   type VariableState,
@@ -75,6 +78,7 @@ export function FrameworkEditor({
   blocks,
   rows,
   chips,
+  blockVariables,
   variables,
   values,
   nations,
@@ -85,6 +89,7 @@ export function FrameworkEditor({
   blocks: EndingFrameworkBlock[];
   rows: EndingConditionRow[];
   chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
   nations: Pick<Nation, "name" | "color_hex">[];
@@ -124,14 +129,25 @@ export function FrameworkEditor({
           sort_order: c.sort_order,
         })
       ),
+      blockVariables: blockVariables.map(
+        (bv): BlockVariableState => ({
+          id: bv.id,
+          condition_block_id: bv.condition_block_id,
+          variable_id: bv.variable_id,
+          sort_order: bv.sort_order,
+        })
+      ),
     }),
-    [framework.name, blocks, rows, chips]
+    [framework.name, blocks, rows, chips, blockVariables]
   );
 
   const [name, setName] = useState(initial.name);
   const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
   const [rowState, setRowState] = useState<RowState[]>(initial.rows);
   const [chipState, setChipState] = useState<ChipState[]>(initial.chips);
+  const [blockVariableState, setBlockVariableState] = useState<
+    BlockVariableState[]
+  >(initial.blockVariables);
   const [dirty, setDirty] = useState(false);
   const [pending, startSave] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
@@ -158,6 +174,7 @@ export function FrameworkEditor({
       setBlockState(initial.blocks);
       setRowState(initial.rows);
       setChipState(initial.chips);
+      setBlockVariableState(initial.blockVariables);
       return;
     }
     // Drop locally-deleted ids; fold in server-only additions; preserve
@@ -170,6 +187,9 @@ export function FrameworkEditor({
     );
     setChipState((prev) =>
       mergeServer(prev, initial.chips, (a, b) => a.id === b.id)
+    );
+    setBlockVariableState((prev) =>
+      mergeServer(prev, initial.blockVariables, (a, b) => a.id === b.id)
     );
   }, [initial, dirty]);
 
@@ -236,6 +256,10 @@ export function FrameworkEditor({
     [rowState]
   );
   const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
+  const declaredByBlock = useMemo(
+    () => buildDeclaredByBlock(blockVariableState),
+    [blockVariableState]
+  );
 
   // Static analysis (Phase 5): shadow + uncovered-assignment detection.
   // Pure-function, runs every edit; React.useMemo caches across no-op
@@ -274,12 +298,17 @@ export function FrameworkEditor({
       id: v.id,
       variable_id: v.variable_id,
     }));
+    const evalBlockVariables = blockVariableState.map((bv) => ({
+      condition_block_id: bv.condition_block_id,
+      variable_id: bv.variable_id,
+    }));
     const inputs = {
       blocks: evalBlocks,
       rows: evalRows,
       chips: evalChips,
       variables: evalVariables,
       values: evalValues,
+      blockVariables: evalBlockVariables,
     };
     const shadow = staticShadowedRows(inputs);
     const overlaps = numericRowOverlaps(inputs);
@@ -296,7 +325,15 @@ export function FrameworkEditor({
       blockAnalysis,
       rowSortOrder,
     };
-  }, [blockState, rowState, chipState, variableState, values, rowsByConditionBlock]);
+  }, [
+    blockState,
+    rowState,
+    chipState,
+    blockVariableState,
+    variableState,
+    values,
+    rowsByConditionBlock,
+  ]);
 
   // Variables actually referenced by any chip (for the preview UI).
   // Aggregate variables expand into their underlying number_ref scores
@@ -711,6 +748,7 @@ export function FrameworkEditor({
                 byParent={byParent}
                 rowsByConditionBlock={rowsByConditionBlock}
                 chipsByRow={chipsByRow}
+                declaredByBlock={declaredByBlock}
                 variableIndex={variableIndex}
                 variables={variableState}
                 values={values}

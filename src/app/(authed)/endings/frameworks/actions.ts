@@ -203,6 +203,86 @@ export async function removeRow(formData: FormData) {
   revalidateEndings();
 }
 
+// --- Block-variable headers ---------------------------------------------
+
+export async function addBlockVariable(input: {
+  condition_block_id: string;
+  variable_id: string;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("ending_condition_block_variables")
+    .select("sort_order")
+    .eq("condition_block_id", input.condition_block_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? -1) + 1;
+  // The unique (condition_block_id, variable_id) constraint makes this
+  // idempotent: adding a variable that's already declared is a no-op.
+  const { data, error } = await supabase
+    .from("ending_condition_block_variables")
+    .upsert(
+      {
+        condition_block_id: input.condition_block_id,
+        variable_id: input.variable_id,
+        sort_order: nextSort,
+      },
+      { onConflict: "condition_block_id,variable_id", ignoreDuplicates: true }
+    )
+    .select("id");
+  if (error) throw new Error(error.message);
+  // upsert with ignoreDuplicates returns [] when the row already existed.
+  // Fetch the existing id in that case so callers always get one.
+  if (!data || data.length === 0) {
+    const { data: existing } = await supabase
+      .from("ending_condition_block_variables")
+      .select("id")
+      .eq("condition_block_id", input.condition_block_id)
+      .eq("variable_id", input.variable_id)
+      .single();
+    if (!existing) throw new Error("addBlockVariable: row missing post-upsert");
+    revalidateEndings();
+    return { id: existing.id as string };
+  }
+  revalidateEndings();
+  return { id: data[0].id as string };
+}
+
+export async function removeBlockVariable(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  // Look up the (block_id, variable_id) pair so we can also delete chips
+  // that reference this variable on any row in the block. The
+  // ending_condition_block_variables FK cascades on the block-level
+  // table only — chips need an explicit purge.
+  const { data: header } = await supabase
+    .from("ending_condition_block_variables")
+    .select("condition_block_id, variable_id")
+    .eq("id", id)
+    .single();
+  if (header) {
+    const { data: blockRows } = await supabase
+      .from("ending_condition_rows")
+      .select("id")
+      .eq("condition_block_id", header.condition_block_id);
+    const rowIds = (blockRows ?? []).map((r) => r.id as string);
+    if (rowIds.length > 0) {
+      await supabase
+        .from("ending_condition_row_chips")
+        .delete()
+        .eq("variable_id", header.variable_id)
+        .in("row_id", rowIds);
+    }
+  }
+  const { error } = await supabase
+    .from("ending_condition_block_variables")
+    .delete()
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+}
+
 // --- Chips ---------------------------------------------------------------
 
 export async function addChip(input: {
@@ -249,6 +329,22 @@ export async function addChip(input: {
     .select("id")
     .single();
   if (error) throw new Error(error.message);
+  // Ensure the chip's variable is declared on the parent block's header
+  // (Phase 6). If a row's chip references a variable that isn't yet
+  // in the header — e.g. via legacy authoring flows — auto-add it so
+  // the header stays the source of truth for "what this block branches
+  // on".
+  const { data: row } = await supabase
+    .from("ending_condition_rows")
+    .select("condition_block_id")
+    .eq("id", input.row_id)
+    .single();
+  if (row) {
+    await addBlockVariable({
+      condition_block_id: row.condition_block_id as string,
+      variable_id: input.variable_id,
+    });
+  }
   revalidateEndings();
   return { id: data.id as string };
 }
@@ -368,12 +464,18 @@ type ChipPayload = {
   sort_order: number;
 };
 
+type BlockVariablePayload = {
+  id: string;
+  sort_order: number;
+};
+
 export async function saveFramework(input: {
   id: string;
   name: string;
   blocks: BlockPayload[];
   rows: RowPayload[];
   chips: ChipPayload[];
+  blockVariables?: BlockVariablePayload[];
 }) {
   const supabase = await createSupabaseServerClient();
   const name = input.name.trim();
@@ -427,7 +529,20 @@ export async function saveFramework(input: {
     if (error) throw new Error(`chip ${c.id}: ${error.message}`);
   });
 
-  await Promise.all([...blockUpdates, ...rowUpdates, ...chipUpdates]);
+  const blockVariableUpdates = (input.blockVariables ?? []).map(async (bv) => {
+    const { error } = await supabase
+      .from("ending_condition_block_variables")
+      .update({ sort_order: bv.sort_order })
+      .eq("id", bv.id);
+    if (error) throw new Error(`block_variable ${bv.id}: ${error.message}`);
+  });
+
+  await Promise.all([
+    ...blockUpdates,
+    ...rowUpdates,
+    ...chipUpdates,
+    ...blockVariableUpdates,
+  ]);
 
   revalidateEndings();
 }

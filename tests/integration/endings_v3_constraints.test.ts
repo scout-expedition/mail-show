@@ -424,6 +424,54 @@ describe("endings v3 schema constraints", () => {
     expect(error?.message ?? "").toMatch(/operator/i);
   });
 
+  // -------------------------------------------------------------------
+  // Header-declared variables (Phase 6 / migration 0021)
+  // -------------------------------------------------------------------
+
+  it("ending_condition_block_variables: rejects duplicate (block, variable) pair", async () => {
+    const seeded = await seed();
+    const { error: firstErr } = await sb
+      .from("ending_condition_block_variables")
+      .insert({
+        condition_block_id: seeded.condBlockId,
+        variable_id: seeded.textVarId,
+        sort_order: 0,
+      });
+    expect(firstErr).toBeNull();
+    const { error: dupErr } = await sb
+      .from("ending_condition_block_variables")
+      .insert({
+        condition_block_id: seeded.condBlockId,
+        variable_id: seeded.textVarId,
+        sort_order: 1,
+      });
+    expect(dupErr).not.toBeNull();
+    expect(dupErr?.message ?? "").toMatch(/unique/i);
+  });
+
+  it("ending_condition_block_variables: cascades on block delete", async () => {
+    const seeded = await seed();
+    await sb.from("ending_condition_block_variables").insert({
+      condition_block_id: seeded.condBlockId,
+      variable_id: seeded.textVarId,
+      sort_order: 0,
+    });
+    const { count: beforeCount } = await sb
+      .from("ending_condition_block_variables")
+      .select("id", { count: "exact", head: true })
+      .eq("condition_block_id", seeded.condBlockId);
+    expect(beforeCount).toBe(1);
+    await sb
+      .from("ending_framework_blocks")
+      .delete()
+      .eq("id", seeded.condBlockId);
+    const { count: afterCount } = await sb
+      .from("ending_condition_block_variables")
+      .select("id", { count: "exact", head: true })
+      .eq("condition_block_id", seeded.condBlockId);
+    expect(afterCount).toBe(0);
+  });
+
   it("seeded aggregate variables are present", async () => {
     const { data, error } = await sb
       .from("ending_variables")
