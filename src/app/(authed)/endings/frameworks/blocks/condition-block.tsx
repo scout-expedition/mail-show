@@ -1,7 +1,14 @@
 "use client";
 
 import { useRef, useState, useTransition } from "react";
-import { ChevronDown, ChevronLeft, GripVertical, Plus, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronLeft,
+  GripVertical,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
@@ -9,9 +16,13 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
+import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
+import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { addChip, addRow, removeChip, removeRow } from "../actions";
 import { useDrag, type DragTarget } from "../lib/drag";
+import { useAnalysis } from "../lib/analysis";
 import { AddChipButton, ChipPill, type AddChipInput } from "./chip";
 import { DropLine } from "./text-block";
 
@@ -40,9 +51,12 @@ export function ConditionBlock({
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
+  const analysis = useAnalysis();
   const isDragging = drag.dragId === block.id;
   const [pending, startTransition] = useTransition();
   const [collapsed, setCollapsed] = useState(false);
+  const [uncoveredOpen, setUncoveredOpen] = useState(false);
+  const blockAnalysis = analysis.blockAnalysis.get(block.id);
   const targetBefore =
     drag.target?.kind === "near" &&
     drag.target.targetId === block.id &&
@@ -139,6 +153,15 @@ export function ConditionBlock({
             )}
           </button>
           Condition · {rows.length} {rows.length === 1 ? "row" : "rows"}
+          {blockAnalysis ? (
+            <BlockAnalysisBadge
+              analysis={blockAnalysis}
+              variables={variables}
+              values={values}
+              open={uncoveredOpen}
+              onToggle={() => setUncoveredOpen((v) => !v)}
+            />
+          ) : null}
         </div>
         <button
           type="button"
@@ -153,9 +176,20 @@ export function ConditionBlock({
 
       {collapsed ? null : (
         <>
+      {blockAnalysis?.status === "has_uncovered" && uncoveredOpen ? (
+        <UncoveredList
+          analysis={blockAnalysis}
+          variables={variables}
+          values={values}
+        />
+      ) : null}
       <div className="flex flex-col gap-1.5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
+          const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
+          const coveredByOrdinal = coveredById
+            ? analysis.rowSortOrder.get(coveredById) ?? null
+            : null;
           return (
             <ConditionRow
               key={row.id}
@@ -163,6 +197,7 @@ export function ConditionBlock({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
+              shadowedByOrdinal={coveredByOrdinal}
               onAddChip={(input) =>
                 startTransition(async () => {
                   await addChip({
@@ -220,6 +255,7 @@ function ConditionRow({
   variableIndex,
   variables,
   values,
+  shadowedByOrdinal,
   onAddChip,
   onRemoveChip,
   onChangeChip,
@@ -230,6 +266,7 @@ function ConditionRow({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  shadowedByOrdinal: number | null;
   onAddChip: (input: AddChipInput) => void;
   onRemoveChip: (chipId: string) => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
@@ -237,7 +274,13 @@ function ConditionRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-border/60 bg-card/40 p-2">
+    <div
+      className={cn(
+        "grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-border/60 bg-card/40 p-2",
+        shadowedByOrdinal != null &&
+          "border-amber-500/50 bg-amber-500/5"
+      )}
+    >
       <div className="flex flex-wrap items-start gap-1 self-start">
         {chips.length === 0 ? (
           <span className="text-[11px] italic text-muted-foreground">
@@ -260,6 +303,15 @@ function ConditionRow({
           values={values}
           onAdd={onAddChip}
         />
+        {shadowedByOrdinal != null ? (
+          <span
+            title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
+            className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200"
+          >
+            <AlertTriangle size={10} aria-hidden />
+            shadowed by row {shadowedByOrdinal}
+          </span>
+        ) : null}
       </div>
       <div className="flex flex-col gap-1">{children}</div>
       <button
@@ -273,4 +325,133 @@ function ConditionRow({
       </button>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------
+// Static-analysis badge + expansion panel
+// ---------------------------------------------------------------------
+
+function BlockAnalysisBadge({
+  analysis,
+  variables,
+  values,
+  open,
+  onToggle,
+}: {
+  analysis: import("@/lib/endings/static-analysis").BlockAnalysis;
+  variables: VariableState[];
+  values: EndingVariableValue[];
+  open: boolean;
+  onToggle: () => void;
+}) {
+  void variables;
+  void values;
+  if (analysis.status === "covered" || analysis.status === "no_finite_vars") {
+    return null;
+  }
+  if (analysis.status === "skipped_numeric") {
+    return (
+      <span
+        title="At least one row in this block uses a numeric chip; static analysis can't enumerate the infinite assignment space."
+        className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
+      >
+        partial coverage
+      </span>
+    );
+  }
+  if (analysis.status === "cap_exceeded") {
+    return (
+      <span
+        title="Too many variable combinations to enumerate uncovered assignments."
+        className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
+      >
+        too many combos
+      </span>
+    );
+  }
+  // has_uncovered
+  const count = analysis.uncovered.length;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={open ? "Hide uncovered list" : "Show uncovered list"}
+      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200 hover:bg-amber-500/20"
+    >
+      <AlertTriangle size={10} aria-hidden />
+      {count} {count === 1 ? "assignment" : "assignments"} uncovered
+    </button>
+  );
+}
+
+function UncoveredList({
+  analysis,
+  variables,
+  values,
+}: {
+  analysis: import("@/lib/endings/static-analysis").BlockAnalysis;
+  variables: VariableState[];
+  values: EndingVariableValue[];
+}) {
+  const variableById = new Map(variables.map((v) => [v.id, v]));
+  const valueById = new Map(values.map((v) => [v.id, v]));
+  return (
+    <div className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px]">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-widest text-amber-200/80">
+        Uncovered assignments
+      </div>
+      <ul className="flex flex-col gap-0.5 text-amber-100/80">
+        {analysis.uncovered.map((a, i) => (
+          <li key={i} className="font-mono">
+            · {formatAssignment(a, variableById, valueById)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function formatAssignment(
+  assignment: Record<string, string>,
+  variableById: Map<string, VariableState>,
+  valueById: Map<string, EndingVariableValue>
+): string {
+  const parts: string[] = [];
+  for (const [variableId, outcome] of Object.entries(assignment)) {
+    const v = variableById.get(variableId);
+    const name = v?.name ?? variableId;
+    parts.push(`${name} = ${formatOutcome(v, outcome, valueById)}`);
+  }
+  return parts.join(" & ");
+}
+
+function formatOutcome(
+  variable: VariableState | undefined,
+  outcome: string,
+  valueById: Map<string, EndingVariableValue>
+): string {
+  if (outcome === UNSET_TEXT_OUTCOME) return "unset";
+  if (outcome === TIE_OUTCOME) return "tie";
+  if (variable?.kind === "text") {
+    return valueById.get(outcome)?.value ?? outcome;
+  }
+  if (variable?.kind === "aggregate_ref" && variable.aggregate_ref) {
+    const cols = AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref] ?? [];
+    if (cols.length === 2) {
+      // class_affinity outcomes are "top|bottom"; render as "top wins"
+      // since the bottom is implied.
+      const [top] = outcome.split("|");
+      return `${labelForCol(top)} top`;
+    }
+    // nation_affinity outcomes are "top|bottom"; bottom may be 'tie'.
+    const [top, bottom] = outcome.split("|");
+    if (bottom === TIE_OUTCOME) return `${labelForCol(top)} top, tied bottom`;
+    if (top === TIE_OUTCOME) return `tied top, ${labelForCol(bottom)} bottom`;
+    return `${labelForCol(top)} top, ${labelForCol(bottom)} bottom`;
+  }
+  return outcome;
+}
+
+function labelForCol(col: string): string {
+  return (VARIABLE_LABELS as Record<string, string>)[col] ?? col;
 }
