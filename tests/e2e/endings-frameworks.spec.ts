@@ -302,15 +302,15 @@ test("static analysis: shadowed row + uncovered assignment badges", async ({
     page.getByText(/shadowed by row 1/i)
   ).toBeVisible({ timeout: 5000 });
 
-  // The header should also flag uncovered values: SUMMER, AUTUMN, and
-  // unset all fall through. With 3 values + unset = 4 assignments
-  // total, and only WINTER matches, that's 3 uncovered.
+  // The header should also flag uncovered values: SUMMER and AUTUMN
+  // both fall through. (The runtime "unset" state is intentionally
+  // excluded from authoring analysis.)
   await expect(
-    page.getByRole("button", { name: /3 assignments uncovered/i })
+    page.getByRole("button", { name: /2 assignments uncovered/i })
   ).toBeVisible();
 
   // Clicking the badge expands the list; it should mention SUMMER and AUTUMN.
-  await page.getByRole("button", { name: /3 assignments uncovered/i }).click();
+  await page.getByRole("button", { name: /2 assignments uncovered/i }).click();
   await expect(page.getByText("Uncovered assignments")).toBeVisible();
   await expect(page.getByText(/SUMMER/).first()).toBeVisible();
   await expect(page.getByText(/AUTUMN/).first()).toBeVisible();
