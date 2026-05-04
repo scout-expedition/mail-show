@@ -232,3 +232,17 @@ export function matchingRowsByBlock(
   }
   return out;
 }
+
+/**
+ * Rows that match the current selections but lose to an earlier
+ * first-match-wins row in the same condition block. Powers the preview
+ * overlap badge.
+ */
+export function shadowedRowIds(input: EvalInputs): Set<string> {
+  const matching = matchingRowsByBlock(input);
+  const shadowed = new Set<string>();
+  for (const ids of matching.values()) {
+    for (let i = 1; i < ids.length; i++) shadowed.add(ids[i]);
+  }
+  return shadowed;
+}

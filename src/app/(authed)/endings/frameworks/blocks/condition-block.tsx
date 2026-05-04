@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useTransition } from "react";
-import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { useRef, useState, useTransition } from "react";
+import { ChevronDown, ChevronLeft, GripVertical, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
@@ -40,6 +40,7 @@ export function ConditionBlock({
   const drag = useDrag();
   const isDragging = drag.dragId === block.id;
   const [pending, startTransition] = useTransition();
+  const [collapsed, setCollapsed] = useState(false);
 
   function handleAddRow() {
     startTransition(async () => {
@@ -71,7 +72,7 @@ export function ConditionBlock({
         isDragging && "opacity-40"
       )}
     >
-      <div className="flex items-center justify-between gap-2 px-1 pb-2">
+      <div className={cn("flex items-center justify-between gap-2 px-1", collapsed ? "pb-0" : "pb-2") }>
         <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
@@ -79,6 +80,20 @@ export function ConditionBlock({
           >
             <GripVertical size={12} />
           </span>
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-label={collapsed ? "Expand condition block" : "Collapse condition block"}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Expand" : "Collapse"}
+            className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent/40 hover:text-foreground"
+          >
+            {collapsed ? (
+              <ChevronLeft size={12} aria-hidden />
+            ) : (
+              <ChevronDown size={12} aria-hidden />
+            )}
+          </button>
           Condition · {rows.length} {rows.length === 1 ? "row" : "rows"}
         </div>
         <button
@@ -92,6 +107,8 @@ export function ConditionBlock({
         </button>
       </div>
 
+      {collapsed ? null : (
+        <>
       <div className="flex flex-col gap-1.5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
@@ -145,6 +162,8 @@ export function ConditionBlock({
           <Plus size={11} aria-hidden /> row
         </button>
       </div>
+        </>
+      )}
     </div>
   );
 }
