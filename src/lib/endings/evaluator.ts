@@ -8,9 +8,11 @@
 // that the server actions persist. The evaluator does no I/O and no React,
 // so it's trivially testable.
 
-import type {
-  EndingChipOperator,
-  EndingVariableKind,
+import {
+  AGGREGATE_OPTIONS_BY_REF,
+  type AggregateRef,
+  type EndingChipOperator,
+  type EndingVariableKind,
 } from "@/lib/db/enums";
 
 export interface EvalBlock {
@@ -35,12 +37,15 @@ export interface EvalChip {
   operator: EndingChipOperator;
   text_value_id: string | null;
   number_value: number | null;
+  aggregate_value: string | null;
   sort_order: number;
 }
 
 export interface EvalVariable {
   id: string;
   kind: EndingVariableKind;
+  /** Set when kind === 'aggregate_ref'. */
+  aggregate_ref: AggregateRef | null;
 }
 
 export interface PreviewSelections {
@@ -48,6 +53,16 @@ export interface PreviewSelections {
   textValueIds: Record<string, string | null>;
   /** numeric input for each number_ref variable. Missing/null means unset. */
   numbers: Record<string, number | null>;
+  /**
+   * Map from impact-column name (e.g. 'gentry') to the variable_id of the
+   * seeded number_ref variable that wraps it. Aggregate chips use this to
+   * look the underlying scores out of `numbers` without leaking variable
+   * identity into the chip row data.
+   *
+   * Optional so existing tests + selections that don't touch aggregates
+   * keep working.
+   */
+  numberRefByName?: Map<string, string>;
 }
 
 export const EMPTY_SELECTIONS: PreviewSelections = {
@@ -72,6 +87,9 @@ export function evaluateChip(
     if (chip.operator === "≠") return !equal;
     return false; // numeric operators not valid for text variables
   }
+  if (variable.kind === "aggregate_ref") {
+    return evaluateAggregateChip(chip, variable, selections);
+  }
   // number_ref
   const value = selections.numbers[variable.id];
   if (value == null || chip.number_value == null) return false;
@@ -92,6 +110,52 @@ export function evaluateChip(
     default:
       return false;
   }
+}
+
+/**
+ * Aggregate chip semantics: argmax (top) / argmin (bottom) over the
+ * underlying impact columns. `=` matches when the winner equals the
+ * chip's aggregate_value; `≠` is the negation.
+ *
+ * Tie semantics: tie → false (operator agnostic). Authoring rarely
+ * intends "either is acceptable", and we plan a tiebreaker proposal as
+ * a follow-up.
+ *
+ * Any underlying score unset → false (matches "no fall-through" rule
+ * for unset variables elsewhere in the evaluator).
+ */
+function evaluateAggregateChip(
+  chip: EvalChip,
+  variable: EvalVariable,
+  selections: PreviewSelections
+): boolean {
+  if (variable.aggregate_ref == null) return false;
+  if (chip.aggregate_value == null) return false;
+  const cols = AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref];
+  if (!cols || cols.length === 0) return false;
+  const numberRefByName = selections.numberRefByName;
+  if (!numberRefByName) return false;
+  const vals: number[] = [];
+  for (const col of cols) {
+    const vid = numberRefByName.get(col);
+    if (vid == null) return false;
+    const v = selections.numbers[vid];
+    if (v == null) return false;
+    vals.push(v);
+  }
+  const isTop =
+    chip.operator === "top=" || chip.operator === "top≠";
+  const isBottom =
+    chip.operator === "bottom=" || chip.operator === "bottom≠";
+  if (!isTop && !isBottom) return false;
+  const extreme = isTop ? Math.max(...vals) : Math.min(...vals);
+  const tiedCount = vals.filter((v) => v === extreme).length;
+  if (tiedCount > 1) return false;
+  const winnerCol = cols[vals.indexOf(extreme)];
+  const isEqual = winnerCol === chip.aggregate_value;
+  return chip.operator === "top=" || chip.operator === "bottom="
+    ? isEqual
+    : !isEqual;
 }
 
 /**

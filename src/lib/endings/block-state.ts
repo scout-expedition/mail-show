@@ -5,6 +5,7 @@
 // lookups used by the recursive renderer and the drag-drop wiring.
 
 import type {
+  AggregateRef,
   EndingChipOperator,
   EndingVariableKind,
 } from "@/lib/db/enums";
@@ -32,6 +33,7 @@ export interface ChipState {
   operator: EndingChipOperator;
   text_value_id: string | null;
   number_value: number | null;
+  aggregate_value: string | null;
   sort_order: number;
 }
 
@@ -40,6 +42,7 @@ export interface VariableState {
   name: string;
   kind: EndingVariableKind;
   number_ref: string | null;
+  aggregate_ref: AggregateRef | null;
   default_value_id: string | null;
   color_index: number;
   /** Optional hex override (e.g. nation color, impact-column color).

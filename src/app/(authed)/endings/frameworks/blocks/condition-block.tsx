@@ -171,6 +171,7 @@ export function ConditionBlock({
                     operator: input.operator,
                     text_value_id: input.text_value_id,
                     number_value: input.number_value,
+                    aggregate_value: input.aggregate_value,
                   });
                 })
               }

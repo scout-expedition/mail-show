@@ -13,8 +13,24 @@ import {
   type PreviewSelections,
 } from "./evaluator";
 
-const textVar = (id: string): EvalVariable => ({ id, kind: "text" });
-const numVar = (id: string): EvalVariable => ({ id, kind: "number_ref" });
+const textVar = (id: string): EvalVariable => ({
+  id,
+  kind: "text",
+  aggregate_ref: null,
+});
+const numVar = (id: string): EvalVariable => ({
+  id,
+  kind: "number_ref",
+  aggregate_ref: null,
+});
+const aggVar = (
+  id: string,
+  ref: "class_affinity" | "nation_affinity"
+): EvalVariable => ({
+  id,
+  kind: "aggregate_ref",
+  aggregate_ref: ref,
+});
 
 const textChip = (
   id: string,
@@ -30,6 +46,7 @@ const textChip = (
   operator,
   text_value_id: textValueId,
   number_value: null,
+  aggregate_value: null,
   sort_order: sortOrder,
 });
 
@@ -47,6 +64,25 @@ const numChip = (
   operator,
   text_value_id: null,
   number_value: number,
+  aggregate_value: null,
+  sort_order: sortOrder,
+});
+
+const aggChip = (
+  id: string,
+  rowId: string,
+  variableId: string,
+  aggregateValue: string,
+  operator: "top=" | "top≠" | "bottom=" | "bottom≠",
+  sortOrder = 0
+): EvalChip => ({
+  id,
+  row_id: rowId,
+  variable_id: variableId,
+  operator,
+  text_value_id: null,
+  number_value: null,
+  aggregate_value: aggregateValue,
   sort_order: sortOrder,
 });
 
@@ -169,6 +205,167 @@ describe("evaluateChip / number_ref", () => {
     const chip = numChip("c", "r", variable.id, 0, "≥");
     const sel = numSelections({});
     expect(evaluateChip(chip, variable, sel)).toBe(false);
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateChip — aggregate_ref variables (Phase 4)
+// ----------------------------------------------------------------------
+
+describe("evaluateChip / aggregate_ref", () => {
+  // Stand-in number_ref variable IDs for the underlying impact columns.
+  // The evaluator looks them up via `selections.numberRefByName`.
+  const PROLETARIAT = "var-proletariat";
+  const GENTRY = "var-gentry";
+  const FOLOS = "var-folos";
+  const EMBERLYN = "var-emberlyn";
+  const SPOKGRAD = "var-spokgrad";
+  const PELICO = "var-pelico";
+  const EPICENTER = "var-epicenter";
+
+  function classSelections(
+    proletariat: number | null,
+    gentry: number | null
+  ): PreviewSelections {
+    return {
+      textValueIds: {},
+      numbers: { [PROLETARIAT]: proletariat, [GENTRY]: gentry },
+      numberRefByName: new Map<string, string>([
+        ["proletariat", PROLETARIAT],
+        ["gentry", GENTRY],
+      ]),
+    };
+  }
+
+  function nationSelections(values: {
+    folos: number | null;
+    emberlyn: number | null;
+    spokgrad: number | null;
+    pelico: number | null;
+    epicenter: number | null;
+  }): PreviewSelections {
+    return {
+      textValueIds: {},
+      numbers: {
+        [FOLOS]: values.folos,
+        [EMBERLYN]: values.emberlyn,
+        [SPOKGRAD]: values.spokgrad,
+        [PELICO]: values.pelico,
+        [EPICENTER]: values.epicenter,
+      },
+      numberRefByName: new Map<string, string>([
+        ["folos", FOLOS],
+        ["emberlyn", EMBERLYN],
+        ["spokgrad", SPOKGRAD],
+        ["pelico", PELICO],
+        ["epicenter", EPICENTER],
+      ]),
+    };
+  }
+
+  const klass = aggVar("VAR_CLASS", "class_affinity");
+  const nation = aggVar("VAR_NATION", "nation_affinity");
+
+  it.each([
+    // class_affinity: proletariat=5, gentry=2
+    ["top=", "proletariat", 5, 2, true],
+    ["top=", "gentry", 5, 2, false],
+    ["top≠", "gentry", 5, 2, true],
+    ["top≠", "proletariat", 5, 2, false],
+    ["bottom=", "gentry", 5, 2, true],
+    ["bottom=", "proletariat", 5, 2, false],
+    ["bottom≠", "proletariat", 5, 2, true],
+    ["bottom≠", "gentry", 5, 2, false],
+    // Reversed scores
+    ["top=", "gentry", 1, 4, true],
+    ["bottom=", "proletariat", 1, 4, true],
+  ] as const)(
+    "class_affinity %s %s with proletariat=%s gentry=%s → %s",
+    (op, target, proletariat, gentry, expected) => {
+      const chip = aggChip("c", "r", klass.id, target as string, op);
+      const sel = classSelections(proletariat, gentry);
+      expect(evaluateChip(chip, klass, sel)).toBe(expected);
+    }
+  );
+
+  it("ties produce no match for any aggregate operator", () => {
+    const sel = classSelections(5, 5);
+    for (const op of ["top=", "top≠", "bottom=", "bottom≠"] as const) {
+      const chip = aggChip("c", "r", klass.id, "proletariat", op);
+      expect(evaluateChip(chip, klass, sel)).toBe(false);
+    }
+  });
+
+  it("any underlying score unset → no match", () => {
+    const sel = classSelections(null, 2);
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("missing numberRefByName map → no match", () => {
+    const sel: PreviewSelections = {
+      textValueIds: {},
+      numbers: { [PROLETARIAT]: 5, [GENTRY]: 2 },
+      // numberRefByName intentionally omitted
+    };
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("nation_affinity picks epicenter when it has the highest score", () => {
+    const sel = nationSelections({
+      folos: 3,
+      emberlyn: 1,
+      spokgrad: 2,
+      pelico: 0,
+      epicenter: 4,
+    });
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "epicenter", "top="),
+        nation,
+        sel
+      )
+    ).toBe(true);
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "folos", "top="),
+        nation,
+        sel
+      )
+    ).toBe(false);
+  });
+
+  it("nation_affinity picks pelico as the bottom when it has the lowest score", () => {
+    const sel = nationSelections({
+      folos: 3,
+      emberlyn: 1,
+      spokgrad: 2,
+      pelico: 0,
+      epicenter: 4,
+    });
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "pelico", "bottom="),
+        nation,
+        sel
+      )
+    ).toBe(true);
+  });
+
+  it("aggregate_value missing from chip → no match", () => {
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    chip.aggregate_value = null;
+    const sel = classSelections(5, 2);
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("non-aggregate operator on an aggregate variable → no match", () => {
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    // Force a numeric operator on an aggregate variable.
+    (chip as { operator: string }).operator = "≥";
+    const sel = classSelections(5, 2);
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
   });
 });
 

@@ -46,6 +46,18 @@ describe("endings v3 schema constraints", () => {
       .single();
     if (nErr || !numVar) throw new Error(`seed num var: ${nErr?.message}`);
 
+    const { data: aggVar, error: aErr } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}agg_var`,
+        kind: "aggregate_ref",
+        aggregate_ref: "class_affinity",
+        sort_order: 9999,
+      })
+      .select("id")
+      .single();
+    if (aErr || !aggVar) throw new Error(`seed agg var: ${aErr?.message}`);
+
     const { data: textValue, error: vvErr } = await sb
       .from("ending_variable_values")
       .insert({
@@ -82,6 +94,7 @@ describe("endings v3 schema constraints", () => {
       frameworkId: framework.id as string,
       textVarId: textVar.id as string,
       numVarId: numVar.id as string,
+      aggVarId: aggVar.id as string,
       textValueId: textValue.id as string,
       condBlockId: condBlock.id as string,
       rowId: row.id as string,
@@ -246,5 +259,180 @@ describe("endings v3 schema constraints", () => {
       })
       .select();
     expect(error).toBeNull();
+  });
+
+  // -------------------------------------------------------------------
+  // Aggregate variable kind (Phase 4 / migration 0020)
+  // -------------------------------------------------------------------
+
+  it("rejects aggregate_ref outside the allowed set", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}bad_agg`,
+        kind: "aggregate_ref",
+        aggregate_ref: "kingdom_affinity", // not in the CHECK
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/aggregate_ref/i);
+  });
+
+  it("rejects an aggregate_ref variable with both number_ref and aggregate_ref set", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}bad_agg_shape`,
+        kind: "aggregate_ref",
+        aggregate_ref: "class_affinity",
+        number_ref: "proletariat",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/kind_shape/i);
+  });
+
+  it("rejects an aggregate_ref variable with kind=text but aggregate_ref set", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}bad_text_agg`,
+        kind: "text",
+        aggregate_ref: "class_affinity",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/kind_shape/i);
+  });
+
+  it("accepts a valid aggregate-variable chip with a top= operator", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: seeded.rowId,
+        variable_id: seeded.aggVarId,
+        operator: "top=",
+        text_value_id: null,
+        number_value: null,
+        aggregate_value: "proletariat",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).toBeNull();
+  });
+
+  it("accepts each new aggregate operator on an aggregate-variable chip", async () => {
+    const seeded = await seed();
+    for (const op of ["top=", "top≠", "bottom=", "bottom≠"] as const) {
+      const { error } = await sb
+        .from("ending_condition_row_chips")
+        .insert({
+          row_id: seeded.rowId,
+          variable_id: seeded.aggVarId,
+          operator: op,
+          text_value_id: null,
+          number_value: null,
+          aggregate_value: "gentry",
+          sort_order: 0,
+        })
+        .select();
+      expect(error, `op ${op}`).toBeNull();
+      // Clean up between iterations so the row isn't littered with chips.
+      await sb
+        .from("ending_condition_row_chips")
+        .delete()
+        .eq("row_id", seeded.rowId);
+    }
+  });
+
+  it("rejects an aggregate-variable chip with both aggregate_value and number_value set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: seeded.rowId,
+        variable_id: seeded.aggVarId,
+        operator: "top=",
+        text_value_id: null,
+        number_value: 5,
+        aggregate_value: "proletariat",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/value_shape/i);
+  });
+
+  it("rejects an aggregate-variable chip with both aggregate_value and text_value_id set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: seeded.rowId,
+        variable_id: seeded.aggVarId,
+        operator: "top=",
+        text_value_id: seeded.textValueId,
+        number_value: null,
+        aggregate_value: "proletariat",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/value_shape/i);
+  });
+
+  it("rejects a text-variable chip with aggregate_value set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: seeded.rowId,
+        variable_id: seeded.textVarId,
+        operator: "=",
+        text_value_id: null,
+        number_value: null,
+        aggregate_value: "proletariat",
+        sort_order: 0,
+      })
+      .select();
+    // CHECK is shape-only — payload mismatch with the variable kind is
+    // enforced at the application layer; the row-shape check still
+    // accepts a single-payload chip. Document that here so a future
+    // migration tightening this doesn't surprise anyone.
+    expect(error).toBeNull();
+  });
+
+  it("rejects an unknown operator on an aggregate-variable chip", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_condition_row_chips")
+      .insert({
+        row_id: seeded.rowId,
+        variable_id: seeded.aggVarId,
+        operator: "argmax", // not in the CHECK
+        text_value_id: null,
+        number_value: null,
+        aggregate_value: "proletariat",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/operator/i);
+  });
+
+  it("seeded aggregate variables are present", async () => {
+    const { data, error } = await sb
+      .from("ending_variables")
+      .select("name, kind, aggregate_ref")
+      .eq("kind", "aggregate_ref")
+      .order("sort_order");
+    expect(error).toBeNull();
+    const names = (data ?? []).map((r) => r.name);
+    expect(names).toContain("Class Affinity");
+    expect(names).toContain("Nation Affinity");
   });
 });

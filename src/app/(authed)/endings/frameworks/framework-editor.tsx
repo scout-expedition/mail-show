@@ -37,7 +37,11 @@ import {
   type RowState,
   type VariableState,
 } from "@/lib/endings/block-state";
-import { IMPACT_CHIP_COLORS } from "@/lib/endings/impact-colors";
+import {
+  AGGREGATE_CHIP_COLORS,
+  IMPACT_CHIP_COLORS,
+} from "@/lib/endings/impact-colors";
+import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
 import { BlockList } from "./blocks/block-list";
 import { PreviewView } from "./preview-view";
@@ -105,6 +109,7 @@ export function FrameworkEditor({
           operator: c.operator,
           text_value_id: c.text_value_id,
           number_value: c.number_value,
+          aggregate_value: c.aggregate_value,
           sort_order: c.sort_order,
         })
       ),
@@ -188,12 +193,19 @@ export function FrameworkEditor({
             IMPACT_CHIP_COLORS[v.number_ref] ??
             nationColorByName.get(v.name.toLowerCase()) ??
             null;
+        } else if (v.kind === "aggregate_ref" && v.aggregate_ref) {
+          color_hex = AGGREGATE_CHIP_COLORS[v.aggregate_ref] ?? null;
         }
         return {
           id: v.id,
           name: v.name,
           kind: v.kind,
           number_ref: v.number_ref,
+          aggregate_ref:
+            v.aggregate_ref === "class_affinity" ||
+            v.aggregate_ref === "nation_affinity"
+              ? v.aggregate_ref
+              : null,
           default_value_id: v.default_value_id,
           color_index: v.color_index,
           color_hex,
@@ -215,9 +227,26 @@ export function FrameworkEditor({
   const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
 
   // Variables actually referenced by any chip (for the preview UI).
+  // Aggregate variables expand into their underlying number_ref scores
+  // so the preview surfaces inputs for, e.g., proletariat + gentry when a
+  // Class Affinity chip is in play.
   const referencedVariables = useMemo(() => {
     const ids = new Set<string>();
     for (const c of chipState) ids.add(c.variable_id);
+    const numberRefByName = new Map<string, VariableState>();
+    for (const v of variableState) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        numberRefByName.set(v.number_ref, v);
+      }
+    }
+    for (const v of variableState) {
+      if (!ids.has(v.id)) continue;
+      if (v.kind !== "aggregate_ref" || !v.aggregate_ref) continue;
+      for (const col of AGGREGATE_OPTIONS_BY_REF[v.aggregate_ref]) {
+        const underlying = numberRefByName.get(col);
+        if (underlying) ids.add(underlying.id);
+      }
+    }
     return variableState.filter((v) => ids.has(v.id));
   }, [chipState, variableState]);
 
@@ -233,7 +262,7 @@ export function FrameworkEditor({
           next.textValueIds[v.id] = v.default_value_id ?? null;
         }
         if (v.kind === "number_ref" && next.numbers[v.id] === undefined) {
-          next.numbers[v.id] = null;
+          next.numbers[v.id] = 0;
         }
       }
       return next;
@@ -484,6 +513,7 @@ export function FrameworkEditor({
       operator: c.operator,
       text_value_id: c.text_value_id,
       number_value: c.number_value,
+      aggregate_value: c.aggregate_value,
       sort_order: i,
     }));
 

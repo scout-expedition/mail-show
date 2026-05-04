@@ -168,7 +168,8 @@ export const VALID_OPERATOR_REFERENCES: Record<RuleOperator, RuleReferenceType[]
 export const BOOLEAN_TARGETS: RuleTarget[] = ["is_counterfeit"];
 
 // Endings — chip operator + variable kind. Mirrored from
-// supabase/migrations/0014_endings_v3.sql CHECK constraints.
+// supabase/migrations/0014_endings_v3.sql + 0020_endings_aggregate.sql
+// CHECK constraints.
 
 export const ENDING_CHIP_OPERATORS = [
   "=",
@@ -177,17 +178,48 @@ export const ENDING_CHIP_OPERATORS = [
   "≤",
   ">",
   "≥",
+  "top=",
+  "top≠",
+  "bottom=",
+  "bottom≠",
 ] as const;
 export type EndingChipOperator = (typeof ENDING_CHIP_OPERATORS)[number];
 
-export const ENDING_VARIABLE_KINDS = ["text", "number_ref"] as const;
+export const ENDING_VARIABLE_KINDS = [
+  "text",
+  "number_ref",
+  "aggregate_ref",
+] as const;
 export type EndingVariableKind = (typeof ENDING_VARIABLE_KINDS)[number];
 
-/** Operators allowed for each variable kind. Phase 1 only writes '='. */
+/** Operators allowed for each variable kind. */
 export const ENDING_OPERATORS_BY_KIND: Record<
   EndingVariableKind,
   EndingChipOperator[]
 > = {
   text: ["=", "≠"],
   number_ref: ["=", "≠", "<", "≤", ">", "≥"],
+  aggregate_ref: ["top=", "top≠", "bottom=", "bottom≠"],
+};
+
+/** The two aggregate refs supported in 0020. Set by ending_variables.aggregate_ref. */
+export const AGGREGATE_REFS = ["class_affinity", "nation_affinity"] as const;
+export type AggregateRef = (typeof AGGREGATE_REFS)[number];
+
+/**
+ * Underlying impact-column scores compared by each aggregate ref. The
+ * evaluator argmax/argmins over these column names; the chip's
+ * aggregate_value is one of them.
+ */
+export const AGGREGATE_OPTIONS_BY_REF: Record<AggregateRef, string[]> = {
+  class_affinity: ["proletariat", "gentry"],
+  nation_affinity: ["folos", "emberlyn", "spokgrad", "pelico", "epicenter"],
+};
+
+/** Friendly labels for aggregate operators in the picker / chip UI. */
+export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
+  "top=": "top is",
+  "top≠": "top is not",
+  "bottom=": "bottom is",
+  "bottom≠": "bottom is not",
 };

@@ -7,12 +7,16 @@ import { Select } from "@/components/ui/select";
 import { paletteColor } from "@/lib/endings/color-palette";
 import { AFFINITY_NUMBER_REFS } from "@/lib/endings/impact-colors";
 import {
+  AGGREGATE_OPERATOR_LABELS,
+  AGGREGATE_OPTIONS_BY_REF,
   ENDING_CHIP_OPERATORS,
   ENDING_OPERATORS_BY_KIND,
+  type AggregateRef,
   type EndingChipOperator,
 } from "@/lib/db/enums";
 import type { ChipState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import { PickerCtx } from "../lib/picker";
 
 function chipColor(variable: VariableState): string {
@@ -28,6 +32,10 @@ function chipDisplayName(variable: VariableState): string {
     return `${variable.name} Affinity`;
   }
   return variable.name;
+}
+
+function aggregateOptionLabel(col: string): string {
+  return (VARIABLE_LABELS as Record<string, string>)[col] ?? col;
 }
 
 /**
@@ -50,12 +58,24 @@ export interface AddChipInput {
   operator: EndingChipOperator;
   text_value_id: string | null;
   number_value: number | null;
+  aggregate_value: string | null;
+}
+
+/**
+ * Operator label as shown on the chip pill. Aggregate operators get a
+ * human-readable label ("top is", "top is not", …); the rest render the
+ * raw symbol.
+ */
+function operatorLabel(op: EndingChipOperator): string {
+  return AGGREGATE_OPERATOR_LABELS[op] ?? op;
 }
 
 /**
  * Chip pill. For text variables: `[VAR] [op] [VALUE]` with op + value
  * editable inline. For number_ref variables: `[VAR] [op] [number]` with
- * op + number editable inline. Removing the chip is the × icon.
+ * op + number editable inline. For aggregate variables:
+ * `[VAR] [top is | …] [Working Class | …]`.
+ * Removing the chip is the × icon.
  */
 export function ChipPill({
   chip,
@@ -89,12 +109,20 @@ export function ChipPill({
 
   const color = chipColor(variable);
   const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
-  const valueLabel =
-    variable.kind === "text"
-      ? values.find((v) => v.id === chip.text_value_id)?.value ?? "—"
-      : chip.number_value == null
-      ? "—"
-      : String(chip.number_value);
+  const aggregateOptions =
+    variable.kind === "aggregate_ref" && variable.aggregate_ref
+      ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]
+      : [];
+  let valueLabel: string;
+  if (variable.kind === "text") {
+    valueLabel = values.find((v) => v.id === chip.text_value_id)?.value ?? "—";
+  } else if (variable.kind === "number_ref") {
+    valueLabel = chip.number_value == null ? "—" : String(chip.number_value);
+  } else {
+    valueLabel = chip.aggregate_value
+      ? aggregateOptionLabel(chip.aggregate_value)
+      : "—";
+  }
 
   return (
     <span
@@ -120,7 +148,7 @@ export function ChipPill({
         >
           {allowedOps.map((op) => (
             <option key={op} value={op}>
-              {op}
+              {operatorLabel(op)}
             </option>
           ))}
         </Select>
@@ -131,7 +159,7 @@ export function ChipPill({
           className="opacity-60 hover:opacity-100"
           title={allowedOps.length > 1 ? "Change operator" : undefined}
         >
-          {chip.operator}
+          {operatorLabel(chip.operator)}
         </button>
       )}
 
@@ -156,7 +184,7 @@ export function ChipPill({
                 </option>
               ))}
           </Select>
-        ) : (
+        ) : variable.kind === "number_ref" ? (
           <Input
             autoFocus
             type="number"
@@ -170,6 +198,24 @@ export function ChipPill({
             onBlur={() => setEditing("none")}
             className="h-5 w-16 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
           />
+        ) : (
+          <Select
+            autoFocus
+            value={chip.aggregate_value ?? ""}
+            onChange={(e) => {
+              onChange({ aggregate_value: e.target.value || null });
+              setEditing("none");
+            }}
+            onBlur={() => setEditing("none")}
+            className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+          >
+            <option value="">—</option>
+            {aggregateOptions.map((col) => (
+              <option key={col} value={col}>
+                {aggregateOptionLabel(col)}
+              </option>
+            ))}
+          </Select>
         )
       ) : (
         <button
@@ -193,10 +239,19 @@ export function ChipPill({
   );
 }
 
+const AGGREGATE_OPTIONS: Array<{
+  ref: AggregateRef;
+  label: string;
+}> = [
+  { ref: "class_affinity", label: "Class Affinity" },
+  { ref: "nation_affinity", label: "Nation Affinity" },
+];
+
 /**
  * "+ chip" inline picker. After picking a variable, the operator dropdown
  * is filtered by variable kind, and the value control switches between a
- * value select (text) and a numeric input (number_ref).
+ * value select (text), a numeric input (number_ref), and a class/nation
+ * select (aggregate_ref).
  */
 export function AddChipButton({
   variables,
@@ -212,6 +267,7 @@ export function AddChipButton({
   const [operator, setOperator] = useState<EndingChipOperator>("=");
   const [textValueId, setTextValueId] = useState<string>("");
   const [numberValue, setNumberValue] = useState<string>("");
+  const [aggregateValue, setAggregateValue] = useState<string>("");
   const picker = useContext(PickerCtx);
 
   // Track this picker's open state with the editor so Save knows whether
@@ -228,6 +284,7 @@ export function AddChipButton({
     setOperator("=");
     setTextValueId("");
     setNumberValue("");
+    setAggregateValue("");
   }
 
   const variable = variables.find((v) => v.id === variableId) ?? null;
@@ -235,6 +292,10 @@ export function AddChipButton({
     ? ENDING_OPERATORS_BY_KIND[variable.kind]
     : ENDING_CHIP_OPERATORS;
   const eligibleValues = values.filter((v) => v.variable_id === variableId);
+  const aggregateOptions =
+    variable?.kind === "aggregate_ref" && variable.aggregate_ref
+      ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]
+      : [];
 
   function handleConfirm() {
     if (!variable) return;
@@ -245,14 +306,25 @@ export function AddChipButton({
         operator,
         text_value_id: textValueId,
         number_value: null,
+        aggregate_value: null,
       });
-    } else {
+    } else if (variable.kind === "number_ref") {
       if (numberValue === "" || Number.isNaN(Number(numberValue))) return;
       onAdd({
         variable_id: variableId,
         operator,
         text_value_id: null,
         number_value: Number(numberValue),
+        aggregate_value: null,
+      });
+    } else {
+      if (!aggregateValue) return;
+      onAdd({
+        variable_id: variableId,
+        operator,
+        text_value_id: null,
+        number_value: null,
+        aggregate_value: aggregateValue,
       });
     }
     reset();
@@ -277,6 +349,12 @@ export function AddChipButton({
       numberVariablesByRef.set(v.number_ref, v);
     }
   }
+  const aggregateVariablesByRef = new Map<AggregateRef, VariableState>();
+  for (const v of variables) {
+    if (v.kind === "aggregate_ref" && v.aggregate_ref) {
+      aggregateVariablesByRef.set(v.aggregate_ref, v);
+    }
+  }
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px]">
@@ -285,13 +363,25 @@ export function AddChipButton({
         onChange={(e) => {
           const next = e.target.value;
           setVariableId(next);
+          const picked = variables.find((v) => v.id === next) ?? null;
           // Reset op when the variable changes — allowed-ops depend on kind.
-          setOperator("=");
+          if (picked?.kind === "aggregate_ref") {
+            setOperator("top=");
+          } else {
+            setOperator("=");
+          }
           setTextValueId("");
           // For number_ref vars seed the comparison value to 0 so authors
           // get a usable default and don't have to type one.
-          const picked = variables.find((v) => v.id === next);
           setNumberValue(picked?.kind === "number_ref" ? "0" : "");
+          // For aggregate vars seed the value to the first option.
+          if (picked?.kind === "aggregate_ref" && picked.aggregate_ref) {
+            const first =
+              AGGREGATE_OPTIONS_BY_REF[picked.aggregate_ref]?.[0] ?? "";
+            setAggregateValue(first);
+          } else {
+            setAggregateValue("");
+          }
         }}
         className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
       >
@@ -320,22 +410,35 @@ export function AddChipButton({
             </optgroup>
           );
         })}
+        {aggregateVariablesByRef.size > 0 ? (
+          <optgroup label="Aggregates">
+            {AGGREGATE_OPTIONS.map(({ ref, label }) => {
+              const v = aggregateVariablesByRef.get(ref);
+              if (!v) return null;
+              return (
+                <option key={v.id} value={v.id}>
+                  {label}
+                </option>
+              );
+            })}
+          </optgroup>
+        ) : null}
       </Select>
 
       <Select
         value={operator}
         onChange={(e) => setOperator(e.target.value as EndingChipOperator)}
         disabled={!variableId}
-        className="h-7 w-12 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 w-24 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
       >
         {allowedOps.map((op) => (
           <option key={op} value={op}>
-            {op}
+            {operatorLabel(op)}
           </option>
         ))}
       </Select>
 
-      {variable && variable.kind === "number_ref" ? (
+      {variable?.kind === "number_ref" ? (
         <Input
           type="number"
           value={numberValue}
@@ -343,6 +446,20 @@ export function AddChipButton({
           placeholder="0"
           className="h-7 w-20 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
         />
+      ) : variable?.kind === "aggregate_ref" ? (
+        <Select
+          value={aggregateValue}
+          onChange={(e) => setAggregateValue(e.target.value)}
+          disabled={!variableId}
+          className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        >
+          <option value="">value…</option>
+          {aggregateOptions.map((col) => (
+            <option key={col} value={col}>
+              {aggregateOptionLabel(col)}
+            </option>
+          ))}
+        </Select>
       ) : (
         <Select
           value={textValueId}
@@ -366,7 +483,8 @@ export function AddChipButton({
           !variable ||
           (variable.kind === "text" && !textValueId) ||
           (variable.kind === "number_ref" &&
-            (numberValue === "" || Number.isNaN(Number(numberValue))))
+            (numberValue === "" || Number.isNaN(Number(numberValue)))) ||
+          (variable.kind === "aggregate_ref" && !aggregateValue)
         }
         className="ml-auto rounded px-1 text-[11px] text-primary disabled:opacity-50"
       >

@@ -48,17 +48,36 @@ export function PreviewView({
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
 }) {
+  // Build the impact-column → variable_id map once. Aggregate chips need
+  // it to look the underlying scores out of `selections.numbers`.
+  const numberRefByName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        m.set(v.number_ref, v.id);
+      }
+    }
+    return m;
+  }, [variables]);
+
   const evalInputs = useMemo(
     () => ({
       blocks: blocks as EvalBlock[],
       rows: rows as EvalRow[],
       chips: chips as EvalChip[],
       variables: variables.map(
-        (v): EvalVariable => ({ id: v.id, kind: v.kind })
+        (v): EvalVariable => ({
+          id: v.id,
+          kind: v.kind,
+          aggregate_ref: v.aggregate_ref,
+        })
       ),
-      selections: selections ?? EMPTY_SELECTIONS,
+      selections: {
+        ...(selections ?? EMPTY_SELECTIONS),
+        numberRefByName,
+      },
     }),
-    [blocks, rows, chips, variables, selections]
+    [blocks, rows, chips, variables, selections, numberRefByName]
   );
   const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
   const shadowed = useMemo(() => {
@@ -86,7 +105,9 @@ export function PreviewView({
             Set variable values
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            {referencedVariables.map((v) => (
+            {referencedVariables
+              .filter((v) => v.kind !== "aggregate_ref")
+              .map((v) => (
               <div
                 key={v.id}
                 className="grid grid-cols-[1fr_1fr] items-center gap-2"

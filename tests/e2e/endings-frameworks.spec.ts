@@ -170,6 +170,71 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   ).toHaveCount(0);
 });
 
+test("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
+  // Migration 0020 seeds Class Affinity / Nation Affinity. Build a
+  // framework with one aggregate row and verify the underlying
+  // proletariat / gentry inputs in the preview drive the row state.
+  const admin = makeAdmin();
+  const frameworkName = `${PREFIX}aggfw-${Date.now()}`;
+  const { data: fw } = await admin
+    .from("ending_frameworks")
+    .insert({ name: frameworkName, sort_order: 9999 })
+    .select("id")
+    .single();
+  if (!fw) throw new Error("seed framework");
+
+  await page.goto(`/endings/frameworks?framework=${fw.id}`);
+  await expect(page.getByPlaceholder("Framework name")).toHaveValue(
+    frameworkName
+  );
+
+  await page.getByRole("button", { name: "condition", exact: true }).click();
+  await expect(page.getByText(/Condition · 1 row/i)).toBeVisible({
+    timeout: 20000,
+  });
+
+  // Pick Class Affinity → operator already defaults to top= → set the
+  // value to Working Class (= proletariat).
+  await page.getByRole("button", { name: "+ chip" }).first().click();
+  await page
+    .getByRole("combobox")
+    .nth(0)
+    .selectOption({ label: "Class Affinity" });
+  // Operator picker is allowed-set [top=, top≠, bottom=, bottom≠]; default
+  // is "top is" (top=). Value picker defaults to the first option
+  // (proletariat → "Working Class") so we can confirm directly.
+  await page.getByRole("button", { name: "✓" }).click();
+  await expect(page.getByText("CLASS AFFINITY").first()).toBeVisible();
+
+  // Add row content.
+  await page.getByRole("button", { name: "text", exact: true }).first().click();
+  const rowTextarea = page.getByPlaceholder("Paragraph text…").first();
+  await expect(rowTextarea).toBeVisible();
+  await rowTextarea.fill("the working class is on top");
+
+  await page.getByRole("button", { name: /^Save$/ }).click();
+  await page.waitForTimeout(1500);
+
+  await page.reload();
+  await expect(page.getByText("CLASS AFFINITY").first()).toBeVisible();
+  await expect(page.getByPlaceholder("Paragraph text…").first()).toHaveValue(
+    "the working class is on top"
+  );
+
+  // Preview: the chip's underlying scores (proletariat + gentry) should
+  // surface as numeric inputs even though the chip itself is aggregate.
+  // The seeded variables are labeled "Working Class" and "Upper Class".
+  await page.getByRole("button", { name: "Preview" }).click();
+  await page.getByLabel("Working Class", { exact: true }).fill("5");
+  await page.getByLabel("Upper Class", { exact: true }).fill("2");
+  await expect(page.getByText("the working class is on top")).toBeVisible();
+
+  // Flip the scores so gentry wins → row should stop firing.
+  await page.getByLabel("Working Class", { exact: true }).fill("2");
+  await page.getByLabel("Upper Class", { exact: true }).fill("5");
+  await expect(page.getByText("the working class is on top")).toHaveCount(0);
+});
+
 test("seeded impact variable + numeric operator drives preview", async ({
   page,
 }) => {
