@@ -8,10 +8,12 @@ import {
   GripVertical,
   Plus,
   Trash2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
+  BlockVariableState,
   ChipState,
   RowState,
   VariableState,
@@ -20,7 +22,14 @@ import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
-import { addChip, addRow, removeChip, removeRow } from "../actions";
+import {
+  addBlockVariable,
+  addChip,
+  addRow,
+  removeBlockVariable,
+  removeChip,
+  removeRow,
+} from "../actions";
 import { useDrag, type DragTarget } from "../lib/drag";
 import { useAnalysis } from "../lib/analysis";
 import { AddChipButton, ChipPill, type AddChipInput } from "./chip";
@@ -30,6 +39,7 @@ export function ConditionBlock({
   block,
   rows,
   chipsByRow,
+  declaredVariables,
   variableIndex,
   variables,
   values,
@@ -40,6 +50,7 @@ export function ConditionBlock({
   block: BlockState;
   rows: RowState[];
   chipsByRow: Map<string, ChipState[]>;
+  declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
@@ -153,6 +164,12 @@ export function ConditionBlock({
             )}
           </button>
           Condition · {rows.length} {rows.length === 1 ? "row" : "rows"}
+          <HeaderVariableStrip
+            blockId={block.id}
+            declaredVariables={declaredVariables}
+            variableIndex={variableIndex}
+            variables={variables}
+          />
           {blockAnalysis ? (
             <BlockAnalysisBadge
               analysis={blockAnalysis}
@@ -198,6 +215,7 @@ export function ConditionBlock({
             <ConditionRow
               key={row.id}
               chips={chips}
+              declaredVariables={declaredVariables}
               variableIndex={variableIndex}
               variables={variables}
               values={values}
@@ -258,6 +276,7 @@ export function ConditionBlock({
 
 function ConditionRow({
   chips,
+  declaredVariables,
   variableIndex,
   variables,
   values,
@@ -271,6 +290,7 @@ function ConditionRow({
   children,
 }: {
   chips: ChipState[];
+  declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
@@ -284,6 +304,15 @@ function ConditionRow({
   children: React.ReactNode;
 }) {
   const fullyOverlapped = overlap?.fullShadow ?? false;
+  // One slot per declared variable. A slot holds either an existing
+  // chip on that variable or a wildcard placeholder. Chips that don't
+  // match any declared variable (shouldn't happen post-Phase-6, but
+  // safe-guard) are rendered after the slots so the author still sees
+  // them.
+  const chipByVariableId = new Map<string, ChipState>();
+  for (const c of chips) chipByVariableId.set(c.variable_id, c);
+  const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
+  const orphanChips = chips.filter((c) => !declaredIds.has(c.variable_id));
   return (
     <div
       className={cn(
@@ -293,23 +322,47 @@ function ConditionRow({
       )}
     >
       <div className="flex flex-wrap items-start gap-1 self-start">
-        {chips.length === 0 ? null : (
-          chips.map((chip) => (
-            <ChipPill
-              key={chip.id}
-              chip={chip}
-              variable={variableIndex.get(chip.variable_id) ?? null}
-              values={values}
-              onChange={(patch) => onChangeChip(chip.id, patch)}
-              onRemove={() => onRemoveChip(chip.id)}
-            />
-          ))
+        {declaredVariables.length === 0 ? (
+          <span className="text-[11px] italic text-muted-foreground">
+            (declare variables on the block header)
+          </span>
+        ) : (
+          declaredVariables.map((dv) => {
+            const variable = variableIndex.get(dv.variable_id);
+            const chip = chipByVariableId.get(dv.variable_id);
+            if (chip && variable) {
+              return (
+                <ChipPill
+                  key={dv.id}
+                  chip={chip}
+                  variable={variable}
+                  values={values}
+                  onChange={(patch) => onChangeChip(chip.id, patch)}
+                  onRemove={() => onRemoveChip(chip.id)}
+                />
+              );
+            }
+            // Empty slot = wildcard. Click to fill via pinned-variable picker.
+            return (
+              <SlotPicker
+                key={dv.id}
+                variable={variable}
+                values={values}
+                onAdd={(input) => onAddChip(input)}
+              />
+            );
+          })
         )}
-        <AddChipButton
-          variables={variables}
-          values={values}
-          onAdd={onAddChip}
-        />
+        {orphanChips.map((chip) => (
+          <ChipPill
+            key={chip.id}
+            chip={chip}
+            variable={variableIndex.get(chip.variable_id) ?? null}
+            values={values}
+            onChange={(patch) => onChangeChip(chip.id, patch)}
+            onRemove={() => onRemoveChip(chip.id)}
+          />
+        ))}
         {shadowedByOrdinal != null ? (
           <span
             title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
@@ -447,6 +500,187 @@ function UncoveredList({
         ))}
       </ul>
     </div>
+  );
+}
+
+function SlotPicker({
+  variable,
+  values,
+  onAdd,
+}: {
+  variable: VariableState | undefined;
+  values: EndingVariableValue[];
+  onAdd: (input: AddChipInput) => void;
+}) {
+  if (!variable) return null;
+  return (
+    <AddChipButton
+      variables={[variable]}
+      values={values}
+      pinnedVariable={variable}
+      onAdd={onAdd}
+    />
+  );
+}
+
+/**
+ * Header variable strip — renders the variables a condition block branches
+ * on (Phase 6 header-declared model). Add via the "+ var" pill, remove
+ * via the × on each variable chip.
+ */
+function HeaderVariableStrip({
+  blockId,
+  declaredVariables,
+  variableIndex,
+  variables,
+}: {
+  blockId: string;
+  declaredVariables: BlockVariableState[];
+  variableIndex: Map<string, VariableState>;
+  variables: VariableState[];
+}) {
+  const [pending, startTransition] = useTransition();
+  const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
+  const eligible = variables.filter((v) => !declaredIds.has(v.id));
+
+  return (
+    <span className="ml-1 inline-flex flex-wrap items-center gap-1">
+      {declaredVariables.map((dv) => {
+        const v = variableIndex.get(dv.variable_id);
+        if (!v) return null;
+        return (
+          <HeaderVariableChip
+            key={dv.id}
+            blockVariableId={dv.id}
+            variable={v}
+            disabled={pending}
+            onRemove={() =>
+              startTransition(async () => {
+                const fd = new FormData();
+                fd.set("id", dv.id);
+                await removeBlockVariable(fd);
+              })
+            }
+          />
+        );
+      })}
+      {eligible.length > 0 ? (
+        <AddHeaderVariablePicker
+          variables={eligible}
+          disabled={pending}
+          onPick={(variable_id) =>
+            startTransition(async () => {
+              await addBlockVariable({
+                condition_block_id: blockId,
+                variable_id,
+              });
+            })
+          }
+        />
+      ) : null}
+    </span>
+  );
+}
+
+function HeaderVariableChip({
+  blockVariableId,
+  variable,
+  disabled,
+  onRemove,
+}: {
+  blockVariableId: string;
+  variable: VariableState;
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  void blockVariableId;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest"
+      style={{
+        borderColor: headerChipColor(variable),
+        color: headerChipColor(variable),
+        backgroundColor: `${headerChipColor(variable)}1a`,
+      }}
+    >
+      {variable.name}
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        aria-label={`Remove ${variable.name} from this condition block`}
+        className="opacity-60 hover:opacity-100 disabled:opacity-30"
+      >
+        <X size={10} aria-hidden />
+      </button>
+    </span>
+  );
+}
+
+function headerChipColor(variable: VariableState): string {
+  // Reuse the chip palette/override path. Lazy: lift up if needed.
+  if (variable.color_hex) return variable.color_hex;
+  // Local copy of paletteColor without circular import; same 12-color
+  // palette as `@/lib/endings/color-palette`.
+  const palette = [
+    "#ef4444",
+    "#f97316",
+    "#f59e0b",
+    "#eab308",
+    "#84cc16",
+    "#22c55e",
+    "#10b981",
+    "#06b6d4",
+    "#3b82f6",
+    "#6366f1",
+    "#a855f7",
+    "#ec4899",
+  ];
+  return palette[variable.color_index % palette.length];
+}
+
+function AddHeaderVariablePicker({
+  variables,
+  disabled,
+  onPick,
+}: {
+  variables: VariableState[];
+  disabled: boolean;
+  onPick: (variable_id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={disabled}
+        className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+      >
+        + var
+      </button>
+    );
+  }
+  return (
+    <select
+      autoFocus
+      defaultValue=""
+      disabled={disabled}
+      onBlur={() => setOpen(false)}
+      onChange={(e) => {
+        const id = e.target.value;
+        if (id) onPick(id);
+        setOpen(false);
+      }}
+      className="h-6 rounded-md border border-border bg-background px-1 text-[10px] font-mono"
+    >
+      <option value="">variable…</option>
+      {variables.map((v) => (
+        <option key={v.id} value={v.id}>
+          {v.name}
+        </option>
+      ))}
+    </select>
   );
 }
 

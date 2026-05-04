@@ -256,18 +256,32 @@ const AGGREGATE_OPTIONS: Array<{
 export function AddChipButton({
   variables,
   values,
+  pinnedVariable,
   onAdd,
 }: {
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** When set, the variable picker is hidden and `variableId` is fixed
+   *  to this variable. Used by per-slot row authoring (Phase 6). */
+  pinnedVariable?: VariableState;
   onAdd: (input: AddChipInput) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [variableId, setVariableId] = useState<string>("");
-  const [operator, setOperator] = useState<EndingChipOperator>("=");
+  const [variableId, setVariableId] = useState<string>(
+    pinnedVariable?.id ?? ""
+  );
+  const [operator, setOperator] = useState<EndingChipOperator>(
+    pinnedVariable?.kind === "aggregate_ref" ? "top=" : "="
+  );
   const [textValueId, setTextValueId] = useState<string>("");
-  const [numberValue, setNumberValue] = useState<string>("");
-  const [aggregateValue, setAggregateValue] = useState<string>("");
+  const [numberValue, setNumberValue] = useState<string>(
+    pinnedVariable?.kind === "number_ref" ? "0" : ""
+  );
+  const [aggregateValue, setAggregateValue] = useState<string>(
+    pinnedVariable?.kind === "aggregate_ref" && pinnedVariable.aggregate_ref
+      ? AGGREGATE_OPTIONS_BY_REF[pinnedVariable.aggregate_ref]?.[0] ?? ""
+      : ""
+  );
   const picker = useContext(PickerCtx);
 
   // Track this picker's open state with the editor so Save knows whether
@@ -280,11 +294,13 @@ export function AddChipButton({
 
   function reset() {
     setOpen(false);
-    setVariableId("");
-    setOperator("=");
-    setTextValueId("");
-    setNumberValue("");
-    setAggregateValue("");
+    if (!pinnedVariable) {
+      setVariableId("");
+      setOperator("=");
+      setTextValueId("");
+      setNumberValue("");
+      setAggregateValue("");
+    }
   }
 
   const variable = variables.find((v) => v.id === variableId) ?? null;
@@ -331,6 +347,22 @@ export function AddChipButton({
   }
 
   if (!open) {
+    if (pinnedVariable) {
+      // Slot-mode placeholder — labelled with the variable name so authors
+      // see what the slot is for. Click to open the operator/value picker.
+      return (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40"
+        >
+          <span className="font-mono uppercase tracking-widest text-[10px] opacity-70">
+            {pinnedVariable.name}
+          </span>
+          <span className="opacity-50">: any</span>
+        </button>
+      );
+    }
     return (
       <button
         type="button"
@@ -358,6 +390,11 @@ export function AddChipButton({
 
   return (
     <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px]">
+      {pinnedVariable ? (
+        <span className="px-1 font-mono uppercase tracking-widest text-[10px] opacity-70">
+          {pinnedVariable.name}
+        </span>
+      ) : (
       <Select
         value={variableId}
         onChange={(e) => {
@@ -424,6 +461,7 @@ export function AddChipButton({
           </optgroup>
         ) : null}
       </Select>
+      )}
 
       <Select
         value={operator}

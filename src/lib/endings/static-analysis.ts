@@ -41,12 +41,22 @@ export interface StaticValue {
   variable_id: string;
 }
 
+/** Header-declared variable for a condition block (Phase 6). When the
+ *  caller supplies these, the uncovered analysis enumerates over the
+ *  declared set instead of the chip-derived union. Older callers that
+ *  omit it fall back to the pre-Phase-6 chip-derived behaviour. */
+export interface DeclaredBlockVariable {
+  condition_block_id: string;
+  variable_id: string;
+}
+
 export interface StaticInputs {
   blocks: EvalBlock[];
   rows: EvalRow[];
   chips: EvalChip[];
   variables: EvalVariable[];
   values: StaticValue[];
+  blockVariables?: DeclaredBlockVariable[];
 }
 
 export interface ShadowedRow {
@@ -426,6 +436,18 @@ export function uncoveredAssignmentsByBlock(
   input: StaticInputs
 ): Map<string, BlockAnalysis> {
   const { rowsByBlock, chipsByRow, variableIndex } = buildIndexes(input);
+  // Phase 6: when blockVariables is supplied, the in-scope variable set
+  // for a block is the declared set; chip-derived sets are no longer
+  // used. Older callers that omit blockVariables fall back to chip-
+  // derived behaviour for compatibility.
+  const declaredByBlock = new Map<string, string[]>();
+  if (input.blockVariables) {
+    for (const bv of input.blockVariables) {
+      const list = declaredByBlock.get(bv.condition_block_id);
+      if (list) list.push(bv.variable_id);
+      else declaredByBlock.set(bv.condition_block_id, [bv.variable_id]);
+    }
+  }
   const out = new Map<string, BlockAnalysis>();
   for (const [blockId, rows] of rowsByBlock) {
     const allChips: EvalChip[] = [];
@@ -433,26 +455,17 @@ export function uncoveredAssignmentsByBlock(
       const list = chipsByRow.get(r.id) ?? [];
       allChips.push(...list);
     }
-    const finiteVarIds = [
-      ...new Set(
-        allChips
-          .filter((c) => {
-            const v = variableIndex.get(c.variable_id);
-            return v != null && v.kind !== "number_ref";
-          })
-          .map((c) => c.variable_id)
-      ),
-    ];
-    const numericVarIds = [
-      ...new Set(
-        allChips
-          .filter((c) => {
-            const v = variableIndex.get(c.variable_id);
-            return v?.kind === "number_ref";
-          })
-          .map((c) => c.variable_id)
-      ),
-    ];
+    const inScopeIds = input.blockVariables
+      ? declaredByBlock.get(blockId) ?? []
+      : [...new Set(allChips.map((c) => c.variable_id))];
+    const finiteVarIds = inScopeIds.filter((id) => {
+      const v = variableIndex.get(id);
+      return v != null && v.kind !== "number_ref";
+    });
+    const numericVarIds = inScopeIds.filter((id) => {
+      const v = variableIndex.get(id);
+      return v?.kind === "number_ref";
+    });
     const partial =
       numericVarIds.length > 1 ||
       (numericVarIds.length === 1 && finiteVarIds.length > 0);

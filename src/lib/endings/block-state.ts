@@ -26,6 +26,33 @@ export interface RowState {
   sort_order: number;
 }
 
+export interface BlockVariableState {
+  id: string;
+  condition_block_id: string;
+  variable_id: string;
+  sort_order: number;
+}
+
+/**
+ * Group block-variable header rows by their condition block, in
+ * sort_order. Used to render the variable chips on a condition block's
+ * header and to drive the per-slot row layout.
+ */
+export function buildDeclaredByBlock(
+  blockVariables: BlockVariableState[]
+): Map<string, BlockVariableState[]> {
+  const out = new Map<string, BlockVariableState[]>();
+  for (const bv of blockVariables) {
+    const list = out.get(bv.condition_block_id);
+    if (list) list.push(bv);
+    else out.set(bv.condition_block_id, [bv]);
+  }
+  for (const list of out.values()) {
+    list.sort((a, b) => a.sort_order - b.sort_order);
+  }
+  return out;
+}
+
 export interface ChipState {
   id: string;
   row_id: string;

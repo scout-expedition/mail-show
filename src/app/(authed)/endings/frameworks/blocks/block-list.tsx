@@ -5,6 +5,7 @@ import { Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
+  BlockVariableState,
   ChipState,
   ParentLoc,
   RowState,
@@ -28,6 +29,7 @@ export function BlockList({
   byParent,
   rowsByConditionBlock,
   chipsByRow,
+  declaredByBlock,
   variableIndex,
   variables,
   values,
@@ -39,6 +41,7 @@ export function BlockList({
   byParent: Map<string, BlockState[]>;
   rowsByConditionBlock: Map<string, RowState[]>;
   chipsByRow: Map<string, ChipState[]>;
+  declaredByBlock: Map<string, BlockVariableState[]>;
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
@@ -146,6 +149,7 @@ export function BlockList({
             block={b}
             rows={rowsByConditionBlock.get(b.id) ?? []}
             chipsByRow={chipsByRow}
+            declaredVariables={declaredByBlock.get(b.id) ?? []}
             variableIndex={variableIndex}
             variables={variables}
             values={values}
@@ -160,6 +164,7 @@ export function BlockList({
                 byParent={byParent}
                 rowsByConditionBlock={rowsByConditionBlock}
                 chipsByRow={chipsByRow}
+                declaredByBlock={declaredByBlock}
                 variableIndex={variableIndex}
                 variables={variables}
                 values={values}

@@ -300,6 +300,13 @@ export interface EndingConditionRow {
   sort_order: number;
 }
 
+export interface EndingConditionBlockVariable {
+  id: string;
+  condition_block_id: string;
+  variable_id: string;
+  sort_order: number;
+}
+
 export interface EndingConditionRowChip {
   id: string;
   row_id: string;

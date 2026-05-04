@@ -116,21 +116,33 @@ test("create multi-variable condition, save + reload, preview matches", async ({
     timeout: 20000,
   });
 
-  // Add the first chip: PERFORMER = WINTER. Picker exposes 3 dropdowns
-  // (var, operator, value) plus a ✓ confirm.
-  await page.getByRole("button", { name: "+ chip" }).first().click();
-  await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
-  // operator defaults to '='
-  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
-  await page.getByRole("button", { name: "✓" }).click();
-  await expect(page.getByText(performerName)).toBeVisible();
+  // Phase 6: declare PERFORMER + MOOD on the header before chips can
+  // be added. The "+ var" pill is the header's add-variable picker.
+  await page.getByRole("button", { name: "+ var" }).first().click();
+  await page.getByRole("combobox").last().selectOption({ label: performerName });
+  await expect(
+    page.getByRole("button", { name: `${performerName} : any` }).first()
+  ).toBeVisible({ timeout: 20000 });
+  await page.getByRole("button", { name: "+ var" }).first().click();
+  await page.getByRole("combobox").last().selectOption({ label: moodName });
+  await expect(
+    page.getByRole("button", { name: `${moodName} : any` }).first()
+  ).toBeVisible({ timeout: 20000 });
 
-  // Add the second chip: MOOD = STORMY.
-  await page.getByRole("button", { name: "+ chip" }).first().click();
-  await page.getByRole("combobox").nth(0).selectOption({ label: moodName });
-  await page.getByRole("combobox").nth(2).selectOption({ label: "STORMY" });
+  // Click the PERFORMER slot, set value WINTER, confirm.
+  await page
+    .getByRole("button", { name: `${performerName} : any` })
+    .first()
+    .click();
+  await page.getByRole("combobox").nth(1).selectOption({ label: "WINTER" });
   await page.getByRole("button", { name: "✓" }).click();
-  await expect(page.getByText(moodName)).toBeVisible();
+  // Click the MOOD slot, set value STORMY, confirm.
+  await page
+    .getByRole("button", { name: `${moodName} : any` })
+    .first()
+    .click();
+  await page.getByRole("combobox").nth(1).selectOption({ label: "STORMY" });
+  await page.getByRole("button", { name: "✓" }).click();
 
   // Add a text block under the row. The row's nested list renders before
   // root in DOM order, so its "+ text" pill is the first one.
@@ -144,10 +156,11 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   await page.getByRole("button", { name: /^Save$/ }).click();
   await page.waitForTimeout(1500);
 
-  // Reload and assert chips persist.
+  // Reload and assert chips persist. Each variable appears twice (header
+  // chip + row chip pill), so .first() to disambiguate.
   await page.reload();
-  await expect(page.getByText(performerName)).toBeVisible();
-  await expect(page.getByText(moodName)).toBeVisible();
+  await expect(page.getByText(performerName).first()).toBeVisible();
+  await expect(page.getByText(moodName).first()).toBeVisible();
   // The text block's content lives in a <textarea> — check its value.
   await expect(page.getByPlaceholder("Paragraph text…").first()).toHaveValue(
     "the winter rose blooms in the storm"
@@ -193,16 +206,22 @@ test("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
     timeout: 20000,
   });
 
-  // Pick Class Affinity → operator already defaults to top= → set the
-  // value to Working Class (= proletariat).
-  await page.getByRole("button", { name: "+ chip" }).first().click();
+  // Declare Class Affinity on the header, then click its row slot to
+  // confirm the default chip (top is Working Class).
+  await page.getByRole("button", { name: "+ var" }).first().click();
   await page
     .getByRole("combobox")
-    .nth(0)
+    .last()
     .selectOption({ label: "Class Affinity" });
-  // Operator picker is allowed-set [top=, top≠, bottom=, bottom≠]; default
-  // is "top is" (top=). Value picker defaults to the first option
-  // (proletariat → "Working Class") so we can confirm directly.
+  await expect(
+    page.getByRole("button", { name: "Class Affinity : any" }).first()
+  ).toBeVisible({ timeout: 20000 });
+  await page
+    .getByRole("button", { name: "Class Affinity : any" })
+    .first()
+    .click();
+  // Operator defaults to "top=" and value to proletariat (Working Class)
+  // for class_affinity, so we can confirm directly.
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText("CLASS AFFINITY").first()).toBeVisible();
 
@@ -278,10 +297,19 @@ test("static analysis: shadowed row + uncovered assignment badges", async ({
     timeout: 20000,
   });
 
-  // Row 1: PERFORMER = WINTER
-  await page.getByRole("button", { name: "+ chip" }).first().click();
-  await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
-  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
+  // Phase 6: declare PERFORMER on the header.
+  await page.getByRole("button", { name: "+ var" }).first().click();
+  await page.getByRole("combobox").last().selectOption({ label: performerName });
+  await expect(
+    page.getByRole("button", { name: `${performerName} : any` }).first()
+  ).toBeVisible({ timeout: 20000 });
+
+  // Row 1: PERFORMER = WINTER (slot picker)
+  await page
+    .getByRole("button", { name: `${performerName} : any` })
+    .first()
+    .click();
+  await page.getByRole("combobox").nth(1).selectOption({ label: "WINTER" });
   await page.getByRole("button", { name: "✓" }).click();
   await expect(page.getByText(performerName).first()).toBeVisible();
 
@@ -290,10 +318,11 @@ test("static analysis: shadowed row + uncovered assignment badges", async ({
   await expect(page.getByText(/Condition · 2 row/i)).toBeVisible();
 
   // Row 2: PERFORMER = WINTER (identical → should be shadowed)
-  // The row's "+ chip" button is the second one in DOM order.
-  await page.getByRole("button", { name: "+ chip" }).nth(1).click();
-  await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
-  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
+  await page
+    .getByRole("button", { name: `${performerName} : any` })
+    .first()
+    .click();
+  await page.getByRole("combobox").nth(1).selectOption({ label: "WINTER" });
   await page.getByRole("button", { name: "✓" }).click();
 
   // Static analysis runs on every chipState change — the shadowed badge
@@ -343,16 +372,18 @@ test("seeded impact variable + numeric operator drives preview", async ({
     timeout: 20000,
   });
 
-  // Pick the seeded "World Status" number_ref variable from the chip picker.
-  // It lives in the "Impact" optgroup; selecting by exact label still works.
-  await page.getByRole("button", { name: "+ chip" }).first().click();
+  // Phase 6: declare World Status on the header, then click the slot
+  // and set operator to ≥. Default value = 0 (auto-fill for number_ref).
+  await page.getByRole("button", { name: "+ var" }).first().click();
+  await page.getByRole("combobox").last().selectOption({ label: numVarLabel });
+  await expect(
+    page.getByRole("button", { name: `${numVarLabel} : any` }).first()
+  ).toBeVisible({ timeout: 20000 });
   await page
-    .getByRole("combobox")
-    .nth(0)
-    .selectOption({ label: numVarLabel });
-  await page.getByRole("combobox").nth(1).selectOption("≥");
-  // Variable is number_ref, so comparison value auto-fills to 0; no need
-  // to type one. Confirm.
+    .getByRole("button", { name: `${numVarLabel} : any` })
+    .first()
+    .click();
+  await page.getByRole("combobox").nth(0).selectOption("≥");
   await page.getByRole("button", { name: "✓" }).click();
   await expect(
     page.getByText(numVarLabel.toUpperCase()).first()
