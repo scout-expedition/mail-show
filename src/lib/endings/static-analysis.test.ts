@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EvalBlock, EvalChip, EvalRow, EvalVariable } from "./evaluator";
 import {
   MAX_ENUMERATION,
+  numericRowOverlaps,
   staticShadowedRows,
   uncoveredAssignmentsByBlock,
   type StaticInputs,
@@ -611,6 +612,123 @@ describe("uncoveredAssignmentsByBlock / numeric interval", () => {
     const block = out.get(cb.id);
     // Uncovered: (-∞, 0), (0, 5), (5, ∞)
     expect(block?.numericGaps?.length).toBe(3);
+  });
+});
+
+// ----------------------------------------------------------------------
+// numericRowOverlaps — partial / full overlap on single-numeric blocks
+// ----------------------------------------------------------------------
+
+describe("numericRowOverlaps", () => {
+  const world = numVar("VAR_WORLD");
+  const cb = condBlock("cb");
+
+  it("flags partial overlap when row 2's range extends row 1's", () => {
+    // Row 1: x < 3 → covers (-∞, 3). Row 2: x < 5 → covers (-∞, 5).
+    // Row 2's dead portion (already covered by row 1) is (-∞, 3).
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const overlaps = numericRowOverlaps({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 3, "<"),
+        numChip("c2", r2.id, world.id, 5, "<"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    expect(overlaps.length).toBe(1);
+    expect(overlaps[0].row_id).toBe(r2.id);
+    expect(overlaps[0].earlier_row_ids).toEqual([r1.id]);
+    expect(overlaps[0].fullShadow).toBe(false);
+    expect(overlaps[0].intervals).toEqual([
+      {
+        variable_id: world.id,
+        low: -Infinity,
+        high: 3,
+        lowInclusive: false,
+        highInclusive: false,
+      },
+    ]);
+  });
+
+  it("fullShadow=true when row 2's range is contained in row 1's", () => {
+    // Row 1: x ≤ 5. Row 2: x < 3. Row 2's range ⊂ Row 1's range.
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const overlaps = numericRowOverlaps({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 5, "≤"),
+        numChip("c2", r2.id, world.id, 3, "<"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    expect(overlaps.length).toBe(1);
+    expect(overlaps[0].fullShadow).toBe(true);
+  });
+
+  it("disjoint ranges produce no overlap", () => {
+    // Row 1: x < 0. Row 2: x > 0. No intersection.
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const overlaps = numericRowOverlaps({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, "<"),
+        numChip("c2", r2.id, world.id, 0, ">"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    expect(overlaps).toEqual([]);
+  });
+
+  it("aggregates earlier rows: row 3 overlaps union of rows 1 + 2", () => {
+    // Row 1: x = 0. Row 2: x = 5. Row 3: x ≥ 0 (covers both 0 and 5).
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const r3 = row("r3", cb.id, 2);
+    const overlaps = numericRowOverlaps({
+      blocks: [cb],
+      rows: [r1, r2, r3],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, "="),
+        numChip("c2", r2.id, world.id, 5, "="),
+        numChip("c3", r3.id, world.id, 0, "≥"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    // r3 has dead points at x=0 and x=5 (covered by r1 and r2).
+    const r3Overlap = overlaps.find((o) => o.row_id === r3.id);
+    expect(r3Overlap).toBeDefined();
+    expect(r3Overlap?.earlier_row_ids).toEqual([r1.id, r2.id]);
+    expect(r3Overlap?.fullShadow).toBe(false);
+    // Two singleton intervals (point sets at 0 and 5) — neither merges.
+    expect(r3Overlap?.intervals.length).toBe(2);
+  });
+
+  it("does not run on mixed (numeric + finite) blocks", () => {
+    const performer = textVar("VAR_P");
+    const winter = textValue("VAL_W", performer.id);
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const overlaps = numericRowOverlaps({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1", r1.id, performer.id, winter.id),
+        numChip("c2", r2.id, world.id, 0, ">"),
+      ],
+      variables: [performer, world],
+      values: [winter],
+    });
+    expect(overlaps).toEqual([]);
   });
 });
 
