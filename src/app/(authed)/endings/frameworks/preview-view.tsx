@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { AlertTriangle } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -9,6 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   EMPTY_SELECTIONS,
   evaluateFramework,
+  shadowedRowIds,
   type EvalBlock,
   type EvalChip,
   type EvalRow,
@@ -46,19 +48,35 @@ export function PreviewView({
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
 }) {
-  const paragraphs = useMemo(
-    () =>
-      evaluateFramework({
-        blocks: blocks as EvalBlock[],
-        rows: rows as EvalRow[],
-        chips: chips as EvalChip[],
-        variables: variables.map(
-          (v): EvalVariable => ({ id: v.id, kind: v.kind })
-        ),
-        selections: selections ?? EMPTY_SELECTIONS,
-      }),
+  const evalInputs = useMemo(
+    () => ({
+      blocks: blocks as EvalBlock[],
+      rows: rows as EvalRow[],
+      chips: chips as EvalChip[],
+      variables: variables.map(
+        (v): EvalVariable => ({ id: v.id, kind: v.kind })
+      ),
+      selections: selections ?? EMPTY_SELECTIONS,
+    }),
     [blocks, rows, chips, variables, selections]
   );
+  const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
+  const shadowed = useMemo(() => {
+    const ids = shadowedRowIds(evalInputs);
+    if (ids.size === 0) return [];
+    const rowById = new Map(rows.map((r) => [r.id, r]));
+    return [...ids]
+      .map((id) => rowById.get(id))
+      .filter((r): r is RowState => Boolean(r))
+      .map((row) => ({
+        row,
+        summary: chipSummary(
+          (chips as ChipState[]).filter((c) => c.row_id === row.id),
+          variables,
+          values
+        ),
+      }));
+  }, [evalInputs, chips, rows, values, variables]);
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -117,6 +135,25 @@ export function PreviewView({
         </div>
       ) : null}
 
+      {shadowed.length > 0 ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-200">
+          <AlertTriangle size={12} aria-hidden className="mt-0.5 shrink-0" />
+          <div className="flex flex-col gap-1">
+            <span className="font-mono uppercase tracking-widest text-[10px]">
+              {shadowed.length} row{shadowed.length === 1 ? "" : "s"} shadowed
+              by first-match-wins
+            </span>
+            <ul className="flex flex-col gap-0.5 text-amber-100/80">
+              {shadowed.map(({ row, summary }) => (
+                <li key={row.id} className="font-mono">
+                  · {summary || "(empty row)"}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
       <article className="flex flex-col gap-3 text-sm leading-relaxed text-foreground">
         <h3 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           {name || "(unnamed framework)"}
@@ -135,4 +172,28 @@ export function PreviewView({
       </article>
     </div>
   );
+}
+
+function chipSummary(
+  chips: ChipState[],
+  variables: VariableState[],
+  values: EndingVariableValue[]
+): string {
+  if (chips.length === 0) return "";
+  const sorted = [...chips].sort((a, b) => a.sort_order - b.sort_order);
+  const varById = new Map(variables.map((v) => [v.id, v]));
+  const valueById = new Map(values.map((v) => [v.id, v]));
+  return sorted
+    .map((chip) => {
+      const variable = varById.get(chip.variable_id);
+      if (!variable) return "?";
+      const value =
+        variable.kind === "text"
+          ? valueById.get(chip.text_value_id ?? "")?.value ?? "—"
+          : chip.number_value == null
+          ? "—"
+          : String(chip.number_value);
+      return `${variable.name} ${chip.operator} ${value}`;
+    })
+    .join(" & ");
 }

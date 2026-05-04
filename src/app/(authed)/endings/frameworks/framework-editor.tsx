@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -40,7 +41,12 @@ import { IMPACT_CHIP_COLORS } from "@/lib/endings/impact-colors";
 import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
 import { BlockList } from "./blocks/block-list";
 import { PreviewView } from "./preview-view";
-import { DragCtx, moveBlock, type DragContext } from "./lib/drag";
+import {
+  DragCtx,
+  moveBlock,
+  type DragContext,
+  type DragTarget,
+} from "./lib/drag";
 import { PickerCtx, type PickerContext } from "./lib/picker";
 import { deleteEndingFramework, saveFramework } from "./actions";
 
@@ -116,6 +122,14 @@ export function FrameworkEditor({
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const [target, setTargetState] = useState<DragTarget | null>(null);
+
+  // Refs mirror state so window-level listeners (whose closures are
+  // captured at mount) can read the latest values.
+  const dragIdRef = useRef<string | null>(null);
+  const targetRef = useRef<DragTarget | null>(null);
+  dragIdRef.current = dragId;
+  targetRef.current = target;
 
   const [previewOn, setPreviewOn] = useState(false);
   const [previewSelections, setPreviewSelections] =
@@ -241,36 +255,185 @@ export function FrameworkEditor({
   }
 
   // Drag context --------------------------------------------------------
-  const dragCtx: DragContext = {
-    dragId,
-    dragHeight,
-    start: (blockId, height) => {
-      setDragId(blockId);
-      setDragHeight(height);
-    },
-    end: () => {
+  // Two-phase commit-on-release: dragover sets `target` (visual intent
+  // only); release calls `commit()` which mutates state once. See
+  // lib/drag.ts for the full model.
+  const doCommit = useCallback(
+    (dragIdNow: string, targetNow: DragTarget) => {
+      const beforeId =
+        targetNow.kind === "near"
+          ? targetNow.position === "before"
+            ? targetNow.targetId
+            : null // splice after — handled below
+          : null;
+      setBlockState((prev) => {
+        let next: BlockState[];
+        if (targetNow.kind === "near" && targetNow.position === "after") {
+          // Splice after: find the index of targetId in the post-reparent
+          // list and splice at index+1. Easiest to do inline.
+          const dragged = prev.find((b) => b.id === dragIdNow);
+          if (!dragged) return prev;
+          // Cycle guard delegated to moveBlock; reuse its logic by
+          // moving the block to "before targetId", then swap.
+          const movedBefore = moveBlock(
+            prev,
+            dragIdNow,
+            {
+              parent_block_id: targetNow.parent_block_id,
+              parent_row_id: targetNow.parent_row_id,
+            },
+            targetNow.targetId
+          );
+          if (movedBefore === prev) return prev; // cycle rejected
+          const draggedIdx = movedBefore.findIndex((b) => b.id === dragIdNow);
+          const targetIdx = movedBefore.findIndex(
+            (b) => b.id === targetNow.targetId
+          );
+          if (draggedIdx < 0 || targetIdx < 0) {
+            next = movedBefore;
+          } else if (draggedIdx === targetIdx + 1) {
+            next = movedBefore;
+          } else {
+            const out = [...movedBefore];
+            const [m] = out.splice(draggedIdx, 1);
+            out.splice(targetIdx + (draggedIdx > targetIdx ? 1 : 0), 0, m);
+            next = out;
+          }
+        } else {
+          next = moveBlock(
+            prev,
+            dragIdNow,
+            {
+              parent_block_id: targetNow.parent_block_id,
+              parent_row_id: targetNow.parent_row_id,
+            },
+            beforeId
+          );
+        }
+        // Renumber sort_order per-parent so the visible order (which
+        // sorts by sort_order via buildByParentBlock) reflects the new
+        // flat-array order. Without this, same-parent reorders are
+        // committed to state but invisible.
+        return renumberSortOrders(next);
+      });
+      setDirty(true);
+      // Clear synchronously so the dragged block's ghost opacity resets
+      // even when its DOM node was recreated by the reparent.
       setDragId(null);
       setDragHeight(null);
+      setTargetState(null);
     },
-    overBlock: (target, overId) => {
-      if (!dragId || dragId === overId) return;
-      setBlockState((prev) => moveBlock(prev, dragId, target, overId));
-      setDirty(true);
-    },
-    overEmpty: (target) => {
-      if (!dragId) return;
-      const dragged = blockState.find((b) => b.id === dragId);
-      if (!dragged) return;
-      if (
-        dragged.parent_block_id === target.parent_block_id &&
-        dragged.parent_row_id === target.parent_row_id
-      ) {
-        return;
+    []
+  );
+
+  const dragCtx: DragContext = useMemo(
+    () => ({
+      dragId,
+      dragHeight,
+      target,
+      start: (blockId, height) => {
+        setDragId(blockId);
+        setDragHeight(height);
+        setTargetState(null);
+      },
+      setTarget: (t) => {
+        setTargetState((prev) => {
+          if (prev === t) return prev;
+          if (!prev || !t) return t;
+          if (prev.kind !== t.kind) return t;
+          if (prev.kind === "empty" && t.kind === "empty") {
+            return prev.parent_block_id === t.parent_block_id &&
+              prev.parent_row_id === t.parent_row_id
+              ? prev
+              : t;
+          }
+          if (prev.kind === "near" && t.kind === "near") {
+            if (
+              prev.parent_block_id === t.parent_block_id &&
+              prev.parent_row_id === t.parent_row_id &&
+              prev.targetId === t.targetId &&
+              prev.position === t.position
+            )
+              return prev;
+            return t;
+          }
+          return t;
+        });
+      },
+      commit: () => {
+        const d = dragIdRef.current;
+        const t = targetRef.current;
+        if (!d || !t) return;
+        doCommit(d, t);
+      },
+    }),
+    [dragId, dragHeight, target, doCommit]
+  );
+
+  // Drag-end has multiple silent-failure paths in Chrome (release outside
+  // the window, click-without-real-drag, source DOM removed mid-drag). The
+  // listeners below are layered: window drop is the primary commit path;
+  // window dragend is the backup; document dragover preventDefault makes
+  // the whole page a drop target so `drop` always fires; the safety timer
+  // catches everything else.
+  const safetyTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    function finish() {
+      const d = dragIdRef.current;
+      const t = targetRef.current;
+      if (d && t) {
+        doCommit(d, t);
+      } else if (d || t) {
+        setDragId(null);
+        setDragHeight(null);
+        setTargetState(null);
       }
-      setBlockState((prev) => moveBlock(prev, dragId, target, null));
-      setDirty(true);
-    },
-  };
+      if (safetyTimerRef.current != null) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
+    }
+    function onDocDragOver(e: DragEvent) {
+      if (dragIdRef.current) e.preventDefault();
+    }
+    function onDrop(e: DragEvent) {
+      e.preventDefault();
+      finish();
+    }
+    function onEnd() {
+      finish();
+    }
+    document.addEventListener("dragover", onDocDragOver);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", onEnd);
+    return () => {
+      document.removeEventListener("dragover", onDocDragOver);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", onEnd);
+    };
+  }, [doCommit]);
+
+  // Safety timer: reset state if dragend silently doesn't fire within 3s.
+  useEffect(() => {
+    if (!dragId) return;
+    if (safetyTimerRef.current != null) clearTimeout(safetyTimerRef.current);
+    safetyTimerRef.current = window.setTimeout(() => {
+      const d = dragIdRef.current;
+      const t = targetRef.current;
+      if (d && t) doCommit(d, t);
+      else if (d || t) {
+        setDragId(null);
+        setDragHeight(null);
+        setTargetState(null);
+      }
+    }, 3000);
+    return () => {
+      if (safetyTimerRef.current != null) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
+    };
+  }, [dragId, doCommit]);
 
   // Save ----------------------------------------------------------------
   async function doSave() {
@@ -499,6 +662,21 @@ export function FrameworkEditor({
       {confirmDialogEl}
     </section>
   );
+}
+
+/**
+ * Renumber `sort_order` per-parent based on flat-array position. Called
+ * after every drag commit so byParent (which sorts by sort_order) renders
+ * the user's intended order.
+ */
+function renumberSortOrders(blocks: BlockState[]): BlockState[] {
+  const counts = new Map<string, number>();
+  return blocks.map((b) => {
+    const key = `${b.parent_block_id ?? "root"}:${b.parent_row_id ?? "root"}`;
+    const idx = counts.get(key) ?? 0;
+    counts.set(key, idx + 1);
+    return b.sort_order === idx ? b : { ...b, sort_order: idx };
+  });
 }
 
 /**

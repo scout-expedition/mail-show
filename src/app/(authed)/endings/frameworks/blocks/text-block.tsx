@@ -5,7 +5,7 @@ import { GripVertical, Trash2 } from "lucide-react";
 import { AutoTextarea, GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type { BlockState } from "@/lib/endings/block-state";
-import { useDrag } from "../lib/drag";
+import { useDrag, type DragTarget } from "../lib/drag";
 
 export function TextBlock({
   block,
@@ -17,57 +17,122 @@ export function TextBlock({
   onDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
   const isDragging = drag.dragId === block.id;
+  const targetBefore =
+    drag.target?.kind === "near" &&
+    drag.target.targetId === block.id &&
+    drag.target.position === "before";
+  const targetAfter =
+    drag.target?.kind === "near" &&
+    drag.target.targetId === block.id &&
+    drag.target.position === "after";
+
+  function nearTarget(e: React.DragEvent): DragTarget {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const position = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    return {
+      kind: "near",
+      parent_block_id: block.parent_block_id,
+      parent_row_id: block.parent_row_id,
+      targetId: block.id,
+      position,
+    };
+  }
 
   return (
-    <div
-      ref={ref}
-      draggable
-      onDragStart={(e) => {
-        drag.start(block.id, ref.current?.offsetHeight ?? 0);
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onDragEnd={drag.end}
-      onDragOver={(e) => {
-        e.preventDefault();
-        drag.overBlock(
-          {
-            parent_block_id: block.parent_block_id,
-            parent_row_id: block.parent_row_id,
-          },
-          block.id
-        );
-      }}
-      className={cn(
-        "group/textblock relative flex items-start gap-1 rounded-md border border-transparent bg-card transition-colors hover:border-border",
-        isDragging && "opacity-40"
-      )}
-    >
-      <span
-        aria-hidden
-        className="mt-2 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
+    <div ref={ref} className="relative">
+      <DropLine active={targetBefore} side="top" />
+      <div
+        ref={cardRef}
+        onDragEnter={(e) => {
+          if (!drag.dragId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (drag.dragId === block.id) return;
+          drag.setTarget(nearTarget(e));
+        }}
+        onDragOver={(e) => {
+          if (!drag.dragId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "move";
+          if (drag.dragId === block.id) return;
+          drag.setTarget(nearTarget(e));
+        }}
+        onDrop={(e) => {
+          if (!drag.dragId) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (drag.dragId === block.id) return;
+          drag.commit();
+        }}
+        className={cn(
+          "group/textblock relative flex items-start gap-1 rounded-md border border-transparent bg-card transition-colors hover:border-border",
+          isDragging && "opacity-40"
+        )}
       >
-        <GripVertical size={14} />
-      </span>
-      <AutoTextarea
-        value={block.text}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Paragraph text…"
-        // Disable programming ligatures so authors see the characters they
-        // typed (e.g. `<=` doesn't auto-combine into `⩽`).
-        style={{ fontVariantLigatures: "none" }}
-        className={cn("flex-1 min-h-[2.25rem] !text-sm", GHOST_FIELD)}
-      />
-      <button
-        type="button"
-        onClick={onDelete}
-        aria-label="Delete block"
-        title="Delete block"
-        className="mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-opacity opacity-0 hover:bg-destructive/15 hover:text-destructive group-hover/textblock:opacity-100"
-      >
-        <Trash2 size={12} aria-hidden />
-      </button>
+        <span
+          aria-hidden
+          draggable
+          onDragStart={(e) => {
+            e.stopPropagation();
+            drag.start(block.id, cardRef.current?.offsetHeight ?? 0);
+            e.dataTransfer.effectAllowed = "move";
+            if (cardRef.current) {
+              const rect = cardRef.current.getBoundingClientRect();
+              e.dataTransfer.setDragImage(
+                cardRef.current,
+                e.clientX - rect.left,
+                e.clientY - rect.top
+              );
+            }
+          }}
+          className="mt-2 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
+        >
+          <GripVertical size={14} />
+        </span>
+        <AutoTextarea
+          value={block.text}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Paragraph text…"
+          // Disable programming ligatures so authors see the characters they
+          // typed (e.g. `<=` doesn't auto-combine into `⩽`).
+          style={{ fontVariantLigatures: "none" }}
+          className={cn("flex-1 min-h-[2.25rem] !text-sm", GHOST_FIELD)}
+        />
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label="Delete block"
+          title="Delete block"
+          className="mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-opacity opacity-0 hover:bg-destructive/15 hover:text-destructive group-hover/textblock:opacity-100"
+        >
+          <Trash2 size={12} aria-hidden />
+        </button>
+      </div>
+      <DropLine active={targetAfter} side="bottom" />
     </div>
+  );
+}
+
+export function DropLine({
+  active,
+  side,
+}: {
+  active: boolean;
+  side: "top" | "bottom";
+}) {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute left-0 right-0 h-1 transition-colors"
+      style={{
+        [side]: "-4px",
+        backgroundColor: active ? "rgb(96 165 250)" : "transparent",
+        borderRadius: 999,
+      }}
+    />
   );
 }

@@ -1,21 +1,50 @@
-// Drag-drop coordination for the v3 endings editor. The editor keeps a
-// single `dragId` (the block currently being dragged) and a `dragHeight`
-// (its on-screen height at drag start, used to size the placeholder slot).
-// All block targets register dragover handlers that reparent + reorder the
-// dragged block via `moveBlock`.
+// Drag-drop coordination for the v3 endings editor.
+//
+// Model: two-phase commit-on-release.
+//   1. While the user drags, dragover handlers update a `target` (where the
+//      dragged block would land if released now) and per-block components
+//      render a visual indicator (insertion line / empty-row highlight).
+//      Block state itself is NOT mutated during the drag.
+//   2. On release, `commit()` performs the reparent + reorder once, using
+//      the last-known target.
+//
+// This avoids the oscillation/jitter that "reorder during dragover" causes
+// at parent boundaries and into empty containers — the cursor's relative
+// position no longer shifts mid-drag because the DOM doesn't move.
+//
+// Release-path resolution is layered (see framework-editor.tsx for the
+// listeners): per-element drop → window drop → window dragend → safety
+// timer. Native HTML5 dragend silently doesn't fire in several Chrome edge
+// cases (release outside window, click-without-real-drag, source DOM
+// removed mid-drag), and the layered listeners catch all of them.
 
 import { createContext, useContext } from "react";
 import type { BlockState, ParentLoc } from "@/lib/endings/block-state";
 
+/** Where the dragged block will land if released now. */
+export type DragTarget =
+  | {
+      kind: "near";
+      parent_block_id: string | null;
+      parent_row_id: string | null;
+      targetId: string;
+      position: "before" | "after";
+    }
+  | {
+      kind: "empty";
+      parent_block_id: string | null;
+      parent_row_id: string | null;
+    };
+
 export interface DragContext {
   dragId: string | null;
   dragHeight: number | null;
+  target: DragTarget | null;
   start: (blockId: string, height: number) => void;
-  end: () => void;
-  /** Drop dragged block before `overId` under `target`. */
-  overBlock: (target: ParentLoc, overId: string) => void;
-  /** Drop dragged block at the end of `target` (an empty list slot). */
-  overEmpty: (target: ParentLoc) => void;
+  /** Set the pending drop intent (called from dragenter / dragover). */
+  setTarget: (t: DragTarget | null) => void;
+  /** Commit the move using the current target (called from drop). */
+  commit: () => void;
 }
 
 export const DragCtx = createContext<DragContext | null>(null);

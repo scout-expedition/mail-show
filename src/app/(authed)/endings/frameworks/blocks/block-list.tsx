@@ -75,18 +75,57 @@ export function BlockList({
     await deleteBlock(fd);
   }
 
+  const isEmptyTarget =
+    drag.target?.kind === "empty" &&
+    drag.target.parent_block_id === parent.parent_block_id &&
+    drag.target.parent_row_id === parent.parent_row_id;
+
   return (
     <div
+      onDragEnter={(e) => {
+        if (drag.dragId && blocks.length === 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          drag.setTarget({
+            kind: "empty",
+            parent_block_id: parent.parent_block_id,
+            parent_row_id: parent.parent_row_id,
+          });
+        }
+      }}
       onDragOver={(e) => {
         if (drag.dragId && blocks.length === 0) {
           e.preventDefault();
-          drag.overEmpty(parent);
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "move";
+          drag.setTarget({
+            kind: "empty",
+            parent_block_id: parent.parent_block_id,
+            parent_row_id: parent.parent_row_id,
+          });
         }
       }}
-      className={cn("flex flex-col gap-2")}
+      onDrop={(e) => {
+        if (drag.dragId && blocks.length === 0) {
+          e.preventDefault();
+          e.stopPropagation();
+          drag.commit();
+        }
+      }}
+      className={cn(
+        "flex flex-col gap-2",
+        blocks.length === 0 && isEmptyTarget && "rounded-md ring-2 ring-blue-400"
+      )}
     >
       {blocks.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border px-3 py-2 text-center text-xs text-muted-foreground">
+        <p
+          className={cn(
+            "rounded-md border border-dashed px-3 py-2 text-center text-xs",
+            isEmptyTarget
+              ? "border-blue-400 bg-blue-400/10 text-blue-200"
+              : "border-border text-muted-foreground"
+          )}
+        >
           (no blocks)
         </p>
       ) : null}

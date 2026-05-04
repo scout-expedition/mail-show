@@ -5,6 +5,7 @@ import {
   evaluateChip,
   evaluateRow,
   matchingRowsByBlock,
+  shadowedRowIds,
   type EvalBlock,
   type EvalChip,
   type EvalRow,
@@ -433,5 +434,162 @@ describe("matchingRowsByBlock", () => {
       selections: textSelections({ [performer.id]: "WINTER" }),
     });
     expect(out.get(cb.id)).toEqual([r1.id, r2.id]);
+  });
+});
+
+// ----------------------------------------------------------------------
+// shadowedRowIds — Phase 3 overlap detection
+// ----------------------------------------------------------------------
+
+describe("shadowedRowIds", () => {
+  it("returns empty when no rows match", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [r1],
+      chips: [textChip("c1", r1.id, performer.id, "WINTER")],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "SUMMER" }),
+    });
+    expect(out.size).toBe(0);
+  });
+
+  it("returns empty when exactly one row matches", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1", r1.id, performer.id, "WINTER"),
+        textChip("c2", r2.id, performer.id, "SUMMER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out.size).toBe(0);
+  });
+
+  it("flags later matching rows but not the winner", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const r3 = row("r3", cb.id, 2);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [r1, r2, r3],
+      chips: [
+        textChip("c1", r1.id, performer.id, "WINTER"),
+        textChip("c2", r2.id, performer.id, "WINTER"),
+        textChip("c3", r3.id, performer.id, "WINTER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect([...out].sort()).toEqual([r2.id, r3.id].sort());
+  });
+
+  it("only the first match wins per block — sort_order, not array order", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    // Insert in reverse sort_order to verify the evaluator orders by sort_order.
+    const rLater = row("rLater", cb.id, 1);
+    const rFirst = row("rFirst", cb.id, 0);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [rLater, rFirst],
+      chips: [
+        textChip("c1", rLater.id, performer.id, "WINTER"),
+        textChip("c2", rFirst.id, performer.id, "WINTER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect([...out]).toEqual([rLater.id]);
+  });
+
+  it("scopes shadowing per condition block (no cross-block shadowing)", () => {
+    const performer = textVar("PERFORMER");
+    const cb1 = condBlock("cb1");
+    const cb2 = condBlock("cb2");
+    const r1 = row("r1", cb1.id, 0);
+    const r2 = row("r2", cb2.id, 0);
+    const out = shadowedRowIds({
+      blocks: [cb1, cb2],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1", r1.id, performer.id, "WINTER"),
+        textChip("c2", r2.id, performer.id, "WINTER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out.size).toBe(0);
+  });
+
+  it("does not flag rows that fail to match, even after a winning row", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1", r1.id, performer.id, "WINTER"),
+        textChip("c2", r2.id, performer.id, "SUMMER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out.size).toBe(0);
+  });
+
+  it("detects shadowing inside nested condition blocks", () => {
+    const performer = textVar("PERFORMER");
+    const mood = textVar("MOOD");
+    const outer = condBlock("outer");
+    const outerRow = row("outerRow", outer.id, 0);
+    const inner = condBlock("inner", outer.id, outerRow.id);
+    const inner1 = row("inner1", inner.id, 0);
+    const inner2 = row("inner2", inner.id, 1);
+    const out = shadowedRowIds({
+      blocks: [outer, inner],
+      rows: [outerRow, inner1, inner2],
+      chips: [
+        textChip("co", outerRow.id, performer.id, "WINTER"),
+        textChip("c1", inner1.id, mood.id, "STORMY"),
+        textChip("c2", inner2.id, mood.id, "STORMY"),
+      ],
+      variables: [performer, mood],
+      selections: textSelections({
+        [performer.id]: "WINTER",
+        [mood.id]: "STORMY",
+      }),
+    });
+    expect([...out]).toEqual([inner2.id]);
+  });
+
+  it("flags numeric overlap (≥0 and >-5 both fire for value=2)", () => {
+    const world = numVar("WORLD");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = shadowedRowIds({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, "≥"),
+        numChip("c2", r2.id, world.id, -5, ">"),
+      ],
+      variables: [world],
+      selections: numSelections({ [world.id]: 2 }),
+    });
+    expect([...out]).toEqual([r2.id]);
   });
 });
