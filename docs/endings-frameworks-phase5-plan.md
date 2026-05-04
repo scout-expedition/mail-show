@@ -3,6 +3,13 @@
 Master plan: `docs/endings-frameworks-plan.md` (Phases 1–3).
 Predecessor: `docs/endings-frameworks-phase4-plan.md` (aggregate variable kinds — shipped as PR #4 / commit `1225d8b`).
 
+**Status:** shipped as PR #5 (`7cfa415`). Two follow-ups landed on top:
+
+- PR #6 (`a8974f2`) — numeric interval analysis. Single-numeric-variable blocks now compute exact uncovered intervals via breakpoint enumeration. Mixed (numeric + finite) blocks still use the wildcard-and-partial path.
+- PR #7 (`5b4badd`) — numeric row overlap detection. Per-row badge for partial overlap (later row's range intersects an earlier row's) and full numeric shadow (later row entirely contained).
+
+Phase 6 (`docs/endings-frameworks-phase6-plan.md`, header-declared variables) re-points the uncovered analysis at the header's declared set; the numeric analyses here stay as-is and continue to apply.
+
 ## Context
 
 Today the editor has a single warning: `shadowedRowIds()` flags rows that overlap an earlier row **for the current preview selections**. That requires the author to set values and notice the badge. Two failure modes that's bad at:
@@ -227,7 +234,7 @@ After all steps:
 
 - **Tiebreakers.** Spec separately. Imagined model: when the underlying scores tie, a tie-breaker rule (lex order, storyline-specific, etc.) returns a definite winner; both `top=X` and `top≠X` then evaluate against that resolved winner. So `[top=Working]` paired with `[top≠Working]` would together cover every assignment once tie-breakers exist. Phase 5's static analysis models the *current* "tie → false" semantics; when tie-breakers ship, the aggregate truth-table here updates and ties stop appearing in the uncovered list.
 - **Recursive shadow / unreachable rows.** v1 scopes shadow analysis to a single condition block. A row inside a nested block can still be statically unreachable because of the *outer* row's chips — the same finite-domain machinery handles this, just with the outer chips folded into the row's predicate. Add as a separate pass once Phase 5's badges are stable.
-- **Numeric interval analysis.** v1 conservatively excludes numeric chips. A future pass could do interval arithmetic to make the analysis exact when only `<,≤,>,≥,=,≠` chips are present.
+- **Numeric interval analysis.** ~~v1 conservatively excludes numeric chips.~~ Shipped as PR #6 (gaps) and PR #7 (overlap) for the single-numeric-variable case. Mixed blocks (numeric + finite, or multiple numerics) still use the partial path; extending interval analysis to those cases is future work.
 - **Combined Nat'l aggregate.** Same as Phase 4 — wait until authoring asks.
 - **Logic tab migration to chip-row primitive.** Still its own future plan.
 - **Manual color picker.** Still out of scope (master plan).
