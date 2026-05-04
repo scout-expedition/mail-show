@@ -176,7 +176,10 @@ export function ConditionBlock({
 
       {collapsed ? null : (
         <>
-      {blockAnalysis?.status === "has_uncovered" && uncoveredOpen ? (
+      {blockAnalysis &&
+      uncoveredOpen &&
+      (blockAnalysis.uncovered.length > 0 ||
+        blockAnalysis.numericGaps.length > 0) ? (
         <UncoveredList
           analysis={blockAnalysis}
           variables={variables}
@@ -282,11 +285,7 @@ function ConditionRow({
       )}
     >
       <div className="flex flex-wrap items-start gap-1 self-start">
-        {chips.length === 0 ? (
-          <span className="text-[11px] italic text-muted-foreground">
-            (always)
-          </span>
-        ) : (
+        {chips.length === 0 ? null : (
           chips.map((chip) => (
             <ChipPill
               key={chip.id}
@@ -346,18 +345,18 @@ function BlockAnalysisBadge({
 }) {
   void variables;
   void values;
-  if (analysis.status === "covered" || analysis.status === "no_finite_vars") {
+  if (analysis.status === "no_finite_vars") {
+    if (analysis.partial) {
+      return (
+        <span
+          title="This block's rows reference multiple numeric variables. Multi-axis numeric analysis isn't run; coverage isn't statically determinable."
+          className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
+        >
+          partial coverage
+        </span>
+      );
+    }
     return null;
-  }
-  if (analysis.status === "skipped_numeric") {
-    return (
-      <span
-        title="At least one row in this block uses a numeric chip; static analysis can't enumerate the infinite assignment space."
-        className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
-      >
-        partial coverage
-      </span>
-    );
   }
   if (analysis.status === "cap_exceeded") {
     return (
@@ -369,17 +368,37 @@ function BlockAnalysisBadge({
       </span>
     );
   }
+  if (analysis.status === "covered") {
+    if (analysis.partial) {
+      return (
+        <span
+          title="No finite-domain gaps detected, but this block contains numeric chips that aren't statically analyzed."
+          className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground"
+        >
+          partial coverage
+        </span>
+      );
+    }
+    return null;
+  }
   // has_uncovered
-  const count = analysis.uncovered.length;
+  const count = analysis.uncovered.length + analysis.numericGaps.length;
+  const partialSuffix = analysis.partial ? "+" : "";
+  const partialTitle = analysis.partial
+    ? " (numeric chips not analyzed; more combos may be uncovered at runtime)"
+    : "";
   return (
     <button
       type="button"
       onClick={onToggle}
-      title={open ? "Hide uncovered list" : "Show uncovered list"}
+      title={
+        (open ? "Hide uncovered list" : "Show uncovered list") + partialTitle
+      }
       className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200 hover:bg-amber-500/20"
     >
       <AlertTriangle size={10} aria-hidden />
-      {count} {count === 1 ? "assignment" : "assignments"} uncovered
+      {count}
+      {partialSuffix} {count === 1 ? "assignment" : "assignments"} uncovered
     </button>
   );
 }
@@ -401,14 +420,41 @@ function UncoveredList({
         Uncovered assignments
       </div>
       <ul className="flex flex-col gap-0.5 text-amber-100/80">
+        {analysis.numericGaps.map((g, i) => (
+          <li key={`n-${i}`} className="font-mono">
+            · {formatNumericGap(g, variableById)}
+          </li>
+        ))}
         {analysis.uncovered.map((a, i) => (
-          <li key={i} className="font-mono">
+          <li key={`f-${i}`} className="font-mono">
             · {formatAssignment(a, variableById, valueById)}
           </li>
         ))}
       </ul>
     </div>
   );
+}
+
+function formatNumericGap(
+  gap: import("@/lib/endings/static-analysis").NumericGap,
+  variableById: Map<string, VariableState>
+): string {
+  const name = variableById.get(gap.variable_id)?.name ?? gap.variable_id;
+  const lo = gap.low === -Infinity ? null : gap.low;
+  const hi = gap.high === Infinity ? null : gap.high;
+  if (lo == null && hi == null) return name;
+  if (lo == null) {
+    return `${name} ${gap.highInclusive ? "≤" : "<"} ${hi}`;
+  }
+  if (hi == null) {
+    return `${name} ${gap.lowInclusive ? "≥" : ">"} ${lo}`;
+  }
+  if (lo === hi && gap.lowInclusive && gap.highInclusive) {
+    return `${name} = ${lo}`;
+  }
+  return `${lo} ${gap.lowInclusive ? "≤" : "<"} ${name} ${
+    gap.highInclusive ? "≤" : "<"
+  } ${hi}`;
 }
 
 function formatAssignment(

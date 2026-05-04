@@ -376,14 +376,10 @@ describe("uncoveredAssignmentsByBlock / text", () => {
     });
     const block = out.get(cb.id);
     expect(block?.status).toBe("has_uncovered");
-    // unset is also uncovered (no chip matches an unset variable).
-    const outcomes = (block?.uncovered ?? [])
-      .map((u) => u[performer.id])
-      .sort();
-    expect(outcomes).toEqual([c.id, "unset"].sort());
+    expect(block?.uncovered).toEqual([{ [performer.id]: c.id }]);
   });
 
-  it("reports 'covered' when = A and ≠ A together cover everything except unset", () => {
+  it("reports 'covered' when = A and ≠ A together cover every defined value", () => {
     const r1 = row("r1", cb.id, 0);
     const r2 = row("r2", cb.id, 1);
     const out = uncoveredAssignmentsByBlock({
@@ -397,12 +393,11 @@ describe("uncoveredAssignmentsByBlock / text", () => {
       values: [a, b, c],
     });
     const block = out.get(cb.id);
-    // unset still falls through (no chip matches an unset variable).
-    expect(block?.status).toBe("has_uncovered");
-    expect(block?.uncovered).toEqual([{ [performer.id]: "unset" }]);
+    expect(block?.status).toBe("covered");
+    expect(block?.uncovered).toEqual([]);
   });
 
-  it("two-variable AND row: lists every (var, mood) combo not matched", () => {
+  it("two-variable AND row: lists every defined (var, mood) combo not matched", () => {
     const mood = textVar("VAR_MOOD");
     const stormy = textValue("VAL_STORMY", mood.id);
     const calm = textValue("VAL_CALM", mood.id);
@@ -418,10 +413,10 @@ describe("uncoveredAssignmentsByBlock / text", () => {
       values: [a, b, stormy, calm],
     });
     const block = out.get(cb.id);
-    // performer dom = {unset, A, B}, mood dom = {unset, stormy, calm}
-    // = 9 assignments; only (A, stormy) matches → 8 uncovered.
+    // performer dom = {A, B}, mood dom = {stormy, calm}
+    // = 4 assignments; only (A, stormy) matches → 3 uncovered.
     expect(block?.status).toBe("has_uncovered");
-    expect(block?.uncovered.length).toBe(8);
+    expect(block?.uncovered.length).toBe(3);
   });
 });
 
@@ -473,15 +468,167 @@ describe("uncoveredAssignmentsByBlock / aggregate", () => {
 });
 
 // ----------------------------------------------------------------------
+// uncoveredAssignmentsByBlock — numeric interval analysis
+// ----------------------------------------------------------------------
+
+describe("uncoveredAssignmentsByBlock / numeric interval", () => {
+  const world = numVar("VAR_WORLD");
+  const cb = condBlock("cb");
+
+  it("x > 0 and x < 0 → uncovered at x = 0", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, ">"),
+        numChip("c2", r2.id, world.id, 0, "<"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    expect(block?.partial).toBe(false);
+    expect(block?.status).toBe("has_uncovered");
+    expect(block?.numericGaps).toEqual([
+      {
+        variable_id: world.id,
+        low: 0,
+        high: 0,
+        lowInclusive: true,
+        highInclusive: true,
+      },
+    ]);
+  });
+
+  it("x > 3 and x < 0 → uncovered between 0 ≤ x ≤ 3", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 3, ">"),
+        numChip("c2", r2.id, world.id, 0, "<"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    expect(block?.partial).toBe(false);
+    expect(block?.numericGaps).toEqual([
+      {
+        variable_id: world.id,
+        low: 0,
+        high: 3,
+        lowInclusive: true,
+        highInclusive: true,
+      },
+    ]);
+  });
+
+  it("(x > 0 ∧ x < 2) and x ≥ 2 → uncovered x ≤ 0", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1a", r1.id, world.id, 0, ">"),
+        numChip("c1b", r1.id, world.id, 2, "<"),
+        numChip("c2", r2.id, world.id, 2, "≥"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    expect(block?.partial).toBe(false);
+    expect(block?.numericGaps).toEqual([
+      {
+        variable_id: world.id,
+        low: -Infinity,
+        high: 0,
+        lowInclusive: false,
+        highInclusive: true,
+      },
+    ]);
+  });
+
+  it("x ≥ 0 and x < 0 fully cover the line", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, "≥"),
+        numChip("c2", r2.id, world.id, 0, "<"),
+      ],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    expect(block?.partial).toBe(false);
+    expect(block?.status).toBe("covered");
+    expect(block?.numericGaps).toEqual([]);
+  });
+
+  it("≠ 5 leaves only x = 5 uncovered", () => {
+    const r1 = row("r1", cb.id, 0);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1],
+      chips: [numChip("c1", r1.id, world.id, 5, "≠")],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    expect(block?.numericGaps).toEqual([
+      {
+        variable_id: world.id,
+        low: 5,
+        high: 5,
+        lowInclusive: true,
+        highInclusive: true,
+      },
+    ]);
+  });
+
+  it("two scattered = chips leave three open intervals uncovered", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        numChip("c1", r1.id, world.id, 0, "="),
+        numChip("c2", r2.id, world.id, 5, "="),
+      ],
+      variables: [world],
+      values: [],
+    });
+    const block = out.get(cb.id);
+    // Uncovered: (-∞, 0), (0, 5), (5, ∞)
+    expect(block?.numericGaps?.length).toBe(3);
+  });
+});
+
+// ----------------------------------------------------------------------
 // uncoveredAssignmentsByBlock — number_ref + cap + edge cases
 // ----------------------------------------------------------------------
 
 describe("uncoveredAssignmentsByBlock / edges", () => {
-  it("status='skipped_numeric' when any row has a number_ref chip", () => {
+  it("ignores numeric chips and reports partial coverage", () => {
+    // Row 1 (`performer = winter`) covers performer=winter; row 2's
+    // numeric chip is treated as a wildcard so it covers the rest.
+    // Result: every finite assignment is "covered" (lower bound) and
+    // the partial flag is set so the UI surfaces the caveat.
     const performer = textVar("VAR_PERFORMER");
     const world = numVar("VAR_WORLD");
     const cb = condBlock("cb");
     const winter = textValue("VAL_WINTER", performer.id);
+    const summer = textValue("VAL_SUMMER", performer.id);
     const r1 = row("r1", cb.id, 0);
     const r2 = row("r2", cb.id, 1);
     const out = uncoveredAssignmentsByBlock({
@@ -492,11 +639,41 @@ describe("uncoveredAssignmentsByBlock / edges", () => {
         numChip("c2", r2.id, world.id, 0, "≥"),
       ],
       variables: [performer, world],
-      values: [winter],
+      values: [winter, summer],
     });
     const block = out.get(cb.id);
-    expect(block?.status).toBe("skipped_numeric");
-    expect(block?.uncovered).toEqual([]);
+    expect(block?.partial).toBe(true);
+    // Row 2's numeric-only chip is a wildcard → covers all finite assignments.
+    expect(block?.status).toBe("covered");
+  });
+
+  it("partial flag set when numeric chip mixes with finite chips on the same row", () => {
+    // Row 1: performer=winter ∧ world>=0 → finite-only constraint:
+    // performer=winter (numeric ignored). Row 2: performer=summer.
+    // performer values {winter, summer, autumn} → autumn uncovered.
+    const performer = textVar("VAR_PERFORMER");
+    const world = numVar("VAR_WORLD");
+    const cb = condBlock("cb");
+    const winter = textValue("VAL_WINTER", performer.id);
+    const summer = textValue("VAL_SUMMER", performer.id);
+    const autumn = textValue("VAL_AUTUMN", performer.id);
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1a", r1.id, performer.id, winter.id),
+        numChip("c1b", r1.id, world.id, 0, "≥"),
+        textChip("c2", r2.id, performer.id, summer.id),
+      ],
+      variables: [performer, world],
+      values: [winter, summer, autumn],
+    });
+    const block = out.get(cb.id);
+    expect(block?.partial).toBe(true);
+    expect(block?.status).toBe("has_uncovered");
+    expect(block?.uncovered).toEqual([{ [performer.id]: autumn.id }]);
   });
 
   it("status='no_finite_vars' when no row has any chips", () => {
@@ -569,12 +746,8 @@ describe("uncoveredAssignmentsByBlock / edges", () => {
     expect(out.get(cb1.id)?.status).toBe("has_uncovered");
     expect(out.get(cb2.id)?.status).toBe("has_uncovered");
     // Each block's uncovered list is independent of the other's chip set.
-    expect(out.get(cb1.id)?.uncovered.map((u) => u[performer.id]).sort()).toEqual(
-      [b.id, "unset"].sort()
-    );
-    expect(out.get(cb2.id)?.uncovered.map((u) => u[performer.id]).sort()).toEqual(
-      [a.id, "unset"].sort()
-    );
+    expect(out.get(cb1.id)?.uncovered).toEqual([{ [performer.id]: b.id }]);
+    expect(out.get(cb2.id)?.uncovered).toEqual([{ [performer.id]: a.id }]);
   });
 });
 

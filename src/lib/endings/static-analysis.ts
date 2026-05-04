@@ -58,17 +58,36 @@ export type BlockUncoveredStatus =
   | "covered"
   | "has_uncovered"
   | "cap_exceeded"
-  | "skipped_numeric"
   | "no_finite_vars";
 
 export interface BlockAnalysis {
   block_id: string;
   status: BlockUncoveredStatus;
   /** Each entry: `variable_id → outcome string` — `text_value_id` for text
-   *  vars, `winner_top` or `winner_top|loser_bottom` for aggregates, or
-   *  the special string `unset` when a chip's variable has no values
-   *  defined yet. Empty unless `status === 'has_uncovered'`. */
+   *  vars, `winner_top` or `winner_top|loser_bottom` for aggregates.
+   *  Empty unless `status === 'has_uncovered'`. */
   uncovered: Array<Record<string, string>>;
+  /** Numeric-domain gaps on the block's single numeric variable. Only
+   *  populated when the block references *exactly one* numeric variable
+   *  and *no* finite-domain variables. For mixed blocks (numeric +
+   *  finite, or multiple numerics) interval analysis isn't run; those
+   *  blocks fall back to the partial-coverage path below. */
+  numericGaps: NumericGap[];
+  /** True when the analysis couldn't be exact — e.g. mixed numeric +
+   *  finite chips, or multiple numeric variables. The uncovered list
+   *  is then a lower bound (more combos may be uncovered at runtime
+   *  once numeric constraints apply). */
+  partial: boolean;
+}
+
+export interface NumericGap {
+  variable_id: string;
+  /** Lower bound; -Infinity for unbounded below. */
+  low: number;
+  /** Upper bound; Infinity for unbounded above. */
+  high: number;
+  lowInclusive: boolean;
+  highInclusive: boolean;
 }
 
 // Outcome encoding ------------------------------------------------------
@@ -76,10 +95,12 @@ export interface BlockAnalysis {
 export const TIE_OUTCOME = "tie";
 export const UNSET_TEXT_OUTCOME = "unset";
 
-/** All possible outcomes for a finite-domain variable. Returns null for
- *  number_ref (no finite outcome set) and for text variables with no
- *  values defined yet (only the unset outcome — those are tracked but
- *  never satisfy a chip). */
+/** Possible *authoring* outcomes for a finite-domain variable. The
+ *  runtime "unset" state is intentionally excluded — authors don't
+ *  branch on absence; they branch on values — so leaving it out keeps
+ *  the uncovered list focused on real gaps. Returns null for number_ref
+ *  (no finite outcome set) and for text variables with no values
+ *  defined yet (no enumerable outcomes). */
 export function variableDomain(
   variable: EvalVariable,
   values: StaticValue[]
@@ -88,9 +109,7 @@ export function variableDomain(
     const vids = values
       .filter((v) => v.variable_id === variable.id)
       .map((v) => v.id);
-    return vids.length > 0
-      ? [UNSET_TEXT_OUTCOME, ...vids]
-      : [UNSET_TEXT_OUTCOME];
+    return vids.length > 0 ? vids : null;
   }
   if (variable.kind === "aggregate_ref" && variable.aggregate_ref) {
     return aggregateOutcomes(variable.aggregate_ref);
@@ -209,16 +228,25 @@ export function chipMatchesOutcome(
   return false;
 }
 
-/** Does the row match the given variable→outcome assignment? */
+/** Does the row match the given variable→outcome assignment?
+ *
+ *  When `ignoreNumeric` is true, chips on number_ref variables are
+ *  treated as wildcards (always-match). The uncovered analysis uses
+ *  this so a block with a mix of numeric + finite chips still produces
+ *  a useful lower-bound uncovered list. Shadow analysis keeps the
+ *  default (false) because wildcarding numeric chips would over-report
+ *  shadowing across rows whose numeric constraints don't overlap. */
 function rowMatchesAssignment(
   rowChips: EvalChip[],
   variableIndex: Map<string, EvalVariable>,
-  assignment: Map<string, string>
+  assignment: Map<string, string>,
+  ignoreNumeric = false
 ): boolean {
   if (rowChips.length === 0) return false; // matches Phase 1 evaluator
   for (const chip of rowChips) {
     const variable = variableIndex.get(chip.variable_id);
     if (!variable) return false;
+    if (ignoreNumeric && variable.kind === "number_ref") continue;
     const outcome = assignment.get(chip.variable_id);
     if (outcome == null) return false;
     if (!chipMatchesOutcome(chip, variable, outcome)) return false;
@@ -384,9 +412,15 @@ function rowCovers(
 // Public API: uncovered assignments -------------------------------------
 
 /**
- * Per-block: enumerate every assignment over the finite-domain variables
- * referenced by the block's rows; flag the ones no row matches. Skips
- * blocks whose rows reference number_ref variables (infinite domain).
+ * Per-block: compute uncovered assignments. The strategy depends on the
+ * block's chip mix:
+ *
+ *  * Pure finite-domain (text + aggregate, no numeric) — exact enumeration.
+ *  * Pure single numeric variable (no finite-domain chips) — interval
+ *    analysis via `computeNumericGaps`.
+ *  * Mixed (numeric + finite, or multiple numeric variables) — partial:
+ *    enumerate the finite domain treating numeric chips as wildcards and
+ *    set `partial: true`. The uncovered list is a lower bound.
  */
 export function uncoveredAssignmentsByBlock(
   input: StaticInputs
@@ -399,28 +433,61 @@ export function uncoveredAssignmentsByBlock(
       const list = chipsByRow.get(r.id) ?? [];
       allChips.push(...list);
     }
-    if (rowHasNumberRef(allChips, variableIndex)) {
+    const finiteVarIds = [
+      ...new Set(
+        allChips
+          .filter((c) => {
+            const v = variableIndex.get(c.variable_id);
+            return v != null && v.kind !== "number_ref";
+          })
+          .map((c) => c.variable_id)
+      ),
+    ];
+    const numericVarIds = [
+      ...new Set(
+        allChips
+          .filter((c) => {
+            const v = variableIndex.get(c.variable_id);
+            return v?.kind === "number_ref";
+          })
+          .map((c) => c.variable_id)
+      ),
+    ];
+    const partial =
+      numericVarIds.length > 1 ||
+      (numericVarIds.length === 1 && finiteVarIds.length > 0);
+
+    // Pure single-numeric-variable case → exact interval analysis.
+    if (
+      finiteVarIds.length === 0 &&
+      numericVarIds.length === 1
+    ) {
+      const numericVarId = numericVarIds[0];
+      const gaps = computeNumericGaps(rows, chipsByRow, numericVarId);
       out.set(blockId, {
         block_id: blockId,
-        status: "skipped_numeric",
+        status: gaps.length > 0 ? "has_uncovered" : "covered",
         uncovered: [],
+        numericGaps: gaps.map((g) => ({ variable_id: numericVarId, ...g })),
+        partial: false,
       });
       continue;
     }
-    const varIds = [...new Set(allChips.map((c) => c.variable_id))];
-    if (varIds.length === 0) {
-      // No chips on any row → nothing to enumerate. Block emits nothing
-      // for every assignment; report 'no_finite_vars' so the UI can
-      // distinguish "trivially uncovered" from "fully covered".
+
+    if (finiteVarIds.length === 0) {
+      // No finite-domain chips and not single-numeric (either zero
+      // numeric or multiple numerics). Nothing enumerable here.
       out.set(blockId, {
         block_id: blockId,
         status: "no_finite_vars",
         uncovered: [],
+        numericGaps: [],
+        partial,
       });
       continue;
     }
     const dims: { id: string; outcomes: string[] }[] = [];
-    for (const id of varIds) {
+    for (const id of finiteVarIds) {
       const v = variableIndex.get(id);
       if (!v) continue;
       const dom = variableDomain(v, input.values);
@@ -433,6 +500,8 @@ export function uncoveredAssignmentsByBlock(
         block_id: blockId,
         status: "cap_exceeded",
         uncovered: [],
+        numericGaps: [],
+        partial,
       });
       continue;
     }
@@ -441,7 +510,7 @@ export function uncoveredAssignmentsByBlock(
       let covered = false;
       for (const r of rows) {
         const chips = chipsByRow.get(r.id) ?? [];
-        if (rowMatchesAssignment(chips, variableIndex, a)) {
+        if (rowMatchesAssignment(chips, variableIndex, a, true)) {
           covered = true;
           break;
         }
@@ -456,9 +525,149 @@ export function uncoveredAssignmentsByBlock(
       block_id: blockId,
       status: uncovered.length > 0 ? "has_uncovered" : "covered",
       uncovered,
+      numericGaps: [],
+      partial,
     });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------
+// Numeric interval analysis
+// ---------------------------------------------------------------------
+
+/**
+ * For a block whose only chipped variable is `variableId` (a number_ref),
+ * compute the set of values where no row matches. Strategy: collect all
+ * chip number_values as breakpoints, split the real line into the
+ * resulting segments (open intervals + breakpoint singletons), test
+ * coverage at one representative per segment, then merge contiguous
+ * uncovered segments into intervals.
+ */
+function computeNumericGaps(
+  rows: EvalRow[],
+  chipsByRow: Map<string, EvalChip[]>,
+  variableId: string
+): Omit<NumericGap, "variable_id">[] {
+  const bps = new Set<number>();
+  for (const r of rows) {
+    for (const c of chipsByRow.get(r.id) ?? []) {
+      if (c.variable_id === variableId && c.number_value != null) {
+        bps.add(c.number_value);
+      }
+    }
+  }
+  const sortedBps = [...bps].sort((a, b) => a - b);
+
+  // Block matches a value iff some row's chips on this variable all
+  // match that value (AND across the row's chips). Empty rows never
+  // fire. Rows whose chips are entirely on other variables don't apply
+  // here either — but in the single-numeric-var-only path, there are no
+  // such rows.
+  function blockCoversValue(v: number): boolean {
+    for (const r of rows) {
+      const rowChips = (chipsByRow.get(r.id) ?? []).filter(
+        (c) => c.variable_id === variableId
+      );
+      if (rowChips.length === 0) continue;
+      let ok = true;
+      for (const c of rowChips) {
+        if (!chipNumericMatches(c, v)) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  type Seg = { type: "open" | "point"; low: number; high: number; covered: boolean };
+  const segs: Seg[] = [];
+  if (sortedBps.length === 0) {
+    segs.push({
+      type: "open",
+      low: -Infinity,
+      high: Infinity,
+      covered: blockCoversValue(0),
+    });
+  } else {
+    segs.push({
+      type: "open",
+      low: -Infinity,
+      high: sortedBps[0],
+      covered: blockCoversValue(sortedBps[0] - 1),
+    });
+    for (let i = 0; i < sortedBps.length; i++) {
+      segs.push({
+        type: "point",
+        low: sortedBps[i],
+        high: sortedBps[i],
+        covered: blockCoversValue(sortedBps[i]),
+      });
+      if (i + 1 < sortedBps.length) {
+        segs.push({
+          type: "open",
+          low: sortedBps[i],
+          high: sortedBps[i + 1],
+          covered: blockCoversValue(
+            (sortedBps[i] + sortedBps[i + 1]) / 2
+          ),
+        });
+      }
+    }
+    segs.push({
+      type: "open",
+      low: sortedBps[sortedBps.length - 1],
+      high: Infinity,
+      covered: blockCoversValue(sortedBps[sortedBps.length - 1] + 1),
+    });
+  }
+
+  // Merge contiguous uncovered segments into intervals.
+  const gaps: Omit<NumericGap, "variable_id">[] = [];
+  let i = 0;
+  while (i < segs.length) {
+    if (segs[i].covered) {
+      i++;
+      continue;
+    }
+    const start = segs[i];
+    let lastUncovered = start;
+    while (i + 1 < segs.length && !segs[i + 1].covered) {
+      i++;
+      lastUncovered = segs[i];
+    }
+    gaps.push({
+      low: start.low,
+      high: lastUncovered.high,
+      lowInclusive: start.type === "point",
+      highInclusive: lastUncovered.type === "point",
+    });
+    i++;
+  }
+  return gaps;
+}
+
+function chipNumericMatches(chip: EvalChip, v: number): boolean {
+  if (chip.number_value == null) return false;
+  const t = chip.number_value;
+  switch (chip.operator) {
+    case "=":
+      return v === t;
+    case "≠":
+      return v !== t;
+    case "<":
+      return v < t;
+    case "≤":
+      return v <= t;
+    case ">":
+      return v > t;
+    case "≥":
+      return v >= t;
+    default:
+      return false;
+  }
 }
 
 // Convenience aliases used in tests / callers ---------------------------
