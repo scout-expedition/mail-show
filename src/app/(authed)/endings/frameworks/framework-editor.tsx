@@ -43,6 +43,10 @@ import {
 } from "@/lib/endings/impact-colors";
 import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
+import {
+  staticShadowedRows,
+  uncoveredAssignmentsByBlock,
+} from "@/lib/endings/static-analysis";
 import { BlockList } from "./blocks/block-list";
 import { PreviewView } from "./preview-view";
 import {
@@ -52,6 +56,11 @@ import {
   type DragTarget,
 } from "./lib/drag";
 import { PickerCtx, type PickerContext } from "./lib/picker";
+import {
+  AnalysisCtx,
+  indexShadow,
+  type AnalysisContext,
+} from "./lib/analysis";
 import { deleteEndingFramework, saveFramework } from "./actions";
 
 export type EditorHandle = {
@@ -225,6 +234,65 @@ export function FrameworkEditor({
     [rowState]
   );
   const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
+
+  // Static analysis (Phase 5): shadow + uncovered-assignment detection.
+  // Pure-function, runs every edit; React.useMemo caches across no-op
+  // re-renders. Both calls share the same EvalInputs shape so we build
+  // the inputs once.
+  const analysisCtx = useMemo<AnalysisContext>(() => {
+    const evalVariables = variableState.map((v) => ({
+      id: v.id,
+      kind: v.kind,
+      aggregate_ref: v.aggregate_ref,
+    }));
+    const evalChips = chipState.map((c) => ({
+      id: c.id,
+      row_id: c.row_id,
+      variable_id: c.variable_id,
+      operator: c.operator,
+      text_value_id: c.text_value_id,
+      number_value: c.number_value,
+      aggregate_value: c.aggregate_value,
+      sort_order: c.sort_order,
+    }));
+    const evalRows = rowState.map((r) => ({
+      id: r.id,
+      condition_block_id: r.condition_block_id,
+      sort_order: r.sort_order,
+    }));
+    const evalBlocks = blockState.map((b) => ({
+      id: b.id,
+      parent_block_id: b.parent_block_id,
+      parent_row_id: b.parent_row_id,
+      block_type: b.block_type,
+      text: b.text,
+      sort_order: b.sort_order,
+    }));
+    const evalValues = values.map((v) => ({
+      id: v.id,
+      variable_id: v.variable_id,
+    }));
+    const inputs = {
+      blocks: evalBlocks,
+      rows: evalRows,
+      chips: evalChips,
+      variables: evalVariables,
+      values: evalValues,
+    };
+    const shadow = staticShadowedRows(inputs);
+    const blockAnalysis = uncoveredAssignmentsByBlock(inputs);
+    // Map each row id to its 1-based ordinal within its condition block,
+    // so badges can read "shadowed by row 2" instead of opaque uuids.
+    const rowSortOrder = new Map<string, number>();
+    for (const list of rowsByConditionBlock.values()) {
+      list.forEach((r, i) => rowSortOrder.set(r.id, i + 1));
+    }
+    return {
+      shadowByRowId: indexShadow(shadow),
+      blockAnalysis,
+      rowSortOrder,
+    };
+  }, [blockState, rowState, chipState, variableState, values, rowsByConditionBlock]);
 
   // Variables actually referenced by any chip (for the preview UI).
   // Aggregate variables expand into their underlying number_ref scores
@@ -633,18 +701,20 @@ export function FrameworkEditor({
 
         <DragCtx.Provider value={dragCtx}>
           <PickerCtx.Provider value={pickerCtx}>
-            <BlockList
-              parent={{ parent_block_id: null, parent_row_id: null }}
-              byParent={byParent}
-              rowsByConditionBlock={rowsByConditionBlock}
-              chipsByRow={chipsByRow}
-              variableIndex={variableIndex}
-              variables={variableState}
-              values={values}
-              framework_id={framework.id}
-              onUpdateBlock={updateBlock}
-              onChangeChip={updateChip}
-            />
+            <AnalysisCtx.Provider value={analysisCtx}>
+              <BlockList
+                parent={{ parent_block_id: null, parent_row_id: null }}
+                byParent={byParent}
+                rowsByConditionBlock={rowsByConditionBlock}
+                chipsByRow={chipsByRow}
+                variableIndex={variableIndex}
+                variables={variableState}
+                values={values}
+                framework_id={framework.id}
+                onUpdateBlock={updateBlock}
+                onChangeChip={updateChip}
+              />
+            </AnalysisCtx.Provider>
           </PickerCtx.Provider>
         </DragCtx.Provider>
       </div>

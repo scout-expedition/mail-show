@@ -235,6 +235,87 @@ test("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
   await expect(page.getByText("the working class is on top")).toHaveCount(0);
 });
 
+test("static analysis: shadowed row + uncovered assignment badges", async ({
+  page,
+}) => {
+  // Phase 5: build a framework where row 2 is fully shadowed by row 1
+  // (identical chip), and a third value falls through (uncovered).
+  // Asserts both the "shadowed by row 1" badge and the
+  // "N assignments uncovered" header badge.
+  const admin = makeAdmin();
+
+  const performerName = `${PREFIX}PERFORMER_S`;
+  const { data: performer } = await admin
+    .from("ending_variables")
+    .insert({ name: performerName, kind: "text", sort_order: 9999 })
+    .select("id")
+    .single();
+  if (!performer) throw new Error("seed performer");
+  await admin
+    .from("ending_variable_values")
+    .insert([
+      { variable_id: performer.id, value: "WINTER", sort_order: 0 },
+      { variable_id: performer.id, value: "SUMMER", sort_order: 1 },
+      { variable_id: performer.id, value: "AUTUMN", sort_order: 2 },
+    ]);
+
+  const frameworkName = `${PREFIX}staticfw-${Date.now()}`;
+  const { data: fw } = await admin
+    .from("ending_frameworks")
+    .insert({ name: frameworkName, sort_order: 9999 })
+    .select("id")
+    .single();
+  if (!fw) throw new Error("seed framework");
+
+  await page.goto(`/endings/frameworks?framework=${fw.id}`);
+  await expect(page.getByPlaceholder("Framework name")).toHaveValue(
+    frameworkName
+  );
+
+  // Add a condition block.
+  await page.getByRole("button", { name: "condition", exact: true }).click();
+  await expect(page.getByText(/Condition · 1 row/i)).toBeVisible({
+    timeout: 20000,
+  });
+
+  // Row 1: PERFORMER = WINTER
+  await page.getByRole("button", { name: "+ chip" }).first().click();
+  await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
+  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
+  await page.getByRole("button", { name: "✓" }).click();
+  await expect(page.getByText(performerName).first()).toBeVisible();
+
+  // Add a second row.
+  await page.getByRole("button", { name: "row", exact: true }).click();
+  await expect(page.getByText(/Condition · 2 row/i)).toBeVisible();
+
+  // Row 2: PERFORMER = WINTER (identical → should be shadowed)
+  // The row's "+ chip" button is the second one in DOM order.
+  await page.getByRole("button", { name: "+ chip" }).nth(1).click();
+  await page.getByRole("combobox").nth(0).selectOption({ label: performerName });
+  await page.getByRole("combobox").nth(2).selectOption({ label: "WINTER" });
+  await page.getByRole("button", { name: "✓" }).click();
+
+  // Static analysis runs on every chipState change — the shadowed badge
+  // should appear without saving or reloading.
+  await expect(
+    page.getByText(/shadowed by row 1/i)
+  ).toBeVisible({ timeout: 5000 });
+
+  // The header should also flag uncovered values: SUMMER, AUTUMN, and
+  // unset all fall through. With 3 values + unset = 4 assignments
+  // total, and only WINTER matches, that's 3 uncovered.
+  await expect(
+    page.getByRole("button", { name: /3 assignments uncovered/i })
+  ).toBeVisible();
+
+  // Clicking the badge expands the list; it should mention SUMMER and AUTUMN.
+  await page.getByRole("button", { name: /3 assignments uncovered/i }).click();
+  await expect(page.getByText("Uncovered assignments")).toBeVisible();
+  await expect(page.getByText(/SUMMER/).first()).toBeVisible();
+  await expect(page.getByText(/AUTUMN/).first()).toBeVisible();
+});
+
 test("seeded impact variable + numeric operator drives preview", async ({
   page,
 }) => {
