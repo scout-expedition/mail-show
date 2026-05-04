@@ -1,7 +1,10 @@
 # Endings Frameworks — Phase 6: Header-declared variables
 
 Master plan: `docs/endings-frameworks-plan.md` (Phases 1–3).
-Predecessors: `phase4` (aggregate kinds, shipped), `phase5` (static warnings, shipped + a numeric-gap follow-up).
+Predecessors:
+- `phase4` (aggregate kinds, shipped — PR #4)
+- `phase5` (static warnings, shipped — PR #5)
+- Phase 5 follow-ups: numeric interval gap analysis (PR #6) + numeric row overlap detection (PR #7)
 
 ## Context
 
@@ -124,12 +127,12 @@ Idempotent-friendly per project convention (`if not exists` table create; backfi
 After Phase 6 lands, `uncoveredAssignmentsByBlock` changes its variable-set source: instead of deriving from the chips, it reads `block.declared_variable_ids`. The enumeration semantics stay the same:
 
 - Finite-domain (text + aggregate) declared variables → cartesian enumeration.
-- Single numeric declared variable, no finite vars → interval analysis (Phase 5 numeric-gap follow-up).
+- Single numeric declared variable, no finite vars → interval gap analysis (PR #6).
 - Mixed declared (numeric + finite, or multi-numeric) → partial coverage with the existing lower-bound badge.
 
 The user-visible effect: counts match author intent (your "8 - 1 = 7" example from Phase 5).
 
-The shadow analysis stays as-is — it operates per-row, comparing chip predicates pairwise. Whether wildcards are explicit or implied doesn't change the shadow logic.
+`staticShadowedRows` (text/aggregate full shadow) and `numericRowOverlaps` (PR #7 — per-row partial overlap + full numeric shadow) both operate per-row, comparing chip predicates pairwise. They don't depend on the variable-set source, so they stay unchanged across the Phase 6 transition.
 
 ## Files to add / change
 
