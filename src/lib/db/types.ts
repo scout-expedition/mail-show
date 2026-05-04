@@ -3,7 +3,9 @@ import type {
   CitizenType,
   ContentRefType,
   DayOfWeek,
+  EndingBlockType,
   EndingChipOperator,
+  EndingDocumentKind,
   EndingVariableKind,
   IconType,
   Phase,
@@ -276,20 +278,57 @@ export interface EndingVariableValue {
   sort_order: number;
 }
 
+/**
+ * Unified document row introduced in 0022. A `framework`-kind document
+ * carries the user-facing `name` (and `sort_order`) — that's the row a
+ * Framework-tab consumer renders. Logic-kind documents are anonymous
+ * singletons; one row per non-framework kind.
+ */
+export interface EndingDocument {
+  id: string;
+  kind: EndingDocumentKind;
+  name: string | null;
+  sort_order: number;
+}
+
+/**
+ * Block in the unified tree. block_type is one of `text` | `condition` |
+ * `result`. Exactly one of `text` / `result_value` is set per leaf block;
+ * condition blocks have neither.
+ */
+export interface EndingBlock {
+  id: string;
+  document_id: string;
+  parent_block_id: string | null;
+  parent_row_id: string | null;
+  block_type: EndingBlockType;
+  text: string | null;
+  result_value: string | null;
+  sort_order: number;
+}
+
+/**
+ * Pre-0022 framework row. Retained so the Frameworks workspace keeps
+ * compiling until step 2 of `docs/endings-logic-v2-plan.md` switches
+ * those callers to `EndingDocument`. New code should use `EndingDocument`.
+ */
 export interface EndingFramework {
   id: string;
   name: string;
   sort_order: number;
 }
 
-export type EndingBlockType = "text" | "condition";
-
+/**
+ * Pre-0022 framework block row. Retained alongside `EndingBlock` for the
+ * same step-2 transition reason as `EndingFramework`. New code should
+ * use `EndingBlock`.
+ */
 export interface EndingFrameworkBlock {
   id: string;
   framework_id: string;
   parent_block_id: string | null;
   parent_row_id: string | null;
-  block_type: EndingBlockType;
+  block_type: "text" | "condition";
   text: string;
   sort_order: number;
 }

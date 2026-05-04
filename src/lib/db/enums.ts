@@ -223,3 +223,86 @@ export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
   "bottom=": "bottom is",
   "bottom≠": "bottom is not",
 };
+
+// Endings — document kinds + block types. Mirrored from
+// supabase/migrations/0022_endings_logic_v2.sql.
+
+export const ENDING_DOCUMENT_KINDS = [
+  "framework",
+  "framework_selection",
+  "class_affinity_top",
+  "class_affinity_bottom",
+  "nation_affinity_top",
+  "nation_affinity_bottom",
+] as const;
+export type EndingDocumentKind = (typeof ENDING_DOCUMENT_KINDS)[number];
+
+/** Non-`framework` kinds — the five tiebreak/selection docs surfaced under the Logic tab. */
+export const ENDING_LOGIC_KINDS = [
+  "framework_selection",
+  "class_affinity_top",
+  "class_affinity_bottom",
+  "nation_affinity_top",
+  "nation_affinity_bottom",
+] as const satisfies readonly Exclude<EndingDocumentKind, "framework">[];
+export type EndingLogicKind = (typeof ENDING_LOGIC_KINDS)[number];
+
+export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
+  framework: "Framework",
+  framework_selection: "Ending Framework",
+  class_affinity_top: "Top",
+  class_affinity_bottom: "Bottom",
+  nation_affinity_top: "Top",
+  nation_affinity_bottom: "Bottom",
+};
+
+/** Tab grouping for the Logic page. */
+export const ENDING_LOGIC_TABS = [
+  { id: "framework_selection", label: "Ending Framework", kinds: ["framework_selection"] as const },
+  {
+    id: "class_affinity",
+    label: "Class Affinity",
+    kinds: ["class_affinity_top", "class_affinity_bottom"] as const,
+  },
+  {
+    id: "nation_affinity",
+    label: "Nation Affinity",
+    kinds: ["nation_affinity_top", "nation_affinity_bottom"] as const,
+  },
+] as const;
+
+/**
+ * Allowed result_value sets for each logic doc kind.
+ *
+ * `framework_selection` is resolved at runtime from the framework documents
+ * (the picker offers each `kind='framework'` document by id), so it's null
+ * here.
+ */
+export const ENDING_LOGIC_RESULT_OPTIONS_BY_KIND: Record<
+  EndingLogicKind,
+  readonly string[] | null
+> = {
+  framework_selection: null,
+  class_affinity_top: AGGREGATE_OPTIONS_BY_REF.class_affinity,
+  class_affinity_bottom: AGGREGATE_OPTIONS_BY_REF.class_affinity,
+  nation_affinity_top: AGGREGATE_OPTIONS_BY_REF.nation_affinity,
+  nation_affinity_bottom: AGGREGATE_OPTIONS_BY_REF.nation_affinity,
+};
+
+/** Map from aggregate ref + side to the tiebreak doc kind. */
+export const TIEBREAK_KIND_BY_REF_SIDE: Record<
+  AggregateRef,
+  Record<"top" | "bottom", EndingLogicKind>
+> = {
+  class_affinity: {
+    top: "class_affinity_top",
+    bottom: "class_affinity_bottom",
+  },
+  nation_affinity: {
+    top: "nation_affinity_top",
+    bottom: "nation_affinity_bottom",
+  },
+};
+
+export const ENDING_BLOCK_TYPES = ["text", "condition", "result"] as const;
+export type EndingBlockType = (typeof ENDING_BLOCK_TYPES)[number];
