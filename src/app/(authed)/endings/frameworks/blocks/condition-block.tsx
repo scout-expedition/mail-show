@@ -20,6 +20,7 @@ import type {
 } from "@/lib/endings/block-state";
 import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
+import { paletteColor } from "@/lib/endings/color-palette";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
 import {
@@ -32,7 +33,11 @@ import {
 } from "../actions";
 import { useDrag, type DragTarget } from "../lib/drag";
 import { useAnalysis } from "../lib/analysis";
-import { AddChipButton, ChipPill, type AddChipInput } from "./chip";
+import {
+  ChipPickerForm,
+  ChipPill,
+  type AddChipInput,
+} from "./chip";
 import { DropLine } from "./text-block";
 
 export function ConditionBlock({
@@ -304,13 +309,15 @@ function ConditionRow({
   children: React.ReactNode;
 }) {
   const fullyOverlapped = overlap?.fullShadow ?? false;
-  // One slot per declared variable. A slot holds either an existing
-  // chip on that variable or a wildcard placeholder. Chips that don't
-  // match any declared variable (shouldn't happen post-Phase-6, but
-  // safe-guard) are rendered after the slots so the author still sees
-  // them.
-  const chipByVariableId = new Map<string, ChipState>();
-  for (const c of chips) chipByVariableId.set(c.variable_id, c);
+  // Render the row's chips grouped by declared variable order, then any
+  // orphan chips (chips on a variable not in the header — shouldn't
+  // happen post-Phase-6 but safe-guard), then a single + adder.
+  const chipsByVariableId = new Map<string, ChipState[]>();
+  for (const c of chips) {
+    const list = chipsByVariableId.get(c.variable_id);
+    if (list) list.push(c);
+    else chipsByVariableId.set(c.variable_id, [c]);
+  }
   const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
   const orphanChips = chips.filter((c) => !declaredIds.has(c.variable_id));
   return (
@@ -327,30 +334,21 @@ function ConditionRow({
             (declare variables on the block header)
           </span>
         ) : (
-          declaredVariables.map((dv) => {
+          declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
-            const chip = chipByVariableId.get(dv.variable_id);
-            if (chip && variable) {
-              return (
-                <ChipPill
-                  key={dv.id}
-                  chip={chip}
-                  variable={variable}
-                  values={values}
-                  onChange={(patch) => onChangeChip(chip.id, patch)}
-                  onRemove={() => onRemoveChip(chip.id)}
-                />
-              );
-            }
-            // Empty slot = wildcard. Click to fill via pinned-variable picker.
-            return (
-              <SlotPicker
-                key={dv.id}
-                variable={variable}
+            const slotChips = chipsByVariableId.get(dv.variable_id) ?? [];
+            return slotChips.map((chip) => (
+              <ChipPill
+                key={chip.id}
+                chip={chip}
+                variable={variable ?? null}
+                variables={variables}
                 values={values}
-                onAdd={(input) => onAddChip(input)}
+                compact
+                onChange={(patch) => onChangeChip(chip.id, patch)}
+                onRemove={() => onRemoveChip(chip.id)}
               />
-            );
+            ));
           })
         )}
         {orphanChips.map((chip) => (
@@ -358,11 +356,20 @@ function ConditionRow({
             key={chip.id}
             chip={chip}
             variable={variableIndex.get(chip.variable_id) ?? null}
+            variables={variables}
             values={values}
             onChange={(patch) => onChangeChip(chip.id, patch)}
             onRemove={() => onRemoveChip(chip.id)}
           />
         ))}
+        {declaredVariables.length > 0 ? (
+          <RowChipAdder
+            declaredVariables={declaredVariables}
+            variableIndex={variableIndex}
+            values={values}
+            onAdd={onAddChip}
+          />
+        ) : null}
         {shadowedByOrdinal != null ? (
           <span
             title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
@@ -503,22 +510,99 @@ function UncoveredList({
   );
 }
 
-function SlotPicker({
-  variable,
+/**
+ * Single + adder per row. Closed state is one button. Click:
+ *   - 1 declared variable → opens the picker form pinned to that var.
+ *   - 2+ declared variables → opens an inline chooser; pick one → picker.
+ */
+function RowChipAdder({
+  declaredVariables,
+  variableIndex,
   values,
   onAdd,
 }: {
-  variable: VariableState | undefined;
+  declaredVariables: BlockVariableState[];
+  variableIndex: Map<string, VariableState>;
   values: EndingVariableValue[];
   onAdd: (input: AddChipInput) => void;
 }) {
-  if (!variable) return null;
+  const [step, setStep] = useState<"closed" | "choose" | "fill">("closed");
+  const [pickedVar, setPickedVar] = useState<VariableState | null>(null);
+  const declaredVarStates = declaredVariables
+    .map((d) => variableIndex.get(d.variable_id))
+    .filter((v): v is VariableState => Boolean(v));
+  if (declaredVarStates.length === 0) return null;
+
+  function reset() {
+    setStep("closed");
+    setPickedVar(null);
+  }
+
+  if (step === "closed") {
+    const onlyOne =
+      declaredVarStates.length === 1 ? declaredVarStates[0] : null;
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          if (onlyOne) {
+            setPickedVar(onlyOne);
+            setStep("fill");
+          } else {
+            setStep("choose");
+          }
+        }}
+        aria-label={onlyOne ? `Add ${onlyOne.name} chip` : "Add chip"}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
+      >
+        +
+      </button>
+    );
+  }
+
+  if (step === "choose") {
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-1 py-0.5 text-[11px]">
+        {declaredVarStates.map((v) => (
+          <button
+            key={v.id}
+            type="button"
+            onClick={() => {
+              setPickedVar(v);
+              setStep("fill");
+            }}
+            aria-label={`Add ${v.name} chip`}
+            className="rounded-full border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest hover:bg-accent/40"
+          >
+            {v.name}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={reset}
+          aria-label="Cancel"
+          className="px-1 opacity-60 hover:opacity-100"
+        >
+          <X size={10} aria-hidden />
+        </button>
+      </span>
+    );
+  }
+
+  // fill
+  if (!pickedVar) {
+    reset();
+    return null;
+  }
   return (
-    <AddChipButton
-      variables={[variable]}
+    <ChipPickerForm
+      pinnedVariable={pickedVar}
       values={values}
-      pinnedVariable={variable}
-      onAdd={onAdd}
+      onConfirm={(input) => {
+        onAdd(input);
+        reset();
+      }}
+      onCancel={reset}
     />
   );
 }
@@ -618,25 +702,16 @@ function HeaderVariableChip({
 }
 
 function headerChipColor(variable: VariableState): string {
-  // Reuse the chip palette/override path. Lazy: lift up if needed.
-  if (variable.color_hex) return variable.color_hex;
-  // Local copy of paletteColor without circular import; same 12-color
-  // palette as `@/lib/endings/color-palette`.
-  const palette = [
-    "#ef4444",
-    "#f97316",
-    "#f59e0b",
-    "#eab308",
-    "#84cc16",
-    "#22c55e",
-    "#10b981",
-    "#06b6d4",
-    "#3b82f6",
-    "#6366f1",
-    "#a855f7",
-    "#ec4899",
-  ];
-  return palette[variable.color_index % palette.length];
+  // Aggregate variables don't pick a color of their own — their chips
+  // resolve to the underlying class/nation color once the value is
+  // committed. Render the header pill white so the header reads as
+  // "this block branches on Class Affinity" without committing to a
+  // specific palette slot.
+  if (variable.kind === "aggregate_ref") return "#ffffff";
+  // Otherwise: same rule as ChipPill — nation/impact override first,
+  // palette fallback. Keeps the header chips visually identical to the
+  // row chips for text + number_ref variables.
+  return variable.color_hex ?? paletteColor(variable.color_index);
 }
 
 function AddHeaderVariablePicker({
@@ -661,6 +736,35 @@ function AddHeaderVariablePicker({
       </button>
     );
   }
+
+  // Same optgroup layout as the chip-picker's variable dropdown so the
+  // sections + ordering stay consistent across the editor.
+  const textVariables = variables.filter((v) => v.kind === "text");
+  const numberVariablesByRef = new Map<string, VariableState>();
+  for (const v of variables) {
+    if (v.kind === "number_ref" && v.number_ref) {
+      numberVariablesByRef.set(v.number_ref, v);
+    }
+  }
+  const aggregateByRef = new Map<string, VariableState>();
+  for (const v of variables) {
+    if (v.kind === "aggregate_ref" && v.aggregate_ref) {
+      aggregateByRef.set(v.aggregate_ref, v);
+    }
+  }
+  const numberRefGroups: Array<{ label: string; columns: string[] }> = [
+    { label: "Impact", columns: ["world_status", "demerits"] },
+    { label: "Class Affinity", columns: ["proletariat", "gentry"] },
+    {
+      label: "Nation Affinity",
+      columns: ["epicenter", "folos", "emberlyn", "spokgrad", "pelico"],
+    },
+  ];
+  const aggregateOrder: Array<{ ref: string; label: string }> = [
+    { ref: "class_affinity", label: "Class Affinity" },
+    { ref: "nation_affinity", label: "Nation Affinity" },
+  ];
+
   return (
     <select
       autoFocus
@@ -675,11 +779,43 @@ function AddHeaderVariablePicker({
       className="h-6 rounded-md border border-border bg-background px-1 text-[10px] font-mono"
     >
       <option value="">variable…</option>
-      {variables.map((v) => (
-        <option key={v.id} value={v.id}>
-          {v.name}
-        </option>
-      ))}
+      {textVariables.length > 0 ? (
+        <optgroup label="Ending Variables">
+          {textVariables.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name}
+            </option>
+          ))}
+        </optgroup>
+      ) : null}
+      {numberRefGroups.map((group) => {
+        const opts = group.columns
+          .map((col) => numberVariablesByRef.get(col))
+          .filter((v): v is VariableState => Boolean(v));
+        if (opts.length === 0) return null;
+        return (
+          <optgroup key={group.label} label={group.label}>
+            {opts.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </optgroup>
+        );
+      })}
+      {aggregateByRef.size > 0 ? (
+        <optgroup label="Aggregates">
+          {aggregateOrder.map(({ ref, label }) => {
+            const v = aggregateByRef.get(ref);
+            if (!v) return null;
+            return (
+              <option key={v.id} value={v.id}>
+                {label}
+              </option>
+            );
+          })}
+        </optgroup>
+      ) : null}
     </select>
   );
 }

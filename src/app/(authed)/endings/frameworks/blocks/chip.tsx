@@ -4,6 +4,7 @@ import { useContext, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { paletteColor } from "@/lib/endings/color-palette";
 import { AFFINITY_NUMBER_REFS } from "@/lib/endings/impact-colors";
 import {
@@ -19,7 +20,25 @@ import type { EndingVariableValue } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import { PickerCtx } from "../lib/picker";
 
-function chipColor(variable: VariableState): string {
+function chipColor(
+  chip: ChipState,
+  variable: VariableState,
+  allVariables: VariableState[]
+): string {
+  // Aggregate chips inherit the underlying class/nation color. The
+  // aggregate_value (e.g. "proletariat", "folos") names an impact
+  // column; the seeded number_ref variable wrapping that column already
+  // carries the right color_hex. Fall back to white when the chip
+  // hasn't committed a value yet (shouldn't happen in practice — the
+  // picker requires a value before ✓).
+  if (variable.kind === "aggregate_ref") {
+    if (!chip.aggregate_value) return "#ffffff";
+    const target = allVariables.find(
+      (v) =>
+        v.kind === "number_ref" && v.number_ref === chip.aggregate_value
+    );
+    return target?.color_hex ?? "#ffffff";
+  }
   return variable.color_hex ?? paletteColor(variable.color_index);
 }
 
@@ -80,17 +99,25 @@ function operatorLabel(op: EndingChipOperator): string {
 export function ChipPill({
   chip,
   variable,
+  variables,
   values,
+  compact = false,
   onChange,
   onRemove,
 }: {
   chip: ChipState;
   variable: VariableState | null;
+  /** All known variables — used to resolve the underlying number_ref
+   *  color for aggregate chips (the chip's aggregate_value names a
+   *  class/nation impact column). */
+  variables: VariableState[];
   values: EndingVariableValue[];
+  /** When true, omit the variable name from the pill — used in slot mode
+   *  where the column already identifies the variable. */
+  compact?: boolean;
   onChange: (patch: Partial<ChipState>) => void;
   onRemove: () => void;
 }) {
-  const [editing, setEditing] = useState<"none" | "op" | "value">("none");
   if (!variable) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive">
@@ -107,7 +134,7 @@ export function ChipPill({
     );
   }
 
-  const color = chipColor(variable);
+  const color = chipColor(chip, variable, variables);
   const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
   const aggregateOptions =
     variable.kind === "aggregate_ref" && variable.aggregate_ref
@@ -133,47 +160,68 @@ export function ChipPill({
         backgroundColor: `${color}1a`,
       }}
     >
-      <span className="font-mono uppercase">{chipDisplayName(variable)}</span>
-
-      {editing === "op" ? (
-        <Select
-          autoFocus
-          value={chip.operator}
-          onChange={(e) => {
-            onChange({ operator: e.target.value as EndingChipOperator });
-            setEditing("none");
-          }}
-          onBlur={() => setEditing("none")}
-          className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
-        >
-          {allowedOps.map((op) => (
-            <option key={op} value={op}>
-              {operatorLabel(op)}
-            </option>
-          ))}
-        </Select>
-      ) : (
-        <button
-          type="button"
-          onClick={() => allowedOps.length > 1 && setEditing("op")}
-          className="opacity-60 hover:opacity-100"
-          title={allowedOps.length > 1 ? "Change operator" : undefined}
-        >
-          {operatorLabel(chip.operator)}
-        </button>
+      {compact ? null : (
+        <span className="font-mono uppercase">{chipDisplayName(variable)}</span>
       )}
 
-      {editing === "value" ? (
-        variable.kind === "text" ? (
-          <Select
-            autoFocus
+      {/*
+        Operator + value render as static text with an invisible <select>
+        overlaid on top — a click reaches the select (system dropdown
+        opens immediately), and selecting an option fires onChange which
+        updates the visible text. Native <select> with appearance-none
+        still reserves chevron padding internally, so this overlay pattern
+        keeps the chip's layout tight while preserving the native menu.
+        Numbers stay as an inline Input you can type into directly.
+      */}
+      <span
+        className={cn(
+          "relative inline-flex items-center font-mono uppercase",
+          allowedOps.length > 1 && "cursor-pointer hover:opacity-100",
+          allowedOps.length > 1 ? "opacity-80" : "opacity-100"
+        )}
+      >
+        <span
+          aria-hidden
+          // Word-style operators ("top is", "bottom is not", …) are
+          // longer than the single-symbol ops (`=`, `<`, …); render them
+          // ~⅔ the size so the chip stays compact and the symbol ops
+          // don't look oddly small next to them.
+          className={
+            AGGREGATE_OPERATOR_LABELS[chip.operator] != null
+              ? "text-[8px]"
+              : undefined
+          }
+        >
+          {operatorLabel(chip.operator)}
+        </span>
+        {allowedOps.length > 1 ? (
+          <select
+            value={chip.operator}
+            onChange={(e) =>
+              onChange({ operator: e.target.value as EndingChipOperator })
+            }
+            aria-label="Operator"
+            className="absolute inset-0 cursor-pointer opacity-0"
+          >
+            {allowedOps.map((op) => (
+              <option key={op} value={op}>
+                {operatorLabel(op)}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </span>
+
+      {variable.kind === "text" ? (
+        <span className="relative inline-flex items-center font-mono uppercase">
+          <span aria-hidden>{valueLabel}</span>
+          <select
             value={chip.text_value_id ?? ""}
-            onChange={(e) => {
-              onChange({ text_value_id: e.target.value || null });
-              setEditing("none");
-            }}
-            onBlur={() => setEditing("none")}
-            className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+            onChange={(e) =>
+              onChange({ text_value_id: e.target.value || null })
+            }
+            aria-label="Value"
+            className="absolute inset-0 cursor-pointer opacity-0"
           >
             <option value="">—</option>
             {values
@@ -183,31 +231,28 @@ export function ChipPill({
                   {v.value}
                 </option>
               ))}
-          </Select>
-        ) : variable.kind === "number_ref" ? (
-          <Input
-            autoFocus
-            type="number"
-            value={chip.number_value == null ? "" : String(chip.number_value)}
-            onChange={(e) => {
-              const raw = e.target.value;
-              onChange({
-                number_value: raw === "" ? null : Number(raw),
-              });
-            }}
-            onBlur={() => setEditing("none")}
-            className="h-5 w-16 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
-          />
-        ) : (
-          <Select
-            autoFocus
+          </select>
+        </span>
+      ) : variable.kind === "number_ref" ? (
+        <Input
+          type="number"
+          value={chip.number_value == null ? "" : String(chip.number_value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            onChange({ number_value: raw === "" ? null : Number(raw) });
+          }}
+          className="h-auto w-16 border-0 bg-transparent p-0 font-mono text-[11px] shadow-none focus:!ring-0"
+        />
+      ) : (
+        <span className="relative inline-flex items-center font-mono uppercase">
+          <span aria-hidden>{valueLabel}</span>
+          <select
             value={chip.aggregate_value ?? ""}
-            onChange={(e) => {
-              onChange({ aggregate_value: e.target.value || null });
-              setEditing("none");
-            }}
-            onBlur={() => setEditing("none")}
-            className="h-5 !min-w-0 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+            onChange={(e) =>
+              onChange({ aggregate_value: e.target.value || null })
+            }
+            aria-label="Value"
+            className="absolute inset-0 cursor-pointer opacity-0"
           >
             <option value="">—</option>
             {aggregateOptions.map((col) => (
@@ -215,16 +260,8 @@ export function ChipPill({
                 {aggregateOptionLabel(col)}
               </option>
             ))}
-          </Select>
-        )
-      ) : (
-        <button
-          type="button"
-          onClick={() => setEditing("value")}
-          className="font-mono uppercase underline-offset-2 hover:underline"
-        >
-          {valueLabel}
-        </button>
+          </select>
+        </span>
       )}
 
       <button
@@ -246,6 +283,158 @@ const AGGREGATE_OPTIONS: Array<{
   { ref: "class_affinity", label: "Class Affinity" },
   { ref: "nation_affinity", label: "Nation Affinity" },
 ];
+
+/**
+ * Always-open inline form for filling out a chip on a pre-pinned variable.
+ * Used by RowChipAdder when the author has chosen which variable to chip
+ * on. Opening / closing is the caller's responsibility.
+ */
+export function ChipPickerForm({
+  pinnedVariable,
+  values,
+  onConfirm,
+  onCancel,
+}: {
+  pinnedVariable: VariableState;
+  values: EndingVariableValue[];
+  onConfirm: (input: AddChipInput) => void;
+  onCancel: () => void;
+}) {
+  const variable = pinnedVariable;
+  const [operator, setOperator] = useState<EndingChipOperator>(
+    variable.kind === "aggregate_ref" ? "top=" : "="
+  );
+  const [textValueId, setTextValueId] = useState<string>("");
+  const [numberValue, setNumberValue] = useState<string>(
+    variable.kind === "number_ref" ? "0" : ""
+  );
+  const [aggregateValue, setAggregateValue] = useState<string>(
+    variable.kind === "aggregate_ref" && variable.aggregate_ref
+      ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? ""
+      : ""
+  );
+  const picker = useContext(PickerCtx);
+
+  // Track this picker's open state with the editor so Save knows whether
+  // any picker is mid-pick (and stays disabled until ✓ or ✕).
+  useEffect(() => {
+    picker.register();
+    return () => picker.unregister();
+  }, [picker]);
+
+  const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
+  const eligibleValues = values.filter((v) => v.variable_id === variable.id);
+  const aggregateOptions =
+    variable.kind === "aggregate_ref" && variable.aggregate_ref
+      ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]
+      : [];
+
+  function handleConfirm() {
+    if (variable.kind === "text") {
+      if (!textValueId) return;
+      onConfirm({
+        variable_id: variable.id,
+        operator,
+        text_value_id: textValueId,
+        number_value: null,
+        aggregate_value: null,
+      });
+    } else if (variable.kind === "number_ref") {
+      if (numberValue === "" || Number.isNaN(Number(numberValue))) return;
+      onConfirm({
+        variable_id: variable.id,
+        operator,
+        text_value_id: null,
+        number_value: Number(numberValue),
+        aggregate_value: null,
+      });
+    } else {
+      if (!aggregateValue) return;
+      onConfirm({
+        variable_id: variable.id,
+        operator,
+        text_value_id: null,
+        number_value: null,
+        aggregate_value: aggregateValue,
+      });
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px]">
+      <span className="px-1 font-mono uppercase tracking-widest text-[10px] opacity-70">
+        {variable.name}
+      </span>
+      <Select
+        value={operator}
+        onChange={(e) => setOperator(e.target.value as EndingChipOperator)}
+        className="h-7 w-24 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+      >
+        {allowedOps.map((op) => (
+          <option key={op} value={op}>
+            {operatorLabel(op)}
+          </option>
+        ))}
+      </Select>
+      {variable.kind === "number_ref" ? (
+        <Input
+          type="number"
+          value={numberValue}
+          onChange={(e) => setNumberValue(e.target.value)}
+          placeholder="0"
+          className="h-7 w-20 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        />
+      ) : variable.kind === "aggregate_ref" ? (
+        <Select
+          value={aggregateValue}
+          onChange={(e) => setAggregateValue(e.target.value)}
+          className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        >
+          <option value="">value…</option>
+          {aggregateOptions.map((col) => (
+            <option key={col} value={col}>
+              {aggregateOptionLabel(col)}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <Select
+          value={textValueId}
+          onChange={(e) => setTextValueId(e.target.value)}
+          className="h-7 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        >
+          <option value="">value…</option>
+          {eligibleValues.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.value}
+            </option>
+          ))}
+        </Select>
+      )}
+      <button
+        type="button"
+        onClick={handleConfirm}
+        disabled={
+          (variable.kind === "text" && !textValueId) ||
+          (variable.kind === "number_ref" &&
+            (numberValue === "" || Number.isNaN(Number(numberValue)))) ||
+          (variable.kind === "aggregate_ref" && !aggregateValue)
+        }
+        className="ml-auto rounded px-1 text-[11px] text-primary disabled:opacity-50"
+      >
+        ✓
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        aria-label="Cancel"
+        className="opacity-60 hover:opacity-100"
+      >
+        <X size={10} aria-hidden />
+      </button>
+    </span>
+  );
+}
 
 /**
  * "+ chip" inline picker. After picking a variable, the operator dropdown
@@ -348,18 +537,17 @@ export function AddChipButton({
 
   if (!open) {
     if (pinnedVariable) {
-      // Slot-mode placeholder — labelled with the variable name so authors
-      // see what the slot is for. Click to open the operator/value picker.
+      // Slot-mode placeholder — small "+" pill. The header (and the
+      // existing chips on the slot) already make the variable obvious,
+      // so this stays compact and stops the row from getting noisy.
       return (
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40"
+          aria-label={`Add ${pinnedVariable.name} chip`}
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
         >
-          <span className="font-mono uppercase tracking-widest text-[10px] opacity-70">
-            {pinnedVariable.name}
-          </span>
-          <span className="opacity-50">: any</span>
+          +
         </button>
       );
     }
