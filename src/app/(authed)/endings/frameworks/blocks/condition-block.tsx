@@ -193,6 +193,7 @@ export function ConditionBlock({
           const coveredByOrdinal = coveredById
             ? analysis.rowSortOrder.get(coveredById) ?? null
             : null;
+          const overlap = analysis.overlapByRowId.get(row.id) ?? null;
           return (
             <ConditionRow
               key={row.id}
@@ -201,6 +202,8 @@ export function ConditionBlock({
               variables={variables}
               values={values}
               shadowedByOrdinal={coveredByOrdinal}
+              overlap={overlap}
+              rowSortOrder={analysis.rowSortOrder}
               onAddChip={(input) =>
                 startTransition(async () => {
                   await addChip({
@@ -259,6 +262,8 @@ function ConditionRow({
   variables,
   values,
   shadowedByOrdinal,
+  overlap,
+  rowSortOrder,
   onAddChip,
   onRemoveChip,
   onChangeChip,
@@ -270,17 +275,20 @@ function ConditionRow({
   variables: VariableState[];
   values: EndingVariableValue[];
   shadowedByOrdinal: number | null;
+  overlap: import("@/lib/endings/static-analysis").NumericRowOverlap | null;
+  rowSortOrder: Map<string, number>;
   onAddChip: (input: AddChipInput) => void;
   onRemoveChip: (chipId: string) => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   onRemoveRow: () => void;
   children: React.ReactNode;
 }) {
+  const fullyOverlapped = overlap?.fullShadow ?? false;
   return (
     <div
       className={cn(
         "grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-border/60 bg-card/40 p-2",
-        shadowedByOrdinal != null &&
+        (shadowedByOrdinal != null || fullyOverlapped) &&
           "border-amber-500/50 bg-amber-500/5"
       )}
     >
@@ -310,6 +318,13 @@ function ConditionRow({
             <AlertTriangle size={10} aria-hidden />
             shadowed by row {shadowedByOrdinal}
           </span>
+        ) : null}
+        {overlap ? (
+          <OverlapBadge
+            overlap={overlap}
+            variableIndex={variableIndex}
+            rowSortOrder={rowSortOrder}
+          />
         ) : null}
       </div>
       <div className="flex flex-col gap-1">{children}</div>
@@ -432,6 +447,39 @@ function UncoveredList({
         ))}
       </ul>
     </div>
+  );
+}
+
+function OverlapBadge({
+  overlap,
+  variableIndex,
+  rowSortOrder,
+}: {
+  overlap: import("@/lib/endings/static-analysis").NumericRowOverlap;
+  variableIndex: Map<string, VariableState>;
+  rowSortOrder: Map<string, number>;
+}) {
+  const ordinals = overlap.earlier_row_ids
+    .map((id) => rowSortOrder.get(id))
+    .filter((n): n is number => n != null);
+  const rowList =
+    ordinals.length === 1
+      ? `row ${ordinals[0]}`
+      : ordinals.length === 2
+      ? `rows ${ordinals[0]} & ${ordinals[1]}`
+      : `rows ${ordinals.slice(0, -1).join(", ")} & ${ordinals[ordinals.length - 1]}`;
+  const ranges = overlap.intervals
+    .map((iv) => formatNumericGap(iv, variableIndex))
+    .join(", ");
+  const verb = overlap.fullShadow ? "shadowed by" : "overlaps";
+  return (
+    <span
+      title={`${verb} ${rowList} at ${ranges}`}
+      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200"
+    >
+      <AlertTriangle size={10} aria-hidden />
+      {verb} {rowList} at {ranges}
+    </span>
   );
 }
 

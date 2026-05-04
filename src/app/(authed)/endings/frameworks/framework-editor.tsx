@@ -44,6 +44,7 @@ import {
 import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { EMPTY_SELECTIONS, type PreviewSelections } from "@/lib/endings/evaluator";
 import {
+  numericRowOverlaps,
   staticShadowedRows,
   uncoveredAssignmentsByBlock,
 } from "@/lib/endings/static-analysis";
@@ -58,6 +59,7 @@ import {
 import { PickerCtx, type PickerContext } from "./lib/picker";
 import {
   AnalysisCtx,
+  indexOverlap,
   indexShadow,
   type AnalysisContext,
 } from "./lib/analysis";
@@ -280,6 +282,7 @@ export function FrameworkEditor({
       values: evalValues,
     };
     const shadow = staticShadowedRows(inputs);
+    const overlaps = numericRowOverlaps(inputs);
     const blockAnalysis = uncoveredAssignmentsByBlock(inputs);
     // Map each row id to its 1-based ordinal within its condition block,
     // so badges can read "shadowed by row 2" instead of opaque uuids.
@@ -289,6 +292,7 @@ export function FrameworkEditor({
     }
     return {
       shadowByRowId: indexShadow(shadow),
+      overlapByRowId: indexOverlap(overlaps),
       blockAnalysis,
       rowSortOrder,
     };

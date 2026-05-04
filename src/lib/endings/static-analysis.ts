@@ -649,6 +649,247 @@ function computeNumericGaps(
   return gaps;
 }
 
+// ---------------------------------------------------------------------
+// Numeric row overlap
+// ---------------------------------------------------------------------
+
+export interface NumericRowOverlap {
+  row_id: string;
+  /** Earlier rows whose ranges contribute to this row's dead portion,
+   *  in sort_order. */
+  earlier_row_ids: string[];
+  /** The dead portion(s) of this row's range — values where the row's
+   *  chips would match but an earlier row already fires. */
+  intervals: NumericGap[];
+  /** True when the dead portion equals the row's entire range, so the
+   *  row never fires at runtime. */
+  fullShadow: boolean;
+}
+
+/**
+ * For single-numeric-variable blocks (no finite-domain chips, exactly
+ * one numeric variable referenced), report each row's "dead portion" —
+ * the values the row claims to match but an earlier row covers first
+ * (first-match-wins).
+ */
+export function numericRowOverlaps(input: StaticInputs): NumericRowOverlap[] {
+  const { rowsByBlock, chipsByRow, variableIndex } = buildIndexes(input);
+  const out: NumericRowOverlap[] = [];
+  for (const rows of rowsByBlock.values()) {
+    const allChips: EvalChip[] = [];
+    for (const r of rows) {
+      for (const c of chipsByRow.get(r.id) ?? []) allChips.push(c);
+    }
+    const numericVarIds = [
+      ...new Set(
+        allChips
+          .filter(
+            (c) => variableIndex.get(c.variable_id)?.kind === "number_ref"
+          )
+          .map((c) => c.variable_id)
+      ),
+    ];
+    const finiteVarIds = [
+      ...new Set(
+        allChips
+          .filter((c) => {
+            const v = variableIndex.get(c.variable_id);
+            return v != null && v.kind !== "number_ref";
+          })
+          .map((c) => c.variable_id)
+      ),
+    ];
+    if (finiteVarIds.length > 0 || numericVarIds.length !== 1) continue;
+    const variableId = numericVarIds[0];
+
+    // Each row's range = AND of its chips on this variable.
+    const rowSets = new Map<string, BareInterval[]>();
+    for (const r of rows) {
+      const rChips = (chipsByRow.get(r.id) ?? []).filter(
+        (c) => c.variable_id === variableId
+      );
+      if (rChips.length === 0) continue; // empty row, never matches
+      let set: BareInterval[] = [FULL_INTERVAL];
+      for (const c of rChips) {
+        set = intersectIntervalSets(set, chipToIntervalSet(c));
+        if (set.length === 0) break;
+      }
+      if (set.length > 0) rowSets.set(r.id, set);
+    }
+
+    let cumulative: BareInterval[] = [];
+    const earlierIds: string[] = [];
+    for (const r of rows) {
+      const mine = rowSets.get(r.id);
+      if (mine == null) continue;
+      const overlap = intersectIntervalSets(mine, cumulative);
+      if (overlap.length > 0) {
+        const fullShadow = intervalSetEqual(overlap, mine);
+        out.push({
+          row_id: r.id,
+          earlier_row_ids: [...earlierIds],
+          intervals: overlap.map((iv) => ({ ...iv, variable_id: variableId })),
+          fullShadow,
+        });
+      }
+      cumulative = unionIntervalSets(cumulative, mine);
+      earlierIds.push(r.id);
+    }
+  }
+  return out;
+}
+
+interface BareInterval {
+  low: number;
+  high: number;
+  lowInclusive: boolean;
+  highInclusive: boolean;
+}
+
+const FULL_INTERVAL: BareInterval = {
+  low: -Infinity,
+  high: Infinity,
+  lowInclusive: false,
+  highInclusive: false,
+};
+
+function chipToIntervalSet(chip: EvalChip): BareInterval[] {
+  if (chip.number_value == null) return [];
+  const t = chip.number_value;
+  switch (chip.operator) {
+    case "=":
+      return [{ low: t, high: t, lowInclusive: true, highInclusive: true }];
+    case "≠":
+      return [
+        { low: -Infinity, high: t, lowInclusive: false, highInclusive: false },
+        { low: t, high: Infinity, lowInclusive: false, highInclusive: false },
+      ];
+    case "<":
+      return [
+        { low: -Infinity, high: t, lowInclusive: false, highInclusive: false },
+      ];
+    case "≤":
+      return [
+        { low: -Infinity, high: t, lowInclusive: false, highInclusive: true },
+      ];
+    case ">":
+      return [
+        { low: t, high: Infinity, lowInclusive: false, highInclusive: false },
+      ];
+    case "≥":
+      return [
+        { low: t, high: Infinity, lowInclusive: true, highInclusive: false },
+      ];
+    default:
+      return [];
+  }
+}
+
+function intersectInterval(
+  a: BareInterval,
+  b: BareInterval
+): BareInterval | null {
+  let low: number;
+  let lowInclusive: boolean;
+  if (a.low > b.low) {
+    low = a.low;
+    lowInclusive = a.lowInclusive;
+  } else if (a.low < b.low) {
+    low = b.low;
+    lowInclusive = b.lowInclusive;
+  } else {
+    low = a.low;
+    lowInclusive = a.lowInclusive && b.lowInclusive;
+  }
+  let high: number;
+  let highInclusive: boolean;
+  if (a.high < b.high) {
+    high = a.high;
+    highInclusive = a.highInclusive;
+  } else if (a.high > b.high) {
+    high = b.high;
+    highInclusive = b.highInclusive;
+  } else {
+    high = a.high;
+    highInclusive = a.highInclusive && b.highInclusive;
+  }
+  if (low > high) return null;
+  if (low === high && (!lowInclusive || !highInclusive)) return null;
+  return { low, high, lowInclusive, highInclusive };
+}
+
+function intersectIntervalSets(
+  a: BareInterval[],
+  b: BareInterval[]
+): BareInterval[] {
+  if (a.length === 0 || b.length === 0) return [];
+  const out: BareInterval[] = [];
+  for (const ia of a) {
+    for (const ib of b) {
+      const m = intersectInterval(ia, ib);
+      if (m) out.push(m);
+    }
+  }
+  return mergeIntervals(out);
+}
+
+function unionIntervalSets(
+  a: BareInterval[],
+  b: BareInterval[]
+): BareInterval[] {
+  return mergeIntervals([...a, ...b]);
+}
+
+function mergeIntervals(intervals: BareInterval[]): BareInterval[] {
+  if (intervals.length <= 1) return intervals.map((iv) => ({ ...iv }));
+  const sorted = [...intervals].sort((a, b) =>
+    a.low === b.low
+      ? a.lowInclusive === b.lowInclusive
+        ? 0
+        : a.lowInclusive
+        ? -1
+        : 1
+      : a.low - b.low
+  );
+  const out: BareInterval[] = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = out[out.length - 1];
+    const cur = sorted[i];
+    const touches =
+      cur.low < last.high ||
+      (cur.low === last.high && (cur.lowInclusive || last.highInclusive));
+    if (touches) {
+      if (
+        cur.high > last.high ||
+        (cur.high === last.high && cur.highInclusive)
+      ) {
+        last.high = cur.high;
+        last.highInclusive = cur.highInclusive;
+      }
+    } else {
+      out.push({ ...cur });
+    }
+  }
+  return out;
+}
+
+function intervalSetEqual(a: BareInterval[], b: BareInterval[]): boolean {
+  const ma = mergeIntervals(a);
+  const mb = mergeIntervals(b);
+  if (ma.length !== mb.length) return false;
+  for (let i = 0; i < ma.length; i++) {
+    if (
+      ma[i].low !== mb[i].low ||
+      ma[i].high !== mb[i].high ||
+      ma[i].lowInclusive !== mb[i].lowInclusive ||
+      ma[i].highInclusive !== mb[i].highInclusive
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function chipNumericMatches(chip: EvalChip, v: number): boolean {
   if (chip.number_value == null) return false;
   const t = chip.number_value;
