@@ -1,27 +1,43 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { makeTestClient } from "./_helpers";
 
-// CHECK constraints on the v3 endings tables. Pin them with service-role
-// inserts so a future migration can't loosen them silently.
+// CHECK constraints + partial unique indexes on the unified endings
+// schema introduced in 0022_endings_logic_v2.sql. Pinned with
+// service-role inserts so a future migration can't loosen them silently.
+//
+// Replaces the older endings_v3_constraints.test.ts (whose seed used
+// ending_frameworks + ending_framework_blocks, both gone in 0022).
+// Coverage that survived the rebuild (chip value_shape, aggregate
+// operators, header variable cascade, aggregate kind_shape) carries
+// over here.
 
-const TEST_PREFIX = "__INT_TEST_V3__";
+const TEST_PREFIX = "__INT_TEST_LOGIC_V2__";
 
-describe("endings v3 schema constraints", () => {
+describe("endings logic v2 schema constraints", () => {
   const sb = makeTestClient();
 
   afterEach(async () => {
-    // Cascades clean up rows / chips when frameworks + variables go.
-    await sb.from("ending_frameworks").delete().like("name", `${TEST_PREFIX}%`);
+    // Cascades clean up rows / chips / header vars when documents +
+    // variables go.
+    await sb
+      .from("ending_documents")
+      .delete()
+      .eq("kind", "framework")
+      .like("name", `${TEST_PREFIX}%`);
     await sb.from("ending_variables").delete().like("name", `${TEST_PREFIX}%`);
   });
 
   async function seed() {
-    const { data: framework, error: fErr } = await sb
-      .from("ending_frameworks")
-      .insert({ name: `${TEST_PREFIX}framework`, sort_order: 9999 })
+    const { data: doc, error: dErr } = await sb
+      .from("ending_documents")
+      .insert({
+        kind: "framework",
+        name: `${TEST_PREFIX}doc-${Math.random()}`,
+        sort_order: 9999,
+      })
       .select("id")
       .single();
-    if (fErr || !framework) throw new Error(`seed framework: ${fErr?.message}`);
+    if (dErr || !doc) throw new Error(`seed document: ${dErr?.message}`);
 
     const { data: textVar, error: vErr } = await sb
       .from("ending_variables")
@@ -71,11 +87,10 @@ describe("endings v3 schema constraints", () => {
       throw new Error(`seed text value: ${vvErr?.message}`);
 
     const { data: condBlock, error: bErr } = await sb
-      .from("ending_framework_blocks")
+      .from("ending_blocks")
       .insert({
-        framework_id: framework.id,
+        document_id: doc.id,
         block_type: "condition",
-        text: "",
         sort_order: 0,
       })
       .select("id")
@@ -91,7 +106,7 @@ describe("endings v3 schema constraints", () => {
     if (rErr || !row) throw new Error(`seed row: ${rErr?.message}`);
 
     return {
-      frameworkId: framework.id as string,
+      docId: doc.id as string,
       textVarId: textVar.id as string,
       numVarId: numVar.id as string,
       aggVarId: aggVar.id as string,
@@ -101,33 +116,246 @@ describe("endings v3 schema constraints", () => {
     };
   }
 
-  it("rejects ending_variables with kind='number_ref' but null number_ref", async () => {
+  // -------------------------------------------------------------------
+  // Documents — kind/name shape, singleton kinds, framework name unique
+  // -------------------------------------------------------------------
+
+  it("rejects a framework document with null name", async () => {
     const { error } = await sb
-      .from("ending_variables")
-      .insert({
-        name: `${TEST_PREFIX}bad_kind`,
-        kind: "number_ref",
-        number_ref: null,
-        sort_order: 9999,
-      })
+      .from("ending_documents")
+      .insert({ kind: "framework", name: null, sort_order: 9999 })
       .select();
     expect(error).not.toBeNull();
-    expect(error?.message ?? "").toMatch(/ending_variables_kind_shape/i);
+    expect(error?.message ?? "").toMatch(/name_shape/i);
   });
 
-  it("rejects ending_variables with kind='text' but number_ref set", async () => {
+  it("rejects a logic-kind document with a name set", async () => {
+    // We can't actually insert a second logic-kind doc (singleton), but
+    // we can attempt one and rely on the name_shape CHECK firing first.
     const { error } = await sb
-      .from("ending_variables")
+      .from("ending_documents")
       .insert({
-        name: `${TEST_PREFIX}bad_text_kind`,
-        kind: "text",
-        number_ref: "world_status",
+        kind: "framework_selection",
+        name: `${TEST_PREFIX}should_be_null`,
         sort_order: 9999,
       })
       .select();
     expect(error).not.toBeNull();
-    expect(error?.message ?? "").toMatch(/ending_variables_kind_shape/i);
+    // Either name_shape (if first) or singleton index (if name CHECK is
+    // shape-only). Both signal the constraint is doing its job.
+    expect(error?.message ?? "").toMatch(/(name_shape|singleton)/i);
   });
+
+  it("seeded singleton logic documents are present", async () => {
+    const { data, error } = await sb
+      .from("ending_documents")
+      .select("kind")
+      .neq("kind", "framework");
+    expect(error).toBeNull();
+    const kinds = (data ?? []).map((r) => r.kind);
+    expect(kinds).toEqual(
+      expect.arrayContaining([
+        "framework_selection",
+        "class_affinity_top",
+        "class_affinity_bottom",
+        "nation_affinity_top",
+        "nation_affinity_bottom",
+      ])
+    );
+  });
+
+  it("rejects inserting a second document of a singleton kind", async () => {
+    const { error } = await sb
+      .from("ending_documents")
+      .insert({ kind: "framework_selection", name: null, sort_order: 9999 })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/(unique|singleton)/i);
+  });
+
+  it("rejects two framework documents sharing the same name", async () => {
+    const name = `${TEST_PREFIX}dup-name`;
+    const { error: firstErr } = await sb
+      .from("ending_documents")
+      .insert({ kind: "framework", name, sort_order: 9999 })
+      .select();
+    expect(firstErr).toBeNull();
+    const { error: dupErr } = await sb
+      .from("ending_documents")
+      .insert({ kind: "framework", name, sort_order: 9999 })
+      .select();
+    expect(dupErr).not.toBeNull();
+    expect(dupErr?.message ?? "").toMatch(/(unique|name_unique)/i);
+  });
+
+  // -------------------------------------------------------------------
+  // Blocks — type payload + parent shape + result + nested under row
+  // -------------------------------------------------------------------
+
+  it("rejects a text block with null text", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "text",
+        text: null,
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/type_payload/i);
+  });
+
+  it("rejects a result block with null result_value", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "result",
+        result_value: null,
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/type_payload/i);
+  });
+
+  it("rejects a condition block with text set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "condition",
+        text: "should be null",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/type_payload/i);
+  });
+
+  it("rejects a condition block with result_value set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "condition",
+        result_value: "should be null",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/type_payload/i);
+  });
+
+  it("rejects a leaf block with both text and result_value set", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "text",
+        text: "yes",
+        result_value: "also yes",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/type_payload/i);
+  });
+
+  it("accepts a valid text block, condition block, and result block", async () => {
+    const seeded = await seed();
+    const { error: textErr } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "text",
+        text: "hello",
+        sort_order: 0,
+      })
+      .select();
+    expect(textErr).toBeNull();
+
+    const { error: condErr } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "condition",
+        sort_order: 1,
+      })
+      .select();
+    expect(condErr).toBeNull();
+
+    const { error: resErr } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        block_type: "result",
+        result_value: "proletariat",
+        sort_order: 2,
+      })
+      .select();
+    expect(resErr).toBeNull();
+  });
+
+  it("rejects a block with parent_block_id but null parent_row_id", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        parent_block_id: seeded.condBlockId,
+        parent_row_id: null,
+        block_type: "text",
+        text: "child",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/parent_shape/i);
+  });
+
+  it("rejects a block with parent_row_id but null parent_block_id", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        parent_block_id: null,
+        parent_row_id: seeded.rowId,
+        block_type: "text",
+        text: "child",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/parent_shape/i);
+  });
+
+  it("accepts a valid nested block under a row (parent_row_id FK wired)", async () => {
+    const seeded = await seed();
+    const { error } = await sb
+      .from("ending_blocks")
+      .insert({
+        document_id: seeded.docId,
+        parent_block_id: seeded.condBlockId,
+        parent_row_id: seeded.rowId,
+        block_type: "text",
+        text: "child",
+        sort_order: 0,
+      })
+      .select();
+    expect(error).toBeNull();
+  });
+
+  // -------------------------------------------------------------------
+  // Chips — value_shape + operator (preserved from 0014/0020)
+  // -------------------------------------------------------------------
 
   it("rejects an invalid operator on a chip", async () => {
     const seeded = await seed();
@@ -211,58 +439,8 @@ describe("endings v3 schema constraints", () => {
     expect(error).toBeNull();
   });
 
-  it("rejects a block with parent_block_id but null parent_row_id", async () => {
-    const seeded = await seed();
-    const { error } = await sb
-      .from("ending_framework_blocks")
-      .insert({
-        framework_id: seeded.frameworkId,
-        parent_block_id: seeded.condBlockId,
-        parent_row_id: null,
-        block_type: "text",
-        text: "",
-        sort_order: 0,
-      })
-      .select();
-    expect(error).not.toBeNull();
-    expect(error?.message ?? "").toMatch(/parent_shape/i);
-  });
-
-  it("rejects a block with parent_row_id but null parent_block_id", async () => {
-    const seeded = await seed();
-    const { error } = await sb
-      .from("ending_framework_blocks")
-      .insert({
-        framework_id: seeded.frameworkId,
-        parent_block_id: null,
-        parent_row_id: seeded.rowId,
-        block_type: "text",
-        text: "",
-        sort_order: 0,
-      })
-      .select();
-    expect(error).not.toBeNull();
-    expect(error?.message ?? "").toMatch(/parent_shape/i);
-  });
-
-  it("accepts a valid nested block under a row", async () => {
-    const seeded = await seed();
-    const { error } = await sb
-      .from("ending_framework_blocks")
-      .insert({
-        framework_id: seeded.frameworkId,
-        parent_block_id: seeded.condBlockId,
-        parent_row_id: seeded.rowId,
-        block_type: "text",
-        text: "child",
-        sort_order: 0,
-      })
-      .select();
-    expect(error).toBeNull();
-  });
-
   // -------------------------------------------------------------------
-  // Aggregate variable kind (Phase 4 / migration 0020)
+  // Aggregate variable kind (preserved from 0020)
   // -------------------------------------------------------------------
 
   it("rejects aggregate_ref outside the allowed set", async () => {
@@ -294,7 +472,7 @@ describe("endings v3 schema constraints", () => {
     expect(error?.message ?? "").toMatch(/kind_shape/i);
   });
 
-  it("rejects an aggregate_ref variable with kind=text but aggregate_ref set", async () => {
+  it("rejects a kind=text variable with aggregate_ref set", async () => {
     const { error } = await sb
       .from("ending_variables")
       .insert({
@@ -325,7 +503,7 @@ describe("endings v3 schema constraints", () => {
     expect(error).toBeNull();
   });
 
-  it("accepts each new aggregate operator on an aggregate-variable chip", async () => {
+  it("accepts each aggregate operator on an aggregate-variable chip", async () => {
     const seeded = await seed();
     for (const op of ["top=", "top≠", "bottom=", "bottom≠"] as const) {
       const { error } = await sb
@@ -341,7 +519,6 @@ describe("endings v3 schema constraints", () => {
         })
         .select();
       expect(error, `op ${op}`).toBeNull();
-      // Clean up between iterations so the row isn't littered with chips.
       await sb
         .from("ending_condition_row_chips")
         .delete()
@@ -385,27 +562,6 @@ describe("endings v3 schema constraints", () => {
     expect(error?.message ?? "").toMatch(/value_shape/i);
   });
 
-  it("rejects a text-variable chip with aggregate_value set", async () => {
-    const seeded = await seed();
-    const { error } = await sb
-      .from("ending_condition_row_chips")
-      .insert({
-        row_id: seeded.rowId,
-        variable_id: seeded.textVarId,
-        operator: "=",
-        text_value_id: null,
-        number_value: null,
-        aggregate_value: "proletariat",
-        sort_order: 0,
-      })
-      .select();
-    // CHECK is shape-only — payload mismatch with the variable kind is
-    // enforced at the application layer; the row-shape check still
-    // accepts a single-payload chip. Document that here so a future
-    // migration tightening this doesn't surprise anyone.
-    expect(error).toBeNull();
-  });
-
   it("rejects an unknown operator on an aggregate-variable chip", async () => {
     const seeded = await seed();
     const { error } = await sb
@@ -425,10 +581,10 @@ describe("endings v3 schema constraints", () => {
   });
 
   // -------------------------------------------------------------------
-  // Header-declared variables (Phase 6 / migration 0021)
+  // Header-declared variables (preserved from 0021)
   // -------------------------------------------------------------------
 
-  it("ending_condition_block_variables: rejects duplicate (block, variable) pair", async () => {
+  it("rejects duplicate (block, variable) pair on header table", async () => {
     const seeded = await seed();
     const { error: firstErr } = await sb
       .from("ending_condition_block_variables")
@@ -449,7 +605,7 @@ describe("endings v3 schema constraints", () => {
     expect(dupErr?.message ?? "").toMatch(/unique/i);
   });
 
-  it("ending_condition_block_variables: cascades on block delete", async () => {
+  it("cascades header variables when the condition block is deleted", async () => {
     const seeded = await seed();
     await sb.from("ending_condition_block_variables").insert({
       condition_block_id: seeded.condBlockId,
@@ -461,10 +617,7 @@ describe("endings v3 schema constraints", () => {
       .select("id", { count: "exact", head: true })
       .eq("condition_block_id", seeded.condBlockId);
     expect(beforeCount).toBe(1);
-    await sb
-      .from("ending_framework_blocks")
-      .delete()
-      .eq("id", seeded.condBlockId);
+    await sb.from("ending_blocks").delete().eq("id", seeded.condBlockId);
     const { count: afterCount } = await sb
       .from("ending_condition_block_variables")
       .select("id", { count: "exact", head: true })

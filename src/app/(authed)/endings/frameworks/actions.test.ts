@@ -28,7 +28,12 @@ import {
 
 const TEST_PREFIX = "__INT_TEST_FW__";
 
-describe("frameworks actions / v3", () => {
+// SKIPPED until step 2 of docs/endings-logic-v2-plan.md replaces these
+// actions with the unified _shared/document-actions.ts. The seed +
+// asserts below reference ending_frameworks / ending_framework_blocks,
+// both dropped in 0022. Restoring coverage means writing a fresh
+// document-actions.test.ts under the new shape, not unskipping this.
+describe.skip("frameworks actions / v3", () => {
   const sb = makeTestClient();
 
   async function cleanup() {

@@ -2,7 +2,13 @@ import { test, expect } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * Golden flow for the v3 endings frameworks editor:
+ * SKIPPED until step 6 of docs/endings-logic-v2-plan.md rewrites this
+ * spec for the unified ending_documents schema. The setup hooks below
+ * still reference the dropped ending_frameworks table; restoring this
+ * file means rewriting it against the new shape (and adding logic-tab
+ * coverage), not flipping the .skip back off.
+ *
+ * Original golden flow for the v3 endings frameworks editor:
  *   1. Seed two text variables + values via the service-role client (faster
  *      and less brittle than driving the variables tab UI).
  *   2. Open /endings/frameworks, create a framework.
@@ -39,7 +45,7 @@ test.afterEach(async () => {
   await admin.from("ending_variables").delete().like("name", `${PREFIX}%`);
 });
 
-test("create multi-variable condition, save + reload, preview matches", async ({
+test.skip("create multi-variable condition, save + reload, preview matches", async ({
   page,
 }) => {
   const admin = makeAdmin();
@@ -182,7 +188,7 @@ test("create multi-variable condition, save + reload, preview matches", async ({
   ).toHaveCount(0);
 });
 
-test("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
+test.skip("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
   // Migration 0020 seeds Class Affinity / Nation Affinity. Build a
   // framework with one aggregate row and verify the underlying
   // proletariat / gentry inputs in the preview drive the row state.
@@ -253,7 +259,7 @@ test("aggregate (Class Affinity top=) drives preview", async ({ page }) => {
   await expect(page.getByText("the working class is on top")).toHaveCount(0);
 });
 
-test("static analysis: shadowed row + uncovered assignment badges", async ({
+test.skip("static analysis: shadowed row + uncovered assignment badges", async ({
   page,
 }) => {
   // Phase 5: build a framework where row 2 is fully shadowed by row 1
@@ -348,7 +354,7 @@ test("static analysis: shadowed row + uncovered assignment badges", async ({
   await expect(page.getByText(/AUTUMN/).first()).toBeVisible();
 });
 
-test("seeded impact variable + numeric operator drives preview", async ({
+test.skip("seeded impact variable + numeric operator drives preview", async ({
   page,
 }) => {
   // Migration 0016 seeds the 10 impact-column variables. The chip picker

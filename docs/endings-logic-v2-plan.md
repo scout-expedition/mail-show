@@ -362,16 +362,25 @@ Extend `tests/e2e/endings-frameworks.spec.ts`:
 
 ## Phasing
 
-Land in this order on branch `endings-frameworks-tiebreak`. Each commit leaves the tree compiling and tests green.
+Land in this order on branch `endings-logic-v2`. Each commit leaves `pnpm typecheck`, `pnpm lint`, and `pnpm test` (unit) green; integration + E2E suites turn green at the steps noted below.
 
-1. **Schema migration + types/enums.** Apply `0022_endings_logic_v2.sql` against local Supabase. Update `db/types.ts`, `db/enums.ts`. The current frameworks workspace + logic editor stop compiling — that's expected; subsequent commits replace them.
+Each step's tests ride **with** the step, not deferred to the end — that's how schema bugs surface immediately and how each commit can be reviewed in isolation.
+
+1. **Schema migration + types/enums.** Apply `0022_endings_logic_v2.sql` against local Supabase. Update `db/types.ts`, `db/enums.ts`.
+   - **Tests:** `tests/integration/endings_logic_v2_constraints.test.ts` (rewrite of `endings_v3_constraints.test.ts`) covers the new schema CHECKs + partial unique indexes + seeded singletons.
+   - **Tests deferred:** `frameworks/actions.test.ts` (`describe.skip` until step 2 replaces the actions); `tests/e2e/endings-frameworks.spec.ts` (`test.skip` until step 6).
 2. **Shared blocks + shared editor + shared actions.** Move `frameworks/blocks/` → `_blocks/`. Build `_shared/document-actions.ts` and `_shared/document-editor.tsx`. Frameworks workspace switches over (no user-visible change).
-3. **Logic page rewrite (skeleton).** Tab shell, result block, three tabs. No tiebreak wiring yet — evaluator still returns `false` on tie, and the playthrough flow temporarily uses a fallback: render the first framework if `framework_selection` doc has no matching row.
-4. **Evaluator + static analysis tiebreak.** Wire `evaluateAggregateChip` to consult tiebreak docs; update static-analysis truth-table. Unit tests for the tiebreak matrix.
+   - **Tests:** `_shared/document-actions.test.ts` — for each shared action assert row shape inserted/updated, `saveDocument` is UPDATE-only, correct paths revalidated, kind-aware validation (text leaf rejected on logic doc; result leaf rejected on framework doc; invalid `result_value` rejected per kind).
+3. **Logic page rewrite (skeleton).** Tab shell, result block, three tabs. No tiebreak wiring yet — evaluator still returns `false` on tie. The playthrough flow temporarily falls back to "first framework wins" if `framework_selection` doc has no matching row.
+   - **Tests:** none new (UI-only; covered by step 6 E2E).
+4. **Evaluator + static analysis tiebreak.** Generalize `evaluateFramework` → `evaluateDocument`. Wire `evaluateAggregateChip` to consult tiebreak docs; update static-analysis truth-table.
+   - **Tests:** `src/lib/endings/evaluator.test.ts` — `evaluateDocument` matrix (text leaf, result leaf, nested, empty, first-match-wins, cycle guard) + tiebreak resolution matrix (empty doc → false, doc resolves to tied option → true, doc returns non-tied option → false, tie-only-fires-on-tie). `src/lib/endings/static-analysis.test.ts` — existing tie-uncovered cases pass `tiebreakDocs: emptyMap`; new case with a non-empty `class_affinity_top` doc drops the tie state.
 5. **Top-level `evaluateEnding`.** Replace the playthrough's framework-selection logic with `framework_selection` doc evaluation. Remove the temporary fallback from step 3.
-6. **E2E hardening.**
+   - **Tests:** evaluator test extended with `evaluateEnding` cases (no matching row → empty paragraphs; matching row picks framework; chosen framework renders).
+6. **E2E rewrite.** Rewrite `tests/e2e/endings-frameworks.spec.ts` (or split into a new `endings-logic.spec.ts`) for the unified shape: 3 logic tabs render; Ending Framework tab persists a row + result; tiebreak doc populated → aggregate chip matches on tied scores; emptied → falls back.
+   - **Tests:** the rewrite itself.
 
-One branch, six (or so) commits, one PR at the end.
+One branch, six commits, one PR at the end.
 
 ## Verification
 
