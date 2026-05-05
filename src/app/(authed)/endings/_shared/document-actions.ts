@@ -139,6 +139,27 @@ export async function deleteFrameworkDocument(formData: FormData) {
 
 // --- Blocks -------------------------------------------------------------
 
+async function fetchSiblings(
+  supabase: Supabase,
+  documentId: string,
+  parentBlockId: string | null,
+  parentRowId: string | null
+): Promise<Array<{ id: string; block_type: string }>> {
+  let q = supabase
+    .from("ending_blocks")
+    .select("id, block_type")
+    .eq("document_id", documentId);
+  q = parentBlockId
+    ? q.eq("parent_block_id", parentBlockId)
+    : q.is("parent_block_id", null);
+  q = parentRowId
+    ? q.eq("parent_row_id", parentRowId)
+    : q.is("parent_row_id", null);
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}
+
 async function nextSiblingSort(
   supabase: Supabase,
   documentId: string,
@@ -228,6 +249,29 @@ export async function addBlock(
   }
   if (input.block_type === "result" && kind === "framework") {
     throw new Error("Framework documents cannot contain result blocks.");
+  }
+
+  // Result-block uniqueness within a sibling group: a result block
+  // ends evaluation for its branch, so siblings would never run.
+  // Reject the add when:
+  //   - adding a result and the group already has anything, OR
+  //   - adding a non-result and the group already has a result.
+  const siblings = await fetchSiblings(
+    supabase,
+    input.document_id,
+    input.parent_block_id,
+    input.parent_row_id
+  );
+  const groupHasResult = siblings.some((b) => b.block_type === "result");
+  if (input.block_type === "result" && siblings.length > 0) {
+    throw new Error(
+      "A result block must be the only block in its sibling group."
+    );
+  }
+  if (input.block_type !== "result" && groupHasResult) {
+    throw new Error(
+      "Cannot add a block alongside an existing result block in the same sibling group."
+    );
   }
 
   let textValue: string | null = null;

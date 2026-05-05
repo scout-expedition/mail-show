@@ -137,6 +137,11 @@ export function BlockList({
   const TextLeaf = leaves.text;
   const ResultLeaf = leaves.result?.Component;
 
+  // Result-block uniqueness rule: a sibling group either has no result
+  // block or has exactly one and nothing else. Drives adder visibility.
+  const hasResultBlock = blocks.some((b) => b.block_type === "result");
+  const hasAnyOtherBlock = blocks.some((b) => b.block_type !== "result");
+
   return (
     <div
       onDragEnter={(e) => {
@@ -254,41 +259,43 @@ export function BlockList({
         );
       })}
 
-      <div className="flex justify-center gap-2">
-        {TextLeaf ? (
+      {hasResultBlock ? null : (
+        <div className="flex justify-center gap-2">
+          {TextLeaf ? (
+            <button
+              type="button"
+              onClick={handleAddText}
+              disabled={pending}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+            >
+              <Plus size={11} aria-hidden /> text
+            </button>
+          ) : null}
+          {ResultLeaf && !hasAnyOtherBlock ? (
+            <button
+              type="button"
+              onClick={handleAddResult}
+              disabled={pending || leaves.result?.defaultValue == null}
+              title={
+                leaves.result?.defaultValue == null
+                  ? "No result options available yet"
+                  : undefined
+              }
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+            >
+              <Plus size={11} aria-hidden /> result
+            </button>
+          ) : null}
           <button
             type="button"
-            onClick={handleAddText}
+            onClick={handleAddCondition}
             disabled={pending}
             className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
           >
-            <Plus size={11} aria-hidden /> text
+            <Plus size={11} aria-hidden /> condition
           </button>
-        ) : null}
-        {ResultLeaf ? (
-          <button
-            type="button"
-            onClick={handleAddResult}
-            disabled={pending || leaves.result?.defaultValue == null}
-            title={
-              leaves.result?.defaultValue == null
-                ? "No result options available yet"
-                : undefined
-            }
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
-          >
-            <Plus size={11} aria-hidden /> result
-          </button>
-        ) : null}
-        <button
-          type="button"
-          onClick={handleAddCondition}
-          disabled={pending}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
-        >
-          <Plus size={11} aria-hidden /> condition
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
