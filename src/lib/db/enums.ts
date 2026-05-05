@@ -249,7 +249,7 @@ export type EndingLogicKind = (typeof ENDING_LOGIC_KINDS)[number];
 
 export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
   framework: "Framework",
-  framework_selection: "Ending Framework",
+  framework_selection: "Framework Logic",
   class_affinity_top: "Top",
   class_affinity_bottom: "Bottom",
   nation_affinity_top: "Top",
@@ -258,7 +258,7 @@ export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
 
 /** Tab grouping for the Logic page. */
 export const ENDING_LOGIC_TABS = [
-  { id: "framework_selection", label: "Ending Framework", kinds: ["framework_selection"] as const },
+  { id: "framework_selection", label: "Ending", kinds: ["framework_selection"] as const },
   {
     id: "class_affinity",
     label: "Class Affinity",

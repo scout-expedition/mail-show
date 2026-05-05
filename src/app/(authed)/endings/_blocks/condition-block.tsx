@@ -329,11 +329,7 @@ function ConditionRow({
       )}
     >
       <div className="flex flex-wrap items-start gap-1 self-start">
-        {declaredVariables.length === 0 ? (
-          <span className="text-[11px] italic text-muted-foreground">
-            (declare variables on the block header)
-          </span>
-        ) : (
+        {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
             const slotChips = chipsByVariableId.get(dv.variable_id) ?? [];

@@ -201,10 +201,7 @@ export function LogicEditor({
           const data = editorDataByDoc.get(doc.id);
           if (!data) return null;
           const resultLeaf = resultBlockByKind.get(kind);
-          const isAffinityTab = activeTabConfig.kinds.length > 1;
-          const panelTitle = isAffinityTab
-            ? ENDING_DOCUMENT_KIND_LABELS[kind]
-            : activeTabConfig.label;
+          const panelTitle = ENDING_DOCUMENT_KIND_LABELS[kind];
           return (
             <DocumentEditor
               key={doc.id}
