@@ -23,6 +23,7 @@ import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   type EndingLogicKind,
 } from "@/lib/db/enums";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { BlockState } from "@/lib/endings/block-state";
 import type { EndingDocument } from "@/lib/db/types";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
@@ -194,7 +195,14 @@ export function makeResultBlock(
   const options: ResultOption[] = (() => {
     const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind];
     if (allowed) {
-      return allowed.map((v) => ({ value: v, label: v }));
+      return allowed.map((v) => ({
+        value: v,
+        // VARIABLE_LABELS maps the impact-column raw name (proletariat,
+        // gentry, folos, …) to its user-facing label (Working Class,
+        // Upper Class, Folos, …). Fall back to the raw value for any
+        // entry the map doesn't know about.
+        label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
+      }));
     }
     // framework_selection — options are framework documents.
     return frameworks

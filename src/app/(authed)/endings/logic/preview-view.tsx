@@ -24,6 +24,7 @@ import type {
 } from "@/lib/endings/block-state";
 import type { EndingDocument, EndingVariableValue } from "@/lib/db/types";
 import type { EndingLogicKind } from "@/lib/db/enums";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 
 /**
  * Preview pane for the Ending Framework (and the affinity tiebreak)
@@ -185,7 +186,9 @@ export function LogicPreviewView({
           </p>
         ) : (
           <p>
-            <span className="font-mono">{resolved}</span>
+            <span className="font-semibold">
+              {(VARIABLE_LABELS as Record<string, string>)[resolved] ?? resolved}
+            </span>
           </p>
         )}
       </article>
