@@ -24,6 +24,7 @@ import type {
 } from "@/lib/endings/block-state";
 import type { EndingDocument, EndingVariableValue } from "@/lib/db/types";
 import type { EndingLogicKind } from "@/lib/db/enums";
+import { RANDOM_RESULT_SENTINEL } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 
 /**
@@ -177,6 +178,12 @@ export function LogicPreviewView({
           <p className="italic text-muted-foreground/80">
             (no match — the document didn&apos;t produce a result for these
             inputs)
+          </p>
+        ) : resolved === RANDOM_RESULT_SENTINEL ? (
+          <p>
+            <span className="italic text-muted-foreground">
+              (random — picked at runtime)
+            </span>
           </p>
         ) : docKind === "framework_selection" ? (
           <p>

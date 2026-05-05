@@ -46,7 +46,10 @@ import {
   type EvalRow,
   type EvalVariable,
 } from "@/lib/endings/evaluator";
-import { ENDING_LOGIC_RESULT_OPTIONS_BY_KIND } from "@/lib/db/enums";
+import {
+  ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
+  RANDOM_RESULT_SENTINEL,
+} from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 
 /**
@@ -64,11 +67,15 @@ function buildFallbackProp(
       emptyLabel: string;
     }
   | undefined {
+  const random = { value: RANDOM_RESULT_SENTINEL, label: "Random" };
   if (kind === "framework_selection") {
     return {
-      options: frameworkDocs
-        .filter((f) => f.kind === "framework")
-        .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" })),
+      options: [
+        ...frameworkDocs
+          .filter((f) => f.kind === "framework")
+          .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" })),
+        random,
+      ],
       helperText:
         "If nothing above resolves to a framework, return this one.",
       emptyLabel: "— pick a framework —",
@@ -77,10 +84,13 @@ function buildFallbackProp(
   if (kind === "class_affinity_top") {
     const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind] ?? [];
     return {
-      options: allowed.map((v) => ({
-        value: v,
-        label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
-      })),
+      options: [
+        ...allowed.map((v) => ({
+          value: v,
+          label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
+        })),
+        random,
+      ],
       helperText:
         "If nothing above resolves a tied class affinity, return this winner.",
       emptyLabel: "— pick a class —",

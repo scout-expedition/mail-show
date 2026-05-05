@@ -323,3 +323,18 @@ export const ENDING_BLOCK_TYPES = [
   "fallback",
 ] as const;
 export type EndingBlockType = (typeof ENDING_BLOCK_TYPES)[number];
+
+/**
+ * Sentinel `result_value` for "pick a random option at evaluation
+ * time". Allowed in any logic-kind result block (and in the fallback
+ * picker for framework_selection / class_affinity_top). The
+ * evaluator expands it at call sites:
+ *   - aggregate-chip tiebreak → random of the currently-tied options
+ *   - framework_selection top-level → random across all frameworks
+ *
+ * Stored in `ending_blocks.result_value` directly; `validateResultValue`
+ * accepts it bypassing the per-kind option list. The preview surfaces
+ * it as "(random)" rather than picking on every render to keep author
+ * inspection deterministic.
+ */
+export const RANDOM_RESULT_SENTINEL = "__random__";

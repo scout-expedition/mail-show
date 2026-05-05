@@ -21,6 +21,7 @@ import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
+  RANDOM_RESULT_SENTINEL,
   type EndingLogicKind,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
@@ -192,7 +193,7 @@ export function makeResultBlock(
   }>;
   defaultValue: string | null;
 } {
-  const options: ResultOption[] = (() => {
+  const baseOptions: ResultOption[] = (() => {
     const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind];
     if (allowed) {
       return allowed.map((v) => ({
@@ -209,6 +210,11 @@ export function makeResultBlock(
       .filter((f) => f.kind === "framework")
       .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" }));
   })();
+  // Random sits last so the named options come first in the picker.
+  const options: ResultOption[] = [
+    ...baseOptions,
+    { value: RANDOM_RESULT_SENTINEL, label: "Random" },
+  ];
 
   function ConfiguredResultBlock(props: {
     block: BlockState;

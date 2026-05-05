@@ -14,6 +14,7 @@
 
 import {
   AGGREGATE_OPTIONS_BY_REF,
+  RANDOM_RESULT_SENTINEL,
   TIEBREAK_KIND_BY_REF_SIDE,
   type AggregateRef,
   type EndingChipOperator,
@@ -211,7 +212,13 @@ function evaluateAggregateChip(
     if (result.length !== 1) return false;
     const docResult = result[0];
     let resolved: string;
-    if (invert) {
+    if (docResult === RANDOM_RESULT_SENTINEL) {
+      // Random tiebreak: pick uniformly from the currently-tied
+      // options. Inversion is moot (every tied option is equally
+      // likely either way).
+      if (tiedCols.length === 0) return false;
+      resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
+    } else if (invert) {
       // Inversion is only defined for 2-option aggregates where every
       // option is currently tied (otherwise "the other one" is
       // ambiguous). Both must hold for the bottom shortcut to be valid.
