@@ -231,17 +231,21 @@ export const ENDING_DOCUMENT_KINDS = [
   "framework",
   "framework_selection",
   "class_affinity_top",
-  "class_affinity_bottom",
   "nation_affinity_top",
   "nation_affinity_bottom",
 ] as const;
 export type EndingDocumentKind = (typeof ENDING_DOCUMENT_KINDS)[number];
 
-/** Non-`framework` kinds — the five tiebreak/selection docs surfaced under the Logic tab. */
+/** Non-`framework` kinds — the four tiebreak/selection docs surfaced under the Logic tab.
+ *
+ * Class affinity has only 2 options, so its bottom-on-tie is redundant
+ * (the option that isn't the top winner). Only `class_affinity_top` is
+ * stored; `TIEBREAK_KIND_BY_REF_SIDE` flips an `invert` flag for
+ * `class_affinity.bottom` so the evaluator derives the bottom from the
+ * top doc's result. */
 export const ENDING_LOGIC_KINDS = [
   "framework_selection",
   "class_affinity_top",
-  "class_affinity_bottom",
   "nation_affinity_top",
   "nation_affinity_bottom",
 ] as const satisfies readonly Exclude<EndingDocumentKind, "framework">[];
@@ -250,8 +254,7 @@ export type EndingLogicKind = (typeof ENDING_LOGIC_KINDS)[number];
 export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
   framework: "Framework",
   framework_selection: "Framework Logic",
-  class_affinity_top: "Top",
-  class_affinity_bottom: "Bottom",
+  class_affinity_top: "Tiebreak",
   nation_affinity_top: "Top",
   nation_affinity_bottom: "Bottom",
 };
@@ -262,7 +265,7 @@ export const ENDING_LOGIC_TABS = [
   {
     id: "class_affinity",
     label: "Class Affinity",
-    kinds: ["class_affinity_top", "class_affinity_bottom"] as const,
+    kinds: ["class_affinity_top"] as const,
   },
   {
     id: "nation_affinity",
@@ -284,23 +287,32 @@ export const ENDING_LOGIC_RESULT_OPTIONS_BY_KIND: Record<
 > = {
   framework_selection: null,
   class_affinity_top: AGGREGATE_OPTIONS_BY_REF.class_affinity,
-  class_affinity_bottom: AGGREGATE_OPTIONS_BY_REF.class_affinity,
   nation_affinity_top: AGGREGATE_OPTIONS_BY_REF.nation_affinity,
   nation_affinity_bottom: AGGREGATE_OPTIONS_BY_REF.nation_affinity,
 };
 
-/** Map from aggregate ref + side to the tiebreak doc kind. */
+/**
+ * Map from aggregate ref + side to the tiebreak doc kind, plus an
+ * `invert` flag for the 2-option-aggregate special case.
+ *
+ * Class affinity has only 2 options (proletariat, gentry), so a single
+ * `class_affinity_top` document covers both sides — knowing the top in
+ * a tie tells you the bottom (the other option). The evaluator reads
+ * `invert: true` for the bottom side and resolves the bottom value as
+ * the option from `AGGREGATE_OPTIONS_BY_REF[ref]` that the top doc
+ * didn't return.
+ */
 export const TIEBREAK_KIND_BY_REF_SIDE: Record<
   AggregateRef,
-  Record<"top" | "bottom", EndingLogicKind>
+  Record<"top" | "bottom", { kind: EndingLogicKind; invert: boolean }>
 > = {
   class_affinity: {
-    top: "class_affinity_top",
-    bottom: "class_affinity_bottom",
+    top: { kind: "class_affinity_top", invert: false },
+    bottom: { kind: "class_affinity_top", invert: true },
   },
   nation_affinity: {
-    top: "nation_affinity_top",
-    bottom: "nation_affinity_bottom",
+    top: { kind: "nation_affinity_top", invert: false },
+    bottom: { kind: "nation_affinity_bottom", invert: false },
   },
 };
 

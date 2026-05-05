@@ -262,8 +262,12 @@ export function chipMatchesOutcome(
       // Tiebreak resolution: when the relevant side's tiebreak doc is
       // non-empty, drop tie from the chip's outcome enumeration (treat
       // it as covered). Empty / absent doc → keep Phase 4's "tie → false".
+      // The class_affinity bottom side aliases through to the top doc
+      // (TIEBREAK_KIND_BY_REF_SIDE encodes the share via `kind` —
+      // `invert` is irrelevant for the static lower-bound check).
       const side: "top" | "bottom" = isTop ? "top" : "bottom";
-      const kind = TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
+      const { kind } =
+        TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
       const summary = tiebreakDocs?.get(kind);
       if (summary && !summary.isEmpty) return true;
       return false;

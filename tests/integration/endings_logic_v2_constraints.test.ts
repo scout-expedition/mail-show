@@ -157,11 +157,15 @@ describe("endings logic v2 schema constraints", () => {
       expect.arrayContaining([
         "framework_selection",
         "class_affinity_top",
-        "class_affinity_bottom",
         "nation_affinity_top",
         "nation_affinity_bottom",
       ])
     );
+    // class_affinity_bottom is intentionally absent — class affinity has
+    // only 2 options, so the top tiebreak doc tells you both winners
+    // (the one it returns, and the one it doesn't). 0024 dropped the
+    // redundant seeded doc.
+    expect(kinds).not.toContain("class_affinity_bottom");
   });
 
   it("rejects inserting a second document of a singleton kind", async () => {

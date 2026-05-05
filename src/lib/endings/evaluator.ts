@@ -193,9 +193,15 @@ function evaluateAggregateChip(
     // Tiebreak resolution. Look up the matching doc; if it resolves to
     // one of the currently-tied column names, that's the winner. Else
     // fall back to today's "tie → false".
+    //
+    // Class affinity is the special case: only 2 options total, so the
+    // bottom doc is implicit (the option that isn't the top doc's
+    // result). TIEBREAK_KIND_BY_REF_SIDE.class_affinity.bottom flips
+    // `invert: true` and points at the same `class_affinity_top` doc.
     const tiedCols = cols.filter((_, i) => vals[i] === extreme);
     const side: "top" | "bottom" = isTop ? "top" : "bottom";
-    const kind = TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
+    const { kind, invert } =
+      TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
     const doc = selections.tiebreak_docs?.get(kind);
     if (!doc) return false;
     if (evaluatingDocs.has(kind)) return false; // cycle guard
@@ -203,7 +209,19 @@ function evaluateAggregateChip(
     nextEvaluating.add(kind);
     const result = evaluateDocumentInternal(doc, nextEvaluating);
     if (result.length !== 1) return false;
-    const resolved = result[0];
+    const docResult = result[0];
+    let resolved: string;
+    if (invert) {
+      // Inversion is only defined for 2-option aggregates where every
+      // option is currently tied (otherwise "the other one" is
+      // ambiguous). Both must hold for the bottom shortcut to be valid.
+      if (cols.length !== 2 || tiedCols.length !== 2) return false;
+      const other = cols.find((c) => c !== docResult);
+      if (other == null) return false;
+      resolved = other;
+    } else {
+      resolved = docResult;
+    }
     if (!tiedCols.includes(resolved)) return false;
     winnerCol = resolved;
   } else {
