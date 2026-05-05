@@ -12,18 +12,23 @@
 // any row / block that touches one. Text + aggregate variables are
 // finite-domain so they get exact analysis.
 //
-// Tie semantics here mirror the Phase 4 evaluator: when an aggregate's
-// underlying scores tie, every aggregate operator returns false. Once a
-// tie-breaker rule lands (separate plan) the tie outcome here either
-// disappears (if ties always resolve) or its truth-table rewrites.
+// Tie semantics: by default ties produce no match (matches the Phase 4
+// evaluator). Callers that have populated tiebreak docs pass a
+// `tiebreakDocs` map; when a chip's relevant side has a non-empty doc,
+// the analysis drops `tie` outcomes from that chip's enumeration — the
+// chip is treated as potentially matching. This is intentionally coarse:
+// we don't statically evaluate whether the tiebreak doc actually covers
+// every tied assignment. The uncovered list stays a lower bound.
 //
 // All functions are pure; they reuse the EvalInputs shapes from
 // `evaluator.ts` plus a `values` array for text-variable domains.
 
 import {
   AGGREGATE_OPTIONS_BY_REF,
+  TIEBREAK_KIND_BY_REF_SIDE,
   type AggregateRef,
   type EndingChipOperator,
+  type EndingLogicKind,
 } from "@/lib/db/enums";
 import type {
   EvalBlock,
@@ -50,6 +55,18 @@ export interface DeclaredBlockVariable {
   variable_id: string;
 }
 
+/**
+ * Per-tiebreak-doc summary for static analysis. The check is intentionally
+ * coarse — we don't statically evaluate the doc against every assignment;
+ * we only consult `isEmpty` to decide whether to drop `tie` from a chip's
+ * outcome enumeration.
+ */
+export interface TiebreakDocSummary {
+  isEmpty: boolean;
+}
+
+export type TiebreakDocsMap = Map<EndingLogicKind, TiebreakDocSummary>;
+
 export interface StaticInputs {
   blocks: EvalBlock[];
   rows: EvalRow[];
@@ -57,6 +74,14 @@ export interface StaticInputs {
   variables: EvalVariable[];
   values: StaticValue[];
   blockVariables?: DeclaredBlockVariable[];
+  /**
+   * Optional per-logic-kind tiebreak doc summaries. When a kind is present
+   * with `isEmpty: false`, aggregate chips on the matching side treat
+   * `tie` outcomes as covered (we can't prove they're uncovered without a
+   * full doc evaluation, which v1 doesn't do). Absent / empty → ties stay
+   * in the uncovered enumeration (Phase 5 semantics).
+   */
+  tiebreakDocs?: TiebreakDocsMap;
 }
 
 export interface ShadowedRow {
@@ -202,11 +227,17 @@ function splitAggregateOutcome(
  * Evaluate a single chip against a single outcome string for its
  * variable. Mirrors the runtime evaluator's per-kind branches but acts
  * on outcome enums rather than user-set selections.
+ *
+ * `tiebreakDocs` is consulted for aggregate chips: when the chip's side
+ * (top / bottom) has a non-empty tiebreak doc and the outcome is a tie
+ * on that side, the chip is treated as matching (we can't statically
+ * prove the tie is uncovered, so we conservatively cover it).
  */
 export function chipMatchesOutcome(
   chip: EvalChip,
   variable: EvalVariable,
-  outcome: string
+  outcome: string,
+  tiebreakDocs?: TiebreakDocsMap
 ): boolean {
   if (variable.kind === "text") {
     if (outcome === UNSET_TEXT_OUTCOME) return false;
@@ -227,7 +258,16 @@ export function chipMatchesOutcome(
       chip.operator === "bottom=" || chip.operator === "bottom≠";
     if (!isTop && !isBottom) return false;
     const winner = isTop ? top : bottom;
-    if (winner === TIE_OUTCOME) return false; // Phase 4: any operator on tie → false
+    if (winner === TIE_OUTCOME) {
+      // Tiebreak resolution: when the relevant side's tiebreak doc is
+      // non-empty, drop tie from the chip's outcome enumeration (treat
+      // it as covered). Empty / absent doc → keep Phase 4's "tie → false".
+      const side: "top" | "bottom" = isTop ? "top" : "bottom";
+      const kind = TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
+      const summary = tiebreakDocs?.get(kind);
+      if (summary && !summary.isEmpty) return true;
+      return false;
+    }
     const isEqual = winner === chip.aggregate_value;
     return chip.operator === "top=" || chip.operator === "bottom="
       ? isEqual
@@ -250,7 +290,8 @@ function rowMatchesAssignment(
   rowChips: EvalChip[],
   variableIndex: Map<string, EvalVariable>,
   assignment: Map<string, string>,
-  ignoreNumeric = false
+  ignoreNumeric = false,
+  tiebreakDocs?: TiebreakDocsMap
 ): boolean {
   if (rowChips.length === 0) return false; // matches Phase 1 evaluator
   for (const chip of rowChips) {
@@ -259,7 +300,7 @@ function rowMatchesAssignment(
     if (ignoreNumeric && variable.kind === "number_ref") continue;
     const outcome = assignment.get(chip.variable_id);
     if (outcome == null) return false;
-    if (!chipMatchesOutcome(chip, variable, outcome)) return false;
+    if (!chipMatchesOutcome(chip, variable, outcome, tiebreakDocs)) return false;
   }
   return true;
 }
@@ -372,7 +413,15 @@ export function staticShadowedRows(input: StaticInputs): ShadowedRow[] {
         const r1Chips = chipsByRow.get(r1.id) ?? [];
         if (r1Chips.length === 0) continue; // never matches; can't shadow
         if (rowHasNumberRef(r1Chips, variableIndex)) continue;
-        if (rowCovers(r1Chips, r2Chips, variableIndex, input.values)) {
+        if (
+          rowCovers(
+            r1Chips,
+            r2Chips,
+            variableIndex,
+            input.values,
+            input.tiebreakDocs
+          )
+        ) {
           out.push({
             shadowed_row_id: r2.id,
             covered_by_row_id: r1.id,
@@ -394,7 +443,8 @@ function rowCovers(
   r1Chips: EvalChip[],
   r2Chips: EvalChip[],
   variableIndex: Map<string, EvalVariable>,
-  values: StaticValue[]
+  values: StaticValue[],
+  tiebreakDocs?: TiebreakDocsMap
 ): boolean {
   const varIds = new Set<string>([
     ...rowVariableIds(r1Chips),
@@ -411,9 +461,21 @@ function rowCovers(
   const assignments = enumerateAssignments(dims, MAX_ENUMERATION);
   if (assignments == null) return false; // too big to decide
   for (const a of assignments) {
-    const r2Match = rowMatchesAssignment(r2Chips, variableIndex, a);
+    const r2Match = rowMatchesAssignment(
+      r2Chips,
+      variableIndex,
+      a,
+      false,
+      tiebreakDocs
+    );
     if (!r2Match) continue;
-    const r1Match = rowMatchesAssignment(r1Chips, variableIndex, a);
+    const r1Match = rowMatchesAssignment(
+      r1Chips,
+      variableIndex,
+      a,
+      false,
+      tiebreakDocs
+    );
     if (!r1Match) return false; // r2 matches here but r1 doesn't → not shadowed
   }
   return true;
@@ -523,7 +585,15 @@ export function uncoveredAssignmentsByBlock(
       let covered = false;
       for (const r of rows) {
         const chips = chipsByRow.get(r.id) ?? [];
-        if (rowMatchesAssignment(chips, variableIndex, a, true)) {
+        if (
+          rowMatchesAssignment(
+            chips,
+            variableIndex,
+            a,
+            true,
+            input.tiebreakDocs
+          )
+        ) {
           covered = true;
           break;
         }

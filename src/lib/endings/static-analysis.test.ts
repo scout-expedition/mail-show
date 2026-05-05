@@ -7,7 +7,9 @@ import {
   uncoveredAssignmentsByBlock,
   type StaticInputs,
   type StaticValue,
+  type TiebreakDocsMap,
 } from "./static-analysis";
+import type { EndingLogicKind } from "@/lib/db/enums";
 
 // ----------------------------------------------------------------------
 // helpers
@@ -465,6 +467,68 @@ describe("uncoveredAssignmentsByBlock / aggregate", () => {
     const block = out.get(cb.id);
     expect(block?.status).toBe("has_uncovered");
     expect(block?.uncovered).toEqual([{ [klass.id]: "tie" }]);
+  });
+
+  it("class_affinity: tie still uncovered when tiebreakDocs map is supplied but empty", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const emptyMap: TiebreakDocsMap = new Map();
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        aggChip("c1", r1.id, klass.id, "proletariat", "top="),
+        aggChip("c2", r2.id, klass.id, "gentry", "top="),
+      ],
+      variables: [klass],
+      values: [],
+      tiebreakDocs: emptyMap,
+    });
+    const block = out.get(cb.id);
+    expect(block?.status).toBe("has_uncovered");
+    expect(block?.uncovered).toEqual([{ [klass.id]: "tie" }]);
+  });
+
+  it("class_affinity: tie still uncovered when class_affinity_top doc is empty", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        aggChip("c1", r1.id, klass.id, "proletariat", "top="),
+        aggChip("c2", r2.id, klass.id, "gentry", "top="),
+      ],
+      variables: [klass],
+      values: [],
+      tiebreakDocs: new Map<EndingLogicKind, { isEmpty: boolean }>([
+        ["class_affinity_top", { isEmpty: true }],
+      ]),
+    });
+    const block = out.get(cb.id);
+    expect(block?.status).toBe("has_uncovered");
+    expect(block?.uncovered).toEqual([{ [klass.id]: "tie" }]);
+  });
+
+  it("class_affinity: non-empty class_affinity_top doc drops the tie state from the uncovered enumeration", () => {
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    const out = uncoveredAssignmentsByBlock({
+      blocks: [cb],
+      rows: [r1, r2],
+      chips: [
+        aggChip("c1", r1.id, klass.id, "proletariat", "top="),
+        aggChip("c2", r2.id, klass.id, "gentry", "top="),
+      ],
+      variables: [klass],
+      values: [],
+      tiebreakDocs: new Map<EndingLogicKind, { isEmpty: boolean }>([
+        ["class_affinity_top", { isEmpty: false }],
+      ]),
+    });
+    const block = out.get(cb.id);
+    expect(block?.status).toBe("covered");
+    expect(block?.uncovered).toEqual([]);
   });
 });
 

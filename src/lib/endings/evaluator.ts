@@ -1,8 +1,12 @@
-// Pure evaluator for ending frameworks (v3 chip-row model).
+// Pure evaluator for ending documents — frameworks and logic docs share
+// the same block tree. Frameworks end in `text` leaves and emit a list of
+// paragraphs; logic docs end in `result` leaves and emit a single value
+// (e.g. a tiebreak winner column name, or a framework UUID for the
+// `framework_selection` doc).
 //
-// Walks the block tree and emits paragraph strings. Condition blocks pick
-// the *first* matching row (AND across the row's chips); their child blocks
-// render under that row. If no row matches, the block emits nothing.
+// Walks the block tree. Condition blocks pick the *first* matching row
+// (AND across the row's chips); their child blocks render under that row.
+// If no row matches, the block emits nothing.
 //
 // Inputs are flat row arrays — the same shapes the UI carries in state and
 // that the server actions persist. The evaluator does no I/O and no React,
@@ -10,8 +14,10 @@
 
 import {
   AGGREGATE_OPTIONS_BY_REF,
+  TIEBREAK_KIND_BY_REF_SIDE,
   type AggregateRef,
   type EndingChipOperator,
+  type EndingLogicKind,
   type EndingVariableKind,
 } from "@/lib/db/enums";
 
@@ -19,8 +25,20 @@ export interface EvalBlock {
   id: string;
   parent_block_id: string | null;
   parent_row_id: string | null;
-  block_type: "text" | "condition";
+  block_type: "text" | "condition" | "result";
   text: string;
+  /**
+   * Set when block_type === 'result'. Carries either an aggregate column
+   * name (`proletariat`, `folos`, …) for tiebreak docs, or the UUID of an
+   * `ending_documents` row for the framework_selection doc. Null on text
+   * and condition blocks.
+   *
+   * Optional so existing call sites that construct EvalBlock from the
+   * frameworks-only `BlockState` (which predates the `result` block type)
+   * keep compiling. Step 4 only widens the leaf vocabulary; the editor
+   * surfaces switch over in later steps.
+   */
+  result_value?: string | null;
   sort_order: number;
 }
 
@@ -63,6 +81,14 @@ export interface PreviewSelections {
    * keep working.
    */
   numberRefByName?: Map<string, string>;
+  /**
+   * Pre-built `EvalInputs` for each tiebreak / selection logic doc, keyed
+   * by `EndingLogicKind`. When an aggregate chip's underlying scores tie,
+   * the evaluator runs the matching doc to resolve the winner.
+   *
+   * Optional. Tests + flows that don't touch aggregates leave it unset.
+   */
+  tiebreak_docs?: Map<EndingLogicKind, EvalInputs>;
 }
 
 export const EMPTY_SELECTIONS: PreviewSelections = {
@@ -73,11 +99,16 @@ export const EMPTY_SELECTIONS: PreviewSelections = {
 /**
  * Evaluate a single chip against the current selections. Unset variables
  * always return false (no fall-through).
+ *
+ * `evaluatingDocs` threads the tiebreak-doc recursion guard down through
+ * aggregate-chip resolution. Public callers pass an empty set (or rely on
+ * the default).
  */
 export function evaluateChip(
   chip: EvalChip,
   variable: EvalVariable,
-  selections: PreviewSelections
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind> = new Set()
 ): boolean {
   if (variable.kind === "text") {
     const selected = selections.textValueIds[variable.id];
@@ -88,7 +119,7 @@ export function evaluateChip(
     return false; // numeric operators not valid for text variables
   }
   if (variable.kind === "aggregate_ref") {
-    return evaluateAggregateChip(chip, variable, selections);
+    return evaluateAggregateChip(chip, variable, selections, evaluatingDocs);
   }
   // number_ref
   const value = selections.numbers[variable.id];
@@ -117,17 +148,24 @@ export function evaluateChip(
  * underlying impact columns. `=` matches when the winner equals the
  * chip's aggregate_value; `≠` is the negation.
  *
- * Tie semantics: tie → false (operator agnostic). Authoring rarely
- * intends "either is acceptable", and we plan a tiebreaker proposal as
- * a follow-up.
+ * Tie semantics: when the underlying scores tie, look up the matching
+ * tiebreak doc in `selections.tiebreak_docs` and run `evaluateDocument`.
+ * If the doc resolves to one of the currently-tied column names, treat
+ * that column as the resolved winner. Otherwise (no doc, no result, or
+ * a non-tied option) fall back to "tie → false".
  *
  * Any underlying score unset → false (matches "no fall-through" rule
  * for unset variables elsewhere in the evaluator).
+ *
+ * `evaluatingDocs` is the cycle guard. If a tiebreak doc references back
+ * (via aggregate chip on a tied score) into a doc already on the stack,
+ * the recursion short-circuits to false rather than spinning.
  */
 function evaluateAggregateChip(
   chip: EvalChip,
   variable: EvalVariable,
-  selections: PreviewSelections
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind>
 ): boolean {
   if (variable.aggregate_ref == null) return false;
   if (chip.aggregate_value == null) return false;
@@ -150,8 +188,27 @@ function evaluateAggregateChip(
   if (!isTop && !isBottom) return false;
   const extreme = isTop ? Math.max(...vals) : Math.min(...vals);
   const tiedCount = vals.filter((v) => v === extreme).length;
-  if (tiedCount > 1) return false;
-  const winnerCol = cols[vals.indexOf(extreme)];
+  let winnerCol: string;
+  if (tiedCount > 1) {
+    // Tiebreak resolution. Look up the matching doc; if it resolves to
+    // one of the currently-tied column names, that's the winner. Else
+    // fall back to today's "tie → false".
+    const tiedCols = cols.filter((_, i) => vals[i] === extreme);
+    const side: "top" | "bottom" = isTop ? "top" : "bottom";
+    const kind = TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
+    const doc = selections.tiebreak_docs?.get(kind);
+    if (!doc) return false;
+    if (evaluatingDocs.has(kind)) return false; // cycle guard
+    const nextEvaluating = new Set(evaluatingDocs);
+    nextEvaluating.add(kind);
+    const result = evaluateDocumentInternal(doc, nextEvaluating);
+    if (result.length !== 1) return false;
+    const resolved = result[0];
+    if (!tiedCols.includes(resolved)) return false;
+    winnerCol = resolved;
+  } else {
+    winnerCol = cols[vals.indexOf(extreme)];
+  }
   const isEqual = winnerCol === chip.aggregate_value;
   return chip.operator === "top=" || chip.operator === "bottom="
     ? isEqual
@@ -161,17 +218,20 @@ function evaluateAggregateChip(
 /**
  * Evaluate one row: AND across all of its chips. A row with zero chips
  * cannot match — it has no condition to satisfy.
+ *
+ * `evaluatingDocs` threads the tiebreak-doc recursion guard.
  */
 export function evaluateRow(
   rowChips: EvalChip[],
   variableIndex: Map<string, EvalVariable>,
-  selections: PreviewSelections
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind> = new Set()
 ): boolean {
   if (rowChips.length === 0) return false;
   for (const chip of rowChips) {
     const variable = variableIndex.get(chip.variable_id);
     if (!variable) return false;
-    if (!evaluateChip(chip, variable, selections)) return false;
+    if (!evaluateChip(chip, variable, selections, evaluatingDocs)) return false;
   }
   return true;
 }
@@ -237,21 +297,52 @@ export function parentKey(
 }
 
 /**
- * Render a framework into a flat list of paragraph strings under the
- * current selections. Condition blocks emit their first-matching row's
- * children; non-matching rows are silent.
+ * Render a document into a flat list of output strings under the current
+ * selections. Condition blocks emit their first-matching row's children;
+ * non-matching rows are silent. Text leaves push their text; result
+ * leaves push their `result_value` and stop walking the current path
+ * (first matching `result` wins for that path).
+ *
+ * For framework docs (text leaves only) the return is the paragraph
+ * list. For logic docs the return is `[result_value]` for the first
+ * matched leaf, or `[]` if no row matches.
+ */
+export function evaluateDocument(input: EvalInputs): string[] {
+  return evaluateDocumentInternal(input, new Set());
+}
+
+/**
+ * Backwards-compatible alias. Existing callers (preview view, framework
+ * editor analysis path) still import this name; it now delegates to
+ * `evaluateDocument`. Behaviour is identical for text-only documents.
  */
 export function evaluateFramework(input: EvalInputs): string[] {
+  return evaluateDocument(input);
+}
+
+function evaluateDocumentInternal(
+  input: EvalInputs,
+  evaluatingDocs: Set<EndingLogicKind>
+): string[] {
   const indexes = buildIndexes(input);
   const root = indexes.byParent.get(parentKey(null, null)) ?? [];
-  return renderBlocks(root, indexes, input.selections);
+  const result = renderBlocks(root, indexes, input.selections, evaluatingDocs);
+  return result.paragraphs;
+}
+
+interface RenderResult {
+  paragraphs: string[];
+  /** A `result` leaf fired in this subtree; the caller should stop
+   *  walking later siblings as well. */
+  stopped: boolean;
 }
 
 function renderBlocks(
   blocks: EvalBlock[],
   indexes: Indexes,
-  selections: PreviewSelections
-): string[] {
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind>
+): RenderResult {
   const out: string[] = [];
   for (const b of blocks) {
     if (b.block_type === "text") {
@@ -259,18 +350,34 @@ function renderBlocks(
       if (trimmed.length > 0) out.push(b.text);
       continue;
     }
+    if (b.block_type === "result") {
+      // First matching `result` leaf wins for this path. Push the value
+      // and signal the caller to stop walking later siblings.
+      if (b.result_value != null) out.push(b.result_value);
+      return { paragraphs: out, stopped: true };
+    }
     // Condition block: first-match-wins across rows.
     const rows = indexes.rowsByBlock.get(b.id) ?? [];
     for (const row of rows) {
       const chips = indexes.chipsByRow.get(row.id) ?? [];
-      if (!evaluateRow(chips, indexes.variableById, selections)) continue;
+      if (
+        !evaluateRow(chips, indexes.variableById, selections, evaluatingDocs)
+      )
+        continue;
       const children =
         indexes.byParent.get(parentKey(b.id, row.id)) ?? [];
-      out.push(...renderBlocks(children, indexes, selections));
+      const childRender = renderBlocks(
+        children,
+        indexes,
+        selections,
+        evaluatingDocs
+      );
+      out.push(...childRender.paragraphs);
+      if (childRender.stopped) return { paragraphs: out, stopped: true };
       break; // first match wins
     }
   }
-  return out;
+  return { paragraphs: out, stopped: false };
 }
 
 /**
