@@ -133,7 +133,7 @@ export function ResultBlock({
             value={valueKnown ? value : value}
             onChange={(e) => onChange(e.target.value)}
             className={cn(
-              "h-8 w-auto min-w-[200px]",
+              "ml-auto h-8 w-auto min-w-[200px]",
               GHOST_FIELD,
               isEmpty &&
                 "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
