@@ -169,19 +169,28 @@ export function ResultBlock({
 
 /**
  * Build a `ResultBlock` component pre-configured with the option list
- * for a particular logic-doc kind. Pass the `frameworks` array when
- * `kind === 'framework_selection'` so the picker can show framework
- * names. For affinity kinds the options are derived from
- * `ENDING_LOGIC_RESULT_OPTIONS_BY_KIND` and `frameworks` is ignored.
+ * for a particular logic-doc kind. Returns `{ Component, defaultValue }`
+ * — `defaultValue` is the value to seed when the user clicks "+ result"
+ * in the block list (null means there are no options yet, e.g.
+ * framework_selection with zero frameworks; the adder is disabled in
+ * that case).
+ *
+ * Pass the `frameworks` array when `kind === 'framework_selection'` so
+ * the picker can show framework names. For affinity kinds the options
+ * are derived from `ENDING_LOGIC_RESULT_OPTIONS_BY_KIND` and
+ * `frameworks` is ignored.
  */
 export function makeResultBlock(
   kind: EndingLogicKind,
   frameworks: EndingDocument[]
-): ComponentType<{
-  block: BlockState;
-  onChange: (result_value: string) => void;
-  onDelete: () => void;
-}> {
+): {
+  Component: ComponentType<{
+    block: BlockState;
+    onChange: (result_value: string) => void;
+    onDelete: () => void;
+  }>;
+  defaultValue: string | null;
+} {
   const options: ResultOption[] = (() => {
     const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind];
     if (allowed) {
@@ -205,5 +214,8 @@ export function makeResultBlock(
     return <ResultBlock options={memoOptions} {...props} />;
   }
   ConfiguredResultBlock.displayName = `ResultBlock(${kind})`;
-  return ConfiguredResultBlock;
+  return {
+    Component: ConfiguredResultBlock,
+    defaultValue: options[0]?.value ?? null,
+  };
 }

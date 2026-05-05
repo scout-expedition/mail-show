@@ -200,7 +200,7 @@ export function LogicEditor({
           }
           const data = editorDataByDoc.get(doc.id);
           if (!data) return null;
-          const ResultLeaf = resultBlockByKind.get(kind);
+          const resultLeaf = resultBlockByKind.get(kind);
           const isAffinityTab = activeTabConfig.kinds.length > 1;
           const panelTitle = isAffinityTab
             ? ENDING_DOCUMENT_KIND_LABELS[kind]
@@ -216,7 +216,7 @@ export function LogicEditor({
               variables={variables}
               values={values}
               nations={nations}
-              leaves={{ result: ResultLeaf }}
+              leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}
               registerHandle={registerHandleFor(doc.id)}
             />

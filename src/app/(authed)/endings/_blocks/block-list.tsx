@@ -31,12 +31,18 @@ export type ResultBlockComponent = ComponentType<{
 
 /**
  * Leaf components by block_type. Frameworks pass `{ text }`; logic docs
- * pass `{ result }`. The list throws if it encounters a leaf type for
- * which no component is supplied — fail loud rather than render nothing.
+ * pass `{ result: { Component, defaultValue } }`. The result form bundles
+ * the default value used when adding a new result block — null disables
+ * the "+ result" adder (e.g. framework_selection with no frameworks yet).
+ * The list throws if it encounters a leaf type for which no component is
+ * supplied — fail loud rather than render nothing.
  */
 export interface LeafComponents {
   text?: TextBlockComponent;
-  result?: ResultBlockComponent;
+  result?: {
+    Component: ResultBlockComponent;
+    defaultValue: string | null;
+  };
 }
 
 /**
@@ -103,6 +109,19 @@ export function BlockList({
       });
     });
   }
+  async function handleAddResult() {
+    const defaultValue = leaves.result?.defaultValue;
+    if (defaultValue == null) return;
+    startTransition(async () => {
+      await addBlock({
+        document_id,
+        parent_block_id: parent.parent_block_id,
+        parent_row_id: parent.parent_row_id,
+        block_type: "result",
+        result_value: defaultValue,
+      });
+    });
+  }
 
   async function handleDeleteBlock(id: string) {
     const fd = new FormData();
@@ -116,7 +135,7 @@ export function BlockList({
     drag.target.parent_row_id === parent.parent_row_id;
 
   const TextLeaf = leaves.text;
-  const ResultLeaf = leaves.result;
+  const ResultLeaf = leaves.result?.Component;
 
   return (
     <div
@@ -244,6 +263,21 @@ export function BlockList({
             className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
           >
             <Plus size={11} aria-hidden /> text
+          </button>
+        ) : null}
+        {ResultLeaf ? (
+          <button
+            type="button"
+            onClick={handleAddResult}
+            disabled={pending || leaves.result?.defaultValue == null}
+            title={
+              leaves.result?.defaultValue == null
+                ? "No result options available yet"
+                : undefined
+            }
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+          >
+            <Plus size={11} aria-hidden /> result
           </button>
         ) : null}
         <button
