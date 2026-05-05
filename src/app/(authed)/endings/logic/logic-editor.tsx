@@ -37,6 +37,15 @@ import {
 } from "../_shared/document-editor";
 import { makeResultBlock } from "../_blocks/result-block";
 import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
+import { LogicPreviewView } from "./preview-view";
+import {
+  EMPTY_SELECTIONS,
+  type EvalBlock,
+  type EvalChip,
+  type EvalInputs,
+  type EvalRow,
+  type EvalVariable,
+} from "@/lib/endings/evaluator";
 
 type LogicTabId = (typeof ENDING_LOGIC_TABS)[number]["id"];
 
@@ -132,6 +141,44 @@ export function LogicEditor({
     return m;
   }, [logicDocs, frameworkDocs]);
 
+  // Saved-state EvalInputs per logic kind. Used by the framework_selection
+  // preview so aggregate chips that reference class/nation affinity can
+  // resolve through the saved tiebreak rules. Unsaved tiebreak edits in
+  // a different tab don't reach this map until saved — call out in the
+  // preview UI if needed (followup).
+  const evalVariablesAll = useMemo(
+    (): EvalVariable[] =>
+      variables.map(
+        (v): EvalVariable => ({
+          id: v.id,
+          kind: v.kind,
+          aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
+        })
+      ),
+    [variables]
+  );
+  const tiebreakDocs = useMemo(() => {
+    const numberRefByName = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        numberRefByName.set(v.number_ref, v.id);
+      }
+    }
+    const m = new Map<EndingLogicKind, EvalInputs>();
+    for (const d of logicDocs) {
+      const data = editorDataByDoc.get(d.id);
+      if (!data) continue;
+      m.set(d.kind as EndingLogicKind, {
+        blocks: data.blocks as unknown as EvalBlock[],
+        rows: data.rows as unknown as EvalRow[],
+        chips: data.chips as unknown as EvalChip[],
+        variables: evalVariablesAll,
+        selections: { ...EMPTY_SELECTIONS, numberRefByName },
+      });
+    }
+    return m;
+  }, [logicDocs, editorDataByDoc, variables, evalVariablesAll]);
+
   // Track each visible editor's dirty state + save fn so tab switches
   // can prompt an unsaved-changes dialog. Keyed by document id.
   const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
@@ -221,6 +268,22 @@ export function LogicEditor({
               panelTitle={panelTitle}
               registerHandle={registerHandleFor(doc.id)}
               fallback={fallback}
+              renderPreview={(args) => (
+                <LogicPreviewView
+                  docKind={kind}
+                  blocks={args.blocks}
+                  rows={args.rows}
+                  chips={args.chips}
+                  variables={args.variables}
+                  referencedVariables={args.referencedVariables}
+                  values={args.values}
+                  selections={args.selections}
+                  onChangeText={args.onChangeText}
+                  onChangeNumber={args.onChangeNumber}
+                  frameworks={frameworkDocs}
+                  tiebreakDocs={tiebreakDocs}
+                />
+              )}
             />
           );
         })}
