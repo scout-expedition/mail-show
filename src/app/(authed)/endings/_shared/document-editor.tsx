@@ -69,6 +69,7 @@ import {
   uncoveredAssignmentsByBlock,
 } from "@/lib/endings/static-analysis";
 import { BlockList, type LeafComponents } from "../_blocks/block-list";
+import { FallbackBlock } from "../_blocks/fallback-block";
 import {
   deleteFrameworkDocument,
   saveDocument,
@@ -126,6 +127,12 @@ export interface DocumentEditorProps {
   /** Override the panel title. Defaults to the document's name when
    *  framework, or the kind label when logic. */
   panelTitle?: string;
+  /** When supplied, renders a pinned fallback picker at the bottom of
+   *  the document. Only meaningful for `framework_selection` (the
+   *  migration seeds the fallback row there). */
+  fallback?: {
+    frameworks: EndingDocument[];
+  };
 }
 
 export function DocumentEditor({
@@ -142,6 +149,7 @@ export function DocumentEditor({
   onDeleted,
   registerHandle,
   panelTitle,
+  fallback,
 }: DocumentEditorProps) {
   const isFramework = document.kind === "framework";
   const initialName = document.name ?? "";
@@ -294,7 +302,20 @@ export function DocumentEditor({
     for (const v of variableState) m.set(v.id, v);
     return m;
   }, [variableState]);
-  const byParent = useMemo(() => buildByParentBlock(blockState), [blockState]);
+  // Fallback blocks are pinned at the bottom of the document and rendered
+  // outside BlockList — filter them out of the byParent map so the
+  // recursive list doesn't try to render them as a regular leaf.
+  const fallbackBlock = useMemo(
+    () => blockState.find((b) => b.block_type === "fallback") ?? null,
+    [blockState]
+  );
+  const byParent = useMemo(
+    () =>
+      buildByParentBlock(
+        blockState.filter((b) => b.block_type !== "fallback")
+      ),
+    [blockState]
+  );
   const rowsByConditionBlock = useMemo(
     () => buildRowsByConditionBlock(rowState),
     [rowState]
@@ -333,7 +354,7 @@ export function DocumentEditor({
     // block_type union — the analyzer never reads block_type itself, but
     // the type system insists.
     const evalBlocks = blockState
-      .filter((b) => b.block_type !== "result")
+      .filter((b) => b.block_type !== "result" && b.block_type !== "fallback")
       .map((b) => ({
         id: b.id,
         parent_block_id: b.parent_block_id,
@@ -626,6 +647,21 @@ export function DocumentEditor({
     }
     walk(null, null);
 
+    // Fallback block lives outside the byParent walk (it's pinned at the
+    // bottom and not part of the recursive tree); append it explicitly so
+    // saveDocument writes its result_value.
+    if (fallbackBlock) {
+      blockPayload.push({
+        id: fallbackBlock.id,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: fallbackBlock.block_type,
+        text: null,
+        result_value: fallbackBlock.result_value,
+        sort_order: 999999,
+      });
+    }
+
     const rowPayload = rowState.map((r, i) => ({
       id: r.id,
       condition_block_id: r.condition_block_id,
@@ -782,6 +818,15 @@ export function DocumentEditor({
                 onUpdateBlock={updateBlock}
                 onChangeChip={updateChip}
               />
+              {fallback && fallbackBlock ? (
+                <FallbackBlock
+                  block={fallbackBlock}
+                  frameworks={fallback.frameworks}
+                  onChange={(result_value) =>
+                    updateBlock(fallbackBlock.id, { result_value })
+                  }
+                />
+              ) : null}
             </AnalysisCtx.Provider>
           </PickerCtx.Provider>
         </DragCtx.Provider>

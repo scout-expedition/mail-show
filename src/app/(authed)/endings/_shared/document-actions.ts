@@ -250,18 +250,28 @@ export async function addBlock(
   if (input.block_type === "result" && kind === "framework") {
     throw new Error("Framework documents cannot contain result blocks.");
   }
+  if (input.block_type === "fallback") {
+    throw new Error(
+      "Fallback blocks aren't author-created — they're seeded with the document."
+    );
+  }
 
   // Result-block uniqueness within a sibling group: a result block
   // ends evaluation for its branch, so siblings would never run.
   // Reject the add when:
   //   - adding a result and the group already has anything, OR
   //   - adding a non-result and the group already has a result.
-  const siblings = await fetchSiblings(
-    supabase,
-    input.document_id,
-    input.parent_block_id,
-    input.parent_row_id
-  );
+  // Fallback blocks are exempt from the rule — they coexist with
+  // result/condition blocks at the document root and only fire when
+  // nothing else matched.
+  const siblings = (
+    await fetchSiblings(
+      supabase,
+      input.document_id,
+      input.parent_block_id,
+      input.parent_row_id
+    )
+  ).filter((b) => b.block_type !== "fallback");
   const groupHasResult = siblings.some((b) => b.block_type === "result");
   if (input.block_type === "result" && siblings.length > 0) {
     throw new Error(
@@ -329,6 +339,15 @@ export async function deleteBlock(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
+  const { data: existing, error: lookupErr } = await supabase
+    .from("ending_blocks")
+    .select("block_type")
+    .eq("id", id)
+    .maybeSingle();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (existing?.block_type === "fallback") {
+    throw new Error("Fallback blocks can't be deleted.");
+  }
   const { error } = await supabase
     .from("ending_blocks")
     .delete()
@@ -605,9 +624,11 @@ export type BlockPayload = {
   parent_block_id: string | null;
   parent_row_id: string | null;
   block_type: EndingBlockType;
-  /** When block_type='text', the text. Empty string is the editor default. */
-  text: string;
-  /** When block_type='result', the result_value. */
+  /** When block_type='text', the text. Null for non-text blocks. */
+  text: string | null;
+  /** When block_type='result' or 'fallback', the result_value. Null
+   *  for text/condition blocks; can also be null for an unset
+   *  fallback. */
   result_value: string | null;
   sort_order: number;
 };
@@ -677,12 +698,28 @@ export async function saveDocument(input: {
       }
       await validateResultValue(supabase, kind, b.result_value);
     }
+    if (b.block_type === "fallback") {
+      if (kind !== "framework_selection") {
+        throw new Error(
+          "Fallback blocks only exist on the framework_selection document."
+        );
+      }
+      // result_value can be null (initially unset). When set, it must
+      // be a valid framework document_id.
+      if (b.result_value != null && b.result_value !== "") {
+        await validateResultValue(supabase, kind, b.result_value);
+      }
+    }
   }
 
   const blockUpdates = input.blocks.map(async (b) => {
     const text = b.block_type === "text" ? b.text : null;
     const result_value =
-      b.block_type === "result" ? b.result_value : null;
+      b.block_type === "result"
+        ? b.result_value
+        : b.block_type === "fallback"
+          ? b.result_value
+          : null;
     const { error } = await supabase
       .from("ending_blocks")
       .update({

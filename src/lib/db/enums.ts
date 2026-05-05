@@ -304,5 +304,10 @@ export const TIEBREAK_KIND_BY_REF_SIDE: Record<
   },
 };
 
-export const ENDING_BLOCK_TYPES = ["text", "condition", "result"] as const;
+export const ENDING_BLOCK_TYPES = [
+  "text",
+  "condition",
+  "result",
+  "fallback",
+] as const;
 export type EndingBlockType = (typeof ENDING_BLOCK_TYPES)[number];

@@ -202,6 +202,10 @@ export function LogicEditor({
           if (!data) return null;
           const resultLeaf = resultBlockByKind.get(kind);
           const panelTitle = ENDING_DOCUMENT_KIND_LABELS[kind];
+          const fallback =
+            kind === "framework_selection"
+              ? { frameworks: frameworkDocs }
+              : undefined;
           return (
             <DocumentEditor
               key={doc.id}
@@ -216,6 +220,7 @@ export function LogicEditor({
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}
               registerHandle={registerHandleFor(doc.id)}
+              fallback={fallback}
             />
           );
         })}

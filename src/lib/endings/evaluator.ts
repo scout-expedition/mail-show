@@ -25,7 +25,7 @@ export interface EvalBlock {
   id: string;
   parent_block_id: string | null;
   parent_row_id: string | null;
-  block_type: "text" | "condition" | "result";
+  block_type: "text" | "condition" | "result" | "fallback";
   text: string;
   /**
    * Set when block_type === 'result'. Carries either an aggregate column
@@ -327,7 +327,15 @@ function evaluateDocumentInternal(
   const indexes = buildIndexes(input);
   const root = indexes.byParent.get(parentKey(null, null)) ?? [];
   const result = renderBlocks(root, indexes, input.selections, evaluatingDocs);
-  return result.paragraphs;
+  if (result.paragraphs.length > 0) return result.paragraphs;
+  // Nothing matched. If a fallback block sits at the document root, use
+  // its result_value. (Today only the framework_selection document seeds
+  // a fallback; the migration's partial unique enforces at most one.)
+  const fallback = root.find((b) => b.block_type === "fallback");
+  if (fallback?.result_value != null && fallback.result_value !== "") {
+    return [fallback.result_value];
+  }
+  return [];
 }
 
 interface RenderResult {
@@ -355,6 +363,11 @@ function renderBlocks(
       // and signal the caller to stop walking later siblings.
       if (b.result_value != null) out.push(b.result_value);
       return { paragraphs: out, stopped: true };
+    }
+    if (b.block_type === "fallback") {
+      // Fallback blocks fire only if the rest of the walk produced
+      // nothing — handled at evaluateDocumentInternal, not mid-walk.
+      continue;
     }
     // Condition block: first-match-wins across rows.
     const rows = indexes.rowsByBlock.get(b.id) ?? [];
