@@ -23,7 +23,7 @@ import {
   useTransition,
   type ReactNode,
 } from "react";
-import { Eye, EyeOff, Trash2 } from "lucide-react";
+import { Eye, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -882,11 +882,7 @@ export function DocumentEditor({
                   : "text-muted-foreground hover:bg-accent hover:text-foreground"
               )}
             >
-              {previewOn ? (
-                <EyeOff size={14} aria-hidden />
-              ) : (
-                <Eye size={14} aria-hidden />
-              )}
+              <Eye size={14} aria-hidden />
             </button>
           ) : null
         }

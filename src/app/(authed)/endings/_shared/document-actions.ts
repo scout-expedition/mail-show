@@ -327,6 +327,10 @@ export async function addBlock(
       .single();
     if (rowErr) throw new Error(rowErr.message);
     rowId = row.id as string;
+    // Seed a default leaf under the auto-created row (matches the
+    // explicit `addRow` path so authors get a workable starting point
+    // regardless of how the row was created).
+    await seedDefaultLeafForRow(supabase, block.id as string, rowId);
   }
 
   revalidateEndings();
@@ -375,11 +379,73 @@ export async function addRow(input: {
       condition_block_id: input.block_id,
       sort_order: nextSort,
     })
-    .select("id")
+    .select("id, condition_block_id")
     .single();
   if (error) throw new Error(error.message);
+
+  // Seed a default leaf block under the new row so authors don't have
+  // to add one manually each time. Frameworks → blank text block;
+  // logic docs → result block with the kind's default option (first
+  // framework, "proletariat", "folos", etc.). Skip the seed if the
+  // doc kind has no default available (e.g. framework_selection with
+  // zero frameworks).
+  await seedDefaultLeafForRow(supabase, input.block_id, data.id as string);
+
   revalidateEndings();
   return { id: data.id as string };
+}
+
+async function seedDefaultLeafForRow(
+  supabase: Supabase,
+  conditionBlockId: string,
+  rowId: string
+): Promise<void> {
+  const { data: parent } = await supabase
+    .from("ending_blocks")
+    .select("document_id")
+    .eq("id", conditionBlockId)
+    .maybeSingle();
+  if (!parent?.document_id) return;
+  const docId = parent.document_id as string;
+  const kind = await getDocumentKind(supabase, docId);
+  if (!kind) return;
+
+  if (kind === "framework") {
+    await supabase.from("ending_blocks").insert({
+      document_id: docId,
+      parent_block_id: conditionBlockId,
+      parent_row_id: rowId,
+      block_type: "text",
+      text: "",
+      sort_order: 0,
+    });
+    return;
+  }
+
+  // Logic doc: pick a default result_value per kind.
+  const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind as EndingLogicKind];
+  let defaultValue: string | null = null;
+  if (allowed && allowed.length > 0) {
+    defaultValue = allowed[0];
+  } else if (kind === "framework_selection") {
+    const { data: firstFramework } = await supabase
+      .from("ending_documents")
+      .select("id")
+      .eq("kind", "framework")
+      .order("sort_order")
+      .limit(1)
+      .maybeSingle();
+    defaultValue = (firstFramework?.id as string | undefined) ?? null;
+  }
+  if (defaultValue == null) return; // nothing valid to seed; leave row empty
+  await supabase.from("ending_blocks").insert({
+    document_id: docId,
+    parent_block_id: conditionBlockId,
+    parent_row_id: rowId,
+    block_type: "result",
+    result_value: defaultValue,
+    sort_order: 0,
+  });
 }
 
 export async function deleteRow(formData: FormData) {
