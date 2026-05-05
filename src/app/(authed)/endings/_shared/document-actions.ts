@@ -712,6 +712,26 @@ export async function saveDocument(input: {
     }
   }
 
+  // Result-uniqueness across sibling groups. Editor-side moveBlock
+  // already rejects invalid drags, but a malformed payload would
+  // otherwise slip through into the DB.
+  const groups = new Map<string, BlockPayload[]>();
+  for (const b of input.blocks) {
+    if (b.block_type === "fallback") continue;
+    const key = `${b.parent_block_id ?? "root"}:${b.parent_row_id ?? "root"}`;
+    const list = groups.get(key);
+    if (list) list.push(b);
+    else groups.set(key, [b]);
+  }
+  for (const list of groups.values()) {
+    const hasResult = list.some((b) => b.block_type === "result");
+    if (hasResult && list.length > 1) {
+      throw new Error(
+        "A result block must be the only block in its sibling group."
+      );
+    }
+  }
+
   const blockUpdates = input.blocks.map(async (b) => {
     const text = b.block_type === "text" ? b.text : null;
     const result_value =

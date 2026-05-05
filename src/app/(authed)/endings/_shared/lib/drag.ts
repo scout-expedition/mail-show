@@ -58,7 +58,12 @@ export function useDrag(): DragContext {
 /**
  * Reparent + reorder one block. Returns the new block list, or `prev`
  * unchanged if the move would create a cycle (target lives inside the
- * dragged subtree).
+ * dragged subtree) or violate result-uniqueness in the destination
+ * group.
+ *
+ * Result-uniqueness: a result block must be the sole non-fallback
+ * block in its sibling group. Reject moves that would put a result
+ * alongside any other non-fallback block (in either direction).
  */
 export function moveBlock(
   prev: BlockState[],
@@ -77,6 +82,19 @@ export function moveBlock(
     const parent = prev.find((x) => x.id === cur);
     cur = parent?.parent_block_id ?? null;
   }
+
+  // Result-uniqueness in the destination group. Same predicate used by
+  // BlockList adders + addBlock server action.
+  const destSiblings = prev.filter(
+    (x) =>
+      x.id !== blockId &&
+      x.parent_block_id === target.parent_block_id &&
+      x.parent_row_id === target.parent_row_id &&
+      x.block_type !== "fallback"
+  );
+  const destHasResult = destSiblings.some((x) => x.block_type === "result");
+  if (b.block_type === "result" && destSiblings.length > 0) return prev;
+  if (b.block_type !== "result" && destHasResult) return prev;
 
   const next = prev.map((x) =>
     x.id === blockId
