@@ -4,15 +4,15 @@ import { useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { PanelHeader, Spinner } from "@/components/panel";
 import { cn } from "@/lib/utils";
-import type { EndingFramework } from "@/lib/db/types";
-import { createEndingFramework } from "./actions";
+import type { EndingDocument } from "@/lib/db/types";
+import { createFrameworkDocument } from "../_shared/document-actions";
 
 export function FrameworkList({
   frameworks,
   selectedId,
   onSelect,
 }: {
-  frameworks: EndingFramework[];
+  frameworks: EndingDocument[];
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -20,7 +20,7 @@ export function FrameworkList({
 
   function handleCreate() {
     startTransition(async () => {
-      const res = await createEndingFramework();
+      const res = await createFrameworkDocument();
       onSelect(res.id);
     });
   }
@@ -47,7 +47,7 @@ export function FrameworkList({
                       active && "bg-accent/60 text-accent-foreground"
                     )}
                   >
-                    <span className="truncate">{f.name}</span>
+                    <span className="truncate">{f.name ?? "(unnamed)"}</span>
                   </button>
                 </li>
               );

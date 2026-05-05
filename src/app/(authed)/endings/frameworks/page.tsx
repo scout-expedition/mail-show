@@ -1,10 +1,10 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
+  EndingBlock,
   EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
-  EndingFramework,
-  EndingFrameworkBlock,
+  EndingDocument,
   EndingVariable,
   EndingVariableValue,
   Nation,
@@ -20,7 +20,7 @@ export default async function FrameworksPage({
   const supabase = await createSupabaseServerClient();
 
   const [
-    { data: frameworkData },
+    { data: documentData },
     { data: blockData },
     { data: rowData },
     { data: chipData },
@@ -29,8 +29,12 @@ export default async function FrameworksPage({
     { data: valueData },
     { data: nationData },
   ] = await Promise.all([
-    supabase.from("ending_frameworks").select("*").order("sort_order"),
-    supabase.from("ending_framework_blocks").select("*").order("sort_order"),
+    supabase
+      .from("ending_documents")
+      .select("*")
+      .eq("kind", "framework")
+      .order("sort_order"),
+    supabase.from("ending_blocks").select("*").order("sort_order"),
     supabase.from("ending_condition_rows").select("*").order("sort_order"),
     supabase
       .from("ending_condition_row_chips")
@@ -45,10 +49,18 @@ export default async function FrameworksPage({
     supabase.from("nations").select("name, color_hex"),
   ]);
 
+  // Filter blocks to those whose document_id is one of our framework
+  // docs — saves a JOIN at the cost of a tiny client-side filter.
+  const frameworkDocs = (documentData ?? []) as EndingDocument[];
+  const frameworkIds = new Set(frameworkDocs.map((d) => d.id));
+  const frameworkBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
+    frameworkIds.has(b.document_id)
+  );
+
   return (
     <FrameworksWorkspace
-      frameworks={(frameworkData ?? []) as EndingFramework[]}
-      blocks={(blockData ?? []) as EndingFrameworkBlock[]}
+      frameworks={frameworkDocs}
+      blocks={frameworkBlocks}
       rows={(rowData ?? []) as EndingConditionRow[]}
       chips={(chipData ?? []) as EndingConditionRowChip[]}
       blockVariables={

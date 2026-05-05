@@ -27,12 +27,12 @@ import {
   addBlockVariable,
   addChip,
   addRow,
+  deleteChip,
+  deleteRow,
   removeBlockVariable,
-  removeChip,
-  removeRow,
-} from "../actions";
-import { useDrag, type DragTarget } from "../lib/drag";
-import { useAnalysis } from "../lib/analysis";
+} from "../_shared/document-actions";
+import { useDrag, type DragTarget } from "../_shared/lib/drag";
+import { useAnalysis } from "../_shared/lib/analysis";
 import {
   ChipPickerForm,
   ChipPill,
@@ -96,7 +96,7 @@ export function ConditionBlock({
 
   function handleAddRow() {
     startTransition(async () => {
-      await addRow({ condition_block_id: block.id });
+      await addRow({ block_id: block.id });
     });
   }
 
@@ -243,7 +243,7 @@ export function ConditionBlock({
                 startTransition(async () => {
                   const fd = new FormData();
                   fd.set("id", chipId);
-                  await removeChip(fd);
+                  await deleteChip(fd);
                 })
               }
               onChangeChip={onChangeChip}
@@ -251,7 +251,7 @@ export function ConditionBlock({
                 startTransition(async () => {
                   const fd = new FormData();
                   fd.set("id", row.id);
-                  await removeRow(fd);
+                  await deleteRow(fd);
                 })
               }
             >
@@ -655,7 +655,7 @@ function HeaderVariableStrip({
           onPick={(variable_id) =>
             startTransition(async () => {
               await addBlockVariable({
-                condition_block_id: blockId,
+                block_id: blockId,
                 variable_id,
               });
             })

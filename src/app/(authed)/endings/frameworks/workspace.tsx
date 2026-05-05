@@ -4,16 +4,17 @@ import { useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUnsavedDialog } from "@/components/panel";
 import type {
+  EndingBlock,
   EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
-  EndingFramework,
-  EndingFrameworkBlock,
+  EndingDocument,
   EndingVariable,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
-import { FrameworkEditor, type EditorHandle } from "./framework-editor";
+import type { EditorHandle } from "../_shared/document-editor";
+import { FrameworkEditor } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
 
 export function FrameworksWorkspace({
@@ -27,8 +28,8 @@ export function FrameworksWorkspace({
   nations,
   selectedFrameworkId,
 }: {
-  frameworks: EndingFramework[];
-  blocks: EndingFrameworkBlock[];
+  frameworks: EndingDocument[];
+  blocks: EndingBlock[];
   rows: EndingConditionRow[];
   chips: EndingConditionRowChip[];
   blockVariables: EndingConditionBlockVariable[];
@@ -52,7 +53,7 @@ export function FrameworksWorkspace({
   // classic infinite-render trap.
   const editorData = useMemo(() => {
     if (!selected) return null;
-    const editorBlocks = blocks.filter((b) => b.framework_id === selected.id);
+    const editorBlocks = blocks.filter((b) => b.document_id === selected.id);
     const blockIds = new Set(editorBlocks.map((b) => b.id));
     const editorRows = rows.filter((r) => blockIds.has(r.condition_block_id));
     const rowIds = new Set(editorRows.map((r) => r.id));

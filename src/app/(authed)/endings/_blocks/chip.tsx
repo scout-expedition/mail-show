@@ -18,7 +18,7 @@ import {
 import type { ChipState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
-import { PickerCtx } from "../lib/picker";
+import { PickerCtx } from "../_shared/lib/picker";
 
 function chipColor(
   chip: ChipState,
