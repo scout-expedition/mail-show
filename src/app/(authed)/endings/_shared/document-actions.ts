@@ -769,13 +769,16 @@ export async function saveDocument(input: {
       await validateResultValue(supabase, kind, b.result_value);
     }
     if (b.block_type === "fallback") {
-      if (kind !== "framework_selection") {
+      if (kind !== "framework_selection" && kind !== "class_affinity_top") {
         throw new Error(
-          "Fallback blocks only exist on the framework_selection document."
+          `Fallback blocks aren't seeded for ${kind}.`
         );
       }
       // result_value can be null (initially unset). When set, it must
-      // be a valid framework document_id.
+      // be a valid result for the doc's kind (a framework UUID for
+      // framework_selection; a class option for class_affinity_top;
+      // RANDOM_RESULT_SENTINEL on either). validateResultValue handles
+      // all three.
       if (b.result_value != null && b.result_value !== "") {
         await validateResultValue(supabase, kind, b.result_value);
       }
