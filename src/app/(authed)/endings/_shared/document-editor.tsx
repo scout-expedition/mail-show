@@ -129,10 +129,14 @@ export interface DocumentEditorProps {
    *  framework, or the kind label when logic. */
   panelTitle?: string;
   /** When supplied, renders a pinned fallback picker at the bottom of
-   *  the document. Only meaningful for `framework_selection` (the
-   *  migration seeds the fallback row there). */
+   *  the document. The migration seeds a fallback row only on docs the
+   *  caller knows about (framework_selection in 0023, class_affinity_top
+   *  in 0025). Caller supplies the options to pick from + the helper
+   *  text under the label. */
   fallback?: {
-    frameworks: EndingDocument[];
+    options: { value: string; label: string }[];
+    helperText: string;
+    emptyLabel: string;
   };
 }
 
@@ -837,7 +841,9 @@ export function DocumentEditor({
               {fallback && fallbackBlock ? (
                 <FallbackBlock
                   block={fallbackBlock}
-                  frameworks={fallback.frameworks}
+                  options={fallback.options}
+                  helperText={fallback.helperText}
+                  emptyLabel={fallback.emptyLabel}
                   onChange={(result_value) =>
                     updateBlock(fallbackBlock.id, { result_value })
                   }

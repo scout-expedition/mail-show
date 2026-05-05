@@ -46,6 +46,48 @@ import {
   type EvalRow,
   type EvalVariable,
 } from "@/lib/endings/evaluator";
+import { ENDING_LOGIC_RESULT_OPTIONS_BY_KIND } from "@/lib/db/enums";
+import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
+
+/**
+ * Build the `fallback` prop DocumentEditor expects for a logic doc, or
+ * undefined if the doc doesn't have a fallback (only framework_selection
+ * + class_affinity_top do today; nation affinity tabs don't).
+ */
+function buildFallbackProp(
+  kind: EndingLogicKind,
+  frameworkDocs: EndingDocument[]
+):
+  | {
+      options: { value: string; label: string }[];
+      helperText: string;
+      emptyLabel: string;
+    }
+  | undefined {
+  if (kind === "framework_selection") {
+    return {
+      options: frameworkDocs
+        .filter((f) => f.kind === "framework")
+        .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" })),
+      helperText:
+        "If nothing above resolves to a framework, return this one.",
+      emptyLabel: "— pick a framework —",
+    };
+  }
+  if (kind === "class_affinity_top") {
+    const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind] ?? [];
+    return {
+      options: allowed.map((v) => ({
+        value: v,
+        label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
+      })),
+      helperText:
+        "If nothing above resolves a tied class affinity, return this winner.",
+      emptyLabel: "— pick a class —",
+    };
+  }
+  return undefined;
+}
 
 type LogicTabId = (typeof ENDING_LOGIC_TABS)[number]["id"];
 
@@ -249,10 +291,7 @@ export function LogicEditor({
           if (!data) return null;
           const resultLeaf = resultBlockByKind.get(kind);
           const panelTitle = ENDING_DOCUMENT_KIND_LABELS[kind];
-          const fallback =
-            kind === "framework_selection"
-              ? { frameworks: frameworkDocs }
-              : undefined;
+          const fallback = buildFallbackProp(kind, frameworkDocs);
           return (
             <DocumentEditor
               key={doc.id}
