@@ -14,7 +14,7 @@ function revalidateEndings() {
 
 async function uniqueName(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  table: "ending_variables" | "ending_frameworks",
+  table: "ending_variables",
   base: string
 ): Promise<string> {
   let name = base;

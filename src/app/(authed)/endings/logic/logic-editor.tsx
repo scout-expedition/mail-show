@@ -1,453 +1,229 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { Trash2 } from "lucide-react";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
-import { useConfirm } from "@/components/confirm-dialog";
+// Logic page client shell. Owns the active sub-tab (`?tab=`), routes
+// between the three tabs, and renders one (or two stacked) shared
+// DocumentEditor instances against the matching logic-kind documents.
+//
+// Tab layout:
+//   - Ending Framework      → single editor for `framework_selection`.
+//   - Class Affinity        → two stacked editors (Top, Bottom) for
+//                             `class_affinity_top` / `class_affinity_bottom`.
+//   - Nation Affinity       → ditto for nation_affinity_*.
+//
+// Each editor saves itself; switching tabs prompts an unsaved-changes
+// dialog the same way the Frameworks workspace does between frameworks.
+
+import { useCallback, useMemo, useRef } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useUnsavedDialog } from "@/components/panel";
 import {
-  GHOST_FIELD,
-  MUTED_ADD_BTN,
-  PanelHeader,
-  SaveRevert,
-  Spinner,
-} from "@/components/panel";
-import { cn } from "@/lib/utils";
+  ENDING_DOCUMENT_KIND_LABELS,
+  ENDING_LOGIC_TABS,
+  type EndingLogicKind,
+} from "@/lib/db/enums";
 import type {
-  EndingFramework,
-  EndingLogicRule,
-  EndingLogicRuleCondition,
+  EndingBlock,
+  EndingConditionBlockVariable,
+  EndingConditionRow,
+  EndingConditionRowChip,
+  EndingDocument,
   EndingVariable,
   EndingVariableValue,
+  Nation,
 } from "@/lib/db/types";
-import { createVariableInline, createValueInline } from "../frameworks/actions";
 import {
-  createLogicRule,
-  deleteLogicRule,
-  saveAllLogicRules,
-} from "./actions";
+  DocumentEditor,
+  type EditorHandle,
+} from "../_shared/document-editor";
+import { makeResultBlock } from "../_blocks/result-block";
+import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
 
-type ConditionState = { variable_id: string; value_id: string };
+type LogicTabId = (typeof ENDING_LOGIC_TABS)[number]["id"];
 
-type RuleState = {
-  id: string;
-  framework_id: string;
-  conditions: ConditionState[];
-};
+const TAB_ITEMS: TabBarItem<LogicTabId>[] = ENDING_LOGIC_TABS.map((t) => ({
+  id: t.id,
+  label: t.label,
+}));
+
+const DEFAULT_TAB: LogicTabId = ENDING_LOGIC_TABS[0].id;
+
+function isLogicTabId(value: string | null | undefined): value is LogicTabId {
+  return ENDING_LOGIC_TABS.some((t) => t.id === value);
+}
 
 export function LogicEditor({
-  rules,
-  conditions,
-  frameworks,
+  logicDocs,
+  frameworkDocs,
+  blocks,
+  rows,
+  chips,
+  blockVariables,
   variables,
   values,
+  nations,
 }: {
-  rules: EndingLogicRule[];
-  conditions: EndingLogicRuleCondition[];
-  frameworks: EndingFramework[];
+  logicDocs: EndingDocument[];
+  frameworkDocs: EndingDocument[];
+  blocks: EndingBlock[];
+  rows: EndingConditionRow[];
+  chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex">[];
 }) {
-  const [ruleState, setRuleState] = useState<RuleState[]>(() =>
-    rules.map((r) => ({
-      id: r.id,
-      framework_id: r.framework_id,
-      conditions: conditions
-        .filter((c) => c.rule_id === r.id)
-        .map((c) => ({ variable_id: c.variable_id, value_id: c.value_id })),
-    }))
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams?.get("tab") ?? null;
+  const activeTab: LogicTabId = isLogicTabId(tabParam) ? tabParam : DEFAULT_TAB;
+
+  // Index logic docs by kind for fast lookup. Each kind is a singleton
+  // by partial unique index so the first match is the only match.
+  const docsByKind = useMemo(() => {
+    const m = new Map<EndingLogicKind, EndingDocument>();
+    for (const d of logicDocs) {
+      m.set(d.kind as EndingLogicKind, d);
+    }
+    return m;
+  }, [logicDocs]);
+
+  // Filter the per-doc slices once so each editor receives stable
+  // references — matches the FrameworksWorkspace memo pattern, same
+  // reason: avoid the editor's reconcile effect retriggering each tick.
+  const editorDataByDoc = useMemo(() => {
+    const out = new Map<
+      string,
+      {
+        blocks: EndingBlock[];
+        rows: EndingConditionRow[];
+        chips: EndingConditionRowChip[];
+        blockVariables: EndingConditionBlockVariable[];
+      }
+    >();
+    for (const d of logicDocs) {
+      const docBlocks = blocks.filter((b) => b.document_id === d.id);
+      const blockIds = new Set(docBlocks.map((b) => b.id));
+      const docRows = rows.filter((r) => blockIds.has(r.condition_block_id));
+      const rowIds = new Set(docRows.map((r) => r.id));
+      const docChips = chips.filter((c) => rowIds.has(c.row_id));
+      const docHeaderVars = blockVariables.filter((bv) =>
+        blockIds.has(bv.condition_block_id)
+      );
+      out.set(d.id, {
+        blocks: docBlocks,
+        rows: docRows,
+        chips: docChips,
+        blockVariables: docHeaderVars,
+      });
+    }
+    return out;
+  }, [logicDocs, blocks, rows, chips, blockVariables]);
+
+  // Pre-build a ResultBlock component per kind (so the BlockList's leaf
+  // dispatch resolves to a kind-aware Select). Memoized so identity is
+  // stable across renders — the editor uses these as React component
+  // identities and would remount its leaves each render otherwise.
+  const resultBlockByKind = useMemo(() => {
+    const m = new Map<EndingLogicKind, ReturnType<typeof makeResultBlock>>();
+    for (const d of logicDocs) {
+      const k = d.kind as EndingLogicKind;
+      if (!m.has(k)) m.set(k, makeResultBlock(k, frameworkDocs));
+    }
+    return m;
+  }, [logicDocs, frameworkDocs]);
+
+  // Track each visible editor's dirty state + save fn so tab switches
+  // can prompt an unsaved-changes dialog. Keyed by document id.
+  const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
+  const { ask, dialog } = useUnsavedDialog();
+
+  const registerHandleFor = useCallback(
+    (docId: string) => (h: EditorHandle) => {
+      editorHandlesRef.current.set(docId, h);
+    },
+    []
   );
-  const [dirty, setDirty] = useState(false);
-  const [pending, startTransition] = useTransition();
-  const [creating, startCreating] = useTransition();
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
-  useEffect(() => {
-    setRuleState((prev) => {
-      const prevById = new Map(prev.map((r) => [r.id, r]));
-      const serverIds = new Set(rules.map((r) => r.id));
-      const kept = prev.filter((r) => serverIds.has(r.id));
-      const keptIds = new Set(kept.map((r) => r.id));
-      const additions: RuleState[] = rules
-        .filter((r) => !prevById.has(r.id))
-        .map((r) => ({
-          id: r.id,
-          framework_id: r.framework_id,
-          conditions: conditions
-            .filter((c) => c.rule_id === r.id)
-            .map((c) => ({
-              variable_id: c.variable_id,
-              value_id: c.value_id,
-            })),
-        }));
-      if (additions.length === 0 && kept.length === prev.length) return prev;
-      return [...kept, ...additions.filter((a) => !keptIds.has(a.id))];
-    });
-  }, [rules, conditions]);
-
-  function updateRule(id: string, patch: Partial<RuleState>) {
-    setRuleState((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, ...patch } : r))
-    );
-    setDirty(true);
+  async function navigateToTab(nextTabId: LogicTabId) {
+    if (nextTabId === activeTab) return;
+    const dirtyHandles: EditorHandle[] = [];
+    for (const handle of editorHandlesRef.current.values()) {
+      if (handle.dirty) dirtyHandles.push(handle);
+    }
+    if (dirtyHandles.length > 0) {
+      const outcome = await ask(
+        "Unsaved changes",
+        "There are unsaved changes on this tab. Save before switching?"
+      );
+      if (outcome === "cancel") return;
+      if (outcome === "save") {
+        try {
+          for (const h of dirtyHandles) await h.save();
+        } catch (e) {
+          console.error(e);
+          return;
+        }
+      }
+    }
+    // Drop stale handles so the next tab's editors register fresh.
+    editorHandlesRef.current = new Map();
+    const qs = new URLSearchParams(searchParams?.toString() ?? "");
+    qs.set("tab", nextTabId);
+    router.push(`/endings/logic?${qs.toString()}`);
   }
 
-  function setRuleConditions(id: string, conds: ConditionState[]) {
-    updateRule(id, { conditions: conds });
-  }
-
-  async function handleCreate() {
-    startCreating(async () => {
-      await createLogicRule();
-    });
-  }
-
-  function handleDragOver(e: React.DragEvent, overIdx: number) {
-    e.preventDefault();
-    if (dragIndex === null || dragIndex === overIdx) return;
-    setRuleState((prev) => {
-      const next = prev.slice();
-      const [moved] = next.splice(dragIndex, 1);
-      next.splice(overIdx, 0, moved);
-      return next;
-    });
-    setDragIndex(overIdx);
-    setDirty(true);
-  }
-
-  function save() {
-    const payload = ruleState.map((r, i) => ({
-      id: r.id,
-      framework_id: r.framework_id,
-      sort_order: i,
-      conditions: r.conditions.filter((c) => c.variable_id && c.value_id),
-    }));
-    startTransition(async () => {
-      await saveAllLogicRules(payload);
-      setDirty(false);
-    });
-  }
-
-  const anyBlocked = ruleState.some((r) => !r.framework_id);
-
-  function revert() {
-    // Re-derive from server props.
-    setRuleState(
-      rules.map((r) => ({
-        id: r.id,
-        framework_id: r.framework_id,
-        conditions: conditions
-          .filter((c) => c.rule_id === r.id)
-          .map((c) => ({ variable_id: c.variable_id, value_id: c.value_id })),
-      }))
-    );
-    setDirty(false);
-  }
+  const activeTabConfig = ENDING_LOGIC_TABS.find((t) => t.id === activeTab)!;
 
   return (
-    <>
-      <section className="overflow-hidden rounded-md border border-border bg-card">
-        <PanelHeader
-          title="Logic"
-          dirty={dirty}
-          showSaved
-          saveRevert={
-            <SaveRevert
-              dirty={dirty && !anyBlocked}
-              pending={pending}
-              onSave={save}
-              onRevert={revert}
-            />
+    <div className="flex flex-col gap-3">
+      <LogicTabBar
+        tabs={TAB_ITEMS}
+        activeId={activeTab}
+        onSelect={(id) => {
+          void navigateToTab(id);
+        }}
+      />
+
+      <div className="flex flex-col gap-4">
+        {activeTabConfig.kinds.map((kind) => {
+          const doc = docsByKind.get(kind);
+          if (!doc) {
+            return (
+              <section
+                key={kind}
+                className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-6 text-center text-sm text-destructive"
+              >
+                Missing seeded document for kind <code>{kind}</code>. Re-run
+                migrations or contact an admin.
+              </section>
+            );
           }
-        />
-        <div className="flex flex-col gap-3 p-3">
-          <p className="text-xs text-muted-foreground">
-            Drag to reorder. The first rule whose conditions all match wins. A
-            rule with no conditions always matches (use it as a catch-all).
-          </p>
-          {anyBlocked ? (
-            <p className="text-xs text-destructive">
-              Every rule needs a framework.
-            </p>
-          ) : null}
-
-          {ruleState.length === 0 ? (
-            <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-              No logic rules yet.
-            </p>
-          ) : null}
-
-          {ruleState.map((rule, idx) => (
-            <div
-              key={rule.id}
-              draggable
-              onDragStart={() => setDragIndex(idx)}
-              onDragOver={(e) => handleDragOver(e, idx)}
-              onDragEnd={() => setDragIndex(null)}
-              className={cn(
-                "overflow-hidden rounded-md border border-border bg-background/40",
-                dragIndex === idx && "opacity-60"
-              )}
-            >
-              <RuleEditor
-                rule={rule}
-                priority={idx + 1}
-                frameworks={frameworks}
-                variables={variables}
-                values={values}
-                onFrameworkChange={(fid) =>
-                  updateRule(rule.id, { framework_id: fid })
-                }
-                onSetConditions={(conds) => setRuleConditions(rule.id, conds)}
-              />
-            </div>
-          ))}
-
-          <div className="flex justify-center">
-            <button
-              type="button"
-              onClick={handleCreate}
-              disabled={creating || frameworks.length === 0}
-              title={
-                frameworks.length === 0
-                  ? "Create a framework first"
-                  : undefined
-              }
-              className={MUTED_ADD_BTN}
-            >
-              {creating ? (
-                <>
-                  <Spinner />
-                  Creating…
-                </>
-              ) : (
-                "+ Rule"
-              )}
-            </button>
-          </div>
-        </div>
-      </section>
-    </>
-  );
-}
-
-function RuleEditor({
-  rule,
-  priority,
-  frameworks,
-  variables,
-  values,
-  onFrameworkChange,
-  onSetConditions,
-}: {
-  rule: RuleState;
-  priority: number;
-  frameworks: EndingFramework[];
-  variables: EndingVariable[];
-  values: EndingVariableValue[];
-  onFrameworkChange: (frameworkId: string) => void;
-  onSetConditions: (conds: ConditionState[]) => void;
-}) {
-  const [deletePending, startDelete] = useTransition();
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-
-  function setCondition(index: number, patch: Partial<ConditionState>) {
-    const next = rule.conditions.slice();
-    next[index] = { ...next[index], ...patch };
-    onSetConditions(next);
-  }
-  function removeCondition(index: number) {
-    const next = rule.conditions.slice();
-    next.splice(index, 1);
-    onSetConditions(next);
-  }
-  function addCondition() {
-    onSetConditions([
-      ...rule.conditions,
-      { variable_id: "", value_id: "" },
-    ]);
-  }
-  async function handleDelete() {
-    const ok = await confirmDialog({
-      title: "Delete rule?",
-      message: "This rule will be permanently removed.",
-      confirmLabel: "Delete",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const fd = new FormData();
-    fd.set("id", rule.id);
-    startDelete(() => deleteLogicRule(fd));
-  }
-
-  return (
-    <>
-      <div className="flex items-center gap-2 border-b border-border bg-muted/20 px-3 py-2">
-        <span
-          className="flex h-6 w-6 shrink-0 cursor-grab items-center justify-center rounded-full bg-muted text-[11px] font-mono text-muted-foreground active:cursor-grabbing"
-          title="Drag to reorder"
-        >
-          {priority}
-        </span>
-        <Label className="!text-xs uppercase">Play framework</Label>
-        <Select
-          value={rule.framework_id || ""}
-          onChange={(e) => onFrameworkChange(e.target.value)}
-          className={cn("h-8 w-auto min-w-[200px]", GHOST_FIELD)}
-        >
-          <option value="">—</option>
-          {frameworks.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.name}
-            </option>
-          ))}
-        </Select>
-        <span className="flex-1" />
-        <button
-          type="button"
-          disabled={deletePending}
-          aria-label="Delete rule"
-          title="Delete rule"
-          onClick={handleDelete}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
-        >
-          <Trash2 size={12} aria-hidden />
-        </button>
-      </div>
-
-      <div className="flex flex-col gap-1.5 px-3 py-2">
-        <Label className="!text-xs">When</Label>
-        {rule.conditions.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            No conditions — always matches (catch-all).
-          </p>
-        ) : (
-          rule.conditions.map((c, idx) => (
-            <RuleConditionRow
-              key={idx}
-              condition={c}
-              otherChosenVariableIds={rule.conditions
-                .filter((_, i) => i !== idx)
-                .map((x) => x.variable_id)
-                .filter(Boolean)}
+          const data = editorDataByDoc.get(doc.id);
+          if (!data) return null;
+          const ResultLeaf = resultBlockByKind.get(kind);
+          const isAffinityTab = activeTabConfig.kinds.length > 1;
+          const panelTitle = isAffinityTab
+            ? ENDING_DOCUMENT_KIND_LABELS[kind]
+            : activeTabConfig.label;
+          return (
+            <DocumentEditor
+              key={doc.id}
+              document={doc}
+              blocks={data.blocks}
+              rows={data.rows}
+              chips={data.chips}
+              blockVariables={data.blockVariables}
               variables={variables}
               values={values}
-              onChange={(patch) => setCondition(idx, patch)}
-              onRemove={() => removeCondition(idx)}
+              nations={nations}
+              leaves={{ result: ResultLeaf }}
+              panelTitle={panelTitle}
+              registerHandle={registerHandleFor(doc.id)}
             />
-          ))
-        )}
-        <div className="flex justify-start">
-          <button type="button" onClick={addCondition} className={MUTED_ADD_BTN}>
-            + Condition
-          </button>
-        </div>
+          );
+        })}
       </div>
-      {confirmDialogEl}
-    </>
-  );
-}
-
-const NEW_VARIABLE_SENTINEL = "__new_variable__";
-const NEW_VALUE_SENTINEL = "__new_value__";
-
-function RuleConditionRow({
-  condition,
-  otherChosenVariableIds,
-  variables,
-  values,
-  onChange,
-  onRemove,
-}: {
-  condition: ConditionState;
-  otherChosenVariableIds: string[];
-  variables: EndingVariable[];
-  values: EndingVariableValue[];
-  onChange: (patch: Partial<ConditionState>) => void;
-  onRemove: () => void;
-}) {
-  const [pending, startTransition] = useTransition();
-  const excludeSet = new Set(otherChosenVariableIds);
-  const availableVariables = variables.filter(
-    (v) => v.id === condition.variable_id || !excludeSet.has(v.id)
-  );
-  const variableValues = values.filter(
-    (v) => v.variable_id === condition.variable_id
-  );
-
-  function handleVariableChange(raw: string) {
-    if (raw === NEW_VARIABLE_SENTINEL) {
-      const name = window.prompt("Variable name:");
-      if (!name || !name.trim()) return;
-      startTransition(async () => {
-        const res = await createVariableInline({ name: name.trim() });
-        onChange({ variable_id: res.id, value_id: "" });
-      });
-      return;
-    }
-    onChange({ variable_id: raw, value_id: "" });
-  }
-
-  function handleValueChange(raw: string) {
-    if (raw === NEW_VALUE_SENTINEL) {
-      if (!condition.variable_id) return;
-      const text = window.prompt("Value:");
-      if (!text || !text.trim()) return;
-      startTransition(async () => {
-        const res = await createValueInline({
-          variable_id: condition.variable_id,
-          value: text.trim(),
-        });
-        onChange({ value_id: res.id });
-      });
-      return;
-    }
-    onChange({ value_id: raw });
-  }
-
-  return (
-    <div className="grid grid-cols-[1fr_1fr_36px] items-center gap-2">
-      <Select
-        value={condition.variable_id || ""}
-        onChange={(e) => handleVariableChange(e.target.value)}
-        className={cn("h-8", GHOST_FIELD)}
-        disabled={pending}
-      >
-        <option value="">— pick variable —</option>
-        {availableVariables.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.name}
-          </option>
-        ))}
-        <option value={NEW_VARIABLE_SENTINEL}>+ New variable…</option>
-      </Select>
-      <Select
-        value={condition.value_id || ""}
-        onChange={(e) => handleValueChange(e.target.value)}
-        className={cn("h-8", GHOST_FIELD)}
-        disabled={pending || !condition.variable_id}
-      >
-        <option value="">
-          {condition.variable_id ? "— pick value —" : "(choose variable first)"}
-        </option>
-        {variableValues.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.value}
-          </option>
-        ))}
-        {condition.variable_id ? (
-          <option value={NEW_VALUE_SENTINEL}>+ New value…</option>
-        ) : null}
-      </Select>
-      <button
-        type="button"
-        aria-label="Remove condition"
-        title="Remove condition"
-        onClick={onRemove}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-      >
-        <Trash2 size={12} aria-hidden />
-      </button>
+      {dialog}
     </div>
   );
 }
