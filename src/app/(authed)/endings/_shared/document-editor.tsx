@@ -77,6 +77,7 @@ import {
 } from "./document-actions";
 import {
   DragCtx,
+  isValidDropTarget,
   moveBlock,
   type DragContext,
   type DragTarget,
@@ -525,6 +526,21 @@ export function DocumentEditor({
         setTargetState(null);
       },
       setTarget: (t) => {
+        // Suppress the insertion highlight when the proposed drop
+        // would be invalid (cycle / result-uniqueness). The dragged
+        // block keeps moving with the cursor; only the target
+        // indicator is hidden.
+        if (
+          t &&
+          dragId &&
+          !isValidDropTarget(blockState, dragId, {
+            parent_block_id: t.parent_block_id,
+            parent_row_id: t.parent_row_id,
+          })
+        ) {
+          setTargetState(null);
+          return;
+        }
         setTargetState((prev) => {
           if (prev === t) return prev;
           if (!prev || !t) return t;
@@ -555,7 +571,7 @@ export function DocumentEditor({
         doCommit(d, t);
       },
     }),
-    [dragId, dragHeight, target, doCommit]
+    [dragId, dragHeight, target, doCommit, blockState]
   );
 
   // Layered drop / dragend listeners. See lib/drag.ts header for why.

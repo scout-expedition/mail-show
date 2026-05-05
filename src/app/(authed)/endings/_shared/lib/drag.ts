@@ -56,35 +56,37 @@ export function useDrag(): DragContext {
 }
 
 /**
- * Reparent + reorder one block. Returns the new block list, or `prev`
- * unchanged if the move would create a cycle (target lives inside the
- * dragged subtree) or violate result-uniqueness in the destination
- * group.
+ * Pure predicate: would dropping `blockId` into the destination
+ * `target` produce a valid sibling layout? Used both by `moveBlock`
+ * (to no-op invalid drops) and by the drag context's `setTarget` (to
+ * suppress the insertion highlight while hovering an invalid spot).
  *
- * Result-uniqueness: a result block must be the sole non-fallback
- * block in its sibling group. Reject moves that would put a result
- * alongside any other non-fallback block (in either direction).
+ * Rejects when:
+ *  - the block doesn't exist in `prev`;
+ *  - the destination is inside the dragged subtree (cycle);
+ *  - the destination already has a result block (and the dragged
+ *    block isn't fallback), or the dragged block is a result and the
+ *    destination already has any non-fallback sibling.
  */
-export function moveBlock(
+export function isValidDropTarget(
   prev: BlockState[],
   blockId: string,
-  target: ParentLoc,
-  beforeId: string | null
-): BlockState[] {
+  target: ParentLoc
+): boolean {
   const b = prev.find((x) => x.id === blockId);
-  if (!b) return prev;
-  if (beforeId === blockId) return prev;
+  if (!b) return false;
 
-  // Cycle guard: walk target.parent_block_id chain; reject if blockId appears.
+  // Cycle guard.
   let cur: string | null = target.parent_block_id;
   while (cur) {
-    if (cur === blockId) return prev;
+    if (cur === blockId) return false;
     const parent = prev.find((x) => x.id === cur);
     cur = parent?.parent_block_id ?? null;
   }
 
-  // Result-uniqueness in the destination group. Same predicate used by
-  // BlockList adders + addBlock server action.
+  // Result-uniqueness — fallback blocks are exempt; they coexist with
+  // any other block at the document root.
+  if (b.block_type === "fallback") return true;
   const destSiblings = prev.filter(
     (x) =>
       x.id !== blockId &&
@@ -93,8 +95,24 @@ export function moveBlock(
       x.block_type !== "fallback"
   );
   const destHasResult = destSiblings.some((x) => x.block_type === "result");
-  if (b.block_type === "result" && destSiblings.length > 0) return prev;
-  if (b.block_type !== "result" && destHasResult) return prev;
+  if (b.block_type === "result" && destSiblings.length > 0) return false;
+  if (b.block_type !== "result" && destHasResult) return false;
+  return true;
+}
+
+/**
+ * Reparent + reorder one block. Returns the new block list, or `prev`
+ * unchanged if the move would create a cycle or violate
+ * result-uniqueness in the destination group.
+ */
+export function moveBlock(
+  prev: BlockState[],
+  blockId: string,
+  target: ParentLoc,
+  beforeId: string | null
+): BlockState[] {
+  if (beforeId === blockId) return prev;
+  if (!isValidDropTarget(prev, blockId, target)) return prev;
 
   const next = prev.map((x) =>
     x.id === blockId
