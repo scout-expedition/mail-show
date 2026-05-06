@@ -7,6 +7,7 @@
 // whose row's block belongs to a logic-kind doc counts toward the
 // "Used in ending logic" panel.
 
+import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   EndingDocument,
@@ -97,12 +98,18 @@ export default async function EndingVariablesPage() {
   }));
 
   return (
-    <VariablesEditor
-      variables={(varData ?? []) as EndingVariable[]}
-      values={(valueData ?? []) as EndingVariableValue[]}
-      frameworks={frameworkRows}
-      frameworkVariableRefs={frameworkVariableRefs}
-      logicConditions={logicConditions}
-    />
+    <div>
+      <PageHeader
+        title="Ending Variables"
+        description="Variables and values referenced by frameworks and logic chips."
+      />
+      <VariablesEditor
+        variables={(varData ?? []) as EndingVariable[]}
+        values={(valueData ?? []) as EndingVariableValue[]}
+        frameworks={frameworkRows}
+        frameworkVariableRefs={frameworkVariableRefs}
+        logicConditions={logicConditions}
+      />
+    </div>
   );
 }

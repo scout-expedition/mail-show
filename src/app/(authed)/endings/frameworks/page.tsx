@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   EndingBlock,
@@ -117,7 +118,12 @@ export default async function FrameworksPage({
   }
 
   return (
-    <FrameworksWorkspace
+    <div>
+      <PageHeader
+        title="Ending Frameworks"
+        description="Madlib-style story templates. Each framework's blocks render based on the variables and chips that match at ending time."
+      />
+      <FrameworksWorkspace
       frameworks={frameworkDocs}
       blocks={frameworkBlocks}
       rows={(rowData ?? []) as EndingConditionRow[]}
@@ -137,5 +143,6 @@ export default async function FrameworksPage({
       tiebreakDocsSummary={tiebreakDocsSummary}
       tiebreakDocsRaw={logicDocRawByKind}
     />
+    </div>
   );
 }

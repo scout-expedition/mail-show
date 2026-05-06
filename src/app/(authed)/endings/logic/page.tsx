@@ -5,6 +5,7 @@
 // values + nations are needed for chip-picker rendering inside the
 // shared editor.
 
+import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   EndingBlock,
@@ -69,7 +70,12 @@ export default async function EndingLogicPage() {
   ).filter((bv) => logicBlockIds.has(bv.condition_block_id));
 
   return (
-    <LogicEditor
+    <div>
+      <PageHeader
+        title="Ending Logic"
+        description="Pick which framework plays at ending time, and how class- and nation-affinity ties resolve."
+      />
+      <LogicEditor
       logicDocs={logicDocs}
       frameworkDocs={frameworkDocs}
       blocks={logicBlocks}
@@ -85,5 +91,6 @@ export default async function EndingLogicPage() {
         >[]
       }
     />
+    </div>
   );
 }
