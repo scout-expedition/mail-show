@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { AlertTriangle, Dice5 } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -9,8 +9,9 @@ import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
   EMPTY_SELECTIONS,
-  evaluateDocument,
+  aggregateKey,
   evaluateFramework,
+  resolveAggregates,
   shadowedRowIds,
   type EvalBlock,
   type EvalChip,
@@ -28,8 +29,6 @@ import type {
 import type { EndingVariableValue } from "@/lib/db/types";
 import {
   AGGREGATE_OPTIONS_BY_REF,
-  RANDOM_RESULT_SENTINEL,
-  TIEBREAK_KIND_BY_REF_SIDE,
   type AggregateRef,
   type EndingLogicKind,
 } from "@/lib/db/enums";
@@ -72,32 +71,58 @@ export function PreviewView({
     return m;
   }, [variables]);
 
-  const evalInputs = useMemo(
-    () => ({
-      blocks: blocks as EvalBlock[],
-      rows: rows as EvalRow[],
-      chips: chips as EvalChip[],
-      variables: variables.map(
+  // Tiebreaks resolve once per evaluation pass, before any chip eval.
+  // resolveAggregates rolls random sentinels exactly once here, so
+  // every chip on the same (ref, side) sees the same winner — no more
+  // "two `top= proletariat` chips disagree because the random rolled
+  // differently per chip."
+  const evalChips = useMemo(() => chips as EvalChip[], [chips]);
+  const evalVariables = useMemo(
+    () =>
+      variables.map(
         (v): EvalVariable => ({
           id: v.id,
           kind: v.kind,
           aggregate_ref: v.aggregate_ref,
         })
       ),
+    [variables]
+  );
+  const variableIndex = useMemo(() => {
+    const m = new Map<string, EvalVariable>();
+    for (const v of evalVariables) m.set(v.id, v);
+    return m;
+  }, [evalVariables]);
+  const baseSelections = useMemo<PreviewSelections>(
+    () => ({
+      ...(selections ?? EMPTY_SELECTIONS),
+      numberRefByName,
+      tiebreak_docs: tiebreakInputs,
+    }),
+    [selections, numberRefByName, tiebreakInputs]
+  );
+  const resolvedAggregates = useMemo(
+    () => resolveAggregates(evalChips, variableIndex, baseSelections),
+    [evalChips, variableIndex, baseSelections]
+  );
+  const evalInputs = useMemo(
+    () => ({
+      blocks: blocks as EvalBlock[],
+      rows: rows as EvalRow[],
+      chips: evalChips,
+      variables: evalVariables,
       selections: {
-        ...(selections ?? EMPTY_SELECTIONS),
-        numberRefByName,
-        tiebreak_docs: tiebreakInputs,
+        ...baseSelections,
+        resolved_aggregates: resolvedAggregates,
       },
     }),
-    [blocks, rows, chips, variables, selections, numberRefByName, tiebreakInputs]
+    [blocks, rows, evalChips, evalVariables, baseSelections, resolvedAggregates]
   );
   const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
 
-  // Aggregate ties surfaced on the framework's referenced chips. For
-  // each unique (ref, side) the framework branches on, peek at the
-  // underlying scores: when 2+ options share the extreme value, list
-  // them and (if a tiebreak doc is set) show the resolved winner.
+  // Aggregate ties surfaced on the framework's referenced chips. The
+  // resolution itself happens in `resolveAggregates` above (rolls
+  // random once); this just picks up the results to render.
   const tieIndicators = useMemo(() => {
     type Indicator = {
       key: string;
@@ -106,7 +131,6 @@ export function PreviewView({
       tiedLabels: string[];
       resolved:
         | { kind: "value"; label: string }
-        | { kind: "random"; pool: string[] }
         | { kind: "unresolved" };
     };
     const out: Indicator[] = [];
@@ -119,7 +143,7 @@ export function PreviewView({
       const op = c.operator;
       const side: "top" | "bottom" =
         op === "top=" || op === "top≠" ? "top" : "bottom";
-      const key = `${ref}|${side}`;
+      const key = aggregateKey(ref, side);
       if (seen.has(key)) continue;
       seen.add(key);
       const cols = AGGREGATE_OPTIONS_BY_REF[ref];
@@ -129,49 +153,31 @@ export function PreviewView({
         const v = selections.numbers[vid];
         return v == null ? null : v;
       });
-      if (vals.some((v) => v == null)) continue; // can't determine yet
+      if (vals.some((v) => v == null)) continue;
       const numericVals = vals as number[];
       const extreme =
         side === "top" ? Math.max(...numericVals) : Math.min(...numericVals);
       const tiedCols = cols.filter((_, i) => numericVals[i] === extreme);
-      if (tiedCols.length < 2) continue; // not tied
+      if (tiedCols.length < 2) continue;
       const tiedLabels = tiedCols.map(
         (col) => (VARIABLE_LABELS as Record<string, string>)[col] ?? col
       );
       const refLabel =
         ref === "class_affinity" ? "Class Affinity" : "Nation Affinity";
-      let resolved: Indicator["resolved"] = { kind: "unresolved" };
-      const { kind: tbKind, invert } = TIEBREAK_KIND_BY_REF_SIDE[ref][side];
-      const doc = tiebreakInputs?.get(tbKind);
-      if (doc) {
-        const docResult = evaluateDocument(doc);
-        if (docResult.length === 1) {
-          const r = docResult[0];
-          if (r === RANDOM_RESULT_SENTINEL) {
-            resolved = { kind: "random", pool: tiedLabels };
-          } else {
-            // Apply class-affinity invert (the bottom side aliases to
-            // the top doc; flip to "the other one") when the resolved
-            // option isn't already in the tied set.
-            let winnerCol: string | null = r;
-            if (invert && cols.length === 2 && tiedCols.length === 2) {
-              winnerCol = cols.find((c) => c !== r) ?? null;
+      const resolvedCol = resolvedAggregates.get(key);
+      const resolved: Indicator["resolved"] =
+        resolvedCol && tiedCols.includes(resolvedCol)
+          ? {
+              kind: "value",
+              label:
+                (VARIABLE_LABELS as Record<string, string>)[resolvedCol] ??
+                resolvedCol,
             }
-            if (winnerCol && tiedCols.includes(winnerCol)) {
-              resolved = {
-                kind: "value",
-                label:
-                  (VARIABLE_LABELS as Record<string, string>)[winnerCol] ??
-                  winnerCol,
-              };
-            }
-          }
-        }
-      }
+          : { kind: "unresolved" };
       out.push({ key, refLabel, side, tiedLabels, resolved });
     }
     return out;
-  }, [chips, variables, numberRefByName, selections.numbers, tiebreakInputs]);
+  }, [chips, variables, numberRefByName, selections.numbers, resolvedAggregates]);
   const shadowed = useMemo(() => {
     const ids = shadowedRowIds(evalInputs);
     if (ids.size === 0) return [];
@@ -260,11 +266,6 @@ export function PreviewView({
                 · {t.refLabel} ({t.side}) tied {t.tiedLabels.join(", ")} →{" "}
                 {t.resolved.kind === "value" ? (
                   <span className="font-semibold">{t.resolved.label}</span>
-                ) : t.resolved.kind === "random" ? (
-                  <span className="inline-flex items-center gap-1 italic">
-                    <Dice5 size={11} aria-hidden /> random of{" "}
-                    {t.resolved.pool.join(", ")}
-                  </span>
                 ) : (
                   <span className="italic text-amber-200/90">
                     no rule (chip evaluates false)

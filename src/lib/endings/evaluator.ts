@@ -90,6 +90,30 @@ export interface PreviewSelections {
    * Optional. Tests + flows that don't touch aggregates leave it unset.
    */
   tiebreak_docs?: Map<EndingLogicKind, EvalInputs>;
+  /**
+   * Pre-resolved aggregate winners, keyed by `${ref}|${side}`. Computed
+   * by `resolveAggregates(...)` once per evaluation pass — the framework
+   * evaluator then reads the resolved column directly without
+   * re-consulting the tiebreak doc per chip. This is the architectural
+   * fix for random sentinels rolling differently per chip: when the
+   * caller pre-resolves, every chip on the same (ref, side) sees the
+   * same winner.
+   *
+   * `null` value = scores incomplete, no tiebreak doc available, or
+   * doc returned an unresolvable result (chip evaluates to false in
+   * those cases). Absent key = caller didn't pre-resolve; chip falls
+   * back to the inline tiebreak path for backwards compatibility.
+   */
+  resolved_aggregates?: Map<string, string | null>;
+}
+
+/**
+ * Build the lookup key used in `PreviewSelections.resolved_aggregates`
+ * for an aggregate ref + side pair. Exported so callers and helpers
+ * stay in sync on the format.
+ */
+export function aggregateKey(ref: AggregateRef, side: "top" | "bottom"): string {
+  return `${ref}|${side}`;
 }
 
 export const EMPTY_SELECTIONS: PreviewSelections = {
@@ -190,47 +214,35 @@ function evaluateAggregateChip(
   const extreme = isTop ? Math.max(...vals) : Math.min(...vals);
   const tiedCount = vals.filter((v) => v === extreme).length;
   let winnerCol: string;
+  const side: "top" | "bottom" = isTop ? "top" : "bottom";
   if (tiedCount > 1) {
-    // Tiebreak resolution. Look up the matching doc; if it resolves to
-    // one of the currently-tied column names, that's the winner. Else
-    // fall back to today's "tie → false".
-    //
-    // Class affinity is the special case: only 2 options total, so the
-    // bottom doc is implicit (the option that isn't the top doc's
-    // result). TIEBREAK_KIND_BY_REF_SIDE.class_affinity.bottom flips
-    // `invert: true` and points at the same `class_affinity_top` doc.
+    // Tiebreak resolution. Prefer the caller's pre-resolved value
+    // (set by `resolveAggregates` running once per evaluation pass)
+    // so every chip on the same (ref, side) sees the same winner —
+    // critical for random sentinels not rolling differently per
+    // chip. Only when the caller didn't pre-resolve do we fall back
+    // to the inline doc-eval path (kept for backwards compatibility
+    // with existing tests).
     const tiedCols = cols.filter((_, i) => vals[i] === extreme);
-    const side: "top" | "bottom" = isTop ? "top" : "bottom";
-    const { kind, invert } =
-      TIEBREAK_KIND_BY_REF_SIDE[variable.aggregate_ref][side];
-    const doc = selections.tiebreak_docs?.get(kind);
-    if (!doc) return false;
-    if (evaluatingDocs.has(kind)) return false; // cycle guard
-    const nextEvaluating = new Set(evaluatingDocs);
-    nextEvaluating.add(kind);
-    const result = evaluateDocumentInternal(doc, nextEvaluating);
-    if (result.length !== 1) return false;
-    const docResult = result[0];
-    let resolved: string;
-    if (docResult === RANDOM_RESULT_SENTINEL) {
-      // Random tiebreak: pick uniformly from the currently-tied
-      // options. Inversion is moot (every tied option is equally
-      // likely either way).
-      if (tiedCols.length === 0) return false;
-      resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
-    } else if (invert) {
-      // Inversion is only defined for 2-option aggregates where every
-      // option is currently tied (otherwise "the other one" is
-      // ambiguous). Both must hold for the bottom shortcut to be valid.
-      if (cols.length !== 2 || tiedCols.length !== 2) return false;
-      const other = cols.find((c) => c !== docResult);
-      if (other == null) return false;
-      resolved = other;
+    const preResolved = selections.resolved_aggregates?.get(
+      aggregateKey(variable.aggregate_ref, side)
+    );
+    if (preResolved !== undefined) {
+      if (preResolved == null) return false;
+      if (!tiedCols.includes(preResolved)) return false;
+      winnerCol = preResolved;
     } else {
-      resolved = docResult;
+      const inline = resolveTieInline(
+        variable.aggregate_ref,
+        side,
+        cols,
+        tiedCols,
+        selections,
+        evaluatingDocs
+      );
+      if (inline == null) return false;
+      winnerCol = inline;
     }
-    if (!tiedCols.includes(resolved)) return false;
-    winnerCol = resolved;
   } else {
     winnerCol = cols[vals.indexOf(extreme)];
   }
@@ -238,6 +250,129 @@ function evaluateAggregateChip(
   return chip.operator === "top=" || chip.operator === "bottom="
     ? isEqual
     : !isEqual;
+}
+
+/**
+ * Inline (per-chip) tiebreak resolution — used by `evaluateAggregateChip`
+ * when the caller didn't pre-resolve via `resolveAggregates`. Returns
+ * the resolved column, or null when the doc / inputs / sentinel can't
+ * produce a valid tied option.
+ *
+ * New code paths should pre-resolve. This helper preserves backwards
+ * compatibility for existing tests + flows that don't.
+ */
+function resolveTieInline(
+  ref: AggregateRef,
+  side: "top" | "bottom",
+  cols: string[],
+  tiedCols: string[],
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind>
+): string | null {
+  const { kind, invert } = TIEBREAK_KIND_BY_REF_SIDE[ref][side];
+  const doc = selections.tiebreak_docs?.get(kind);
+  if (!doc) return null;
+  if (evaluatingDocs.has(kind)) return null;
+  const nextEvaluating = new Set(evaluatingDocs);
+  nextEvaluating.add(kind);
+  const result = evaluateDocumentInternal(doc, nextEvaluating);
+  if (result.length !== 1) return null;
+  const docResult = result[0];
+  let resolved: string | null;
+  if (docResult === RANDOM_RESULT_SENTINEL) {
+    if (tiedCols.length === 0) return null;
+    resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
+  } else if (invert) {
+    if (cols.length !== 2 || tiedCols.length !== 2) return null;
+    resolved = cols.find((c) => c !== docResult) ?? null;
+  } else {
+    resolved = docResult;
+  }
+  // Reject any resolution that doesn't land on a currently-tied
+  // option — the chip can only match if the winner is among the
+  // tied set.
+  if (!resolved || !tiedCols.includes(resolved)) return null;
+  return resolved;
+}
+
+/**
+ * Pre-resolve every aggregate (ref, side) the chip set references.
+ * Returns a map keyed by `aggregateKey(ref, side)` whose values are
+ * either:
+ *   - a resolved column name (winner column for that side, including
+ *     non-tied cases where the answer is unambiguous), or
+ *   - null (scores incomplete, no tiebreak doc, or doc returned an
+ *     unresolvable result).
+ *
+ * Run this once per evaluation pass and stash the result in
+ * `selections.resolved_aggregates` before calling the framework
+ * evaluator. Random sentinels roll exactly once per call to this
+ * function — every chip on the same (ref, side) then sees the same
+ * winner. The function calls `Math.random()` for the random
+ * sentinel; cache via `useMemo` if you need stable resolution
+ * across renders.
+ */
+export function resolveAggregates(
+  chips: EvalChip[],
+  variableIndex: Map<string, EvalVariable>,
+  selections: PreviewSelections
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  const numberRefByName = selections.numberRefByName;
+  for (const c of chips) {
+    const variable = variableIndex.get(c.variable_id);
+    if (!variable || variable.kind !== "aggregate_ref") continue;
+    const ref = variable.aggregate_ref;
+    if (!ref) continue;
+    let side: "top" | "bottom";
+    if (c.operator === "top=" || c.operator === "top≠") side = "top";
+    else if (c.operator === "bottom=" || c.operator === "bottom≠") side = "bottom";
+    else continue;
+    const key = aggregateKey(ref, side);
+    if (out.has(key)) continue;
+
+    const cols = AGGREGATE_OPTIONS_BY_REF[ref];
+    if (!numberRefByName) {
+      out.set(key, null);
+      continue;
+    }
+    const vals: number[] = [];
+    let hasUnset = false;
+    for (const col of cols) {
+      const vid = numberRefByName.get(col);
+      if (vid == null) {
+        hasUnset = true;
+        break;
+      }
+      const v = selections.numbers[vid];
+      if (v == null) {
+        hasUnset = true;
+        break;
+      }
+      vals.push(v);
+    }
+    if (hasUnset) {
+      out.set(key, null);
+      continue;
+    }
+    const extreme = side === "top" ? Math.max(...vals) : Math.min(...vals);
+    const tiedCols = cols.filter((_, i) => vals[i] === extreme);
+    if (tiedCols.length === 1) {
+      out.set(key, tiedCols[0]);
+      continue;
+    }
+    // Tied — run the inline resolver (rolls random once per call).
+    const resolved = resolveTieInline(
+      ref,
+      side,
+      cols,
+      tiedCols,
+      selections,
+      new Set()
+    );
+    out.set(key, resolved && tiedCols.includes(resolved) ? resolved : null);
+  }
+  return out;
 }
 
 /**
