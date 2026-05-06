@@ -130,6 +130,48 @@ export async function createEndingVariableInline(input: {
   return { variableId, valueId };
 }
 
+/**
+ * Create a value with author-supplied text on an existing text variable.
+ * Used by the chip pickers' "+ New value…" inline path. Throws on
+ * duplicates (server-side uniqueness on `(variable_id, value)`).
+ */
+export async function createEndingVariableValueInline(input: {
+  variable_id: string;
+  value: string;
+}): Promise<{ valueId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const trimmedValue = input.value.trim();
+  if (!input.variable_id) throw new Error("variable_id is required.");
+  if (!trimmedValue) throw new Error("Value text is required.");
+
+  const { data: variable } = await supabase
+    .from("ending_variables")
+    .select("kind")
+    .eq("id", input.variable_id)
+    .single();
+  if (variable?.kind !== "text") {
+    throw new Error("Only text variables accept inline-created values.");
+  }
+
+  const { data: existing } = await supabase
+    .from("ending_variable_values")
+    .select("sort_order")
+    .eq("variable_id", input.variable_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+  const valueId = randomUUID();
+  const { error } = await supabase.from("ending_variable_values").insert({
+    id: valueId,
+    variable_id: input.variable_id,
+    value: trimmedValue,
+    sort_order: nextSort,
+  });
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+  return { valueId };
+}
+
 export async function createEndingVariableValue(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const variable_id = String(formData.get("variable_id") ?? "");
