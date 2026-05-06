@@ -120,13 +120,19 @@ export function PreviewView({
   const [rollCache, setRollCache] = useState<
     Map<string, { value: string; poolSnapshot: string }>
   >(new Map());
-  const freshDetailed = useMemo(
-    () => resolveAggregatesDetailed(evalChips, variableIndex, baseSelections),
-    [evalChips, variableIndex, baseSelections]
-  );
+  // Compute the resolution inline (not in a separate memo) so a cache
+  // change actually triggers a fresh Math.random roll for the cleared
+  // key. Memoizing the "fresh" pass separately would only roll once
+  // on first render — clearing the cache for K would then fall through
+  // to the same already-memoized value and the click would do nothing.
   const detailedResolution = useMemo(() => {
-    const out = new Map<string, typeof freshDetailed extends Map<string, infer V> ? V : never>();
-    for (const [key, res] of freshDetailed) {
+    const fresh = resolveAggregatesDetailed(
+      evalChips,
+      variableIndex,
+      baseSelections
+    );
+    const out: typeof fresh = new Map();
+    for (const [key, res] of fresh) {
       if (!res.fromRandom || !res.rollPool) {
         out.set(key, res);
         continue;
@@ -148,7 +154,7 @@ export function PreviewView({
       }
     }
     return out;
-  }, [freshDetailed, rollCache]);
+  }, [evalChips, variableIndex, baseSelections, rollCache]);
   // Sync newly-rolled values back into the cache so a subsequent
   // re-render with no input change keeps the same value (instead of
   // rolling fresh every render).
