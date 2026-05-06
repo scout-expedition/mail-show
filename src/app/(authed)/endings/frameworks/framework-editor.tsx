@@ -4,6 +4,7 @@
 // Wires the framework-specific leaf component (TextBlock) and the preview
 // view; everything else flows through the shared editor.
 
+import { useMemo } from "react";
 import type {
   EndingBlock,
   EndingConditionBlockVariable,
@@ -15,6 +16,14 @@ import type {
   Nation,
 } from "@/lib/db/types";
 import type { EndingLogicKind } from "@/lib/db/enums";
+import {
+  EMPTY_SELECTIONS,
+  type EvalBlock,
+  type EvalChip,
+  type EvalInputs,
+  type EvalRow,
+  type EvalVariable,
+} from "@/lib/endings/evaluator";
 import { TextBlock } from "../_blocks/text-block";
 import {
   DocumentEditor,
@@ -34,6 +43,7 @@ export function FrameworkEditor({
   values,
   nations,
   tiebreakDocsSummary,
+  tiebreakDocsRaw,
   onDeleted,
   registerHandle,
 }: {
@@ -46,9 +56,48 @@ export function FrameworkEditor({
   values: EndingVariableValue[];
   nations: Pick<Nation, "name" | "color_hex">[];
   tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
+  tiebreakDocsRaw?: Map<
+    EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >;
   onDeleted: () => void;
   registerHandle: (h: EditorHandle) => void;
 }) {
+  // Build per-logic-kind EvalInputs once for the preview. The preview
+  // threads these into selections.tiebreak_docs so aggregate chips
+  // resolve through the saved tiebreak rules, AND surfaces them
+  // separately as tie indicators when the user's numeric inputs
+  // trigger an aggregate tie.
+  const tiebreakInputs = useMemo(() => {
+    if (!tiebreakDocsRaw) return undefined;
+    const evalVariables: EvalVariable[] = variables.map((v) => ({
+      id: v.id,
+      kind: v.kind,
+      aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
+    }));
+    const numberRefByName = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        numberRefByName.set(v.number_ref, v.id);
+      }
+    }
+    const m = new Map<EndingLogicKind, EvalInputs>();
+    for (const [kind, raw] of tiebreakDocsRaw) {
+      m.set(kind, {
+        blocks: raw.blocks as unknown as EvalBlock[],
+        rows: raw.rows as unknown as EvalRow[],
+        chips: raw.chips as unknown as EvalChip[],
+        variables: evalVariables,
+        selections: { ...EMPTY_SELECTIONS, numberRefByName },
+      });
+    }
+    return m;
+  }, [tiebreakDocsRaw, variables]);
+
   return (
     <DocumentEditor
       document={framework}
@@ -73,6 +122,7 @@ export function FrameworkEditor({
           selections={args.selections}
           onChangeText={args.onChangeText}
           onChangeNumber={args.onChangeNumber}
+          tiebreakInputs={tiebreakInputs}
         />
       )}
       onDeleted={onDeleted}

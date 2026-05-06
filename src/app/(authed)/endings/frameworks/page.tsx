@@ -88,6 +88,32 @@ export default async function FrameworksPage({
     });
   }
 
+  // Per-logic-kind raw block/row/chip data for the framework preview's
+  // tiebreak resolution. The preview builds EvalInputs for each kind
+  // out of these so aggregate chips can run their tiebreak doc when
+  // the user's numeric inputs produce a tie.
+  const allChips = (chipData ?? []) as EndingConditionRowChip[];
+  const logicDocRawByKind = new Map<
+    EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >();
+  for (const d of (logicDocData ?? []) as Pick<EndingDocument, "id" | "kind">[]) {
+    const docBlocks = allBlocks.filter((b) => b.document_id === d.id);
+    const blockIds = new Set(docBlocks.map((b) => b.id));
+    const docRows = allRows.filter((r) => blockIds.has(r.condition_block_id));
+    const rowIds = new Set(docRows.map((r) => r.id));
+    const docChips = allChips.filter((c) => rowIds.has(c.row_id));
+    logicDocRawByKind.set(d.kind as EndingLogicKind, {
+      blocks: docBlocks,
+      rows: docRows,
+      chips: docChips,
+    });
+  }
+
   return (
     <FrameworksWorkspace
       frameworks={frameworkDocs}
@@ -102,6 +128,7 @@ export default async function FrameworksPage({
       nations={(nationData ?? []) as Pick<Nation, "name" | "color_hex">[]}
       selectedFrameworkId={selectedId ?? null}
       tiebreakDocsSummary={tiebreakDocsSummary}
+      tiebreakDocsRaw={logicDocRawByKind}
     />
   );
 }
