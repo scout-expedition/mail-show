@@ -153,6 +153,19 @@ export function LogicPreviewView({
     return m;
   }, [variables]);
 
+  // Hypothetical tied set on nation_affinity_* tabs. Drives both the
+  // set-narrowing evaluator and the pool for terminal random sentinels.
+  // Authors toggle pills (one per impact-column name) to declare which
+  // nations are tied; the picker is hidden on other doc kinds.
+  const isNationTab =
+    docKind === "nation_affinity_top" || docKind === "nation_affinity_bottom";
+  const [tiedNations, setTiedNations] = useState<string[]>([]);
+  function toggleTiedNation(name: string) {
+    setTiedNations((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
+  }
+
   const evalInputs = useMemo<EvalInputs>(
     () => ({
       blocks: blocks as EvalBlock[],
@@ -174,7 +187,14 @@ export function LogicPreviewView({
     [blocks, rows, chips, variables, selections, numberRefByName, tiebreakDocs]
   );
 
-  const result = useMemo(() => evaluateDocument(evalInputs), [evalInputs]);
+  const result = useMemo(() => {
+    if (isNationTab && tiedNations.length > 0) {
+      return evaluateDocument(evalInputs, {
+        initialTiebreakSet: tiedNations,
+      });
+    }
+    return evaluateDocument(evalInputs);
+  }, [evalInputs, isNationTab, tiedNations]);
   const resolved = result[0] ?? null;
 
   const frameworkNameById = useMemo(() => {
@@ -184,18 +204,6 @@ export function LogicPreviewView({
     }
     return m;
   }, [frameworks]);
-
-  // Hypothetical tied set on nation_affinity_* tabs. Drives the pool
-  // for `__random_tied__`. Authors toggle pills to declare which
-  // nations are tied; the picker is hidden on other doc kinds.
-  const isNationTab =
-    docKind === "nation_affinity_top" || docKind === "nation_affinity_bottom";
-  const [tiedNations, setTiedNations] = useState<string[]>([]);
-  function toggleTiedNation(name: string) {
-    setTiedNations((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
-    );
-  }
 
   // Random sentinels expand to a rolled value at preview time so the
   // author can see "what would actually happen". The roll runs inside
@@ -293,13 +301,21 @@ export function LogicPreviewView({
             Hypothetical tied set
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {nations.map((n) => {
-              const on = tiedNations.includes(n.name);
+            {AGGREGATE_OPTIONS_BY_REF.nation_affinity.map((col) => {
+              // Match the impact-column name to a Nation row by display
+              // name (column "folos" ↔ Nation "Folos"). The Nation
+              // supplies the color + icon; the column name is what the
+              // evaluator works against.
+              const display =
+                (VARIABLE_LABELS as Record<string, string>)[col] ?? col;
+              const nation = nations.find((n) => n.name === display);
+              const on = tiedNations.includes(col);
+              const color = nation?.color_hex;
               return (
                 <button
-                  key={n.name}
+                  key={col}
                   type="button"
-                  onClick={() => toggleTiedNation(n.name)}
+                  onClick={() => toggleTiedNation(col)}
                   aria-pressed={on}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors",
@@ -307,28 +323,28 @@ export function LogicPreviewView({
                       ? "border-foreground/40 bg-foreground/10 text-foreground"
                       : "border-border/40 bg-transparent text-muted-foreground/70 hover:text-foreground"
                   )}
-                  style={on ? { borderColor: n.color_hex } : undefined}
+                  style={on && color ? { borderColor: color } : undefined}
                 >
                   <span
                     className={cn(
                       "flex h-4 w-4 items-center justify-center transition-opacity",
                       on ? "opacity-100" : "opacity-40"
                     )}
-                    style={{ color: n.color_hex }}
+                    style={color ? { color } : undefined}
                   >
-                    {n.icon_value ? (
+                    {nation?.icon_value ? (
                       <IconDisplay
-                        type={n.icon_type}
-                        value={n.icon_value}
+                        type={nation.icon_type}
+                        value={nation.icon_value}
                         size={12}
                       />
                     ) : (
                       <span className="text-[10px] font-mono">
-                        {n.abbreviation ?? n.name.slice(0, 1)}
+                        {nation?.abbreviation ?? display.slice(0, 1)}
                       </span>
                     )}
                   </span>
-                  <span>{n.name}</span>
+                  <span>{display}</span>
                 </button>
               );
             })}

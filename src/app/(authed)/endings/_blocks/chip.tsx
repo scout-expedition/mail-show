@@ -20,6 +20,26 @@ import type { EndingVariableValue } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import { PickerCtx } from "../_shared/lib/picker";
 
+/**
+ * Operators allowed on a particular variable. Same as
+ * `ENDING_OPERATORS_BY_KIND[variable.kind]` for everything except
+ * aggregate_ref — set_includes/set_excludes are nation-tiebreak
+ * specific and are filtered out for class_affinity refs (only 2
+ * options, the chip is meaningless there).
+ */
+function allowedOperatorsFor(variable: VariableState): EndingChipOperator[] {
+  const base = ENDING_OPERATORS_BY_KIND[variable.kind];
+  if (
+    variable.kind === "aggregate_ref" &&
+    variable.aggregate_ref !== "nation_affinity"
+  ) {
+    return base.filter(
+      (op) => op !== "set_includes" && op !== "set_excludes"
+    );
+  }
+  return base;
+}
+
 function chipColor(
   chip: ChipState,
   variable: VariableState,
@@ -135,7 +155,7 @@ export function ChipPill({
   }
 
   const color = chipColor(chip, variable, variables);
-  const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
+  const allowedOps = allowedOperatorsFor(variable);
   const aggregateOptions =
     variable.kind === "aggregate_ref" && variable.aggregate_ref
       ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]
@@ -322,7 +342,7 @@ export function ChipPickerForm({
     return () => picker.unregister();
   }, [picker]);
 
-  const allowedOps = ENDING_OPERATORS_BY_KIND[variable.kind];
+  const allowedOps = allowedOperatorsFor(variable);
   const eligibleValues = values.filter((v) => v.variable_id === variable.id);
   const aggregateOptions =
     variable.kind === "aggregate_ref" && variable.aggregate_ref
@@ -493,9 +513,7 @@ export function AddChipButton({
   }
 
   const variable = variables.find((v) => v.id === variableId) ?? null;
-  const allowedOps = variable
-    ? ENDING_OPERATORS_BY_KIND[variable.kind]
-    : ENDING_CHIP_OPERATORS;
+  const allowedOps = variable ? allowedOperatorsFor(variable) : ENDING_CHIP_OPERATORS;
   const eligibleValues = values.filter((v) => v.variable_id === variableId);
   const aggregateOptions =
     variable?.kind === "aggregate_ref" && variable.aggregate_ref

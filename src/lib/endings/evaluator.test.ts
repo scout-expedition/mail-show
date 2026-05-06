@@ -1176,3 +1176,217 @@ describe("evaluateFramework (backwards-compatible alias)", () => {
     expect(evaluateFramework(inputs)).toEqual(evaluateDocument(inputs));
   });
 });
+
+// ----------------------------------------------------------------------
+// evaluateDocument — set-narrowing tiebreak (nation tiebreak docs)
+// ----------------------------------------------------------------------
+
+describe("evaluateDocument set-narrowing", () => {
+  const NATION = "VAR_NATION_AFFINITY";
+  const FOLOS = "FOLOS_VALUE";
+
+  const setChip = (
+    id: string,
+    rowId: string,
+    nation: string,
+    operator: "set_includes" | "set_excludes",
+    sortOrder = 0
+  ): EvalChip => ({
+    id,
+    row_id: rowId,
+    variable_id: NATION,
+    operator,
+    text_value_id: null,
+    number_value: null,
+    aggregate_value: nation,
+    sort_order: sortOrder,
+  });
+
+  const fallbackBlock = (id: string, value: string | null): EvalBlock => ({
+    id,
+    parent_block_id: null,
+    parent_row_id: null,
+    block_type: "fallback",
+    text: "",
+    result_value: value,
+    sort_order: 999999,
+  });
+
+  it("auto-resolves to the only remaining nation after a removal", () => {
+    // Initial set: folos, emberlyn. Doc removes emberlyn → folos wins.
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("rem1", "__remove__:emberlyn", null, null, 0)],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn"],
+      })
+    ).toEqual(["folos"]);
+  });
+
+  it("set_includes chip on a condition row gates a removal", () => {
+    // condition: tiebreak set includes spokgrad → remove spokgrad.
+    // Initial set folos+spokgrad → spokgrad removed → folos wins.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const removeSpok = resultBlock(
+      "rs",
+      "__remove__:spokgrad",
+      "c1",
+      "r1",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeSpok],
+      rows: [r1],
+      chips: [setChip("ch1", "r1", "spokgrad", "set_includes")],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "spokgrad"],
+      })
+    ).toEqual(["folos"]);
+  });
+
+  it("evaluates every matching row in a condition block (not first-match-wins)", () => {
+    // Two matching rows; both remove different nations. Working set
+    // should narrow to the one not removed.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const r2 = row("r2", "c1", 1);
+    const removeFolos = resultBlock(
+      "rf",
+      "__remove__:folos",
+      "c1",
+      "r1",
+      0
+    );
+    const removeSpok = resultBlock(
+      "rs",
+      "__remove__:spokgrad",
+      "c1",
+      "r2",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeFolos, removeSpok],
+      rows: [r1, r2],
+      chips: [
+        setChip("ch1", "r1", "folos", "set_includes"),
+        setChip("ch2", "r2", "spokgrad", "set_includes"),
+      ],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "spokgrad", "emberlyn"],
+      })
+    ).toEqual(["emberlyn"]);
+  });
+
+  it("definite result wins immediately, skipping later rows", () => {
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const r2 = row("r2", "c1", 1);
+    // r1 returns epicenter directly; r2's removal should never run.
+    const epicenter = resultBlock("ep", "epicenter", "c1", "r1", 0);
+    const removeAll = resultBlock(
+      "rm",
+      "__remove__:emberlyn",
+      "c1",
+      "r2",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, epicenter, removeAll],
+      rows: [r1, r2],
+      chips: [
+        setChip("ch1", "r1", "epicenter", "set_includes"),
+        setChip("ch2", "r2", "emberlyn", "set_includes"),
+      ],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn", "epicenter"],
+      })
+    ).toEqual(["epicenter"]);
+  });
+
+  it("falls through to fallback when working set goes empty", () => {
+    // Initial set is just { folos }. Removing folos drains the set to
+    // empty (size→0); the auto-resolve check that would normally
+    // catch the size-1 transition doesn't fire here because the
+    // removal already finalized at size 0. Fallback returns spokgrad.
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:folos", null, null, 0),
+        fallbackBlock("fb", "spokgrad"),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, { initialTiebreakSet: ["folos"] })
+    ).toEqual(["spokgrad"]);
+  });
+
+  it("__random_remaining__ rolls from the working set", () => {
+    // After removing folos, set is { emberlyn }; random_remaining must
+    // return emberlyn (only option).
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:folos", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn"],
+      })
+    ).toEqual(["emberlyn"]);
+  });
+
+  it("set_excludes returns false when the nation is in the set", () => {
+    // set_excludes folos with folos in set → row doesn't fire → no removal.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const removeEmber = resultBlock(
+      "rem",
+      "__remove__:emberlyn",
+      "c1",
+      "r1",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeEmber, fallbackBlock("fb", "spokgrad")],
+      rows: [r1],
+      chips: [setChip("ch1", "r1", "folos", "set_excludes")],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    // Initial set has folos → set_excludes folos is false → no removal
+    // → no auto-resolve → fallback fires → spokgrad.
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn", "spokgrad"],
+      })
+    ).toEqual(["spokgrad"]);
+    // Suppress unused-var lint on the seeded value id constant.
+    void FOLOS;
+  });
+});

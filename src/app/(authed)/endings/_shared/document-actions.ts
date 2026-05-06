@@ -17,10 +17,14 @@ import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
 import {
+  AGGREGATE_OPTIONS_BY_REF,
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   isRandomSentinel,
   parseRandomSubset,
+  parseRemoveSentinel,
+  RANDOM_REMAINING_SENTINEL,
   RANDOM_SUBSET_SENTINEL_PREFIX,
+  REMOVE_SENTINEL_PREFIX,
   type EndingBlockType,
   type EndingChipOperator,
   type EndingDocumentKind,
@@ -224,6 +228,39 @@ async function validateResultValue(
           `Invalid framework_selection subset entry '${id}': must be the id of a framework document.`
         );
       }
+    }
+    return;
+  }
+  // Set-narrowing sentinels are nation-tiebreak-only. `__remove__:X`
+  // narrows the working set; `__random_remaining__` rolls from
+  // whatever survives. Both rely on the set-narrowing evaluator,
+  // which only kicks in for nation tiebreak docs.
+  const isNationTiebreak =
+    kind === "nation_affinity_top" || kind === "nation_affinity_bottom";
+  if (result_value.startsWith(REMOVE_SENTINEL_PREFIX)) {
+    if (!isNationTiebreak) {
+      throw new Error(
+        `Set-narrowing removals are only valid on nation tiebreak docs (got ${kind}).`
+      );
+    }
+    const nation = parseRemoveSentinel(result_value);
+    if (nation == null) {
+      throw new Error(`Malformed remove result_value '${result_value}'.`);
+    }
+    if (!AGGREGATE_OPTIONS_BY_REF.nation_affinity.includes(nation)) {
+      throw new Error(
+        `Invalid removal target '${nation}': must be one of ${AGGREGATE_OPTIONS_BY_REF.nation_affinity.join(
+          ", "
+        )}.`
+      );
+    }
+    return;
+  }
+  if (result_value === RANDOM_REMAINING_SENTINEL) {
+    if (!isNationTiebreak) {
+      throw new Error(
+        `Random (between remaining) is only valid on nation tiebreak docs (got ${kind}).`
+      );
     }
     return;
   }

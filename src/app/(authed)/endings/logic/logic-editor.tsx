@@ -49,6 +49,7 @@ import {
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   RANDOM_ALL_SENTINEL,
+  RANDOM_REMAINING_SENTINEL,
   RANDOM_RESULT_SENTINEL,
   RANDOM_TIED_SENTINEL,
 } from "@/lib/db/enums";
@@ -112,6 +113,10 @@ function buildFallbackProp(
           label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
         })),
         { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
+        {
+          value: RANDOM_REMAINING_SENTINEL,
+          label: "Random (between remaining)",
+        },
         { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
       ],
       helperText:

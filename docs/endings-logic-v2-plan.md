@@ -44,6 +44,7 @@ Preview:
 - Variable inputs use the actions-page tile UI (shared `src/components/impact-tile.tsx`) — class affinity, nations, world status / demerits each in their own grouped box. Custom number_ref columns + text variables keep the previous label + input layout.
 - Preview eye toggle keeps the same icon on both states; only the active background swaps.
 - Custom-subset random for `framework_selection` result blocks: `__random_subset__:[…]` sentinel + JSON id list, parse/format helpers in `enums.ts`, server-action validation against `kind='framework'` rows, multi-select checkbox picker on the result block, and preview line listing the candidate framework names.
+- Nation tiebreak set narrowing: `__remove__:<nation>` + `__random_remaining__` result sentinels; new `set_includes` / `set_excludes` chip operators on the seeded Nation Affinity aggregate_ref variable (migration 0027); evaluator-side mutable working set, full row walk in condition blocks (not first-match-wins) when narrowing, auto-resolve at size 1, fall-through to fallback at size 0; framework chip's tiebreak path passes the tied columns as the initial set; result-block UI offers per-nation Remove + Random (between remaining); chip picker filters set ops to nation_affinity ref; logic preview pills toggle the hypothetical tied set and feed it into the evaluator.
 
 Tests + tooling:
 - `tests/integration/endings_logic_v2_constraints.test.ts` covers all CHECKs + partial unique indexes + seeded singletons.

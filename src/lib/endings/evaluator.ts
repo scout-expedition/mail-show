@@ -14,7 +14,9 @@
 
 import {
   AGGREGATE_OPTIONS_BY_REF,
+  parseRemoveSentinel,
   RANDOM_ALL_SENTINEL,
+  RANDOM_REMAINING_SENTINEL,
   RANDOM_RESULT_SENTINEL,
   RANDOM_TIED_SENTINEL,
   TIEBREAK_KIND_BY_REF_SIDE,
@@ -107,6 +109,17 @@ export interface PreviewSelections {
    * back to the inline tiebreak path for backwards compatibility.
    */
   resolved_aggregates?: Map<string, string | null>;
+  /**
+   * Mutable working set for the nation-tiebreak set-narrowing
+   * evaluator. Set by `evaluateDocument` when an `initialTiebreakSet`
+   * option is supplied; chips with `set_includes` / `set_excludes`
+   * operators consult it. Mutated in-place by `__remove__:X` result
+   * leaves so subsequent chip checks see the narrowed set.
+   *
+   * Outside narrowing mode this stays unset and the new operators /
+   * sentinels evaluate to false (same as any other unmet input).
+   */
+  tiebreakWorkingSet?: Set<string>;
 }
 
 /**
@@ -146,6 +159,14 @@ export function evaluateChip(
     return false; // numeric operators not valid for text variables
   }
   if (variable.kind === "aggregate_ref") {
+    if (chip.operator === "set_includes" || chip.operator === "set_excludes") {
+      const set = selections.tiebreakWorkingSet;
+      if (!set) return false;
+      const target = chip.aggregate_value;
+      if (target == null) return false;
+      const has = set.has(target);
+      return chip.operator === "set_includes" ? has : !has;
+    }
     return evaluateAggregateChip(chip, variable, selections, evaluatingDocs);
   }
   // number_ref
@@ -284,7 +305,16 @@ function resolveTieInline(
   if (evaluatingDocs.has(kind)) return null;
   const nextEvaluating = new Set(evaluatingDocs);
   nextEvaluating.add(kind);
-  const result = evaluateDocumentInternal(doc, nextEvaluating);
+  // Nation tiebreak docs run in set-narrowing mode with the
+  // currently-tied columns as the initial working set. Class affinity
+  // keeps the existing first-match-wins flow.
+  const initialTiebreakSet =
+    kind === "nation_affinity_top" || kind === "nation_affinity_bottom"
+      ? tiedCols
+      : undefined;
+  const result = evaluateDocumentInternal(doc, nextEvaluating, {
+    initialTiebreakSet,
+  });
   if (result.length !== 1) return null;
   const docResult = result[0];
   let resolved: string | null;
@@ -581,9 +611,19 @@ export function parentKey(
  * For framework docs (text leaves only) the return is the paragraph
  * list. For logic docs the return is `[result_value]` for the first
  * matched leaf, or `[]` if no row matches.
+ *
+ * `options.initialTiebreakSet` switches the document to set-narrowing
+ * semantics — used only by nation tiebreak docs. Condition blocks
+ * walk every row in order (instead of first-match-wins), each row's
+ * effects apply, `__remove__:X` result leaves drop nations from the
+ * working set, `__random_remaining__` rolls from what survives, and
+ * the doc auto-resolves when the working set has size 1.
  */
-export function evaluateDocument(input: EvalInputs): string[] {
-  return evaluateDocumentInternal(input, new Set());
+export function evaluateDocument(
+  input: EvalInputs,
+  options?: { initialTiebreakSet?: readonly string[] }
+): string[] {
+  return evaluateDocumentInternal(input, new Set(), options);
 }
 
 /**
@@ -597,8 +637,16 @@ export function evaluateFramework(input: EvalInputs): string[] {
 
 function evaluateDocumentInternal(
   input: EvalInputs,
-  evaluatingDocs: Set<EndingLogicKind>
+  evaluatingDocs: Set<EndingLogicKind>,
+  options?: { initialTiebreakSet?: readonly string[] }
 ): string[] {
+  if (options?.initialTiebreakSet) {
+    return evaluateNarrowing(
+      input,
+      evaluatingDocs,
+      options.initialTiebreakSet
+    );
+  }
   const indexes = buildIndexes(input);
   const root = indexes.byParent.get(parentKey(null, null)) ?? [];
   const result = renderBlocks(root, indexes, input.selections, evaluatingDocs);
@@ -611,6 +659,132 @@ function evaluateDocumentInternal(
     return [fallback.result_value];
   }
   return [];
+}
+
+/**
+ * Set-narrowing evaluation for nation tiebreak docs. Walks the doc
+ * in document order, lets matching condition rows apply their
+ * effects (`__remove__:X` shrinks the working set; definite results
+ * return immediately), auto-resolves when the working set collapses
+ * to a single nation, and falls through to the fallback when the
+ * tree finishes without picking.
+ */
+function evaluateNarrowing(
+  input: EvalInputs,
+  evaluatingDocs: Set<EndingLogicKind>,
+  initialTiebreakSet: readonly string[]
+): string[] {
+  const workingSet = new Set<string>(initialTiebreakSet);
+  const selections: PreviewSelections = {
+    ...input.selections,
+    tiebreakWorkingSet: workingSet,
+  };
+  const indexes = buildIndexes(input);
+  const root = indexes.byParent.get(parentKey(null, null)) ?? [];
+  const picked = renderNarrow(
+    root,
+    indexes,
+    selections,
+    workingSet,
+    evaluatingDocs
+  );
+  if (picked != null) return [picked];
+  if (workingSet.size === 1) return [...workingSet];
+  // Tree exhausted without picking. Fall through to fallback if any.
+  const fallback = root.find((b) => b.block_type === "fallback");
+  if (fallback?.result_value != null && fallback.result_value !== "") {
+    const expanded = expandTerminalSentinel(
+      fallback.result_value,
+      workingSet
+    );
+    if (expanded != null) return [expanded];
+  }
+  return [];
+}
+
+function renderNarrow(
+  blocks: EvalBlock[],
+  indexes: Indexes,
+  selections: PreviewSelections,
+  workingSet: Set<string>,
+  evaluatingDocs: Set<EndingLogicKind>
+): string | null {
+  for (const b of blocks) {
+    if (b.block_type === "fallback") continue;
+    if (b.block_type === "text") continue;
+    if (b.block_type === "result") {
+      const v = b.result_value;
+      if (v == null || v === "") continue;
+      const removeNation = parseRemoveSentinel(v);
+      if (removeNation != null) {
+        workingSet.delete(removeNation);
+        if (workingSet.size === 0) return null;
+        if (workingSet.size === 1) return [...workingSet][0];
+        continue;
+      }
+      const expanded = expandTerminalSentinel(v, workingSet);
+      if (expanded != null) return expanded;
+      // expandTerminalSentinel returned null: empty pool or
+      // unresolvable sentinel. Skip to the next sibling.
+      continue;
+    }
+    // Condition block: evaluate ALL matching rows in order, applying
+    // their child blocks' effects each time. Stops as soon as a
+    // descendant returns a definite result, the working set hits 1,
+    // or the working set hits 0.
+    const rows = indexes.rowsByBlock.get(b.id) ?? [];
+    for (const row of rows) {
+      const chips = indexes.chipsByRow.get(row.id) ?? [];
+      if (
+        !evaluateRow(chips, indexes.variableById, selections, evaluatingDocs)
+      ) {
+        continue;
+      }
+      const children = indexes.byParent.get(parentKey(b.id, row.id)) ?? [];
+      const r = renderNarrow(
+        children,
+        indexes,
+        selections,
+        workingSet,
+        evaluatingDocs
+      );
+      if (r != null) return r;
+      if (workingSet.size === 0) return null;
+      if (workingSet.size === 1) return [...workingSet][0];
+    }
+  }
+  return null;
+}
+
+function expandTerminalSentinel(
+  value: string,
+  workingSet: Set<string>
+): string | null {
+  if (
+    value === RANDOM_REMAINING_SENTINEL ||
+    value === RANDOM_TIED_SENTINEL ||
+    value === RANDOM_RESULT_SENTINEL
+  ) {
+    if (workingSet.size === 0) return null;
+    const arr = [...workingSet];
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+  if (value === RANDOM_ALL_SENTINEL) {
+    // In narrowing mode, "all" still means the original aggregate's
+    // option set — but we no longer have direct access to it here.
+    // Fall back to the working set, which is a strict subset; the
+    // caller uses the narrowing context's tied set as the pool.
+    if (workingSet.size === 0) return null;
+    const arr = [...workingSet];
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+  if (parseRemoveSentinel(value) != null) {
+    // A `__remove__:X` value as a fallback or terminal result is
+    // meaningless — there's nothing left to walk. Treat as unresolved.
+    return null;
+  }
+  // Definite nation/value.
+  return value;
 }
 
 interface RenderResult {

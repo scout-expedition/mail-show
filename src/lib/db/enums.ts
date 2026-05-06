@@ -182,6 +182,12 @@ export const ENDING_CHIP_OPERATORS = [
   "top≠",
   "bottom=",
   "bottom≠",
+  // Set-narrowing operators for the nation tiebreak docs. Evaluated
+  // against the *working* tiebreak set during a set-narrowing pass —
+  // not against any score column. Outside a tiebreak context the
+  // evaluator returns false.
+  "set_includes",
+  "set_excludes",
 ] as const;
 export type EndingChipOperator = (typeof ENDING_CHIP_OPERATORS)[number];
 
@@ -199,7 +205,14 @@ export const ENDING_OPERATORS_BY_KIND: Record<
 > = {
   text: ["=", "≠"],
   number_ref: ["=", "≠", "<", "≤", ">", "≥"],
-  aggregate_ref: ["top=", "top≠", "bottom=", "bottom≠"],
+  aggregate_ref: [
+    "top=",
+    "top≠",
+    "bottom=",
+    "bottom≠",
+    "set_includes",
+    "set_excludes",
+  ],
 };
 
 /** The two aggregate refs supported in 0020. Set by ending_variables.aggregate_ref. */
@@ -222,6 +235,8 @@ export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
   "top≠": "top is not",
   "bottom=": "bottom is",
   "bottom≠": "bottom is not",
+  set_includes: "tiebreak set includes",
+  set_excludes: "tiebreak set excludes",
 };
 
 // Endings — document kinds + block types. Mirrored from
@@ -349,6 +364,31 @@ export type EndingBlockType = (typeof ENDING_BLOCK_TYPES)[number];
 export const RANDOM_RESULT_SENTINEL = "__random__";
 export const RANDOM_TIED_SENTINEL = "__random_tied__";
 export const RANDOM_ALL_SENTINEL = "__random_all__";
+/** Pick uniformly from the *working* tiebreak set at the moment the
+ *  leaf fires. Only meaningful inside a nation tiebreak doc evaluated
+ *  with set-narrowing semantics; outside that context falls through. */
+export const RANDOM_REMAINING_SENTINEL = "__random_remaining__";
+
+/**
+ * Set-narrowing result_value: removes one nation from the working
+ * tiebreak set instead of returning a definite result. Format:
+ * `__remove__:<nation_name>` (e.g. `__remove__:spokgrad`). The
+ * evaluator continues evaluation after applying the removal.
+ */
+export const REMOVE_SENTINEL_PREFIX = "__remove__:";
+
+export function formatRemoveSentinel(nation: string): string {
+  return `${REMOVE_SENTINEL_PREFIX}${nation}`;
+}
+
+export function parseRemoveSentinel(
+  value: string | null | undefined
+): string | null {
+  if (value == null) return null;
+  if (!value.startsWith(REMOVE_SENTINEL_PREFIX)) return null;
+  const rest = value.slice(REMOVE_SENTINEL_PREFIX.length);
+  return rest.length > 0 ? rest : null;
+}
 
 /**
  * Custom-subset random for `framework_selection` result blocks. Author
@@ -368,6 +408,7 @@ export const RANDOM_SENTINELS = [
   RANDOM_RESULT_SENTINEL,
   RANDOM_TIED_SENTINEL,
   RANDOM_ALL_SENTINEL,
+  RANDOM_REMAINING_SENTINEL,
 ] as const;
 
 export function isRandomSentinel(value: string | null | undefined): boolean {
@@ -376,6 +417,7 @@ export function isRandomSentinel(value: string | null | undefined): boolean {
     value === RANDOM_RESULT_SENTINEL ||
     value === RANDOM_TIED_SENTINEL ||
     value === RANDOM_ALL_SENTINEL ||
+    value === RANDOM_REMAINING_SENTINEL ||
     value.startsWith(RANDOM_SUBSET_SENTINEL_PREFIX)
   );
 }

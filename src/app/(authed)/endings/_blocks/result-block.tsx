@@ -20,10 +20,13 @@ import { Select } from "@/components/ui/select";
 import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
+  AGGREGATE_OPTIONS_BY_REF,
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   formatRandomSubset,
+  formatRemoveSentinel,
   parseRandomSubset,
   RANDOM_ALL_SENTINEL,
+  RANDOM_REMAINING_SENTINEL,
   RANDOM_RESULT_SENTINEL,
   RANDOM_SUBSET_SENTINEL_PREFIX,
   RANDOM_TIED_SENTINEL,
@@ -295,8 +298,25 @@ export function makeResultBlock(
   // framework)" — random of all today; custom subset is a followup.
   const randomOptions: ResultOption[] = (() => {
     if (kind === "nation_affinity_top" || kind === "nation_affinity_bottom") {
+      // Set-narrowing: emit one "Remove …" entry per nation alongside
+      // the random sentinels. Authors pick a removal as a row's leaf
+      // when they want the doc to drop a nation from the working set
+      // and keep evaluating instead of returning a definite answer.
+      const removeOptions: ResultOption[] = AGGREGATE_OPTIONS_BY_REF.nation_affinity.map(
+        (n) => ({
+          value: formatRemoveSentinel(n),
+          label: `Remove ${
+            (VARIABLE_LABELS as Record<string, string>)[n] ?? n
+          }`,
+        })
+      );
       return [
+        ...removeOptions,
         { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
+        {
+          value: RANDOM_REMAINING_SENTINEL,
+          label: "Random (between remaining)",
+        },
         { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
       ];
     }
