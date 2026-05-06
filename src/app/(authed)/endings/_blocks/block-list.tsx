@@ -259,7 +259,15 @@ export function BlockList({
         );
       })}
 
-      {hasResultBlock ? null : (
+      {hasResultBlock ? (
+        // A result block ends evaluation for its sibling group, so
+        // nothing else can sit alongside it. Surface the recovery
+        // path inline — the bin icon on the result row is otherwise
+        // easy to miss and the missing toolbar reads as "broken".
+        <p className="text-center text-[11px] italic text-muted-foreground">
+          Remove the result above to add condition blocks here.
+        </p>
+      ) : (
         <div className="flex justify-center gap-2">
           {TextLeaf ? (
             <button

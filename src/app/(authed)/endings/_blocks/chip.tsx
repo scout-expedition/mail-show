@@ -21,23 +21,26 @@ import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import { PickerCtx } from "../_shared/lib/picker";
 
 /**
- * Operators allowed on a particular variable. Same as
- * `ENDING_OPERATORS_BY_KIND[variable.kind]` for everything except
- * aggregate_ref — set_includes/set_excludes are nation-tiebreak
- * specific and are filtered out for class_affinity refs (only 2
- * options, the chip is meaningless there).
+ * Operators allowed on a particular variable. For aggregate_ref
+ * variables the operator set is partitioned by `aggregate_ref`:
+ *   - `nation_tiebreak_set` → `set_includes` / `set_excludes` only.
+ *   - `class_affinity` / `nation_affinity` → `top=` / `top≠` /
+ *     `bottom=` / `bottom≠` only.
+ * Text and number_ref variables fall back to their kind defaults.
  */
 function allowedOperatorsFor(variable: VariableState): EndingChipOperator[] {
-  const base = ENDING_OPERATORS_BY_KIND[variable.kind];
-  if (
-    variable.kind === "aggregate_ref" &&
-    variable.aggregate_ref !== "nation_affinity"
-  ) {
+  if (variable.kind !== "aggregate_ref") {
+    return ENDING_OPERATORS_BY_KIND[variable.kind];
+  }
+  const base = ENDING_OPERATORS_BY_KIND.aggregate_ref;
+  if (variable.aggregate_ref === "nation_tiebreak_set") {
     return base.filter(
-      (op) => op !== "set_includes" && op !== "set_excludes"
+      (op) => op === "set_includes" || op === "set_excludes"
     );
   }
-  return base;
+  return base.filter(
+    (op) => op !== "set_includes" && op !== "set_excludes"
+  );
 }
 
 function chipColor(
@@ -607,9 +610,15 @@ export function AddChipButton({
           const next = e.target.value;
           setVariableId(next);
           const picked = variables.find((v) => v.id === next) ?? null;
-          // Reset op when the variable changes — allowed-ops depend on kind.
+          // Reset op when the variable changes — allowed-ops depend
+          // on kind + aggregate_ref. Tiebreak Set vars only accept
+          // set_includes / set_excludes.
           if (picked?.kind === "aggregate_ref") {
-            setOperator("top=");
+            setOperator(
+              picked.aggregate_ref === "nation_tiebreak_set"
+                ? "set_includes"
+                : "top="
+            );
           } else {
             setOperator("=");
           }

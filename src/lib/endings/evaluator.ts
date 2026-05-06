@@ -24,6 +24,7 @@ import {
   type EndingChipOperator,
   type EndingLogicKind,
   type EndingVariableKind,
+  type ScoringAggregateRef,
 } from "@/lib/db/enums";
 
 export interface EvalBlock {
@@ -217,7 +218,12 @@ function evaluateAggregateChip(
 ): boolean {
   if (variable.aggregate_ref == null) return false;
   if (chip.aggregate_value == null) return false;
-  const cols = AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref];
+  // Set-membership refs don't have score columns to compare; they're
+  // handled by the dedicated set_includes/set_excludes branch in
+  // `evaluateChip` and never reach this function for top/bottom ops.
+  if (variable.aggregate_ref === "nation_tiebreak_set") return false;
+  const ref: ScoringAggregateRef = variable.aggregate_ref;
+  const cols = AGGREGATE_OPTIONS_BY_REF[ref];
   if (!cols || cols.length === 0) return false;
   const numberRefByName = selections.numberRefByName;
   if (!numberRefByName) return false;
@@ -248,7 +254,7 @@ function evaluateAggregateChip(
     // with existing tests).
     const tiedCols = cols.filter((_, i) => vals[i] === extreme);
     const preResolved = selections.resolved_aggregates?.get(
-      aggregateKey(variable.aggregate_ref, side)
+      aggregateKey(ref, side)
     );
     if (preResolved !== undefined) {
       if (preResolved == null) return false;
@@ -256,7 +262,7 @@ function evaluateAggregateChip(
       winnerCol = preResolved;
     } else {
       const inline = resolveTieInline(
-        variable.aggregate_ref,
+        ref,
         side,
         cols,
         tiedCols,
@@ -285,7 +291,7 @@ function evaluateAggregateChip(
  * compatibility for existing tests + flows that don't.
  */
 function resolveTieInline(
-  ref: AggregateRef,
+  ref: ScoringAggregateRef,
   side: "top" | "bottom",
   cols: string[],
   tiedCols: string[],
@@ -375,8 +381,11 @@ export function resolveAggregatesDetailed(
   for (const c of chips) {
     const variable = variableIndex.get(c.variable_id);
     if (!variable || variable.kind !== "aggregate_ref") continue;
-    const ref = variable.aggregate_ref;
-    if (!ref) continue;
+    const aref = variable.aggregate_ref;
+    if (!aref) continue;
+    // Set-membership refs don't have scoring tiebreaks to pre-resolve.
+    if (aref === "nation_tiebreak_set") continue;
+    const ref: ScoringAggregateRef = aref;
     let side: "top" | "bottom";
     if (c.operator === "top=" || c.operator === "top≠") side = "top";
     else if (c.operator === "bottom=" || c.operator === "bottom≠") side = "bottom";
@@ -467,8 +476,10 @@ export function resolveAggregates(
   for (const c of chips) {
     const variable = variableIndex.get(c.variable_id);
     if (!variable || variable.kind !== "aggregate_ref") continue;
-    const ref = variable.aggregate_ref;
-    if (!ref) continue;
+    const aref = variable.aggregate_ref;
+    if (!aref) continue;
+    if (aref === "nation_tiebreak_set") continue;
+    const ref: ScoringAggregateRef = aref;
     let side: "top" | "bottom";
     if (c.operator === "top=" || c.operator === "top≠") side = "top";
     else if (c.operator === "bottom=" || c.operator === "bottom≠") side = "bottom";

@@ -215,18 +215,35 @@ export const ENDING_OPERATORS_BY_KIND: Record<
   ],
 };
 
-/** The two aggregate refs supported in 0020. Set by ending_variables.aggregate_ref. */
-export const AGGREGATE_REFS = ["class_affinity", "nation_affinity"] as const;
+/**
+ * Aggregate refs. `class_affinity` + `nation_affinity` (0020) compare
+ * impact-column scores via `top=` / `bottom=`. `nation_tiebreak_set`
+ * (0028) is the dedicated home for set-narrowing chips on nation
+ * tiebreak docs — the chip's `aggregate_value` is a nation column
+ * name, but the operators are `set_includes` / `set_excludes` which
+ * consult the working tiebreak set rather than scoring columns.
+ */
+export const AGGREGATE_REFS = [
+  "class_affinity",
+  "nation_affinity",
+  "nation_tiebreak_set",
+] as const;
 export type AggregateRef = (typeof AGGREGATE_REFS)[number];
 
 /**
- * Underlying impact-column scores compared by each aggregate ref. The
- * evaluator argmax/argmins over these column names; the chip's
- * aggregate_value is one of them.
+ * Underlying impact-column / set-membership values compared by each
+ * aggregate ref. The chip's aggregate_value is one of them.
  */
 export const AGGREGATE_OPTIONS_BY_REF: Record<AggregateRef, string[]> = {
   class_affinity: ["proletariat", "gentry"],
   nation_affinity: ["folos", "emberlyn", "spokgrad", "pelico", "epicenter"],
+  nation_tiebreak_set: [
+    "folos",
+    "emberlyn",
+    "spokgrad",
+    "pelico",
+    "epicenter",
+  ],
 };
 
 /** Friendly labels for aggregate operators in the picker / chip UI. */
@@ -317,8 +334,14 @@ export const ENDING_LOGIC_RESULT_OPTIONS_BY_KIND: Record<
  * the option from `AGGREGATE_OPTIONS_BY_REF[ref]` that the top doc
  * didn't return.
  */
+/** Aggregate refs that participate in score-based top/bottom
+ *  tiebreak resolution. `nation_tiebreak_set` is excluded — it's a
+ *  set-membership concept, not a scoring axis, and has no
+ *  corresponding tiebreak doc. */
+export type ScoringAggregateRef = Exclude<AggregateRef, "nation_tiebreak_set">;
+
 export const TIEBREAK_KIND_BY_REF_SIDE: Record<
-  AggregateRef,
+  ScoringAggregateRef,
   Record<"top" | "bottom", { kind: EndingLogicKind; invert: boolean }>
 > = {
   class_affinity: {

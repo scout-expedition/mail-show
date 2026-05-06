@@ -249,6 +249,11 @@ export function chipMatchesOutcome(
   }
   if (variable.kind === "aggregate_ref") {
     if (!variable.aggregate_ref || chip.aggregate_value == null) return false;
+    // Set-membership refs don't have a top/bottom outcome enumeration;
+    // they're scored via the working tiebreak set at runtime, not via
+    // any axis the static analyzer reasons about. Treat them as
+    // never-matching for the lower-bound enumeration.
+    if (variable.aggregate_ref === "nation_tiebreak_set") return false;
     const { top, bottom } = splitAggregateOutcome(
       outcome,
       variable.aggregate_ref
