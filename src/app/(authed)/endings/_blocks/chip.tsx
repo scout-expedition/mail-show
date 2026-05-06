@@ -19,6 +19,10 @@ import type { ChipState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import { PickerCtx } from "../_shared/lib/picker";
+import {
+  CREATE_VARIABLE_SENTINEL,
+  InlineCreateVariableForm,
+} from "./inline-create-variable";
 
 /**
  * Operators allowed on a particular variable. For aggregate_ref
@@ -305,6 +309,7 @@ const AGGREGATE_OPTIONS: Array<{
 }> = [
   { ref: "class_affinity", label: "Class Affinity" },
   { ref: "nation_affinity", label: "Nation Affinity" },
+  { ref: "nation_tiebreak_set", label: "Tiebreak Set" },
 ];
 
 /**
@@ -325,7 +330,11 @@ export function ChipPickerForm({
 }) {
   const variable = pinnedVariable;
   const [operator, setOperator] = useState<EndingChipOperator>(
-    variable.kind === "aggregate_ref" ? "top=" : "="
+    variable.kind === "aggregate_ref"
+      ? variable.aggregate_ref === "nation_tiebreak_set"
+        ? "set_includes"
+        : "top="
+      : "="
   );
   const [textValueId, setTextValueId] = useState<string>("");
   const [numberValue, setNumberValue] = useState<string>(
@@ -479,11 +488,16 @@ export function AddChipButton({
   onAdd: (input: AddChipInput) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [creatingNew, setCreatingNew] = useState(false);
   const [variableId, setVariableId] = useState<string>(
     pinnedVariable?.id ?? ""
   );
   const [operator, setOperator] = useState<EndingChipOperator>(
-    pinnedVariable?.kind === "aggregate_ref" ? "top=" : "="
+    pinnedVariable?.kind === "aggregate_ref"
+      ? pinnedVariable.aggregate_ref === "nation_tiebreak_set"
+        ? "set_includes"
+        : "top="
+      : "="
   );
   const [textValueId, setTextValueId] = useState<string>("");
   const [numberValue, setNumberValue] = useState<string>(
@@ -494,6 +508,13 @@ export function AddChipButton({
       ? AGGREGATE_OPTIONS_BY_REF[pinnedVariable.aggregate_ref]?.[0] ?? ""
       : ""
   );
+  // Optimistic shadow of a just-created variable + first value so the
+  // chip picker can keep flowing even before the parent's revalidatePath
+  // re-renders with the real variables list.
+  const [optimistic, setOptimistic] = useState<
+    | { variableId: string; valueId: string; name: string; valueText: string }
+    | null
+  >(null);
   const picker = useContext(PickerCtx);
 
   // Track this picker's open state with the editor so Save knows whether
@@ -506,6 +527,8 @@ export function AddChipButton({
 
   function reset() {
     setOpen(false);
+    setCreatingNew(false);
+    setOptimistic(null);
     if (!pinnedVariable) {
       setVariableId("");
       setOperator("=");
@@ -515,9 +538,42 @@ export function AddChipButton({
     }
   }
 
-  const variable = variables.find((v) => v.id === variableId) ?? null;
+  // Synthesize a transient VariableState for the just-created variable
+  // so the picker UI can render its name + value while we wait for the
+  // server-side revalidate to bring the real row into `variables`.
+  const optimisticVariable: VariableState | null = optimistic
+    ? {
+        id: optimistic.variableId,
+        name: optimistic.name,
+        kind: "text",
+        number_ref: null,
+        aggregate_ref: null,
+        default_value_id: optimistic.valueId,
+        color_index: 0,
+        color_hex: null,
+        sort_order: 0,
+      }
+    : null;
+  const optimisticValues: EndingVariableValue[] = optimistic
+    ? [
+        {
+          id: optimistic.valueId,
+          variable_id: optimistic.variableId,
+          value: optimistic.valueText,
+          sort_order: 0,
+        },
+      ]
+    : [];
+  const variable =
+    variables.find((v) => v.id === variableId) ??
+    (optimisticVariable && optimisticVariable.id === variableId
+      ? optimisticVariable
+      : null);
   const allowedOps = variable ? allowedOperatorsFor(variable) : ENDING_CHIP_OPERATORS;
-  const eligibleValues = values.filter((v) => v.variable_id === variableId);
+  const eligibleValues = [
+    ...values.filter((v) => v.variable_id === variableId),
+    ...optimisticValues.filter((v) => v.variable_id === variableId),
+  ];
   const aggregateOptions =
     variable?.kind === "aggregate_ref" && variable.aggregate_ref
       ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]
@@ -597,6 +653,30 @@ export function AddChipButton({
     }
   }
 
+  if (creatingNew) {
+    return (
+      <InlineCreateVariableForm
+        onCreated={({ variableId: newId, valueId, name, firstValue }) => {
+          // Stash a transient copy so the picker can render the new
+          // var/value before the parent re-renders with revalidated data.
+          setOptimistic({
+            variableId: newId,
+            valueId,
+            name,
+            valueText: firstValue,
+          });
+          setVariableId(newId);
+          setOperator("=");
+          setTextValueId(valueId);
+          setNumberValue("");
+          setAggregateValue("");
+          setCreatingNew(false);
+        }}
+        onCancel={() => setCreatingNew(false)}
+      />
+    );
+  }
+
   return (
     <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px]">
       {pinnedVariable ? (
@@ -608,6 +688,10 @@ export function AddChipButton({
         value={variableId}
         onChange={(e) => {
           const next = e.target.value;
+          if (next === CREATE_VARIABLE_SENTINEL) {
+            setCreatingNew(true);
+            return;
+          }
           setVariableId(next);
           const picked = variables.find((v) => v.id === next) ?? null;
           // Reset op when the variable changes — allowed-ops depend
@@ -645,6 +729,12 @@ export function AddChipButton({
                 {v.name}
               </option>
             ))}
+            {optimisticVariable &&
+            !textVariables.some((v) => v.id === optimisticVariable.id) ? (
+              <option key={optimisticVariable.id} value={optimisticVariable.id}>
+                {optimisticVariable.name}
+              </option>
+            ) : null}
           </optgroup>
         ) : null}
         {NUMBER_REF_GROUPS.map((group) => {
@@ -675,6 +765,7 @@ export function AddChipButton({
             })}
           </optgroup>
         ) : null}
+        <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
       </Select>
       )}
 

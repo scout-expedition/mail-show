@@ -39,6 +39,10 @@ import {
   type AddChipInput,
 } from "./chip";
 import { DropLine } from "./text-block";
+import {
+  CREATE_VARIABLE_SENTINEL,
+  InlineCreateVariableForm,
+} from "./inline-create-variable";
 
 export function ConditionBlock({
   block,
@@ -720,6 +724,22 @@ function AddHeaderVariablePicker({
   onPick: (variable_id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [creatingNew, setCreatingNew] = useState(false);
+  if (creatingNew) {
+    return (
+      <InlineCreateVariableForm
+        onCreated={({ variableId }) => {
+          setCreatingNew(false);
+          setOpen(false);
+          onPick(variableId);
+        }}
+        onCancel={() => {
+          setCreatingNew(false);
+          setOpen(false);
+        }}
+      />
+    );
+  }
   if (!open) {
     return (
       <button
@@ -759,6 +779,7 @@ function AddHeaderVariablePicker({
   const aggregateOrder: Array<{ ref: string; label: string }> = [
     { ref: "class_affinity", label: "Class Affinity" },
     { ref: "nation_affinity", label: "Nation Affinity" },
+    { ref: "nation_tiebreak_set", label: "Tiebreak Set" },
   ];
 
   return (
@@ -769,6 +790,10 @@ function AddHeaderVariablePicker({
       onBlur={() => setOpen(false)}
       onChange={(e) => {
         const id = e.target.value;
+        if (id === CREATE_VARIABLE_SENTINEL) {
+          setCreatingNew(true);
+          return;
+        }
         if (id) onPick(id);
         setOpen(false);
       }}
@@ -812,6 +837,7 @@ function AddHeaderVariablePicker({
           })}
         </optgroup>
       ) : null}
+      <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
     </select>
   );
 }

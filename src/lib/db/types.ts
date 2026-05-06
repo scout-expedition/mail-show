@@ -269,6 +269,9 @@ export interface EndingVariable {
   number_ref: string | null;
   aggregate_ref: string | null;
   color_index: number;
+  /** User-set color override; null falls back to `paletteColor(color_index)`. */
+  color_hex: string | null;
+  created_at: string;
 }
 
 export interface EndingVariableValue {

@@ -252,8 +252,8 @@ export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
   "top≠": "top is not",
   "bottom=": "bottom is",
   "bottom≠": "bottom is not",
-  set_includes: "tiebreak set includes",
-  set_excludes: "tiebreak set excludes",
+  set_includes: "includes",
+  set_excludes: "does not include",
 };
 
 // Endings — document kinds + block types. Mirrored from

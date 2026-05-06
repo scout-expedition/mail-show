@@ -318,11 +318,26 @@ function resolveTieInline(
     kind === "nation_affinity_top" || kind === "nation_affinity_bottom"
       ? tiedCols
       : undefined;
-  const result = evaluateDocumentInternal(doc, nextEvaluating, {
+  const detailed = evaluateDocumentDetailedInternal(doc, nextEvaluating, {
     initialTiebreakSet,
   });
-  if (result.length !== 1) return null;
-  const docResult = result[0];
+  // Narrowing-mode random sentinels carry the post-`__remove__:` working
+  // set as `detailed.rollPool` — surface that as the chip's roll pool so
+  // the framework preview's tiebreak indicator can offer a reroll button.
+  if (
+    detailed.rollSentinel != null &&
+    detailed.rollPool &&
+    detailed.rollPool.length > 0
+  ) {
+    const pool = detailed.rollPool;
+    const resolvedRoll = pool[Math.floor(Math.random() * pool.length)];
+    if (fromRandom) fromRandom.value = true;
+    if (rollPool) rollPool.value = pool.slice();
+    if (!tiedCols.includes(resolvedRoll)) return null;
+    return resolvedRoll;
+  }
+  if (detailed.paragraphs.length !== 1) return null;
+  const docResult = detailed.paragraphs[0];
   let resolved: string | null;
   if (
     docResult === RANDOM_RESULT_SENTINEL ||
@@ -651,25 +666,86 @@ function evaluateDocumentInternal(
   evaluatingDocs: Set<EndingLogicKind>,
   options?: { initialTiebreakSet?: readonly string[] }
 ): string[] {
+  const detailed = evaluateDocumentDetailedInternal(
+    input,
+    evaluatingDocs,
+    options
+  );
+  // Eagerly expand a deferred random sentinel for runtime callers that
+  // expect a concrete result. Preview callers consume the detailed shape
+  // directly so they can offer a reroll button.
+  if (
+    detailed.rollSentinel != null &&
+    detailed.rollPool &&
+    detailed.rollPool.length > 0
+  ) {
+    return [
+      detailed.rollPool[Math.floor(Math.random() * detailed.rollPool.length)],
+    ];
+  }
+  return detailed.paragraphs;
+}
+
+/**
+ * Like `evaluateDocument` but exposes the rollPool when the resolved
+ * result is a random sentinel — used by the preview UI to surface a
+ * reroll button. The non-narrowing path returns rollPool=null because
+ * its sentinels carry their pool implicitly (preview infers via
+ * `rollPoolForSentinel`); the narrowing path returns the final
+ * working-set snapshot from inside the evaluator.
+ */
+export interface DocumentEvaluation {
+  paragraphs: string[];
+  rollSentinel: string | null;
+  rollPool: string[] | null;
+}
+
+export function evaluateDocumentDetailed(
+  input: EvalInputs,
+  options?: { initialTiebreakSet?: readonly string[] }
+): DocumentEvaluation {
+  return evaluateDocumentDetailedInternal(input, new Set(), options);
+}
+
+function evaluateDocumentDetailedInternal(
+  input: EvalInputs,
+  evaluatingDocs: Set<EndingLogicKind>,
+  options?: { initialTiebreakSet?: readonly string[] }
+): DocumentEvaluation {
   if (options?.initialTiebreakSet) {
-    return evaluateNarrowing(
+    const narrow = evaluateNarrowing(
       input,
       evaluatingDocs,
       options.initialTiebreakSet
     );
+    return {
+      paragraphs:
+        narrow.rollSentinel != null
+          ? [narrow.rollSentinel]
+          : narrow.paragraphs,
+      rollSentinel: narrow.rollSentinel,
+      rollPool: narrow.rollPool,
+    };
   }
   const indexes = buildIndexes(input);
   const root = indexes.byParent.get(parentKey(null, null)) ?? [];
   const result = renderBlocks(root, indexes, input.selections, evaluatingDocs);
-  if (result.paragraphs.length > 0) return result.paragraphs;
-  // Nothing matched. If a fallback block sits at the document root, use
-  // its result_value. (Today only the framework_selection document seeds
-  // a fallback; the migration's partial unique enforces at most one.)
+  if (result.paragraphs.length > 0) {
+    return {
+      paragraphs: result.paragraphs,
+      rollSentinel: null,
+      rollPool: null,
+    };
+  }
   const fallback = root.find((b) => b.block_type === "fallback");
   if (fallback?.result_value != null && fallback.result_value !== "") {
-    return [fallback.result_value];
+    return {
+      paragraphs: [fallback.result_value],
+      rollSentinel: null,
+      rollPool: null,
+    };
   }
-  return [];
+  return { paragraphs: [], rollSentinel: null, rollPool: null };
 }
 
 /**
@@ -680,11 +756,22 @@ function evaluateDocumentInternal(
  * to a single nation, and falls through to the fallback when the
  * tree finishes without picking.
  */
+interface NarrowResolution {
+  paragraphs: string[];
+  rollSentinel: string | null;
+  rollPool: string[] | null;
+}
+
+type SentinelExpansion =
+  | { kind: "value"; value: string }
+  | { kind: "deferred"; sentinel: string; pool: string[] }
+  | { kind: "empty" };
+
 function evaluateNarrowing(
   input: EvalInputs,
   evaluatingDocs: Set<EndingLogicKind>,
   initialTiebreakSet: readonly string[]
-): string[] {
+): NarrowResolution {
   const workingSet = new Set<string>(initialTiebreakSet);
   const selections: PreviewSelections = {
     ...input.selections,
@@ -699,18 +786,35 @@ function evaluateNarrowing(
     workingSet,
     evaluatingDocs
   );
-  if (picked != null) return [picked];
-  if (workingSet.size === 1) return [...workingSet];
+  if (picked.kind === "value") {
+    return { paragraphs: [picked.value], rollSentinel: null, rollPool: null };
+  }
+  if (picked.kind === "deferred") {
+    return {
+      paragraphs: [],
+      rollSentinel: picked.sentinel,
+      rollPool: picked.pool,
+    };
+  }
+  if (workingSet.size === 1) {
+    return { paragraphs: [...workingSet], rollSentinel: null, rollPool: null };
+  }
   // Tree exhausted without picking. Fall through to fallback if any.
   const fallback = root.find((b) => b.block_type === "fallback");
   if (fallback?.result_value != null && fallback.result_value !== "") {
-    const expanded = expandTerminalSentinel(
-      fallback.result_value,
-      workingSet
-    );
-    if (expanded != null) return [expanded];
+    const expanded = expandTerminalSentinel(fallback.result_value, workingSet);
+    if (expanded.kind === "value") {
+      return { paragraphs: [expanded.value], rollSentinel: null, rollPool: null };
+    }
+    if (expanded.kind === "deferred") {
+      return {
+        paragraphs: [],
+        rollSentinel: expanded.sentinel,
+        rollPool: expanded.pool,
+      };
+    }
   }
-  return [];
+  return { paragraphs: [], rollSentinel: null, rollPool: null };
 }
 
 function renderNarrow(
@@ -719,7 +823,7 @@ function renderNarrow(
   selections: PreviewSelections,
   workingSet: Set<string>,
   evaluatingDocs: Set<EndingLogicKind>
-): string | null {
+): SentinelExpansion {
   for (const b of blocks) {
     if (b.block_type === "fallback") continue;
     if (b.block_type === "text") continue;
@@ -729,14 +833,15 @@ function renderNarrow(
       const removeNation = parseRemoveSentinel(v);
       if (removeNation != null) {
         workingSet.delete(removeNation);
-        if (workingSet.size === 0) return null;
-        if (workingSet.size === 1) return [...workingSet][0];
+        if (workingSet.size === 0) return { kind: "empty" };
+        if (workingSet.size === 1) {
+          return { kind: "value", value: [...workingSet][0] };
+        }
         continue;
       }
       const expanded = expandTerminalSentinel(v, workingSet);
-      if (expanded != null) return expanded;
-      // expandTerminalSentinel returned null: empty pool or
-      // unresolvable sentinel. Skip to the next sibling.
+      if (expanded.kind !== "empty") return expanded;
+      // empty: empty pool or unresolvable sentinel. Skip to next sibling.
       continue;
     }
     // Condition block: evaluate ALL matching rows in order, applying
@@ -759,43 +864,39 @@ function renderNarrow(
         workingSet,
         evaluatingDocs
       );
-      if (r != null) return r;
-      if (workingSet.size === 0) return null;
-      if (workingSet.size === 1) return [...workingSet][0];
+      if (r.kind !== "empty") return r;
+      if (workingSet.size === 0) return { kind: "empty" };
+      if (workingSet.size === 1) {
+        return { kind: "value", value: [...workingSet][0] };
+      }
     }
   }
-  return null;
+  return { kind: "empty" };
 }
 
 function expandTerminalSentinel(
   value: string,
   workingSet: Set<string>
-): string | null {
+): SentinelExpansion {
   if (
     value === RANDOM_REMAINING_SENTINEL ||
     value === RANDOM_TIED_SENTINEL ||
-    value === RANDOM_RESULT_SENTINEL
-  ) {
-    if (workingSet.size === 0) return null;
-    const arr = [...workingSet];
-    return arr[Math.floor(Math.random() * arr.length)];
-  }
-  if (value === RANDOM_ALL_SENTINEL) {
+    value === RANDOM_RESULT_SENTINEL ||
     // In narrowing mode, "all" still means the original aggregate's
     // option set — but we no longer have direct access to it here.
-    // Fall back to the working set, which is a strict subset; the
-    // caller uses the narrowing context's tied set as the pool.
-    if (workingSet.size === 0) return null;
-    const arr = [...workingSet];
-    return arr[Math.floor(Math.random() * arr.length)];
+    // Fall back to the working set, which is a strict subset.
+    value === RANDOM_ALL_SENTINEL
+  ) {
+    if (workingSet.size === 0) return { kind: "empty" };
+    return { kind: "deferred", sentinel: value, pool: [...workingSet] };
   }
   if (parseRemoveSentinel(value) != null) {
     // A `__remove__:X` value as a fallback or terminal result is
     // meaningless — there's nothing left to walk. Treat as unresolved.
-    return null;
+    return { kind: "empty" };
   }
   // Definite nation/value.
-  return value;
+  return { kind: "value", value };
 }
 
 interface RenderResult {

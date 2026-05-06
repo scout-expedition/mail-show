@@ -66,19 +66,24 @@ function buildFallbackProp(
 ):
   | {
       options: { value: string; label: string }[];
+      subsetFrameworks?: { value: string; label: string }[];
+      subsetEnabled?: boolean;
       helperText: string;
       emptyLabel: string;
       title: string;
     }
   | undefined {
   if (kind === "framework_selection") {
+    const frameworkOptions = frameworkDocs
+      .filter((f) => f.kind === "framework")
+      .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" }));
     return {
       options: [
-        ...frameworkDocs
-          .filter((f) => f.kind === "framework")
-          .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" })),
+        ...frameworkOptions,
         { value: RANDOM_ALL_SENTINEL, label: "Random (any framework)" },
       ],
+      subsetFrameworks: frameworkOptions,
+      subsetEnabled: true,
       helperText:
         "If nothing above resolves to a framework, return this one.",
       emptyLabel: "— pick a framework —",

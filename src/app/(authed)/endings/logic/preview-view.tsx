@@ -10,7 +10,7 @@ import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import {
   EMPTY_SELECTIONS,
-  evaluateDocument,
+  evaluateDocumentDetailed,
   type EvalBlock,
   type EvalChip,
   type EvalRow,
@@ -35,6 +35,7 @@ import {
   isRandomSentinel,
   parseRandomSubset,
   RANDOM_ALL_SENTINEL,
+  RANDOM_REMAINING_SENTINEL,
   RANDOM_RESULT_SENTINEL,
   RANDOM_TIED_SENTINEL,
   type EndingLogicKind,
@@ -91,6 +92,12 @@ function rollPoolForSentinel(
     ) {
       return [...tiedNations];
     }
+    return null;
+  }
+  if (sentinel === RANDOM_REMAINING_SENTINEL) {
+    // Only meaningful inside narrowing context, which the caller picks
+    // up from `evaluateDocumentDetailed.rollPool`. This branch is the
+    // non-narrowing fallback and has no pool to offer.
     return null;
   }
   return null;
@@ -189,13 +196,13 @@ export function LogicPreviewView({
 
   const result = useMemo(() => {
     if (isNationTab && tiedNations.length > 0) {
-      return evaluateDocument(evalInputs, {
+      return evaluateDocumentDetailed(evalInputs, {
         initialTiebreakSet: tiedNations,
       });
     }
-    return evaluateDocument(evalInputs);
+    return evaluateDocumentDetailed(evalInputs);
   }, [evalInputs, isNationTab, tiedNations]);
-  const resolved = result[0] ?? null;
+  const resolved = result.rollSentinel ?? result.paragraphs[0] ?? null;
 
   const frameworkNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -213,8 +220,13 @@ export function LogicPreviewView({
   // force a fresh roll without any other input change.
   const rollPool = useMemo(() => {
     if (resolved == null || !isRandomSentinel(resolved)) return null;
+    // The narrowing evaluator already returns the post-`__remove__:` working
+    // set as `result.rollPool`; trust it for nation tiebreak random
+    // sentinels. For other paths (non-narrowing) infer the pool from the
+    // sentinel + preview context.
+    if (result.rollPool && result.rollPool.length > 0) return result.rollPool;
     return rollPoolForSentinel(resolved, docKind, frameworks, tiedNations);
-  }, [resolved, docKind, frameworks, tiedNations]);
+  }, [resolved, result.rollPool, docKind, frameworks, tiedNations]);
   const poolSnapshot = useMemo(
     () => (rollPool ? [...rollPool].sort().join("|") : null),
     [rollPool]
@@ -385,7 +397,15 @@ export function LogicPreviewView({
                       .join(", ");
                     return `random — rolled from ${subset.length}: ${names}`;
                   }
-                  return `random — rolled from ${rollPool.length} option${rollPool.length === 1 ? "" : "s"}`;
+                  const labels = rollPool.map((opt) => {
+                    if (docKind === "framework_selection") {
+                      return frameworkNameById.get(opt) ?? "(deleted)";
+                    }
+                    return (
+                      (VARIABLE_LABELS as Record<string, string>)[opt] ?? opt
+                    );
+                  });
+                  return `random — rolled from ${rollPool.length} option${rollPool.length === 1 ? "" : "s"} (${labels.join(", ")})`;
                 })()}
               </span>
             </div>

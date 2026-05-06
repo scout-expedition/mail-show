@@ -135,6 +135,10 @@ export interface DocumentEditorProps {
    *  text under the label. */
   fallback?: {
     options: { value: string; label: string }[];
+    /** Frameworks available for the custom-subset picker; only consulted
+     *  when `subsetEnabled` is true (framework_selection only). */
+    subsetFrameworks?: { value: string; label: string }[];
+    subsetEnabled?: boolean;
     helperText: string;
     emptyLabel: string;
     /** Header label on the fallback panel (e.g. "Fallback ending" or
@@ -305,7 +309,8 @@ export function DocumentEditor({
           number_ref: v.number_ref,
           aggregate_ref:
             v.aggregate_ref === "class_affinity" ||
-            v.aggregate_ref === "nation_affinity"
+            v.aggregate_ref === "nation_affinity" ||
+            v.aggregate_ref === "nation_tiebreak_set"
               ? v.aggregate_ref
               : null,
           default_value_id: v.default_value_id,
@@ -436,6 +441,11 @@ export function DocumentEditor({
     for (const v of variableState) {
       if (!ids.has(v.id)) continue;
       if (v.kind !== "aggregate_ref" || !v.aggregate_ref) continue;
+      // nation_tiebreak_set chips check set-membership against the working
+      // tiebreak set, not the underlying nation impact-column scores —
+      // pulling those columns into the preview would show inputs that
+      // have no effect on the result.
+      if (v.aggregate_ref === "nation_tiebreak_set") continue;
       for (const col of AGGREGATE_OPTIONS_BY_REF[v.aggregate_ref]) {
         const underlying = numberRefByName.get(col);
         if (underlying) ids.add(underlying.id);
@@ -858,6 +868,8 @@ export function DocumentEditor({
                 <FallbackBlock
                   block={fallbackBlock}
                   options={fallback.options}
+                  subsetFrameworks={fallback.subsetFrameworks}
+                  subsetEnabled={fallback.subsetEnabled}
                   helperText={fallback.helperText}
                   emptyLabel={fallback.emptyLabel}
                   title={fallback.title}
