@@ -21,8 +21,11 @@ import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
+  formatRandomSubset,
+  parseRandomSubset,
   RANDOM_ALL_SENTINEL,
   RANDOM_RESULT_SENTINEL,
+  RANDOM_SUBSET_SENTINEL_PREFIX,
   RANDOM_TIED_SENTINEL,
   type EndingLogicKind,
 } from "@/lib/db/enums";
@@ -34,14 +37,25 @@ import { DropLine } from "./text-block";
 
 export type ResultOption = { value: string; label: string };
 
+/** Marker value for the "Random (custom subset)" dropdown row. The
+ *  picker rewrites this to a real subset sentinel once the user has
+ *  toggled the framework checkboxes. */
+const SUBSET_PICKER_VALUE = `${RANDOM_SUBSET_SENTINEL_PREFIX}__pending__`;
+
 export function ResultBlock({
   block,
   options,
+  /** Frameworks available for the custom-subset picker. Only used when
+   *  `subsetEnabled` is true; ignored otherwise. */
+  subsetFrameworks,
+  subsetEnabled,
   onChange,
   onDelete,
 }: {
   block: BlockState;
   options: ResultOption[];
+  subsetFrameworks?: ResultOption[];
+  subsetEnabled?: boolean;
   onChange: (result_value: string) => void;
   onDelete: () => void;
 }) {
@@ -72,10 +86,58 @@ export function ResultBlock({
 
   const value = block.result_value ?? "";
   const isEmpty = value === "";
+  const subset = subsetEnabled ? parseRandomSubset(value) : null;
+  const isSubset = subset != null;
   // If the persisted value is no longer in the option list (e.g. a
   // framework was deleted), surface it as an "unknown" entry so the
-  // author notices and re-picks. We never hide it silently.
-  const valueKnown = isEmpty || options.some((o) => o.value === value);
+  // author notices and re-picks. We never hide it silently. Subset
+  // values render via their own virtual entry below.
+  const valueKnown =
+    isEmpty || isSubset || options.some((o) => o.value === value);
+
+  // Subset count for the dropdown label. Frameworks no longer in the
+  // available list (deleted) still count toward the stored size — the
+  // user sees "(missing: …)" in the inline picker.
+  const subsetSize = subset?.length ?? 0;
+  const subsetTotal = subsetFrameworks?.length ?? 0;
+  const subsetLabel = isSubset
+    ? `Random (subset: ${subsetSize}${
+        subsetTotal > 0 ? ` of ${subsetTotal}` : ""
+      })`
+    : "";
+
+  function handleSelectChange(next: string) {
+    if (next === SUBSET_PICKER_VALUE) {
+      // Default subset = every available framework. Authors then
+      // uncheck what they don't want. Empty subset is rejected by
+      // server validation, so we never seed an empty list.
+      const defaultIds = (subsetFrameworks ?? []).map((f) => f.value);
+      if (defaultIds.length === 0) return; // no frameworks → nothing to pick
+      onChange(formatRandomSubset(defaultIds));
+      return;
+    }
+    onChange(next);
+  }
+
+  function toggleSubsetId(id: string) {
+    if (!isSubset) return;
+    const current = new Set(subset);
+    if (current.has(id)) current.delete(id);
+    else current.add(id);
+    if (current.size === 0) return; // never persist an empty subset
+    // Preserve the order of subsetFrameworks so reordering frameworks
+    // upstream doesn't churn the stored value.
+    const ordered = (subsetFrameworks ?? [])
+      .map((f) => f.value)
+      .filter((id2) => current.has(id2));
+    // Include any unknown ids (deleted frameworks) still in `current`
+    // at the end — iterate `current`, not the pre-toggle `subset`,
+    // otherwise an unchecked-then-removed id would be re-added here.
+    for (const id2 of current) {
+      if (!ordered.includes(id2)) ordered.push(id2);
+    }
+    onChange(formatRandomSubset(ordered));
+  }
 
   return (
     <div ref={ref} className="relative">
@@ -129,32 +191,46 @@ export function ResultBlock({
         >
           <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 items-center gap-2 py-1">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-            →
-          </span>
-          <Select
-            value={valueKnown ? value : value}
-            onChange={(e) => onChange(e.target.value)}
-            className={cn(
-              "ml-auto h-8 w-auto min-w-[200px]",
-              GHOST_FIELD,
-              isEmpty &&
-                "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
-            )}
-          >
-            {isEmpty ? (
-              <option value="">— pick a result —</option>
-            ) : null}
-            {!isEmpty && !valueKnown ? (
-              <option value={value}>(unknown: {value})</option>
-            ) : null}
-            {options.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
+        <div className="flex flex-1 flex-col gap-2 py-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+              →
+            </span>
+            <Select
+              value={isSubset ? SUBSET_PICKER_VALUE : value}
+              onChange={(e) => handleSelectChange(e.target.value)}
+              className={cn(
+                "ml-auto h-8 w-auto min-w-[200px]",
+                GHOST_FIELD,
+                isEmpty &&
+                  "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
+              )}
+            >
+              {isEmpty ? (
+                <option value="">— pick a result —</option>
+              ) : null}
+              {!isEmpty && !valueKnown ? (
+                <option value={value}>(unknown: {value})</option>
+              ) : null}
+              {options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+              {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
+                <option value={SUBSET_PICKER_VALUE}>
+                  {isSubset ? subsetLabel : "Random (custom subset)…"}
+                </option>
+              ) : null}
+            </Select>
+          </div>
+          {isSubset && subsetFrameworks ? (
+            <SubsetPicker
+              frameworks={subsetFrameworks}
+              selectedIds={subset!}
+              onToggle={toggleSubsetId}
+            />
+          ) : null}
         </div>
         <button
           type="button"
@@ -238,6 +314,16 @@ export function makeResultBlock(
   })();
   const options: ResultOption[] = [...baseOptions, ...randomOptions];
 
+  // Custom-subset random is only meaningful for framework_selection.
+  // The picker reads from `subsetFrameworks`; the dropdown shows
+  // "Random (custom subset)…" only when this flag is on.
+  const subsetEnabled = kind === "framework_selection";
+  const subsetFrameworks: ResultOption[] | undefined = subsetEnabled
+    ? frameworks
+        .filter((f) => f.kind === "framework")
+        .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" }))
+    : undefined;
+
   function ConfiguredResultBlock(props: {
     block: BlockState;
     onChange: (result_value: string) => void;
@@ -247,11 +333,78 @@ export function makeResultBlock(
     // <option> map keys; the captured `options` is already stable across
     // makeResultBlock calls so this is mostly belt-and-braces.
     const memoOptions = useMemo(() => options, []);
-    return <ResultBlock options={memoOptions} {...props} />;
+    const memoSubset = useMemo(() => subsetFrameworks, []);
+    return (
+      <ResultBlock
+        options={memoOptions}
+        subsetFrameworks={memoSubset}
+        subsetEnabled={subsetEnabled}
+        {...props}
+      />
+    );
   }
   ConfiguredResultBlock.displayName = `ResultBlock(${kind})`;
   return {
     Component: ConfiguredResultBlock,
     defaultValue: options[0]?.value ?? null,
   };
+}
+
+function SubsetPicker({
+  frameworks,
+  selectedIds,
+  onToggle,
+}: {
+  frameworks: ResultOption[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  const selectedSet = new Set(selectedIds);
+  const known = new Set(frameworks.map((f) => f.value));
+  const missing = selectedIds.filter((id) => !known.has(id));
+  return (
+    <div className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-border/60 bg-muted/10 p-2 sm:grid-cols-2">
+      {frameworks.length === 0 ? (
+        <p className="col-span-full text-[11px] italic text-muted-foreground">
+          No frameworks available.
+        </p>
+      ) : null}
+      {frameworks.map((f) => {
+        const checked = selectedSet.has(f.value);
+        const disable = checked && selectedIds.length === 1;
+        return (
+          <label
+            key={f.value}
+            className={cn(
+              "flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-muted/30",
+              disable && "cursor-not-allowed opacity-60"
+            )}
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={disable}
+              onChange={() => onToggle(f.value)}
+              className="h-3 w-3"
+            />
+            <span className="truncate">{f.label}</span>
+          </label>
+        );
+      })}
+      {missing.map((id) => (
+        <label
+          key={id}
+          className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-warning-foreground hover:bg-warning/10"
+        >
+          <input
+            type="checkbox"
+            checked
+            onChange={() => onToggle(id)}
+            className="h-3 w-3"
+          />
+          <span className="truncate">(missing framework: {id})</span>
+        </label>
+      ))}
+    </div>
+  );
 }

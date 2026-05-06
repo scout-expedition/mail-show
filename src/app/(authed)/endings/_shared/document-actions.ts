@@ -19,6 +19,8 @@ import { colorIndexFor } from "@/lib/endings/color-palette";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   isRandomSentinel,
+  parseRandomSubset,
+  RANDOM_SUBSET_SENTINEL_PREFIX,
   type EndingBlockType,
   type EndingChipOperator,
   type EndingDocumentKind,
@@ -191,9 +193,43 @@ async function validateResultValue(
   if (kind === "framework") {
     throw new Error("Framework documents cannot contain result blocks.");
   }
-  // Random sentinels (tied / all / legacy alias) are allowed on every
-  // logic-kind doc. The evaluator expands them at call sites; storage
-  // is just the literal.
+  // Custom-subset random is only valid on framework_selection — the
+  // payload is a JSON list of framework UUIDs to randomize over.
+  // Reject any value that wears the prefix but doesn't parse, so
+  // malformed payloads can't slip past the rest of the matchers.
+  if (result_value.startsWith(RANDOM_SUBSET_SENTINEL_PREFIX)) {
+    if (kind !== "framework_selection") {
+      throw new Error(
+        `Custom-subset random is only valid on framework_selection (got ${kind}).`
+      );
+    }
+    const subset = parseRandomSubset(result_value);
+    if (subset == null) {
+      throw new Error(
+        `Malformed random-subset result_value '${result_value}'.`
+      );
+    }
+    const { data: subsetDocs, error } = await supabase
+      .from("ending_documents")
+      .select("id, kind")
+      .in("id", subset);
+    if (error) throw new Error(error.message);
+    const found = new Map(
+      (subsetDocs ?? []).map((d) => [d.id as string, d.kind as string])
+    );
+    for (const id of subset) {
+      const docKind = found.get(id);
+      if (docKind !== "framework") {
+        throw new Error(
+          `Invalid framework_selection subset entry '${id}': must be the id of a framework document.`
+        );
+      }
+    }
+    return;
+  }
+  // Plain random sentinels (tied / all / legacy alias) are allowed on
+  // every logic-kind doc. The evaluator expands them at call sites;
+  // storage is just the literal.
   if (isRandomSentinel(result_value)) return;
   const logicKind = kind as EndingLogicKind;
   const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[logicKind];

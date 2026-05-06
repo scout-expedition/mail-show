@@ -43,6 +43,7 @@ Preview:
 - Framework preview surfaces a tie-indicator panel above the paragraphs: each tied `(ref, side)` shows the tied options + the resolved winner. When the resolution came from a random sentinel, a `Dice5` button between the arrow and the value rerolls **just that key** (per-key cache keyed by aggregateKey, snapshot-validated against the current pool).
 - Variable inputs use the actions-page tile UI (shared `src/components/impact-tile.tsx`) — class affinity, nations, world status / demerits each in their own grouped box. Custom number_ref columns + text variables keep the previous label + input layout.
 - Preview eye toggle keeps the same icon on both states; only the active background swaps.
+- Custom-subset random for `framework_selection` result blocks: `__random_subset__:[…]` sentinel + JSON id list, parse/format helpers in `enums.ts`, server-action validation against `kind='framework'` rows, multi-select checkbox picker on the result block, and preview line listing the candidate framework names.
 
 Tests + tooling:
 - `tests/integration/endings_logic_v2_constraints.test.ts` covers all CHECKs + partial unique indexes + seeded singletons.
@@ -440,8 +441,7 @@ After all steps:
 
 ### Active — discussed but not shipped
 
-- **Nation affinity cardinality split.** Subdivide `nation_affinity_top` / `nation_affinity_bottom` into 2-way / 3-way / 4-way / 5-way tie sections. Sketched as Option A (separate `nation_affinity_{top,bottom}_{2,3,4,5}way` doc kinds; evaluator picks by `tiedCount`). Class affinity is unaffected (only 2 options). User parked the decision: "let me think about more first."
-- **Custom-subset random for framework_selection result blocks.** Author picks a specific list of frameworks to randomize over. Needs a multi-select picker UI + richer storage (suggested: JSON-encoded subset in `result_value`, e.g. `__random_subset__:["fwId1","fwId2"]`). Today only `Random (any framework)` exists.
+- **Nation affinity cardinality split.** Deferred — explicitly future work as of 2026-05-06. Subdivide `nation_affinity_top` / `nation_affinity_bottom` into 2-way / 3-way / 4-way / 5-way tie sections. Sketched as Option A (separate `nation_affinity_{top,bottom}_{2,3,4,5}way` doc kinds; evaluator picks by `tiedCount`). Class affinity is unaffected (only 2 options).
 - **Step 5 — top-level `evaluateEnding`.** Wire the `framework_selection` doc into the playthrough so it actually picks the framework at game-end, and expand `__random_all__` for that doc at runtime. The dropped `ending_logic_rules` flow has no replacement at the runtime layer yet — authors can configure `framework_selection` but no caller consumes it.
 - **Step 6 — E2E rewrite.** `tests/e2e/endings-frameworks.spec.ts` is currently `test.skip` on every test. Rewrite for the unified shape: 3 logic tabs render, persistence per tab, tiebreak resolution end-to-end via the framework preview, fallback usage on each fallback-bearing doc.
 

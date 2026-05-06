@@ -350,6 +350,20 @@ export const RANDOM_RESULT_SENTINEL = "__random__";
 export const RANDOM_TIED_SENTINEL = "__random_tied__";
 export const RANDOM_ALL_SENTINEL = "__random_all__";
 
+/**
+ * Custom-subset random for `framework_selection` result blocks. Author
+ * picks a specific list of framework document_ids to randomize over;
+ * runtime expansion uniformly samples one of them. Storage is the
+ * prefix followed by a JSON array of UUIDs:
+ *
+ *   __random_subset__:["fwId1","fwId2","fwId3"]
+ *
+ * `parseRandomSubset` returns the id array, or `null` if the value
+ * isn't a subset sentinel or the JSON payload doesn't parse to a
+ * non-empty array of strings.
+ */
+export const RANDOM_SUBSET_SENTINEL_PREFIX = "__random_subset__:";
+
 export const RANDOM_SENTINELS = [
   RANDOM_RESULT_SENTINEL,
   RANDOM_TIED_SENTINEL,
@@ -357,7 +371,33 @@ export const RANDOM_SENTINELS = [
 ] as const;
 
 export function isRandomSentinel(value: string | null | undefined): boolean {
-  return value === RANDOM_RESULT_SENTINEL ||
+  if (value == null) return false;
+  return (
+    value === RANDOM_RESULT_SENTINEL ||
     value === RANDOM_TIED_SENTINEL ||
-    value === RANDOM_ALL_SENTINEL;
+    value === RANDOM_ALL_SENTINEL ||
+    value.startsWith(RANDOM_SUBSET_SENTINEL_PREFIX)
+  );
+}
+
+export function formatRandomSubset(ids: readonly string[]): string {
+  return `${RANDOM_SUBSET_SENTINEL_PREFIX}${JSON.stringify(ids)}`;
+}
+
+export function parseRandomSubset(
+  value: string | null | undefined
+): string[] | null {
+  if (value == null) return null;
+  if (!value.startsWith(RANDOM_SUBSET_SENTINEL_PREFIX)) return null;
+  const json = value.slice(RANDOM_SUBSET_SENTINEL_PREFIX.length);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  if (parsed.length === 0) return null;
+  if (!parsed.every((v): v is string => typeof v === "string")) return null;
+  return parsed;
 }

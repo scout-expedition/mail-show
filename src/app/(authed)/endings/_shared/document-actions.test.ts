@@ -344,6 +344,76 @@ describe("shared document actions", () => {
         })
       ).rejects.toThrow(/framework_selection result_value/i);
     });
+
+    it("accepts a custom-subset payload of valid framework UUIDs on framework_selection", async () => {
+      const fwA = await seedFrameworkDoc();
+      const fwB = await seedFrameworkDoc();
+      const docId = await logicDocId("framework_selection");
+      const subsetValue = `__random_subset__:${JSON.stringify([fwA, fwB])}`;
+      const { id } = await addBlock({
+        document_id: docId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "result",
+        result_value: subsetValue,
+      });
+      const { data } = await sb
+        .from("ending_blocks")
+        .select("result_value")
+        .eq("id", id)
+        .single();
+      expect(data?.result_value).toBe(subsetValue);
+      const fd = new FormData();
+      fd.set("id", id);
+      await deleteBlock(fd);
+    });
+
+    it("rejects a custom-subset payload that references a non-framework id", async () => {
+      const fwA = await seedFrameworkDoc();
+      const otherLogicId = await logicDocId("class_affinity_top");
+      const docId = await logicDocId("framework_selection");
+      const subsetValue = `__random_subset__:${JSON.stringify([
+        fwA,
+        otherLogicId,
+      ])}`;
+      await expect(
+        addBlock({
+          document_id: docId,
+          parent_block_id: null,
+          parent_row_id: null,
+          block_type: "result",
+          result_value: subsetValue,
+        })
+      ).rejects.toThrow(/subset entry/i);
+    });
+
+    it("rejects a custom-subset payload with a malformed JSON body", async () => {
+      const docId = await logicDocId("framework_selection");
+      await expect(
+        addBlock({
+          document_id: docId,
+          parent_block_id: null,
+          parent_row_id: null,
+          block_type: "result",
+          result_value: "__random_subset__:not-json",
+        })
+      ).rejects.toThrow(/Malformed random-subset/i);
+    });
+
+    it("rejects custom-subset on a non-framework_selection logic doc", async () => {
+      const fwA = await seedFrameworkDoc();
+      const docId = await logicDocId("class_affinity_top");
+      const subsetValue = `__random_subset__:${JSON.stringify([fwA])}`;
+      await expect(
+        addBlock({
+          document_id: docId,
+          parent_block_id: null,
+          parent_row_id: null,
+          block_type: "result",
+          result_value: subsetValue,
+        })
+      ).rejects.toThrow(/Custom-subset random is only valid/i);
+    });
   });
 
   // -------------------------------------------------------------------
