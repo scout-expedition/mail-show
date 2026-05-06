@@ -33,12 +33,15 @@ export function FallbackBlock({
   options,
   helperText,
   emptyLabel,
+  title,
   onChange,
 }: {
   block: BlockState;
   options: FallbackOption[];
   helperText: string;
   emptyLabel: string;
+  /** Header label on the panel. Defaults to "Fallback ending". */
+  title?: string;
   onChange: (result_value: string | null) => void;
 }) {
   const value = block.result_value ?? "";
@@ -49,7 +52,7 @@ export function FallbackBlock({
     <section className="mt-4 grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-dashed border-border bg-muted/20 p-2">
       <div className="self-start">
         <Label className="mb-1 block text-[11px] uppercase tracking-wide">
-          Fallback ending
+          {title ?? "Fallback ending"}
         </Label>
         <p className="text-[11px] text-muted-foreground">{helperText}</p>
       </div>

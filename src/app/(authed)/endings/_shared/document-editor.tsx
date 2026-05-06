@@ -137,6 +137,9 @@ export interface DocumentEditorProps {
     options: { value: string; label: string }[];
     helperText: string;
     emptyLabel: string;
+    /** Header label on the fallback panel (e.g. "Fallback ending" or
+     *  "Tiebreak Fallback"). Defaults to "Fallback ending". */
+    title?: string;
   };
   /** Per-logic-kind tiebreak summary for the static analyzer. When the
    *  doc the analyzer is running on has aggregate chips, tied outcomes
@@ -857,6 +860,7 @@ export function DocumentEditor({
                   options={fallback.options}
                   helperText={fallback.helperText}
                   emptyLabel={fallback.emptyLabel}
+                  title={fallback.title}
                   onChange={(result_value) =>
                     updateBlock(fallbackBlock.id, { result_value })
                   }

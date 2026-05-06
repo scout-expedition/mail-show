@@ -264,12 +264,12 @@ export const ENDING_LOGIC_TABS = [
   { id: "framework_selection", label: "Ending", kinds: ["framework_selection"] as const },
   {
     id: "class_affinity",
-    label: "Class Affinity",
+    label: "Class Tiebreak",
     kinds: ["class_affinity_top"] as const,
   },
   {
     id: "nation_affinity",
-    label: "Nation Affinity",
+    label: "Nation Tiebreak",
     kinds: ["nation_affinity_top", "nation_affinity_bottom"] as const,
   },
 ] as const;

@@ -50,13 +50,14 @@ import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
   RANDOM_ALL_SENTINEL,
   RANDOM_RESULT_SENTINEL,
+  RANDOM_TIED_SENTINEL,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 
 /**
- * Build the `fallback` prop DocumentEditor expects for a logic doc, or
- * undefined if the doc doesn't have a fallback (only framework_selection
- * + class_affinity_top do today; nation affinity tabs don't).
+ * Build the `fallback` prop DocumentEditor expects for a logic doc.
+ * Framework_selection picks a framework UUID; the three tiebreak docs
+ * pick a class/nation column or a random sentinel.
  */
 function buildFallbackProp(
   kind: EndingLogicKind,
@@ -66,6 +67,7 @@ function buildFallbackProp(
       options: { value: string; label: string }[];
       helperText: string;
       emptyLabel: string;
+      title: string;
     }
   | undefined {
   if (kind === "framework_selection") {
@@ -79,6 +81,7 @@ function buildFallbackProp(
       helperText:
         "If nothing above resolves to a framework, return this one.",
       emptyLabel: "— pick a framework —",
+      title: "Fallback ending",
     };
   }
   if (kind === "class_affinity_top") {
@@ -95,8 +98,26 @@ function buildFallbackProp(
         { value: RANDOM_RESULT_SENTINEL, label: "Random" },
       ],
       helperText:
-        "If nothing above resolves a tied class affinity, return this winner.",
+        "If nothing above resolves a tied class, return this winner.",
       emptyLabel: "— pick a class —",
+      title: "Tiebreak Fallback",
+    };
+  }
+  if (kind === "nation_affinity_top" || kind === "nation_affinity_bottom") {
+    const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind] ?? [];
+    return {
+      options: [
+        ...allowed.map((v) => ({
+          value: v,
+          label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
+        })),
+        { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
+        { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
+      ],
+      helperText:
+        "If nothing above resolves a tied nation, return this winner.",
+      emptyLabel: "— pick a nation —",
+      title: "Tiebreak Fallback",
     };
   }
   return undefined;
