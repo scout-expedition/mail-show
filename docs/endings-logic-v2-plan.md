@@ -11,6 +11,45 @@ This plan covers two things at once because they collapse to the same primitive:
 1. **Tiebreaker resolution for aggregate chips.** Today `top=` / `bottom=` chips return `false` on a tie (Phase 4 evaluator) and the static analysis flags the tie state as uncovered (Phase 5). Authoring usually wants ties to resolve deterministically.
 2. **Logic-tab migration to chip-row primitive.** The current `ending_logic_rules` table is a flat ordered list of `[var=value, …] → framework`. The master plan §Followups names the migration to chip-row as a separate effort. It's a separate effort no longer — the tiebreak UI naturally wants the chip-row primitive, and a unified model means we don't ship two parallel block trees.
 
+## Status snapshot (as of 2026-05-05)
+
+Branch: `endings-logic-v2`. Migrations 0022 / 0023 / 0024 / 0025 applied to local Supabase + the hosted dev project. `pnpm typecheck` clean; 238 unit tests + 109 integration tests green.
+
+### Shipped on this branch
+
+Schema + primitives:
+- 0022 unified `ending_documents` + `ending_blocks` (block_type widened to text/condition/result), seeded 5 logic-kind singletons.
+- 0023 added `fallback` block_type + partial unique singleton index; backfilled fallback for `framework_selection`.
+- 0024 dropped redundant `class_affinity_bottom` doc (only 2 options; bottom is implicit).
+- 0025 backfilled fallback for `class_affinity_top`.
+
+Editor UX:
+- Frameworks workspace switched to the unified shape. Logic page rebuilt with three sub-tabs (Ending / Class Affinity / Nation Affinity).
+- Adders + drag-drop both enforce result-block uniqueness in a sibling group; drop highlight hides on invalid targets.
+- Auto-seed default leaf when adding a condition row (text for frameworks, kind-default result for logic).
+- Per-doc fallback panel (Ending Framework + Class Affinity), with arrow-aligned styling matching root-level result blocks.
+- Result picker offers per-kind `Random` (Class: single Random; Nation: tied vs all; Ending Framework: any framework). Sentinel values: `__random__` (legacy alias for tied), `__random_tied__`, `__random_all__`.
+- Friendly impact labels (Working Class / Upper Class / nation names) in result + fallback pickers.
+- Tab "Ending Framework" → "Ending"; panel title "Framework Logic". Removed "(declare variables on the block header)" placeholder.
+
+Evaluator + analysis:
+- `evaluateFramework` generalised to `evaluateDocument`, supports `text` + `result` leaves and the `fallback` block.
+- `resolveAggregates(Detailed)` runs once per evaluation pass before chip eval. Pre-resolved winners flow through `selections.resolved_aggregates` so all chips on the same `(ref, side)` see the same value (eliminates per-chip random-rolling drift).
+- Tiebreak resolution covers all three random sentinels + class-affinity invert; cycle guard via `evaluatingDocs` set.
+- Static analyzer threads a per-kind `tiebreakDocsSummary` (`{ isEmpty }`) so non-empty tiebreak docs drop the tie state from aggregate uncovered enumeration. Wired in both `frameworks/page.tsx` and `logic-editor.tsx`.
+
+Preview:
+- Generic logic-doc preview (`/endings/logic` tabs) showing variable inputs + "Resolves to" line; framework UUIDs map to names.
+- Framework preview surfaces a tie-indicator panel above the paragraphs: each tied `(ref, side)` shows the tied options + the resolved winner. When the resolution came from a random sentinel, a `Dice5` button between the arrow and the value rerolls **just that key** (per-key cache keyed by aggregateKey, snapshot-validated against the current pool).
+- Variable inputs use the actions-page tile UI (shared `src/components/impact-tile.tsx`) — class affinity, nations, world status / demerits each in their own grouped box. Custom number_ref columns + text variables keep the previous label + input layout.
+- Preview eye toggle keeps the same icon on both states; only the active background swaps.
+
+Tests + tooling:
+- `tests/integration/endings_logic_v2_constraints.test.ts` covers all CHECKs + partial unique indexes + seeded singletons.
+- Existing actions / e2e tests that referenced dropped tables are `describe.skip` / `test.skip` with comments pointing at the step that resurrects them.
+
+### Not shipped — see "Out of scope (followups)" below for the active list.
+
 ## Context
 
 The user's design (from chat):
@@ -399,10 +438,26 @@ After all steps:
 
 ## Out of scope (followups)
 
+### Active — discussed but not shipped
+
+- **Nation affinity cardinality split.** Subdivide `nation_affinity_top` / `nation_affinity_bottom` into 2-way / 3-way / 4-way / 5-way tie sections. Sketched as Option A (separate `nation_affinity_{top,bottom}_{2,3,4,5}way` doc kinds; evaluator picks by `tiedCount`). Class affinity is unaffected (only 2 options). User parked the decision: "let me think about more first."
+- **Custom-subset random for framework_selection result blocks.** Author picks a specific list of frameworks to randomize over. Needs a multi-select picker UI + richer storage (suggested: JSON-encoded subset in `result_value`, e.g. `__random_subset__:["fwId1","fwId2"]`). Today only `Random (any framework)` exists.
+- **Step 5 — top-level `evaluateEnding`.** Wire the `framework_selection` doc into the playthrough so it actually picks the framework at game-end, and expand `__random_all__` for that doc at runtime. The dropped `ending_logic_rules` flow has no replacement at the runtime layer yet — authors can configure `framework_selection` but no caller consumes it.
+- **Step 6 — E2E rewrite.** `tests/e2e/endings-frameworks.spec.ts` is currently `test.skip` on every test. Rewrite for the unified shape: 3 logic tabs render, persistence per tab, tiebreak resolution end-to-end via the framework preview, fallback usage on each fallback-bearing doc.
+
+### Smaller polish + cleanup
+
+- **`pnpm db:migrate` env-file convenience.** Switch `package.json`'s `db:migrate` script from plain `tsx scripts/apply-migration.ts` to `tsx --env-file=.env.local scripts/apply-migration.ts`. We agreed to hold for a separate PR. Without it, you currently have to `set -a; source .env.local; set +a; pnpm db:migrate`.
+- **Move `inspection/letters/workspace.tsx` to use the shared `src/components/impact-tile.tsx`.** That file ships its own local `ClassTile` / `NationTile` / `CounterInput` for now; the shared module was added during the framework-preview tile work but only the preview consumes it. Mechanical cleanup, low risk.
 - **Inline variable creation in the frameworks editor.** Today the chip picker only selects preexisting variables — authors have to leave the editor, create a variable on the Variables tab, then come back. Add an inline "+ New variable" path in the chip picker (and the header-variable picker). Same shape as the existing `createVariableInline` / `createValueInline` used in the pre-rebuild logic editor — pull those server actions forward.
-- **Tiebreak doc completeness analysis.** Statically prove the doc covers every tied assignment, drop the lower-bound caveat. v1 only checks "doc has rows".
+
+### Out of scope long-term (named for completeness)
+
+- **Tiebreak doc completeness analysis.** Statically prove the doc covers every tied assignment, drop the lower-bound caveat. v1 only checks "doc has rows or fallback set".
 - **Per-storyline tiebreak.** A storyline could in theory carry its own tiebreak override. Not requested.
-- **Logic doc preview pane.** Frameworks have a preview tab that renders the chosen paragraph; logic docs would have an analogous "what does this resolve to?" preview. Add once authoring asks.
+- **Logic doc preview pane** (richer). Today's `LogicPreviewView` shows a basic "Resolves to" line per kind. Could add overlap/shadow badges, fallback indication, etc.
 - **Drag-drop reorder for header variables.** Master plan §Followups carry-over.
-- **Manual color picker.** Still pending.
+- **Manual color picker** for variables. Still pending.
+- **Per-key reroll polish.** Surgical reroll works; a future polish could animate the value swap or remember reroll history.
+- **Autosave / collaborative editing.** Master plan §Followups — separate effort. The unified primitive shares the framework save model and rides the same future migration.
 - **Autosave / collaborative editing.** Master plan §Followups — separate effort. The unified primitive shares the framework save model and rides the same future migration.
