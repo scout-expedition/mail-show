@@ -103,7 +103,7 @@ export interface DocumentEditorProps {
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
-  nations: Pick<Nation, "name" | "color_hex">[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   /** Leaf components by block_type. Frameworks pass `{ text }`; logic
    *  docs pass `{ result }`. */
   leaves: LeafComponents;

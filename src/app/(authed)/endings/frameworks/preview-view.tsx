@@ -26,13 +26,18 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
-import type { EndingVariableValue } from "@/lib/db/types";
+import type { EndingVariableValue, Nation } from "@/lib/db/types";
 import {
   AGGREGATE_OPTIONS_BY_REF,
   type AggregateRef,
   type EndingLogicKind,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
+import {
+  ImpactTile,
+  NationImpactTile,
+  IMPACT_TILE_PRESETS,
+} from "@/components/impact-tile";
 
 export function PreviewView({
   name,
@@ -46,6 +51,7 @@ export function PreviewView({
   onChangeText,
   onChangeNumber,
   tiebreakInputs,
+  nations,
 }: {
   name: string;
   blocks: BlockState[];
@@ -58,6 +64,10 @@ export function PreviewView({
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
   tiebreakInputs?: Map<EndingLogicKind, EvalInputs>;
+  nations?: Pick<
+    Nation,
+    "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
+  >[];
 }) {
   // Build the impact-column → variable_id map once. Aggregate chips need
   // it to look the underlying scores out of `selections.numbers`.
@@ -217,6 +227,74 @@ export function PreviewView({
       }));
   }, [evalInputs, chips, rows, values, variables]);
 
+  // Split the referenced number_ref variables into the same buckets the
+  // actions page renders: class affinities, nation impacts, and the
+  // demerits/world_status pair. Other number_ref variables (custom or
+  // unfamiliar columns) fall through to a generic numeric input.
+  const NATION_IMPACT_COLS = useMemo(
+    () => new Set(["folos", "emberlyn", "spokgrad", "pelico", "epicenter"]),
+    []
+  );
+  const CLASS_IMPACT_COLS = useMemo(
+    () => new Set(["proletariat", "gentry"]),
+    []
+  );
+  const WORLD_IMPACT_COLS = useMemo(
+    () => new Set(["world_status", "demerits"]),
+    []
+  );
+  const nationByName = useMemo(() => {
+    const m = new Map<
+      string,
+      Pick<
+        Nation,
+        "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
+      >
+    >();
+    for (const n of nations ?? []) m.set(n.name.toLowerCase(), n);
+    return m;
+  }, [nations]);
+
+  const buckets = useMemo(() => {
+    const text: VariableState[] = [];
+    const classImpacts: VariableState[] = [];
+    const nationImpacts: VariableState[] = [];
+    const worldImpacts: VariableState[] = [];
+    const otherNumbers: VariableState[] = [];
+    for (const v of referencedVariables) {
+      if (v.kind === "text") {
+        text.push(v);
+      } else if (v.kind === "number_ref" && v.number_ref) {
+        if (CLASS_IMPACT_COLS.has(v.number_ref)) classImpacts.push(v);
+        else if (NATION_IMPACT_COLS.has(v.number_ref)) nationImpacts.push(v);
+        else if (WORLD_IMPACT_COLS.has(v.number_ref)) worldImpacts.push(v);
+        else otherNumbers.push(v);
+      }
+      // aggregate_ref variables get filled out via their underlying
+      // number_ref entries (resolved into the buckets above), not as
+      // their own input.
+    }
+    return { text, classImpacts, nationImpacts, worldImpacts, otherNumbers };
+  }, [
+    referencedVariables,
+    CLASS_IMPACT_COLS,
+    NATION_IMPACT_COLS,
+    WORLD_IMPACT_COLS,
+  ]);
+
+  const numericValue = (v: VariableState): number =>
+    selections.numbers[v.id] == null ? 0 : (selections.numbers[v.id] as number);
+  const setNumeric = (v: VariableState, n: number) => {
+    onChangeNumber(v.id, n === 0 ? null : n);
+  };
+  const presetFor = (v: VariableState) =>
+    v.number_ref ? IMPACT_TILE_PRESETS[v.number_ref] : undefined;
+
+  const hasAnyImpacts =
+    buckets.classImpacts.length > 0 ||
+    buckets.nationImpacts.length > 0 ||
+    buckets.worldImpacts.length > 0;
+
   return (
     <div className="flex flex-col gap-4 p-4">
       {referencedVariables.length > 0 ? (
@@ -224,16 +302,15 @@ export function PreviewView({
           <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             Set variable values
           </div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {referencedVariables
-              .filter((v) => v.kind !== "aggregate_ref")
-              .map((v) => (
-              <div
-                key={v.id}
-                className="grid grid-cols-[1fr_1fr] items-center gap-2"
-              >
-                <Label className="!text-xs">{v.name}</Label>
-                {v.kind === "text" ? (
+
+          {buckets.text.length > 0 ? (
+            <div className="mb-2 grid gap-2 sm:grid-cols-2">
+              {buckets.text.map((v) => (
+                <div
+                  key={v.id}
+                  className="grid grid-cols-[1fr_1fr] items-center gap-2"
+                >
+                  <Label className="!text-xs">{v.name}</Label>
                   <Select
                     aria-label={v.name}
                     value={selections.textValueIds[v.id] ?? ""}
@@ -251,7 +328,87 @@ export function PreviewView({
                         </option>
                       ))}
                   </Select>
-                ) : (
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {hasAnyImpacts ? (
+            <div className="flex flex-wrap items-start gap-1.5">
+              {buckets.classImpacts.length > 0 ? (
+                <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                  {buckets.classImpacts.map((v) => {
+                    const preset = presetFor(v);
+                    return (
+                      <ImpactTile
+                        key={v.id}
+                        label={preset?.label ?? v.name}
+                        icon={preset?.icon}
+                        value={numericValue(v)}
+                        onChange={(n) => setNumeric(v, n)}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {buckets.nationImpacts.length > 0 ? (
+                <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                  {buckets.nationImpacts.map((v) => {
+                    const nation = v.number_ref
+                      ? nationByName.get(v.number_ref)
+                      : undefined;
+                    if (!nation) {
+                      const preset = presetFor(v);
+                      return (
+                        <ImpactTile
+                          key={v.id}
+                          label={preset?.label ?? v.name}
+                          icon={preset?.icon}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      );
+                    }
+                    return (
+                      <NationImpactTile
+                        key={v.id}
+                        nation={nation}
+                        value={numericValue(v)}
+                        onChange={(n) => setNumeric(v, n)}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {buckets.worldImpacts.length > 0 ? (
+                <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                  {buckets.worldImpacts.map((v) => {
+                    const preset = presetFor(v);
+                    return (
+                      <ImpactTile
+                        key={v.id}
+                        label={preset?.label ?? v.name}
+                        icon={preset?.icon}
+                        value={numericValue(v)}
+                        onChange={(n) => setNumeric(v, n)}
+                      />
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {buckets.otherNumbers.length > 0 ? (
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {buckets.otherNumbers.map((v) => (
+                <div
+                  key={v.id}
+                  className="grid grid-cols-[1fr_1fr] items-center gap-2"
+                >
+                  <Label className="!text-xs">{v.name}</Label>
                   <Input
                     aria-label={v.name}
                     type="number"
@@ -269,10 +426,10 @@ export function PreviewView({
                     }}
                     className={cn("h-8", GHOST_FIELD)}
                   />
-                )}
-              </div>
-            ))}
-          </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

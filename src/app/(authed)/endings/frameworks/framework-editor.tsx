@@ -54,7 +54,7 @@ export function FrameworkEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
-  nations: Pick<Nation, "name" | "color_hex">[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
   tiebreakDocsRaw?: Map<
     EndingLogicKind,
@@ -123,6 +123,7 @@ export function FrameworkEditor({
           onChangeText={args.onChangeText}
           onChangeNumber={args.onChangeNumber}
           tiebreakInputs={tiebreakInputs}
+          nations={nations}
         />
       )}
       onDeleted={onDeleted}

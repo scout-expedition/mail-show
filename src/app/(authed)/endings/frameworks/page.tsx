@@ -54,7 +54,9 @@ export default async function FrameworksPage({
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
-    supabase.from("nations").select("name, color_hex"),
+    supabase
+      .from("nations")
+      .select("name, color_hex, abbreviation, icon_type, icon_value"),
   ]);
 
   // Filter blocks to those whose document_id is one of our framework
@@ -125,7 +127,12 @@ export default async function FrameworksPage({
       }
       variables={(varData ?? []) as EndingVariable[]}
       values={(valueData ?? []) as EndingVariableValue[]}
-      nations={(nationData ?? []) as Pick<Nation, "name" | "color_hex">[]}
+      nations={
+        (nationData ?? []) as Pick<
+          Nation,
+          "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
+        >[]
+      }
       selectedFrameworkId={selectedId ?? null}
       tiebreakDocsSummary={tiebreakDocsSummary}
       tiebreakDocsRaw={logicDocRawByKind}

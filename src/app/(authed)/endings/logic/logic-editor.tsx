@@ -134,7 +134,7 @@ export function LogicEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
-  nations: Pick<Nation, "name" | "color_hex">[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();

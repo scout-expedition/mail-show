@@ -37,7 +37,7 @@ export function FrameworksWorkspace({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
-  nations: Pick<Nation, "name" | "color_hex">[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
