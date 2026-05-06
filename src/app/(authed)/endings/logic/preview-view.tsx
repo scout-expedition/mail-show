@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { GHOST_FIELD } from "@/components/panel";
+import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import {
   EMPTY_SELECTIONS,
@@ -23,7 +24,11 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
-import type { EndingDocument, EndingVariableValue } from "@/lib/db/types";
+import type {
+  EndingDocument,
+  EndingVariableValue,
+  Nation,
+} from "@/lib/db/types";
 import {
   AGGREGATE_OPTIONS_BY_REF,
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
@@ -38,15 +43,17 @@ import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 
 /**
  * Build the pool of options a random sentinel rolls over for a given
- * doc kind in the standalone preview. Returns null when the sentinel
+ * doc kind in the standalone preview. `tiedNations` is the user's
+ * declared hypothetical tied set on nation_affinity_* tabs — used as
+ * the pool for `__random_tied__`. Returns null when the sentinel
  * needs runtime context that the preview can't provide (e.g.
- * `__random_tied__` only makes sense when invoked from a tied chip;
- * the standalone preview has no tied set to roll from).
+ * `__random_tied__` with fewer than two declared tied options).
  */
 function rollPoolForSentinel(
   sentinel: string,
   docKind: EndingLogicKind,
-  frameworks: EndingDocument[]
+  frameworks: EndingDocument[],
+  tiedNations: string[]
 ): string[] | null {
   const subset = parseRandomSubset(sentinel);
   if (subset != null) return subset;
@@ -75,8 +82,15 @@ function rollPoolForSentinel(
     return null;
   }
   if (sentinel === RANDOM_TIED_SENTINEL) {
-    // No tied set in the standalone preview — caller renders an
-    // unresolved indicator instead.
+    // Only nation tabs expose a tied-set picker; class affinity has
+    // only 2 options so a "tied set" is degenerate (always both).
+    if (
+      (docKind === "nation_affinity_top" ||
+        docKind === "nation_affinity_bottom") &&
+      tiedNations.length >= 2
+    ) {
+      return [...tiedNations];
+    }
     return null;
   }
   return null;
@@ -112,6 +126,7 @@ export function LogicPreviewView({
   onChangeNumber,
   frameworks,
   tiebreakDocs,
+  nations,
 }: {
   docKind: EndingLogicKind;
   blocks: BlockState[];
@@ -125,6 +140,10 @@ export function LogicPreviewView({
   onChangeNumber: (variableId: string, value: number | null) => void;
   frameworks: EndingDocument[];
   tiebreakDocs: Map<EndingLogicKind, EvalInputs>;
+  nations: Pick<
+    Nation,
+    "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
+  >[];
 }) {
   const numberRefByName = useMemo(() => {
     const m = new Map<string, string>();
@@ -166,16 +185,28 @@ export function LogicPreviewView({
     return m;
   }, [frameworks]);
 
+  // Hypothetical tied set on nation_affinity_* tabs. Drives the pool
+  // for `__random_tied__`. Authors toggle pills to declare which
+  // nations are tied; the picker is hidden on other doc kinds.
+  const isNationTab =
+    docKind === "nation_affinity_top" || docKind === "nation_affinity_bottom";
+  const [tiedNations, setTiedNations] = useState<string[]>([]);
+  function toggleTiedNation(name: string) {
+    setTiedNations((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+    );
+  }
+
   // Random sentinels expand to a rolled value at preview time so the
   // author can see "what would actually happen". The roll runs inside
   // a useMemo keyed by `[poolSnapshot, rollNonce]` — pool change
-  // (different sentinel, framework added/removed, subset edited)
-  // re-rolls, and the Dice button bumps the nonce to force a fresh
-  // roll without any other input change.
+  // (different sentinel, framework added/removed, subset edited, tied
+  // set toggled) re-rolls, and the Dice button bumps the nonce to
+  // force a fresh roll without any other input change.
   const rollPool = useMemo(() => {
     if (resolved == null || !isRandomSentinel(resolved)) return null;
-    return rollPoolForSentinel(resolved, docKind, frameworks);
-  }, [resolved, docKind, frameworks]);
+    return rollPoolForSentinel(resolved, docKind, frameworks, tiedNations);
+  }, [resolved, docKind, frameworks, tiedNations]);
   const poolSnapshot = useMemo(
     () => (rollPool ? [...rollPool].sort().join("|") : null),
     [rollPool]
@@ -252,6 +283,55 @@ export function LogicPreviewView({
                   )}
                 </div>
               ))}
+          </div>
+        </div>
+      ) : null}
+
+      {isNationTab ? (
+        <div className="rounded-md border border-border bg-muted/10 p-3">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Hypothetical tied set
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {nations.map((n) => {
+              const on = tiedNations.includes(n.name);
+              return (
+                <button
+                  key={n.name}
+                  type="button"
+                  onClick={() => toggleTiedNation(n.name)}
+                  aria-pressed={on}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors",
+                    on
+                      ? "border-foreground/40 bg-foreground/10 text-foreground"
+                      : "border-border/40 bg-transparent text-muted-foreground/70 hover:text-foreground"
+                  )}
+                  style={on ? { borderColor: n.color_hex } : undefined}
+                >
+                  <span
+                    className={cn(
+                      "flex h-4 w-4 items-center justify-center transition-opacity",
+                      on ? "opacity-100" : "opacity-40"
+                    )}
+                    style={{ color: n.color_hex }}
+                  >
+                    {n.icon_value ? (
+                      <IconDisplay
+                        type={n.icon_type}
+                        value={n.icon_value}
+                        size={12}
+                      />
+                    ) : (
+                      <span className="text-[10px] font-mono">
+                        {n.abbreviation ?? n.name.slice(0, 1)}
+                      </span>
+                    )}
+                  </span>
+                  <span>{n.name}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
       ) : null}

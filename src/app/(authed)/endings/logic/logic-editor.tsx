@@ -353,6 +353,7 @@ export function LogicEditor({
                   onChangeNumber={args.onChangeNumber}
                   frameworks={frameworkDocs}
                   tiebreakDocs={tiebreakDocs}
+                  nations={nations}
                 />
               )}
             />
