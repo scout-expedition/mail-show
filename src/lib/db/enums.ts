@@ -325,16 +325,39 @@ export const ENDING_BLOCK_TYPES = [
 export type EndingBlockType = (typeof ENDING_BLOCK_TYPES)[number];
 
 /**
- * Sentinel `result_value` for "pick a random option at evaluation
- * time". Allowed in any logic-kind result block (and in the fallback
- * picker for framework_selection / class_affinity_top). The
- * evaluator expands it at call sites:
- *   - aggregate-chip tiebreak → random of the currently-tied options
- *   - framework_selection top-level → random across all frameworks
+ * Sentinel `result_value`s for "pick a random option at evaluation
+ * time". The evaluator expands them at call sites:
+ *
+ *   - `__random_tied__` → for aggregate tiebreak result blocks, pick
+ *     uniformly from the currently-tied options. The "I'm picking who
+ *     wins from the tied set" semantic.
+ *   - `__random_all__` → pick uniformly from every option in the
+ *     aggregate's column set (or every framework, for
+ *     framework_selection). May land on a non-tied option for an
+ *     aggregate tiebreak; the chip then evaluates false unless that
+ *     option happened to be tied.
+ *
+ * `__random__` is preserved as an alias for `__random_tied__` (the
+ * pre-split behavior). Existing rows with that value behave identically
+ * after this change.
  *
  * Stored in `ending_blocks.result_value` directly; `validateResultValue`
- * accepts it bypassing the per-kind option list. The preview surfaces
- * it as "(random)" rather than picking on every render to keep author
- * inspection deterministic.
+ * accepts any of them bypassing the per-kind option list. The preview
+ * keeps the resolution stable across renders by rolling once via
+ * `resolveAggregates`.
  */
 export const RANDOM_RESULT_SENTINEL = "__random__";
+export const RANDOM_TIED_SENTINEL = "__random_tied__";
+export const RANDOM_ALL_SENTINEL = "__random_all__";
+
+export const RANDOM_SENTINELS = [
+  RANDOM_RESULT_SENTINEL,
+  RANDOM_TIED_SENTINEL,
+  RANDOM_ALL_SENTINEL,
+] as const;
+
+export function isRandomSentinel(value: string | null | undefined): boolean {
+  return value === RANDOM_RESULT_SENTINEL ||
+    value === RANDOM_TIED_SENTINEL ||
+    value === RANDOM_ALL_SENTINEL;
+}

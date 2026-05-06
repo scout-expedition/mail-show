@@ -14,7 +14,9 @@
 
 import {
   AGGREGATE_OPTIONS_BY_REF,
+  RANDOM_ALL_SENTINEL,
   RANDOM_RESULT_SENTINEL,
+  RANDOM_TIED_SENTINEL,
   TIEBREAK_KIND_BY_REF_SIDE,
   type AggregateRef,
   type EndingChipOperator,
@@ -279,9 +281,20 @@ function resolveTieInline(
   if (result.length !== 1) return null;
   const docResult = result[0];
   let resolved: string | null;
-  if (docResult === RANDOM_RESULT_SENTINEL) {
+  if (
+    docResult === RANDOM_RESULT_SENTINEL ||
+    docResult === RANDOM_TIED_SENTINEL
+  ) {
+    // Random of the currently-tied options. Used to be the only random
+    // mode; the legacy `__random__` value still maps here.
     if (tiedCols.length === 0) return null;
     resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
+  } else if (docResult === RANDOM_ALL_SENTINEL) {
+    // Random of every option in the aggregate's column set. May roll a
+    // non-tied option, which the post-resolve `tiedCols.includes`
+    // check below will reject (chip evaluates false in that case).
+    if (cols.length === 0) return null;
+    resolved = cols[Math.floor(Math.random() * cols.length)];
   } else if (invert) {
     if (cols.length !== 2 || tiedCols.length !== 2) return null;
     resolved = cols.find((c) => c !== docResult) ?? null;

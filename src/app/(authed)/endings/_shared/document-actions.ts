@@ -18,7 +18,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
-  RANDOM_RESULT_SENTINEL,
+  isRandomSentinel,
   type EndingBlockType,
   type EndingChipOperator,
   type EndingDocumentKind,
@@ -191,9 +191,10 @@ async function validateResultValue(
   if (kind === "framework") {
     throw new Error("Framework documents cannot contain result blocks.");
   }
-  // RANDOM_RESULT_SENTINEL is allowed on every logic-kind doc. The
-  // evaluator expands it at call sites; storage is just the literal.
-  if (result_value === RANDOM_RESULT_SENTINEL) return;
+  // Random sentinels (tied / all / legacy alias) are allowed on every
+  // logic-kind doc. The evaluator expands them at call sites; storage
+  // is just the literal.
+  if (isRandomSentinel(result_value)) return;
   const logicKind = kind as EndingLogicKind;
   const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[logicKind];
   if (allowed) {

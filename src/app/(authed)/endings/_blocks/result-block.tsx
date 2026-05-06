@@ -21,7 +21,9 @@ import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
+  RANDOM_ALL_SENTINEL,
   RANDOM_RESULT_SENTINEL,
+  RANDOM_TIED_SENTINEL,
   type EndingLogicKind,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
@@ -210,11 +212,31 @@ export function makeResultBlock(
       .filter((f) => f.kind === "framework")
       .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" }));
   })();
-  // Random sits last so the named options come first in the picker.
-  const options: ResultOption[] = [
-    ...baseOptions,
-    { value: RANDOM_RESULT_SENTINEL, label: "Random" },
-  ];
+  // Random options sit at the end. Nation affinity (5-way tiebreak)
+  // distinguishes "tied only" from "all". Class affinity (2-way, every
+  // tie is the full set) collapses to a single "Random" since the two
+  // would behave identically. Framework_selection offers "Random (any
+  // framework)" — random of all today; custom subset is a followup.
+  const randomOptions: ResultOption[] = (() => {
+    if (kind === "nation_affinity_top" || kind === "nation_affinity_bottom") {
+      return [
+        { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
+        { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
+      ];
+    }
+    if (kind === "class_affinity_top") {
+      return [
+        // Legacy alias keeps existing rows working without an in-place
+        // migration.
+        { value: RANDOM_RESULT_SENTINEL, label: "Random" },
+      ];
+    }
+    // framework_selection
+    return [
+      { value: RANDOM_ALL_SENTINEL, label: "Random (any framework)" },
+    ];
+  })();
+  const options: ResultOption[] = [...baseOptions, ...randomOptions];
 
   function ConfiguredResultBlock(props: {
     block: BlockState;

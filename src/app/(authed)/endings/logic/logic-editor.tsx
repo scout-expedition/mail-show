@@ -48,6 +48,7 @@ import {
 } from "@/lib/endings/evaluator";
 import {
   ENDING_LOGIC_RESULT_OPTIONS_BY_KIND,
+  RANDOM_ALL_SENTINEL,
   RANDOM_RESULT_SENTINEL,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
@@ -67,14 +68,13 @@ function buildFallbackProp(
       emptyLabel: string;
     }
   | undefined {
-  const random = { value: RANDOM_RESULT_SENTINEL, label: "Random" };
   if (kind === "framework_selection") {
     return {
       options: [
         ...frameworkDocs
           .filter((f) => f.kind === "framework")
           .map((f) => ({ value: f.id, label: f.name ?? "(unnamed)" })),
-        random,
+        { value: RANDOM_ALL_SENTINEL, label: "Random (any framework)" },
       ],
       helperText:
         "If nothing above resolves to a framework, return this one.",
@@ -89,7 +89,10 @@ function buildFallbackProp(
           value: v,
           label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
         })),
-        random,
+        // Class affinity has only 2 options, so "tied" and "all"
+        // collapse to the same outcome; one Random entry suffices.
+        // Legacy alias keeps existing rows working.
+        { value: RANDOM_RESULT_SENTINEL, label: "Random" },
       ],
       helperText:
         "If nothing above resolves a tied class affinity, return this winner.",
