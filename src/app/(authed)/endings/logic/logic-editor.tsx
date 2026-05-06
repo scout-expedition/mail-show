@@ -231,6 +231,24 @@ export function LogicEditor({
     return m;
   }, [logicDocs, editorDataByDoc, variables, evalVariablesAll]);
 
+  // Per-logic-kind tiebreak summary for the static analyzer. Same
+  // shape FrameworksWorkspace builds in frameworks/page.tsx — a doc
+  // is empty only when it has zero rows AND no fallback value set.
+  const tiebreakDocsSummary = useMemo(() => {
+    const m = new Map<EndingLogicKind, { isEmpty: boolean }>();
+    for (const d of logicDocs) {
+      const data = editorDataByDoc.get(d.id);
+      const hasRow = (data?.rows.length ?? 0) > 0;
+      const fallback = data?.blocks.find((b) => b.block_type === "fallback");
+      const fallbackSet =
+        fallback?.result_value != null && fallback.result_value !== "";
+      m.set(d.kind as EndingLogicKind, {
+        isEmpty: !hasRow && !fallbackSet,
+      });
+    }
+    return m;
+  }, [logicDocs, editorDataByDoc]);
+
   // Track each visible editor's dirty state + save fn so tab switches
   // can prompt an unsaved-changes dialog. Keyed by document id.
   const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
@@ -317,6 +335,7 @@ export function LogicEditor({
               panelTitle={panelTitle}
               registerHandle={registerHandleFor(doc.id)}
               fallback={fallback}
+              tiebreakDocsSummary={tiebreakDocsSummary}
               renderPreview={(args) => (
                 <LogicPreviewView
                   docKind={kind}

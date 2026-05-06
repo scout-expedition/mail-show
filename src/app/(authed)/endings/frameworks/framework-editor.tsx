@@ -14,6 +14,7 @@ import type {
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
+import type { EndingLogicKind } from "@/lib/db/enums";
 import { TextBlock } from "../_blocks/text-block";
 import {
   DocumentEditor,
@@ -32,6 +33,7 @@ export function FrameworkEditor({
   variables,
   values,
   nations,
+  tiebreakDocsSummary,
   onDeleted,
   registerHandle,
 }: {
@@ -43,6 +45,7 @@ export function FrameworkEditor({
   variables: EndingVariable[];
   values: EndingVariableValue[];
   nations: Pick<Nation, "name" | "color_hex">[];
+  tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
   onDeleted: () => void;
   registerHandle: (h: EditorHandle) => void;
 }) {
@@ -56,6 +59,7 @@ export function FrameworkEditor({
       variables={variables}
       values={values}
       nations={nations}
+      tiebreakDocsSummary={tiebreakDocsSummary}
       leaves={{ text: TextBlock }}
       renderPreview={(args) => (
         <PreviewView

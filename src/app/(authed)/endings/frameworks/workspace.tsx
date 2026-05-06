@@ -27,6 +27,7 @@ export function FrameworksWorkspace({
   values,
   nations,
   selectedFrameworkId,
+  tiebreakDocsSummary,
 }: {
   frameworks: EndingDocument[];
   blocks: EndingBlock[];
@@ -37,6 +38,10 @@ export function FrameworksWorkspace({
   values: EndingVariableValue[];
   nations: Pick<Nation, "name" | "color_hex">[];
   selectedFrameworkId: string | null;
+  tiebreakDocsSummary: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    { isEmpty: boolean }
+  >;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -112,6 +117,7 @@ export function FrameworksWorkspace({
           variables={variables}
           values={values}
           nations={nations}
+          tiebreakDocsSummary={tiebreakDocsSummary}
           onDeleted={() => navigateTo(null)}
           registerHandle={(h) => {
             editorHandleRef.current = h;

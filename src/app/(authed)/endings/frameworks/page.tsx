@@ -10,6 +10,7 @@ import type {
   Nation,
 } from "@/lib/db/types";
 import { FrameworksWorkspace } from "./workspace";
+import type { EndingLogicKind } from "@/lib/db/enums";
 
 export default async function FrameworksPage({
   searchParams,
@@ -21,6 +22,7 @@ export default async function FrameworksPage({
 
   const [
     { data: documentData },
+    { data: logicDocData },
     { data: blockData },
     { data: rowData },
     { data: chipData },
@@ -34,6 +36,12 @@ export default async function FrameworksPage({
       .select("*")
       .eq("kind", "framework")
       .order("sort_order"),
+    // Logic-kind documents — used downstream to compute the per-kind
+    // tiebreak summary that the static analyzer reads.
+    supabase
+      .from("ending_documents")
+      .select("id, kind")
+      .neq("kind", "framework"),
     supabase.from("ending_blocks").select("*").order("sort_order"),
     supabase.from("ending_condition_rows").select("*").order("sort_order"),
     supabase
@@ -57,6 +65,29 @@ export default async function FrameworksPage({
     frameworkIds.has(b.document_id)
   );
 
+  // Per-logic-kind tiebreak summary for static analysis. A doc is
+  // "empty" only when both: it has zero condition-block rows AND its
+  // fallback (if any) carries no result_value. A non-empty doc lets
+  // the aggregate-chip outcome enumeration drop the tie state.
+  const allBlocks = (blockData ?? []) as EndingBlock[];
+  const allRows = (rowData ?? []) as EndingConditionRow[];
+  const tiebreakDocsSummary = new Map<EndingLogicKind, { isEmpty: boolean }>();
+  for (const d of (logicDocData ?? []) as Pick<EndingDocument, "id" | "kind">[]) {
+    const docBlocks = allBlocks.filter((b) => b.document_id === d.id);
+    const conditionBlockIds = new Set(
+      docBlocks.filter((b) => b.block_type === "condition").map((b) => b.id)
+    );
+    const hasRow = allRows.some((r) =>
+      conditionBlockIds.has(r.condition_block_id)
+    );
+    const fallback = docBlocks.find((b) => b.block_type === "fallback");
+    const fallbackSet =
+      fallback?.result_value != null && fallback.result_value !== "";
+    tiebreakDocsSummary.set(d.kind as EndingLogicKind, {
+      isEmpty: !hasRow && !fallbackSet,
+    });
+  }
+
   return (
     <FrameworksWorkspace
       frameworks={frameworkDocs}
@@ -70,6 +101,7 @@ export default async function FrameworksPage({
       values={(valueData ?? []) as EndingVariableValue[]}
       nations={(nationData ?? []) as Pick<Nation, "name" | "color_hex">[]}
       selectedFrameworkId={selectedId ?? null}
+      tiebreakDocsSummary={tiebreakDocsSummary}
     />
   );
 }

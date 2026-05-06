@@ -138,6 +138,16 @@ export interface DocumentEditorProps {
     helperText: string;
     emptyLabel: string;
   };
+  /** Per-logic-kind tiebreak summary for the static analyzer. When the
+   *  doc the analyzer is running on has aggregate chips, tied outcomes
+   *  drop from the uncovered enumeration if the relevant tiebreak doc
+   *  is non-empty. Caller computes from saved state (e.g. frameworks/
+   *  page.tsx pre-fetches all logic-doc data and condenses to a
+   *  per-kind isEmpty boolean). */
+  tiebreakDocsSummary?: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    { isEmpty: boolean }
+  >;
 }
 
 export function DocumentEditor({
@@ -155,6 +165,7 @@ export function DocumentEditor({
   registerHandle,
   panelTitle,
   fallback,
+  tiebreakDocsSummary,
 }: DocumentEditorProps) {
   const isFramework = document.kind === "framework";
   const initialName = document.name ?? "";
@@ -383,6 +394,7 @@ export function DocumentEditor({
       variables: evalVariables,
       values: evalValues,
       blockVariables: evalBlockVariables,
+      tiebreakDocs: tiebreakDocsSummary,
     };
     const shadow = staticShadowedRows(inputs);
     const overlaps = numericRowOverlaps(inputs);
@@ -405,6 +417,7 @@ export function DocumentEditor({
     variableState,
     values,
     rowsByConditionBlock,
+    tiebreakDocsSummary,
   ]);
 
   // Variables actually referenced by any chip (for the preview UI).
