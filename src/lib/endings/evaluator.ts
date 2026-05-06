@@ -269,7 +269,10 @@ function resolveTieInline(
   cols: string[],
   tiedCols: string[],
   selections: PreviewSelections,
-  evaluatingDocs: Set<EndingLogicKind>
+  evaluatingDocs: Set<EndingLogicKind>,
+  /** When provided, set to true if the resolution came from a random
+   *  sentinel (UI uses this to surface a die icon + reroll). */
+  fromRandom?: { value: boolean }
 ): string | null {
   const { kind, invert } = TIEBREAK_KIND_BY_REF_SIDE[ref][side];
   const doc = selections.tiebreak_docs?.get(kind);
@@ -289,12 +292,14 @@ function resolveTieInline(
     // mode; the legacy `__random__` value still maps here.
     if (tiedCols.length === 0) return null;
     resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
+    if (fromRandom) fromRandom.value = true;
   } else if (docResult === RANDOM_ALL_SENTINEL) {
     // Random of every option in the aggregate's column set. May roll a
     // non-tied option, which the post-resolve `tiedCols.includes`
     // check below will reject (chip evaluates false in that case).
     if (cols.length === 0) return null;
     resolved = cols[Math.floor(Math.random() * cols.length)];
+    if (fromRandom) fromRandom.value = true;
   } else if (invert) {
     if (cols.length !== 2 || tiedCols.length !== 2) return null;
     resolved = cols.find((c) => c !== docResult) ?? null;
@@ -306,6 +311,84 @@ function resolveTieInline(
   // tied set.
   if (!resolved || !tiedCols.includes(resolved)) return null;
   return resolved;
+}
+
+/**
+ * Same as `resolveAggregates` but each value also carries `fromRandom`
+ * — true when a random sentinel was rolled to produce the value. UI
+ * surfaces this as a die icon + a "reroll" button.
+ */
+export interface AggregateResolution {
+  value: string | null;
+  fromRandom: boolean;
+}
+
+export function resolveAggregatesDetailed(
+  chips: EvalChip[],
+  variableIndex: Map<string, EvalVariable>,
+  selections: PreviewSelections
+): Map<string, AggregateResolution> {
+  const out = new Map<string, AggregateResolution>();
+  const numberRefByName = selections.numberRefByName;
+  for (const c of chips) {
+    const variable = variableIndex.get(c.variable_id);
+    if (!variable || variable.kind !== "aggregate_ref") continue;
+    const ref = variable.aggregate_ref;
+    if (!ref) continue;
+    let side: "top" | "bottom";
+    if (c.operator === "top=" || c.operator === "top≠") side = "top";
+    else if (c.operator === "bottom=" || c.operator === "bottom≠") side = "bottom";
+    else continue;
+    const key = aggregateKey(ref, side);
+    if (out.has(key)) continue;
+
+    const cols = AGGREGATE_OPTIONS_BY_REF[ref];
+    if (!numberRefByName) {
+      out.set(key, { value: null, fromRandom: false });
+      continue;
+    }
+    const vals: number[] = [];
+    let hasUnset = false;
+    for (const col of cols) {
+      const vid = numberRefByName.get(col);
+      if (vid == null) {
+        hasUnset = true;
+        break;
+      }
+      const v = selections.numbers[vid];
+      if (v == null) {
+        hasUnset = true;
+        break;
+      }
+      vals.push(v);
+    }
+    if (hasUnset) {
+      out.set(key, { value: null, fromRandom: false });
+      continue;
+    }
+    const extreme = side === "top" ? Math.max(...vals) : Math.min(...vals);
+    const tiedCols = cols.filter((_, i) => vals[i] === extreme);
+    if (tiedCols.length === 1) {
+      out.set(key, { value: tiedCols[0], fromRandom: false });
+      continue;
+    }
+    const fromRandom = { value: false };
+    const resolved = resolveTieInline(
+      ref,
+      side,
+      cols,
+      tiedCols,
+      selections,
+      new Set(),
+      fromRandom
+    );
+    const valid = resolved && tiedCols.includes(resolved);
+    out.set(key, {
+      value: valid ? resolved : null,
+      fromRandom: fromRandom.value,
+    });
+  }
+  return out;
 }
 
 /**
@@ -324,6 +407,10 @@ function resolveTieInline(
  * winner. The function calls `Math.random()` for the random
  * sentinel; cache via `useMemo` if you need stable resolution
  * across renders.
+ *
+ * For UIs that need to surface "this resolution came from a random
+ * sentinel" (e.g. a die-reroll button), call
+ * `resolveAggregatesDetailed` instead.
  */
 export function resolveAggregates(
   chips: EvalChip[],

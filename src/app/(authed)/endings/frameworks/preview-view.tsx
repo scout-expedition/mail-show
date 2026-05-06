@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { AlertTriangle } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertTriangle, Dice5 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -11,7 +11,7 @@ import {
   EMPTY_SELECTIONS,
   aggregateKey,
   evaluateFramework,
-  resolveAggregates,
+  resolveAggregatesDetailed,
   shadowedRowIds,
   type EvalBlock,
   type EvalChip,
@@ -101,10 +101,23 @@ export function PreviewView({
     }),
     [selections, numberRefByName, tiebreakInputs]
   );
-  const resolvedAggregates = useMemo(
-    () => resolveAggregates(evalChips, variableIndex, baseSelections),
-    [evalChips, variableIndex, baseSelections]
+  // rerollNonce bumps each time the user clicks a die in the tie
+  // indicator panel — including it in the deps below forces
+  // resolveAggregatesDetailed to roll new randoms. Single nonce
+  // re-rolls every random key together; per-key surgical reroll is a
+  // followup if it's worth the complexity.
+  const [rerollNonce, setRerollNonce] = useState(0);
+  const detailedResolution = useMemo(
+    () => resolveAggregatesDetailed(evalChips, variableIndex, baseSelections),
+    // rerollNonce intentionally included to force a new roll on click.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [evalChips, variableIndex, baseSelections, rerollNonce]
   );
+  const resolvedAggregates = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const [k, v] of detailedResolution) m.set(k, v.value);
+    return m;
+  }, [detailedResolution]);
   const evalInputs = useMemo(
     () => ({
       blocks: blocks as EvalBlock[],
@@ -129,6 +142,7 @@ export function PreviewView({
       refLabel: string;
       side: "top" | "bottom";
       tiedLabels: string[];
+      fromRandom: boolean;
       resolved:
         | { kind: "value"; label: string }
         | { kind: "unresolved" };
@@ -164,7 +178,8 @@ export function PreviewView({
       );
       const refLabel =
         ref === "class_affinity" ? "Class Affinity" : "Nation Affinity";
-      const resolvedCol = resolvedAggregates.get(key);
+      const detail = detailedResolution.get(key);
+      const resolvedCol = detail?.value ?? null;
       const resolved: Indicator["resolved"] =
         resolvedCol && tiedCols.includes(resolvedCol)
           ? {
@@ -174,10 +189,17 @@ export function PreviewView({
                 resolvedCol,
             }
           : { kind: "unresolved" };
-      out.push({ key, refLabel, side, tiedLabels, resolved });
+      out.push({
+        key,
+        refLabel,
+        side,
+        tiedLabels,
+        fromRandom: detail?.fromRandom ?? false,
+        resolved,
+      });
     }
     return out;
-  }, [chips, variables, numberRefByName, selections.numbers, resolvedAggregates]);
+  }, [chips, variables, numberRefByName, selections.numbers, detailedResolution]);
   const shadowed = useMemo(() => {
     const ids = shadowedRowIds(evalInputs);
     if (ids.size === 0) return [];
@@ -262,8 +284,21 @@ export function PreviewView({
           </span>
           <ul className="flex flex-col gap-0.5 text-blue-100/85">
             {tieIndicators.map((t) => (
-              <li key={t.key} className="font-mono">
-                · {t.refLabel} ({t.side}) tied {t.tiedLabels.join(", ")} →{" "}
+              <li key={t.key} className="flex items-center gap-1 font-mono">
+                <span>
+                  · {t.refLabel} ({t.side}) tied {t.tiedLabels.join(", ")} →
+                </span>
+                {t.fromRandom ? (
+                  <button
+                    type="button"
+                    onClick={() => setRerollNonce((n) => n + 1)}
+                    aria-label="Reroll random tiebreak"
+                    title="Reroll"
+                    className="inline-flex h-4 w-4 items-center justify-center rounded text-blue-100/80 transition-colors hover:bg-blue-500/25 hover:text-blue-50"
+                  >
+                    <Dice5 size={12} aria-hidden />
+                  </button>
+                ) : null}
                 {t.resolved.kind === "value" ? (
                   <span className="font-semibold">{t.resolved.label}</span>
                 ) : (
