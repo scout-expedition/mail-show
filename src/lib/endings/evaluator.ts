@@ -272,7 +272,11 @@ function resolveTieInline(
   evaluatingDocs: Set<EndingLogicKind>,
   /** When provided, set to true if the resolution came from a random
    *  sentinel (UI uses this to surface a die icon + reroll). */
-  fromRandom?: { value: boolean }
+  fromRandom?: { value: boolean },
+  /** When provided AND the resolution came from a random sentinel,
+   *  set to the pool the value was picked from (tied set vs full
+   *  column set) so callers can validate cached rolls. */
+  rollPool?: { value: string[] | null }
 ): string | null {
   const { kind, invert } = TIEBREAK_KIND_BY_REF_SIDE[ref][side];
   const doc = selections.tiebreak_docs?.get(kind);
@@ -293,6 +297,7 @@ function resolveTieInline(
     if (tiedCols.length === 0) return null;
     resolved = tiedCols[Math.floor(Math.random() * tiedCols.length)];
     if (fromRandom) fromRandom.value = true;
+    if (rollPool) rollPool.value = tiedCols.slice();
   } else if (docResult === RANDOM_ALL_SENTINEL) {
     // Random of every option in the aggregate's column set. May roll a
     // non-tied option, which the post-resolve `tiedCols.includes`
@@ -300,6 +305,7 @@ function resolveTieInline(
     if (cols.length === 0) return null;
     resolved = cols[Math.floor(Math.random() * cols.length)];
     if (fromRandom) fromRandom.value = true;
+    if (rollPool) rollPool.value = cols.slice();
   } else if (invert) {
     if (cols.length !== 2 || tiedCols.length !== 2) return null;
     resolved = cols.find((c) => c !== docResult) ?? null;
@@ -317,10 +323,16 @@ function resolveTieInline(
  * Same as `resolveAggregates` but each value also carries `fromRandom`
  * — true when a random sentinel was rolled to produce the value. UI
  * surfaces this as a die icon + a "reroll" button.
+ *
+ * `rollPool` is the option set the random was picked from (tied set
+ * for tied/legacy random; entire column set for random_all). UIs
+ * caching prior rolls use it to invalidate the cache when scores
+ * shift the tied set out from under the cached value.
  */
 export interface AggregateResolution {
   value: string | null;
   fromRandom: boolean;
+  rollPool?: string[];
 }
 
 export function resolveAggregatesDetailed(
@@ -373,6 +385,7 @@ export function resolveAggregatesDetailed(
       continue;
     }
     const fromRandom = { value: false };
+    const rollPool: { value: string[] | null } = { value: null };
     const resolved = resolveTieInline(
       ref,
       side,
@@ -380,12 +393,14 @@ export function resolveAggregatesDetailed(
       tiedCols,
       selections,
       new Set(),
-      fromRandom
+      fromRandom,
+      rollPool
     );
     const valid = resolved && tiedCols.includes(resolved);
     out.set(key, {
       value: valid ? resolved : null,
       fromRandom: fromRandom.value,
+      rollPool: rollPool.value ?? undefined,
     });
   }
   return out;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { AlertTriangle, Dice5 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -111,18 +111,84 @@ export function PreviewView({
     }),
     [selections, numberRefByName, tiebreakInputs]
   );
-  // rerollNonce bumps each time the user clicks a die in the tie
-  // indicator panel — including it in the deps below forces
-  // resolveAggregatesDetailed to roll new randoms. Single nonce
-  // re-rolls every random key together; per-key surgical reroll is a
-  // followup if it's worth the complexity.
-  const [rerollNonce, setRerollNonce] = useState(0);
-  const detailedResolution = useMemo(
+  // Surgical per-key reroll. `rollCache` keyed by aggregateKey caches
+  // the value the random sentinel rolled, alongside a snapshot of the
+  // pool it was picked from. We reuse the cached value while the pool
+  // is unchanged — clicking a specific die clears just that key,
+  // forcing it to re-roll on the next memo run; other keys keep their
+  // cached values regardless of how many other keys exist.
+  const [rollCache, setRollCache] = useState<
+    Map<string, { value: string; poolSnapshot: string }>
+  >(new Map());
+  const freshDetailed = useMemo(
     () => resolveAggregatesDetailed(evalChips, variableIndex, baseSelections),
-    // rerollNonce intentionally included to force a new roll on click.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [evalChips, variableIndex, baseSelections, rerollNonce]
+    [evalChips, variableIndex, baseSelections]
   );
+  const detailedResolution = useMemo(() => {
+    const out = new Map<string, typeof freshDetailed extends Map<string, infer V> ? V : never>();
+    for (const [key, res] of freshDetailed) {
+      if (!res.fromRandom || !res.rollPool) {
+        out.set(key, res);
+        continue;
+      }
+      const poolSnapshot = [...res.rollPool].sort().join("|");
+      const cached = rollCache.get(key);
+      if (
+        cached &&
+        cached.poolSnapshot === poolSnapshot &&
+        res.rollPool.includes(cached.value)
+      ) {
+        out.set(key, {
+          value: cached.value,
+          fromRandom: true,
+          rollPool: res.rollPool,
+        });
+      } else {
+        out.set(key, res);
+      }
+    }
+    return out;
+  }, [freshDetailed, rollCache]);
+  // Sync newly-rolled values back into the cache so a subsequent
+  // re-render with no input change keeps the same value (instead of
+  // rolling fresh every render).
+  useEffect(() => {
+    setRollCache((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const [key, res] of detailedResolution) {
+        if (!res.fromRandom || !res.value || !res.rollPool) continue;
+        const poolSnapshot = [...res.rollPool].sort().join("|");
+        const existing = prev.get(key);
+        if (
+          !existing ||
+          existing.value !== res.value ||
+          existing.poolSnapshot !== poolSnapshot
+        ) {
+          next.set(key, { value: res.value, poolSnapshot });
+          changed = true;
+        }
+      }
+      // Drop any cache entries whose key is no longer present in the
+      // resolution (e.g. the chip was deleted). Keeps the cache from
+      // growing forever.
+      for (const key of prev.keys()) {
+        if (!detailedResolution.has(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [detailedResolution]);
+  const rerollKey = useCallback((key: string) => {
+    setRollCache((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
   const resolvedAggregates = useMemo(() => {
     const m = new Map<string, string | null>();
     for (const [k, v] of detailedResolution) m.set(k, v.value);
@@ -448,7 +514,7 @@ export function PreviewView({
                 {t.fromRandom ? (
                   <button
                     type="button"
-                    onClick={() => setRerollNonce((n) => n + 1)}
+                    onClick={() => rerollKey(t.key)}
                     aria-label="Reroll random tiebreak"
                     title="Reroll"
                     className="inline-flex h-4 w-4 items-center justify-center rounded text-blue-100/80 transition-colors hover:bg-blue-500/25 hover:text-blue-50"
