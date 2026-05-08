@@ -25,6 +25,8 @@ E2E expects `SUPABASE_TEST_URL` + `SUPABASE_TEST_SERVICE_KEY` and the dev server
   - `evaluateChip / aggregate tiebreak resolution` — empty doc → false; doc resolves tied option → true; doc returns null / non-tied → false; nation 3-way tie; "tiebreak only fires on tie" pin.
   - `evaluateFramework` backwards-compat alias parity.
   - `evaluateDocument set-narrowing` — auto-resolve at size 1, gated removals, every-row evaluation, definite result short-circuits, fallback on empty set, `__random_remaining__` rolls the working set, `set_excludes` semantics.
+  - `evaluateDocumentDetailed` — non-narrowing path returns null pool/sentinel; narrowing path with concrete result returns null pool; narrowing path with `__random_remaining__` returns the post-removal working set as `rollPool` and the literal sentinel as `rollSentinel`; narrowing fallback path with random sentinel returns the surviving working set.
+  - `resolveAggregatesDetailed / nation tiebreak random` — narrowing-mode random sentinel sets `fromRandom: true` + populates `rollPool`; concrete narrowing result keeps `fromRandom: false`; `__remove__:` chain into `__random_remaining__` surfaces the post-removal pool (fewer options than the original tied set).
 - **`src/lib/endings/static-analysis.test.ts`** (~39 cases)
   - `staticShadowedRows` for text / aggregate / number_ref chips.
   - `uncoveredAssignmentsByBlock` for text + aggregate (including tie-state behavior under empty / non-empty `tiebreakDocsSummary`).
@@ -40,10 +42,12 @@ E2E expects `SUPABASE_TEST_URL` + `SUPABASE_TEST_SERVICE_KEY` and the dev server
   - Rows + chips + header variables (CRUD shape).
   - Deletes (block / row / chip / header var).
   - `saveDocument` — UPDATE-only invariant, revalidate calls.
-- **`src/app/(authed)/endings/variables/actions.test.ts`** (4 cases)
+- **`src/app/(authed)/endings/variables/actions.test.ts`** (~13 cases)
   - `createEndingVariable` — names "New variable", auto-suffix on collision, ignores number_ref sort_order slots.
   - `createEndingVariableValue` — rejected on number_ref, accepted on text.
-  - **Gap**: no coverage yet for `createEndingVariableInline`, `createEndingVariableValueInline`, or `updateAllEndingVariables` (color_hex validation specifically).
+  - `createEndingVariableInline` — creates variable + first value, sets default; trims whitespace; rejects empty name; rejects empty first value.
+  - `createEndingVariableValueInline` — appends value on a text variable, returns id; uses next sort_order slot; rejects on number_ref; rejects empty value; rejects empty variable_id.
+  - **Gap**: `updateAllEndingVariables` color_hex validation (server-action level) still untested.
 
 ### Other domains
 - **`src/lib/rules/evaluate.test.ts`** — sorting-rules evaluator (Phase 3 sim): operators (equals / contains / numeric / is-with-reference_type), target_slice scoping, `evaluateRule` composition.
@@ -63,8 +67,7 @@ E2E expects `SUPABASE_TEST_URL` + `SUPABASE_TEST_SERVICE_KEY` and the dev server
 
 Each spins up a service-role Supabase client and exercises real Postgres.
 
-- **`tests/integration/endings_logic_v2_constraints.test.ts`** (~30 cases) — `ending_documents` kind + name CHECKs, singleton partial unique, framework name uniqueness; `ending_blocks` block_type CHECK matrix (text / condition / result + fallback shape), parent_block / parent_row co-presence, valid nesting; `ending_condition_row_chips` operator + value-shape constraints; `ending_variables.aggregate_ref` allowed-set + kind/shape rules.
-  - **Gap**: no positive case yet for `nation_tiebreak_set` aggregate_ref, no coverage for the 0029 `color_hex` regex CHECK.
+- **`tests/integration/endings_logic_v2_constraints.test.ts`** (~37 cases) — `ending_documents` kind + name CHECKs, singleton partial unique, framework name uniqueness; `ending_blocks` block_type CHECK matrix (text / condition / result + fallback shape), parent_block / parent_row co-presence, valid nesting; `ending_condition_row_chips` operator + value-shape constraints; `ending_variables.aggregate_ref` allowed-set + kind/shape rules; positive case for `aggregate_ref = 'nation_tiebreak_set'` (0028); 0029 `color_hex` regex CHECK (accepts valid `#RRGGBB`, accepts null, rejects no-hash / 3-digit shorthand / non-hex chars / color-name strings); seeded "Tiebreak Set" variable present alongside Class + Nation Affinity.
 - **`tests/integration/rls.test.ts`** (4 cases) — anon client cannot read or insert into protected tables (`letter_groups`, `ending_condition_rows`, `ending_condition_row_chips`); service-role sanity check.
 - **`tests/integration/views/inspection-letters-view.test.ts`** (5 cases) — `inspection_letters_view.content_id` formatting (single-letter group hides variant suffix, piece omitted at 0, multi-piece formatting).
 - **`tests/integration/views/report-segments-view.test.ts`** (4 cases) — `report_id` + `effective_day_id` derivation rules.
@@ -81,10 +84,6 @@ Each spins up a service-role Supabase client and exercises real Postgres.
 
 (See `docs/endings-logic-v2-plan.md` for context on the open work; these are concrete follow-ups specifically about test coverage.)
 
-- **0029 `color_hex` CHECK**: no test rejects malformed hex strings (`#abc`, `red`, `#GG0000`) or accepts a valid `#RRGGBB`.
-- **Nation Tiebreak Set positive case**: existing aggregate_ref test rejects unknown values but doesn't pin `nation_tiebreak_set` as accepted.
-- **`evaluateDocumentDetailed`**: narrowing path's deferred-roll contract (rollPool = working-set snapshot, rollSentinel set) is not asserted directly. Today's narrowing tests only call `evaluateDocument`, which rolls eagerly, so the "preview gets the unrolled pool" path is untested.
-- **`resolveAggregatesDetailed` from narrowing-path random**: the framework preview's nation-tiebreak reroll button is wired through `fromRandom` + `rollPool` plumbing in `resolveTieInline`. No test pins this for the narrowing branch.
-- **Inline-create server actions**: `createEndingVariableInline` (variable + first value + default) and `createEndingVariableValueInline` (append value to text variable; reject on number_ref / aggregate_ref) — no coverage.
-- **`updateAllEndingVariables` color_hex**: validates `#RRGGBB` format and persists; no test.
+- **`updateAllEndingVariables` color_hex** (server-action level): the action validates `#RRGGBB` and persists, but no unit test pins this end-to-end (DB-level CHECK is covered by the integration suite).
 - **Step 6 — endings E2E rewrite**: the skipped spec needs to be rebuilt for the unified shape (3 logic tabs, persistence, tiebreak resolution end-to-end via framework preview, fallback flows on each fallback-bearing doc).
+- **Playthrough runtime tests**: deferred — the playthrough framework itself isn't built yet, so there's no consumer of `evaluateEnding` to test.

@@ -461,6 +461,21 @@ describe("endings logic v2 schema constraints", () => {
     expect(error?.message ?? "").toMatch(/aggregate_ref/i);
   });
 
+  it("accepts aggregate_ref = 'nation_tiebreak_set' (added in 0028)", async () => {
+    const { data, error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}nts_var`,
+        kind: "aggregate_ref",
+        aggregate_ref: "nation_tiebreak_set",
+        sort_order: 9999,
+      })
+      .select("aggregate_ref")
+      .single();
+    expect(error).toBeNull();
+    expect(data?.aggregate_ref).toBe("nation_tiebreak_set");
+  });
+
   it("rejects an aggregate_ref variable with both number_ref and aggregate_ref set", async () => {
     const { error } = await sb
       .from("ending_variables")
@@ -639,5 +654,96 @@ describe("endings logic v2 schema constraints", () => {
     const names = (data ?? []).map((r) => r.name);
     expect(names).toContain("Class Affinity");
     expect(names).toContain("Nation Affinity");
+    expect(names).toContain("Tiebreak Set");
+  });
+
+  // -------------------------------------------------------------------
+  // ending_variables.color_hex format CHECK (0029)
+  // -------------------------------------------------------------------
+
+  it("accepts a valid #RRGGBB color_hex", async () => {
+    const { data, error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_ok`,
+        kind: "text",
+        color_hex: "#a1b2c3",
+        sort_order: 9999,
+      })
+      .select("color_hex")
+      .single();
+    expect(error).toBeNull();
+    expect(data?.color_hex).toBe("#a1b2c3");
+  });
+
+  it("accepts null color_hex (the palette-default case)", async () => {
+    const { data, error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_null`,
+        kind: "text",
+        color_hex: null,
+        sort_order: 9999,
+      })
+      .select("color_hex")
+      .single();
+    expect(error).toBeNull();
+    expect(data?.color_hex).toBeNull();
+  });
+
+  it("rejects color_hex without the # prefix", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_no_hash`,
+        kind: "text",
+        color_hex: "a1b2c3",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/color_hex/i);
+  });
+
+  it("rejects 3-digit color_hex shorthand", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_short`,
+        kind: "text",
+        color_hex: "#abc",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/color_hex/i);
+  });
+
+  it("rejects color_hex with non-hex chars", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_bad_chars`,
+        kind: "text",
+        color_hex: "#GG1122",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/color_hex/i);
+  });
+
+  it("rejects a color name string", async () => {
+    const { error } = await sb
+      .from("ending_variables")
+      .insert({
+        name: `${TEST_PREFIX}color_name`,
+        kind: "text",
+        color_hex: "red",
+        sort_order: 9999,
+      })
+      .select();
+    expect(error).not.toBeNull();
+    expect(error?.message ?? "").toMatch(/color_hex/i);
   });
 });

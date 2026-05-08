@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   EMPTY_SELECTIONS,
   evaluateDocument,
+  evaluateDocumentDetailed,
   evaluateFramework,
   evaluateChip,
   evaluateRow,
   matchingRowsByBlock,
+  resolveAggregatesDetailed,
   shadowedRowIds,
   type EvalBlock,
   type EvalChip,
@@ -1388,5 +1390,217 @@ describe("evaluateDocument set-narrowing", () => {
     ).toEqual(["spokgrad"]);
     // Suppress unused-var lint on the seeded value id constant.
     void FOLOS;
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateDocumentDetailed — exposes rollPool / rollSentinel for the
+// preview UI when a narrowing-mode random sentinel resolves; the
+// runtime `evaluateDocument` would have rolled it eagerly.
+// ----------------------------------------------------------------------
+
+describe("evaluateDocumentDetailed", () => {
+  it("non-narrowing path returns null rollPool / rollSentinel", () => {
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("res", "proletariat")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs);
+    expect(out.paragraphs).toEqual(["proletariat"]);
+    expect(out.rollPool).toBeNull();
+    expect(out.rollSentinel).toBeNull();
+  });
+
+  it("narrowing path with concrete result returns null rollPool", () => {
+    // Initial set { folos, emberlyn }; doc removes emberlyn → folos
+    // wins by auto-resolve. No random sentinel involved.
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("rm", "__remove__:emberlyn", null, null, 0)],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn"],
+    });
+    expect(out.paragraphs).toEqual(["folos"]);
+    expect(out.rollPool).toBeNull();
+    expect(out.rollSentinel).toBeNull();
+  });
+
+  it("narrowing path with __random_remaining__ returns the working set as rollPool", () => {
+    // Initial set { folos, emberlyn, spokgrad }; doc removes spokgrad
+    // first, then __random_remaining__ — pool is the post-removal set.
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:spokgrad", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn", "spokgrad"],
+    });
+    expect(out.rollSentinel).toBe("__random_remaining__");
+    expect(out.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn"])
+    );
+    expect(out.rollPool).toHaveLength(2);
+    // Paragraphs surface the sentinel verbatim — caller is expected to
+    // roll. evaluateDocument (eager path) returns a concrete value
+    // instead; we don't assert paragraphs here beyond the sentinel.
+    expect(out.paragraphs).toEqual(["__random_remaining__"]);
+  });
+
+  it("narrowing fallback path with __random_remaining__ returns rollPool from final working set", () => {
+    // Tree exhausts without picking; fallback is __random_remaining__.
+    // Working set = original tied set.
+    const inputs: EvalInputs = {
+      blocks: [
+        {
+          id: "fb",
+          parent_block_id: null,
+          parent_row_id: null,
+          block_type: "fallback",
+          text: "",
+          result_value: "__random_remaining__",
+          sort_order: 999999,
+        },
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn", "pelico"],
+    });
+    expect(out.rollSentinel).toBe("__random_remaining__");
+    expect(out.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn", "pelico"])
+    );
+    expect(out.rollPool).toHaveLength(3);
+  });
+});
+
+// ----------------------------------------------------------------------
+// resolveAggregatesDetailed — fromRandom + rollPool plumbing for the
+// framework preview's nation-tiebreak reroll button. Verifies the
+// narrowing-random branch threads the working set up as the chip's
+// rollPool.
+// ----------------------------------------------------------------------
+
+describe("resolveAggregatesDetailed / nation tiebreak random", () => {
+  const FOLOS = "var-folos";
+  const EMBERLYN = "var-emberlyn";
+  const SPOKGRAD = "var-spokgrad";
+  const PELICO = "var-pelico";
+  const EPICENTER = "var-epicenter";
+  const nation = aggVar("VAR_NATION", "nation_affinity");
+
+  function tiedNationSelections(
+    tiebreakDoc: EvalInputs
+  ): PreviewSelections {
+    return {
+      textValueIds: {},
+      numbers: {
+        [FOLOS]: 3,
+        [EMBERLYN]: 3,
+        [SPOKGRAD]: 3,
+        [PELICO]: 0,
+        [EPICENTER]: 0,
+      },
+      numberRefByName: new Map([
+        ["folos", FOLOS],
+        ["emberlyn", EMBERLYN],
+        ["spokgrad", SPOKGRAD],
+        ["pelico", PELICO],
+        ["epicenter", EPICENTER],
+      ]),
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["nation_affinity_top", tiebreakDoc],
+      ]),
+    };
+  }
+
+  it("nation tiebreak doc resolving to __random_remaining__ → fromRandom + rollPool from working set", () => {
+    const tiebreakDoc: EvalInputs = {
+      blocks: [resultBlock("rr", "__random_remaining__")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "folos", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res).toBeDefined();
+    expect(res?.fromRandom).toBe(true);
+    expect(res?.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn", "spokgrad"])
+    );
+    expect(res?.rollPool).toHaveLength(3);
+    // The rolled value must be one of the tied options.
+    expect(["folos", "emberlyn", "spokgrad"]).toContain(res?.value);
+  });
+
+  it("nation tiebreak doc resolving to a concrete tied option → fromRandom false", () => {
+    const tiebreakDoc: EvalInputs = {
+      blocks: [resultBlock("res", "emberlyn")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "emberlyn", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res?.fromRandom).toBe(false);
+    expect(res?.value).toBe("emberlyn");
+    expect(res?.rollPool).toBeUndefined();
+  });
+
+  it("narrowing chain (__remove__: + __random_remaining__) surfaces the post-removal working set as rollPool", () => {
+    // Tiebreak doc removes spokgrad first, then random_remaining over
+    // what survives. Pool should be { folos, emberlyn } — the tied set
+    // minus spokgrad.
+    const tiebreakDoc: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:spokgrad", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "folos", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res?.fromRandom).toBe(true);
+    expect(res?.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn"])
+    );
+    expect(res?.rollPool).toHaveLength(2);
+    expect(["folos", "emberlyn"]).toContain(res?.value);
   });
 });
