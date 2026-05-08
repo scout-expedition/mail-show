@@ -20,7 +20,6 @@ import type {
 } from "@/lib/endings/block-state";
 import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
-import { paletteColor } from "@/lib/endings/color-palette";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
 import {
@@ -36,6 +35,7 @@ import { useAnalysis } from "../_shared/lib/analysis";
 import {
   ChipPickerForm,
   ChipPill,
+  VariableChip,
   type AddChipInput,
 } from "./chip";
 import { DropLine } from "./text-block";
@@ -633,9 +633,8 @@ function HeaderVariableStrip({
         const v = variableIndex.get(dv.variable_id);
         if (!v) return null;
         return (
-          <HeaderVariableChip
+          <VariableChip
             key={dv.id}
-            blockVariableId={dv.id}
             variable={v}
             disabled={pending}
             onRemove={() =>
@@ -664,54 +663,6 @@ function HeaderVariableStrip({
       ) : null}
     </span>
   );
-}
-
-function HeaderVariableChip({
-  blockVariableId,
-  variable,
-  disabled,
-  onRemove,
-}: {
-  blockVariableId: string;
-  variable: VariableState;
-  disabled: boolean;
-  onRemove: () => void;
-}) {
-  void blockVariableId;
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest"
-      style={{
-        borderColor: headerChipColor(variable),
-        color: headerChipColor(variable),
-        backgroundColor: `${headerChipColor(variable)}1a`,
-      }}
-    >
-      {variable.name}
-      <button
-        type="button"
-        onClick={onRemove}
-        disabled={disabled}
-        aria-label={`Remove ${variable.name} from this condition block`}
-        className="opacity-60 hover:opacity-100 disabled:opacity-30"
-      >
-        <X size={10} aria-hidden />
-      </button>
-    </span>
-  );
-}
-
-function headerChipColor(variable: VariableState): string {
-  // Aggregate variables don't pick a color of their own — their chips
-  // resolve to the underlying class/nation color once the value is
-  // committed. Render the header pill white so the header reads as
-  // "this block branches on Class Affinity" without committing to a
-  // specific palette slot.
-  if (variable.kind === "aggregate_ref") return "#ffffff";
-  // Otherwise: same rule as ChipPill — nation/impact override first,
-  // palette fallback. Keeps the header chips visually identical to the
-  // row chips for text + number_ref variables.
-  return variable.color_hex ?? paletteColor(variable.color_index);
 }
 
 function AddHeaderVariablePicker({

@@ -119,18 +119,23 @@ function operatorLabel(op: EndingChipOperator): string {
 }
 
 /**
- * Chip pill. For text variables: `[VAR] [op] [VALUE]` with op + value
- * editable inline. For number_ref variables: `[VAR] [op] [number]` with
- * op + number editable inline. For aggregate variables:
- * `[VAR] [top is | …] [Working Class | …]`.
- * Removing the chip is the × icon.
+ * Chip pill — Figma-redesign chrome (Phase 2). Renders a fixed-height
+ * pill split into two segments: a colored operator icon on the left
+ * (`[op]` against the chip's color) and a dark value cell on the right
+ * (`[value]` against `--row-cell-bg`). The variable name is no longer
+ * shown — the redesign moves the variable identifier into the
+ * condition-block header (see VariableChip below). Operator and value
+ * stay editable via invisible <select> overlays.
+ *
+ * `compact` is accepted but ignored; it remains in the API so callers
+ * carrying over from the previous chrome don't break. Removed in a
+ * later cleanup once all call sites stop passing it.
  */
 export function ChipPill({
   chip,
   variable,
   variables,
   values,
-  compact = false,
   onChange,
   onRemove,
 }: {
@@ -141,8 +146,8 @@ export function ChipPill({
    *  class/nation impact column). */
   variables: VariableState[];
   values: EndingVariableValue[];
-  /** When true, omit the variable name from the pill — used in slot mode
-   *  where the column already identifies the variable. */
+  /** Carried over from the previous chrome; the redesign always
+   *  renders compact (variable name lives in the header chip). */
   compact?: boolean;
   onChange: (patch: Partial<ChipState>) => void;
   onRemove: () => void;
@@ -203,46 +208,36 @@ export function ChipPill({
       : "—";
   }
 
+  // Word-style operators ("top is", "tiebreak set includes", …) are
+  // longer than the single-symbol ops (`=`, `<`, …); the icon segment
+  // shrinks them to ~⅔ size so the chip stays compact and symbol ops
+  // don't look oddly small next to them.
+  const operatorIsWordy = AGGREGATE_OPERATOR_LABELS[chip.operator] != null;
+
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase"
       style={{
         borderColor: color,
-        color,
-        backgroundColor: `${color}1a`,
+        backgroundColor: "var(--row-cell-bg)",
       }}
     >
-      {compact ? null : (
-        <span className="font-mono uppercase">{chipDisplayName(variable)}</span>
-      )}
-
-      {/*
-        Operator + value render as static text with an invisible <select>
-        overlaid on top — a click reaches the select (system dropdown
-        opens immediately), and selecting an option fires onChange which
-        updates the visible text. Native <select> with appearance-none
-        still reserves chevron padding internally, so this overlay pattern
-        keeps the chip's layout tight while preserving the native menu.
-        Numbers stay as an inline Input you can type into directly.
-      */}
+      {/* Operator segment — colored background, white text. The
+          invisible <select> over it lets authors swap operators
+          without the chip's chrome having to host a chevron. */}
       <span
         className={cn(
-          "relative inline-flex items-center font-mono uppercase",
-          allowedOps.length > 1 && "cursor-pointer hover:opacity-100",
-          allowedOps.length > 1 ? "opacity-80" : "opacity-100"
+          "relative inline-flex items-center justify-center px-1 text-white",
+          allowedOps.length > 1 && "cursor-pointer"
         )}
+        style={{ backgroundColor: color }}
       >
         <span
           aria-hidden
-          // Word-style operators ("top is", "bottom is not", …) are
-          // longer than the single-symbol ops (`=`, `<`, …); render them
-          // ~⅔ the size so the chip stays compact and the symbol ops
-          // don't look oddly small next to them.
-          className={
-            AGGREGATE_OPERATOR_LABELS[chip.operator] != null
-              ? "text-[8px]"
-              : undefined
-          }
+          className={cn(
+            "px-px tracking-[0.025em]",
+            operatorIsWordy && "text-[8px] leading-tight"
+          )}
         >
           {operatorLabel(chip.operator)}
         </span>
@@ -264,9 +259,13 @@ export function ChipPill({
         ) : null}
       </span>
 
+      {/* Value segment — dark cell with white text. Click-through
+          select / number input depending on variable.kind. */}
       {variable.kind === "text" ? (
-        <span className="relative inline-flex items-center font-mono uppercase">
-          <span aria-hidden>{valueLabel}</span>
+        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+          <span aria-hidden className="truncate tracking-[0.025em]">
+            {valueLabel}
+          </span>
           <select
             value={chip.text_value_id ?? ""}
             onChange={(e) => {
@@ -305,11 +304,13 @@ export function ChipPill({
             const raw = e.target.value;
             onChange({ number_value: raw === "" ? null : Number(raw) });
           }}
-          className="h-auto w-16 border-0 bg-transparent p-0 font-mono text-[11px] shadow-none focus:!ring-0"
+          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent px-1 font-mono text-[10px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
         />
       ) : (
-        <span className="relative inline-flex items-center font-mono uppercase">
-          <span aria-hidden>{valueLabel}</span>
+        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+          <span aria-hidden className="truncate tracking-[0.025em]">
+            {valueLabel}
+          </span>
           <select
             value={chip.aggregate_value ?? ""}
             onChange={(e) =>
@@ -332,10 +333,49 @@ export function ChipPill({
         type="button"
         onClick={onRemove}
         aria-label="Remove chip"
-        className="ml-0.5 opacity-50 hover:opacity-100"
+        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 opacity-0 transition-opacity hover:text-white group-hover/chip:opacity-100"
       >
         <X size={10} aria-hidden />
       </button>
+    </span>
+  );
+}
+
+/**
+ * VariableChip — header surface only. Solid color background (the
+ * variable's color_hex), white uppercase text, dismiss button on
+ * hover. Used by HeaderVariableStrip in condition-block.tsx so the
+ * declared-variables row reads as the column anchors that the row
+ * chips below align against.
+ */
+export function VariableChip({
+  variable,
+  onRemove,
+  disabled,
+}: {
+  variable: VariableState;
+  onRemove?: () => void;
+  disabled?: boolean;
+}) {
+  const color =
+    variable.color_hex ?? paletteColor(variable.color_index);
+  return (
+    <span
+      className="group/headerchip inline-flex h-5 items-center gap-1 rounded-md px-1 text-[10px] font-mono uppercase tracking-[0.025em] text-white"
+      style={{ backgroundColor: color }}
+    >
+      <span className="px-px">{chipDisplayName(variable)}</span>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={disabled}
+          aria-label={`Remove ${variable.name} from this condition block`}
+          className="opacity-0 transition-opacity hover:text-white group-hover/headerchip:opacity-100 disabled:opacity-30"
+        >
+          <X size={10} aria-hidden />
+        </button>
+      ) : null}
     </span>
   );
 }
