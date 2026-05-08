@@ -11,9 +11,9 @@ This plan covers two things at once because they collapse to the same primitive:
 1. **Tiebreaker resolution for aggregate chips.** Today `top=` / `bottom=` chips return `false` on a tie (Phase 4 evaluator) and the static analysis flags the tie state as uncovered (Phase 5). Authoring usually wants ties to resolve deterministically.
 2. **Logic-tab migration to chip-row primitive.** The current `ending_logic_rules` table is a flat ordered list of `[var=value, …] → framework`. The master plan §Followups names the migration to chip-row as a separate effort. It's a separate effort no longer — the tiebreak UI naturally wants the chip-row primitive, and a unified model means we don't ship two parallel block trees.
 
-## Status snapshot (as of 2026-05-05)
+## Status snapshot (as of 2026-05-08)
 
-Branch: `endings-logic-v2`. Migrations 0022 / 0023 / 0024 / 0025 applied to local Supabase + the hosted dev project. `pnpm typecheck` clean; 238 unit tests + 109 integration tests green.
+Branch: `endings-logic-v2`. Migrations 0022 – 0029 applied to local Supabase + the hosted dev project. `pnpm typecheck` clean; 131 endings unit tests green; integration test suite green.
 
 ### Shipped on this branch
 
@@ -49,6 +49,16 @@ Preview:
 Tests + tooling:
 - `tests/integration/endings_logic_v2_constraints.test.ts` covers all CHECKs + partial unique indexes + seeded singletons.
 - Existing actions / e2e tests that referenced dropped tables are `describe.skip` / `test.skip` with comments pointing at the step that resurrects them.
+
+Variables + chip UX (shipped 2026-05-08):
+- 0029 added nullable `color_hex` to `ending_variables` (#RRGGBB check); the chip + preview render path already preferred it via `VariableState.color_hex`, so this just lit up storage.
+- Variables page rewrite: View toggle (Grouped / List), Sort dropdown (created-newest / name A→Z), localStorage-persisted; collapsible group panels and variable cards; per-card native color picker with reset; default-value moved to a header dropdown ("—" for null) on a fixed grid that aligns across rows.
+- Inline variable creation in the chip + header pickers via a new `createEndingVariableInline` action (creates variable + first value, sets default).
+- Inline value creation in chip-picker value menus — "+ New value…" sentinel option in all three surfaces (`ChipPill`, `ChipPickerForm`, `AddChipButton`) backed by `createEndingVariableValueInline`; optimistic shadow keeps the picker showing the typed text until revalidate lands.
+- Logic preview: rollPool surfaced from the narrowing evaluator (post-`__remove__:` working set) so `__random_remaining__` shows a reroll button + lists the option labels by friendly name (framework names for `framework_selection`).
+- Frameworks preview: nation-tiebreak random sentinels plumb through `resolveTieInline` → `evaluateDocumentDetailedInternal`, so the tie-indicator panel surfaces a per-key reroll button when the doc resolves randomly.
+- Framework_selection fallback now offers Random (custom subset) like result blocks (`FallbackBlock` extended with `subsetEnabled` / `subsetFrameworks`).
+- Tiebreak Set selectable in both pickers (chip + header); operator labels read "includes" / "does not include"; chips on `nation_tiebreak_set` default to `set_includes`; chip color is purple-500 to distinguish from scoring aggregates.
 
 ### Not shipped — see "Out of scope (followups)" below for the active list.
 
@@ -442,15 +452,14 @@ After all steps:
 
 ### Active — discussed but not shipped
 
-- **Nation affinity cardinality split.** Deferred — explicitly future work as of 2026-05-06. Subdivide `nation_affinity_top` / `nation_affinity_bottom` into 2-way / 3-way / 4-way / 5-way tie sections. Sketched as Option A (separate `nation_affinity_{top,bottom}_{2,3,4,5}way` doc kinds; evaluator picks by `tiedCount`). Class affinity is unaffected (only 2 options).
 - **Step 5 — top-level `evaluateEnding`.** Wire the `framework_selection` doc into the playthrough so it actually picks the framework at game-end, and expand `__random_all__` for that doc at runtime. The dropped `ending_logic_rules` flow has no replacement at the runtime layer yet — authors can configure `framework_selection` but no caller consumes it.
 - **Step 6 — E2E rewrite.** `tests/e2e/endings-frameworks.spec.ts` is currently `test.skip` on every test. Rewrite for the unified shape: 3 logic tabs render, persistence per tab, tiebreak resolution end-to-end via the framework preview, fallback usage on each fallback-bearing doc.
+- **Figma redesign pass.** Once Steps 5 + 6 land, plan a separate effort to align the variables / frameworks / logic surfaces with the latest Figma comps. Scope: visual language only — no schema or evaluator changes. Confirm Figma source-of-truth links before starting.
 
 ### Smaller polish + cleanup
 
-- **`pnpm db:migrate` env-file convenience.** Switch `package.json`'s `db:migrate` script from plain `tsx scripts/apply-migration.ts` to `tsx --env-file=.env.local scripts/apply-migration.ts`. We agreed to hold for a separate PR. Without it, you currently have to `set -a; source .env.local; set +a; pnpm db:migrate`.
+- **`pnpm db:migrate` env-file convenience.** Switch `package.json`'s `db:migrate` script from plain `tsx scripts/apply-migration.ts` to `tsx --env-file=.env.local scripts/apply-migration.ts`. Without it, you currently have to `set -a; source .env.local; set +a; pnpm db:migrate`.
 - **Move `inspection/letters/workspace.tsx` to use the shared `src/components/impact-tile.tsx`.** That file ships its own local `ClassTile` / `NationTile` / `CounterInput` for now; the shared module was added during the framework-preview tile work but only the preview consumes it. Mechanical cleanup, low risk.
-- **Inline variable creation in the frameworks editor.** Today the chip picker only selects preexisting variables — authors have to leave the editor, create a variable on the Variables tab, then come back. Add an inline "+ New variable" path in the chip picker (and the header-variable picker). Same shape as the existing `createVariableInline` / `createValueInline` used in the pre-rebuild logic editor — pull those server actions forward.
 
 ### Out of scope long-term (named for completeness)
 
@@ -458,7 +467,5 @@ After all steps:
 - **Per-storyline tiebreak.** A storyline could in theory carry its own tiebreak override. Not requested.
 - **Logic doc preview pane** (richer). Today's `LogicPreviewView` shows a basic "Resolves to" line per kind. Could add overlap/shadow badges, fallback indication, etc.
 - **Drag-drop reorder for header variables.** Master plan §Followups carry-over.
-- **Manual color picker** for variables. Still pending.
 - **Per-key reroll polish.** Surgical reroll works; a future polish could animate the value swap or remember reroll history.
-- **Autosave / collaborative editing.** Master plan §Followups — separate effort. The unified primitive shares the framework save model and rides the same future migration.
 - **Autosave / collaborative editing.** Master plan §Followups — separate effort. The unified primitive shares the framework save model and rides the same future migration.
