@@ -103,6 +103,85 @@ For each, default behavior is **keep current chrome until comps land**. Implemen
 - [ ] No file in `src/lib/endings/` or `supabase/migrations/` modified.
 - [ ] No regressions in inline create flows ("+ New variable…", "+ New value…") — they keep working with current chrome until phase 7's overlay redesign lands.
 
+## Phase 1 — token + color audit (2026-05-08)
+
+Sampled three sublayers from frame `1:2` for styled output: `1:3` PanelHeader, `12:1270` ConditionBlock (single-variable), `12:1649` ConditionBlock (multi-variable SEATSATIONAL with SECURITY + WORLD STATUS). The Figma file uses inline hex values — there are no Figma variables defined — so this audit rolls them into our existing CSS-variable token system.
+
+### Tokens already present (no change)
+
+These map exactly to current tokens in `src/app/globals.css`:
+
+| Figma value | Current token | Used in |
+| --- | --- | --- |
+| `#2c323b` | `--border` | PanelHeader border-bottom; matches existing UI border. |
+| `#8b93a1` | `--muted-foreground` | "FRAMEWORK" panel-header label text. |
+| `rgba(139,147,161,0.7)` | `--muted-foreground` @ 70% alpha | "Saved" indicator (inline alpha — no new token). |
+
+### New tokens to add
+
+These are repeated across the frame and earn a name. I'll add them in `globals.css`, scoped under the existing dark theme block. Light mode is out of scope for this project.
+
+| New token | Hex | Role |
+| --- | --- | --- |
+| `--block-card` | `#21252b` | Condition block fill — sits between `--card` (#181c22) and `--accent` (#242b36). The redesign uses this specifically for condition-block chrome; regular cards (`--card`) keep their value. |
+| `--block-border` | `#606771` | Condition block border + dashed `+` adders. Lighter than `--border` so blocks visually separate from the panel without competing with text. |
+| `--block-result-bg` | `#000000` | ResultsBlock fill (the black panel that holds rows inside a condition block) and the innermost TextBlock fill. Pure black is intentional — the design uses it as the deepest layer. |
+| `--block-text-card` | `#474a4d` | Outer chrome around a TextBlock when it sits inside a ResultsBlock. Mid-gray to lift prose off the black base. |
+| `--row-cell-bg` | `#0c0e12` | ConditionLabel cell background (the dark pill on the left of each row holding `[op] [value]`). One step below `--background` (#0b0d10). |
+
+Notes:
+
+- The white-04 panel-header overlay (`rgba(255,255,255,0.04)`) is rendered inline rather than tokenized — only one usage in the frame, no need for a name.
+- Pure black `#000000` already shows up as `bg-black` via Tailwind defaults, but I'm naming it `--block-result-bg` so the redesign code reads as "the result-block layer" rather than relying on incidental black usage.
+
+### Per-variable chip color
+
+Confirmed: chip / operator-icon / condition-label border all inherit the **variable's** `color_hex`. The Figma frame demonstrates this with three concrete variables:
+
+| Variable | Figma color | Notes |
+| --- | --- | --- |
+| `PERFORMER` | `#00bfff` (Deep Sky Blue) | Used as Variable chip bg, ConditionLabel left-border, and Operator icon bg on every row keyed to PERFORMER. |
+| `SECURITY` | `#ff7700` (`#f70` shorthand — orange) | Same plumbing on rows keyed to SECURITY. |
+| `WORLD STATUS` | `#ff00dd` (`#f0d` shorthand — magenta) | Same plumbing on rows keyed to WORLD STATUS. |
+
+These hexes are placeholders the designer picked for legibility — the runtime read picks them up via `ending_variables.color_hex` (added in 0029) with a fallback to `paletteColor(color_index)`. No DB seeding needed.
+
+### Spacing scale
+
+Figma uses px values that round to 0.25rem multiples at the project's 13px root (so `0.375rem = 4.875px`, `0.75rem = 9.75px`, `1rem = 13px`, `1.5rem = 19.5px`). All values fit cleanly into Tailwind's existing `[1.5,1,0.75,0.5,0.25]rem` scale. **No new spacing tokens.**
+
+Recurring values:
+
+- Block card padding: `6px 2px` (`py-1.5 px-0.5`).
+- ResultsBlock padding: `8px` (`p-2`) or `8px / 16px` (`px-2 py-4`) for outer-chrome variants.
+- Inter-row gap inside ResultsBlock: `12px` (`gap-3`).
+- Row chip stack gap: `2px` — needs a one-off `gap-[2px]` (or `gap-px` doubled) since Tailwind's smallest is `4px`.
+- ConditionLabel width: `120px` (`w-30`).
+- Variable chip height: `16px` — the fixed pill height across the design.
+
+### Border radii
+
+Effectively a single radius: `4.88px` (`0.375rem`). Maps to Tailwind `rounded-md`. No new radius tokens.
+
+The PanelHeader uses `rounded-tl-md rounded-tr-md` to match the panel's outer chrome. The Variable chip and ConditionLabel use full `rounded-md`. The ConditionLabel is half-rounded (`rounded-l-md`) when it abuts a TextBlock, full-rounded when it stands alone with a `+` next to it.
+
+### Typography
+
+All JetBrains Mono. The current globals.css declares `--font-mono` already; we already use it as the body default. Sizes:
+
+| Role | Figma | Tailwind (at 13px root) |
+| --- | --- | --- |
+| Panel header title ("FRAMEWORK") | JBM Medium 9.75px / 13px leading / 0.075rem tracking, uppercase | `text-[0.75rem] font-medium tracking-widest uppercase` (existing pattern) |
+| "Saved" indicator | JBM Regular 10px / 15px leading / 0.077rem tracking, uppercase | `text-[10px] font-mono uppercase tracking-widest opacity-70` |
+| Variable chip / operator icon / value pill | JBM Regular 10px / 15px leading / 0.019rem tracking, uppercase, white | `text-[10px] font-mono uppercase tracking-wider text-white` |
+| Prose / TextBlock body | JBM Regular 12–13px / 15–19.5px leading, white | `text-sm font-mono` (existing) |
+
+### Open question for Phase 2+
+
+The redesign reuses `bg-black` (and tokenizes it as `--block-result-bg`) for the inner TextBlock. Today's editor uses `--card` / `--background` exclusively. **Confirm before Phase 2** that pure-black inner panels are intended; this is a meaningful contrast bump from the current chrome.
+
+Default plan: take the Figma palette literally — implement with `--block-result-bg = #000000`. If you want to soften it, swap to `--background` (#0b0d10) before Phase 2 lands.
+
 ## Followups (post-redesign)
 
 - **Variables editor** redesign pass (out of scope today).

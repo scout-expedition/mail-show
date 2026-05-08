@@ -30,6 +30,15 @@
   --nation-emberlyn: #d18a2e;
   --nation-spokgrad: #7a7fbf;
   --nation-pelico: #4fb07a;
+
+  /* Endings-redesign block chrome (docs/endings-figma-redesign-plan.md
+     Phase 1). Used by `src/app/(authed)/endings/_blocks/*`; the rest of
+     the app keeps `--card` / `--accent` / `--background`. */
+  --block-card: #21252b;
+  --block-border: #606771;
+  --block-result-bg: #000000;
+  --block-text-card: #474a4d;
+  --row-cell-bg: #0c0e12;
 }
 
 @theme inline {
@@ -54,6 +63,11 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-block-card: var(--block-card);
+  --color-block-border: var(--block-border);
+  --color-block-result-bg: var(--block-result-bg);
+  --color-block-text-card: var(--block-text-card);
+  --color-row-cell-bg: var(--row-cell-bg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
