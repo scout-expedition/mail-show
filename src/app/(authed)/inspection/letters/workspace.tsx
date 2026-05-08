@@ -72,6 +72,7 @@ import {
   updateStorylineFields,
 } from "../storylines/actions";
 import { IconPicker } from "@/components/icon-picker";
+import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -4497,7 +4498,7 @@ function ActionEditor({
       <div className="mt-1 flex flex-wrap items-start gap-1.5">
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           {CLASS_AFFINITY.map((c) => (
-            <ClassTile
+            <ImpactTile
               key={c.key}
               label={c.label}
               icon={c.icon}
@@ -4512,7 +4513,7 @@ function ActionEditor({
           {orderedNations.map((n) => {
             const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
             return (
-              <NationTile
+              <NationImpactTile
                 key={n.id}
                 nation={n}
                 value={action[key]}
@@ -4524,7 +4525,7 @@ function ActionEditor({
           })}
         </div>
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-          <ClassTile
+          <ImpactTile
             label="Demerits"
             icon={
               <IconCircleMinus
@@ -4538,7 +4539,7 @@ function ActionEditor({
               onChange({ impact_demerits: v } as Partial<ActionState>)
             }
           />
-          <ClassTile
+          <ImpactTile
             label="World Status"
             icon={
               <IconWorldBolt
@@ -4688,122 +4689,6 @@ function EndingAssignmentsSection({
         </div>
       </div>
     </>
-  );
-}
-
-function CounterInput({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-  orientation?: "horizontal" | "vertical";
-}) {
-  return (
-    <div className="group flex flex-col items-center gap-0.5">
-      <Input
-        type="text"
-        inputMode="numeric"
-        value={value === 0 ? "" : String(value)}
-        placeholder="—"
-        onChange={(e) => {
-          const raw = e.target.value.replace(/[^0-9-]/g, "");
-          if (raw === "" || raw === "-") {
-            onChange(0);
-            return;
-          }
-          const n = Number(raw);
-          if (Number.isFinite(n)) onChange(n);
-        }}
-        className={cn(
-          "h-6 w-9 px-1 text-center placeholder:text-muted-foreground/70",
-          GHOST_FIELD
-        )}
-      />
-      <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-        <button
-          type="button"
-          onClick={() => onChange(value - 1)}
-          tabIndex={-1}
-          className="flex h-4 w-4 items-center justify-center rounded-sm text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Decrease"
-        >
-          −
-        </button>
-        <button
-          type="button"
-          onClick={() => onChange(value + 1)}
-          tabIndex={-1}
-          className="flex h-4 w-4 items-center justify-center rounded-sm text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Increase"
-        >
-          +
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ClassTile({
-  label,
-  icon,
-  value,
-  onChange,
-}: {
-  label: string;
-  icon?: ReactNode;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-1" title={label}>
-      <button
-        type="button"
-        onClick={() => onChange(0)}
-        aria-label={`Reset ${label} to 0`}
-        title={`${label} — click to reset`}
-        className="flex h-6 items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground"
-      >
-        {icon ?? <span className="text-[10px]">{label}</span>}
-      </button>
-      <CounterInput value={value} onChange={onChange} orientation="vertical" />
-    </div>
-  );
-}
-
-function NationTile({
-  nation,
-  value,
-  onChange,
-}: {
-  nation: Nation;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div className="flex flex-col items-center gap-1" title={nation.name}>
-      <button
-        type="button"
-        onClick={() => onChange(0)}
-        aria-label={`Reset ${nation.name} to 0`}
-        title={`${nation.name} — click to reset`}
-        className="flex h-6 w-6 items-center justify-center rounded-sm transition-opacity hover:opacity-80"
-        style={{ color: nation.color_hex }}
-      >
-        {nation.icon_value ? (
-          <IconDisplay
-            type={nation.icon_type}
-            value={nation.icon_value}
-            size={14}
-          />
-        ) : (
-          <span className="text-[10px] font-mono">
-            {nation.abbreviation ?? nation.name.slice(0, 1)}
-          </span>
-        )}
-      </button>
-      <CounterInput value={value} onChange={onChange} orientation="vertical" />
-    </div>
   );
 }
 
