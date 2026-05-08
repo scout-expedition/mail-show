@@ -15,11 +15,13 @@ import {
   Inbox,
   Menu,
   Milestone,
+  Network,
   Ruler,
   Package,
   PlayCircle,
   ScrollText,
   Settings,
+  Variable,
 } from "lucide-react";
 import { IconMailOpened } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
@@ -30,28 +32,37 @@ const NAV_ITEMS: Array<{
   href: string;
   label: string;
   icon: NavIcon;
-  section: "Game" | "Sorting" | "Inspection" | "Data" | "Run";
+  section: "Game" | "Sorting" | "Inspection" | "Endings" | "Data" | "Run";
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
-  { href: "/graph", label: "Narrative Graph", icon: MapIcon, section: "Game" },
+  { href: "/graph", label: "Map View", icon: MapIcon, section: "Game" },
   { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
   { href: "/sorting/letters", label: "Letters", icon: Mail, section: "Sorting" },
   { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
   { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
   { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
   { href: "/inspection/actions", label: "Actions", icon: Milestone, section: "Inspection" },
+  { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
+  { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
+  { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
-  { href: "/endings", label: "Endings", icon: ScrollText, section: "Data" },
   { href: "/playthroughs", label: "Playthroughs", icon: PlayCircle, section: "Run" },
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
-  const sections = ["Game", "Sorting", "Inspection", "Data", "Run"] as const;
+  const sections = [
+    "Game",
+    "Sorting",
+    "Inspection",
+    "Endings",
+    "Data",
+    "Run",
+  ] as const;
   const [open, setOpen] = useState(false);
 
   // Close the drawer whenever navigation finishes so a clicked link

@@ -13,7 +13,7 @@
     "test:int": "bash scripts/test-int.sh",
     "test:e2e": "bash scripts/test-e2e.sh",
     "test:all": "pnpm test && pnpm test:int && pnpm test:e2e",
-    "db:migrate": "tsx scripts/apply-migration.ts"
+    "db:migrate": "tsx --env-file=.env.local scripts/apply-migration.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

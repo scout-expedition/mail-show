@@ -20,7 +20,7 @@ export default defineConfig({
       ".next",
       "tests/**",
       // Server-action tests need the integration harness; run via `pnpm test:int`.
-      "src/app/**/actions.test.ts",
+      "src/app/**/*actions.test.ts",
       // Playwright owns its own runner + spec files.
       "tests/e2e/**",
     ],

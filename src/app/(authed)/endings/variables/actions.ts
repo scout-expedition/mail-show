@@ -14,7 +14,7 @@ function revalidateEndings() {
 
 async function uniqueName(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  table: "ending_variables" | "ending_frameworks",
+  table: "ending_variables",
   base: string
 ): Promise<string> {
   let name = base;
@@ -77,6 +77,101 @@ export async function createEndingVariable() {
   revalidateEndings();
 }
 
+/**
+ * Create a text variable + a single value in one round-trip, used by the
+ * "+ New variable…" inline path in the frameworks chip pickers. Returns
+ * the ids so the caller can immediately reference them.
+ */
+export async function createEndingVariableInline(input: {
+  name: string;
+  firstValue: string;
+}): Promise<{ variableId: string; valueId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const trimmedName = input.name.trim();
+  const trimmedValue = input.firstValue.trim();
+  if (!trimmedName) throw new Error("Variable name is required.");
+  if (!trimmedValue) throw new Error("First value is required.");
+
+  const { data: existing } = await supabase
+    .from("ending_variables")
+    .select("sort_order")
+    .eq("kind", "text")
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+  const variableId = randomUUID();
+  const valueId = randomUUID();
+
+  const { error: varErr } = await supabase.from("ending_variables").insert({
+    id: variableId,
+    name: trimmedName,
+    kind: "text",
+    number_ref: null,
+    color_index: colorIndexFor(variableId),
+    sort_order: nextSort,
+  });
+  if (varErr) throw new Error(varErr.message);
+
+  const { error: valErr } = await supabase.from("ending_variable_values").insert({
+    id: valueId,
+    variable_id: variableId,
+    value: trimmedValue,
+    sort_order: 0,
+  });
+  if (valErr) throw new Error(valErr.message);
+
+  const { error: defaultErr } = await supabase
+    .from("ending_variables")
+    .update({ default_value_id: valueId })
+    .eq("id", variableId);
+  if (defaultErr) throw new Error(defaultErr.message);
+
+  revalidateEndings();
+  return { variableId, valueId };
+}
+
+/**
+ * Create a value with author-supplied text on an existing text variable.
+ * Used by the chip pickers' "+ New value…" inline path. Throws on
+ * duplicates (server-side uniqueness on `(variable_id, value)`).
+ */
+export async function createEndingVariableValueInline(input: {
+  variable_id: string;
+  value: string;
+}): Promise<{ valueId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const trimmedValue = input.value.trim();
+  if (!input.variable_id) throw new Error("variable_id is required.");
+  if (!trimmedValue) throw new Error("Value text is required.");
+
+  const { data: variable } = await supabase
+    .from("ending_variables")
+    .select("kind")
+    .eq("id", input.variable_id)
+    .single();
+  if (variable?.kind !== "text") {
+    throw new Error("Only text variables accept inline-created values.");
+  }
+
+  const { data: existing } = await supabase
+    .from("ending_variable_values")
+    .select("sort_order")
+    .eq("variable_id", input.variable_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
+  const valueId = randomUUID();
+  const { error } = await supabase.from("ending_variable_values").insert({
+    id: valueId,
+    variable_id: input.variable_id,
+    value: trimmedValue,
+    sort_order: nextSort,
+  });
+  if (error) throw new Error(error.message);
+  revalidateEndings();
+  return { valueId };
+}
+
 export async function createEndingVariableValue(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const variable_id = String(formData.get("variable_id") ?? "");
@@ -113,6 +208,7 @@ type VariablePayload = {
   name: string;
   default_value_id: string | null;
   sort_order: number;
+  color_hex: string | null;
   values: Array<{ id: string; value: string; sort_order: number }>;
 };
 
@@ -150,12 +246,17 @@ export async function updateAllEndingVariables(payload: VariablePayload[]) {
       if (error) throw new Error(error.message);
     }
 
+    const trimmedHex = v.color_hex?.trim() ?? null;
+    if (trimmedHex && !/^#[0-9a-fA-F]{6}$/.test(trimmedHex)) {
+      throw new Error(`Invalid color "${trimmedHex}" — expected #RRGGBB.`);
+    }
     const { error: varErr } = await supabase
       .from("ending_variables")
       .update({
         name: v.name.trim(),
         default_value_id: v.default_value_id,
         sort_order: v.sort_order,
+        color_hex: trimmedHex,
       })
       .eq("id", v.id);
     if (varErr) throw new Error(varErr.message);

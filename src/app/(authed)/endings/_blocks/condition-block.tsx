@@ -27,18 +27,22 @@ import {
   addBlockVariable,
   addChip,
   addRow,
+  deleteChip,
+  deleteRow,
   removeBlockVariable,
-  removeChip,
-  removeRow,
-} from "../actions";
-import { useDrag, type DragTarget } from "../lib/drag";
-import { useAnalysis } from "../lib/analysis";
+} from "../_shared/document-actions";
+import { useDrag, type DragTarget } from "../_shared/lib/drag";
+import { useAnalysis } from "../_shared/lib/analysis";
 import {
   ChipPickerForm,
   ChipPill,
   type AddChipInput,
 } from "./chip";
 import { DropLine } from "./text-block";
+import {
+  CREATE_VARIABLE_SENTINEL,
+  InlineCreateVariableForm,
+} from "./inline-create-variable";
 
 export function ConditionBlock({
   block,
@@ -96,7 +100,7 @@ export function ConditionBlock({
 
   function handleAddRow() {
     startTransition(async () => {
-      await addRow({ condition_block_id: block.id });
+      await addRow({ block_id: block.id });
     });
   }
 
@@ -243,7 +247,7 @@ export function ConditionBlock({
                 startTransition(async () => {
                   const fd = new FormData();
                   fd.set("id", chipId);
-                  await removeChip(fd);
+                  await deleteChip(fd);
                 })
               }
               onChangeChip={onChangeChip}
@@ -251,7 +255,7 @@ export function ConditionBlock({
                 startTransition(async () => {
                   const fd = new FormData();
                   fd.set("id", row.id);
-                  await removeRow(fd);
+                  await deleteRow(fd);
                 })
               }
             >
@@ -329,11 +333,7 @@ function ConditionRow({
       )}
     >
       <div className="flex flex-wrap items-start gap-1 self-start">
-        {declaredVariables.length === 0 ? (
-          <span className="text-[11px] italic text-muted-foreground">
-            (declare variables on the block header)
-          </span>
-        ) : (
+        {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
             const slotChips = chipsByVariableId.get(dv.variable_id) ?? [];
@@ -655,7 +655,7 @@ function HeaderVariableStrip({
           onPick={(variable_id) =>
             startTransition(async () => {
               await addBlockVariable({
-                condition_block_id: blockId,
+                block_id: blockId,
                 variable_id,
               });
             })
@@ -724,6 +724,22 @@ function AddHeaderVariablePicker({
   onPick: (variable_id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [creatingNew, setCreatingNew] = useState(false);
+  if (creatingNew) {
+    return (
+      <InlineCreateVariableForm
+        onCreated={({ variableId }) => {
+          setCreatingNew(false);
+          setOpen(false);
+          onPick(variableId);
+        }}
+        onCancel={() => {
+          setCreatingNew(false);
+          setOpen(false);
+        }}
+      />
+    );
+  }
   if (!open) {
     return (
       <button
@@ -763,6 +779,7 @@ function AddHeaderVariablePicker({
   const aggregateOrder: Array<{ ref: string; label: string }> = [
     { ref: "class_affinity", label: "Class Affinity" },
     { ref: "nation_affinity", label: "Nation Affinity" },
+    { ref: "nation_tiebreak_set", label: "Tiebreak Set" },
   ];
 
   return (
@@ -773,6 +790,10 @@ function AddHeaderVariablePicker({
       onBlur={() => setOpen(false)}
       onChange={(e) => {
         const id = e.target.value;
+        if (id === CREATE_VARIABLE_SENTINEL) {
+          setCreatingNew(true);
+          return;
+        }
         if (id) onPick(id);
         setOpen(false);
       }}
@@ -816,6 +837,7 @@ function AddHeaderVariablePicker({
           })}
         </optgroup>
       ) : null}
+      <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
     </select>
   );
 }

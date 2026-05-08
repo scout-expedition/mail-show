@@ -4,16 +4,17 @@ import { useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUnsavedDialog } from "@/components/panel";
 import type {
+  EndingBlock,
   EndingConditionBlockVariable,
   EndingConditionRow,
   EndingConditionRowChip,
-  EndingFramework,
-  EndingFrameworkBlock,
+  EndingDocument,
   EndingVariable,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
-import { FrameworkEditor, type EditorHandle } from "./framework-editor";
+import type { EditorHandle } from "../_shared/document-editor";
+import { FrameworkEditor } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
 
 export function FrameworksWorkspace({
@@ -26,16 +27,30 @@ export function FrameworksWorkspace({
   values,
   nations,
   selectedFrameworkId,
+  tiebreakDocsSummary,
+  tiebreakDocsRaw,
 }: {
-  frameworks: EndingFramework[];
-  blocks: EndingFrameworkBlock[];
+  frameworks: EndingDocument[];
+  blocks: EndingBlock[];
   rows: EndingConditionRow[];
   chips: EndingConditionRowChip[];
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
-  nations: Pick<Nation, "name" | "color_hex">[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
+  tiebreakDocsSummary: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    { isEmpty: boolean }
+  >;
+  tiebreakDocsRaw: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -52,7 +67,7 @@ export function FrameworksWorkspace({
   // classic infinite-render trap.
   const editorData = useMemo(() => {
     if (!selected) return null;
-    const editorBlocks = blocks.filter((b) => b.framework_id === selected.id);
+    const editorBlocks = blocks.filter((b) => b.document_id === selected.id);
     const blockIds = new Set(editorBlocks.map((b) => b.id));
     const editorRows = rows.filter((r) => blockIds.has(r.condition_block_id));
     const rowIds = new Set(editorRows.map((r) => r.id));
@@ -111,6 +126,8 @@ export function FrameworksWorkspace({
           variables={variables}
           values={values}
           nations={nations}
+          tiebreakDocsSummary={tiebreakDocsSummary}
+          tiebreakDocsRaw={tiebreakDocsRaw}
           onDeleted={() => navigateTo(null)}
           registerHandle={(h) => {
             editorHandleRef.current = h;

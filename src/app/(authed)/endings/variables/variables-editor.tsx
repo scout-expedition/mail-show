@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState, useTransition } from "react";
-import { Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { useConfirm } from "@/components/confirm-dialog";
 import {
   GHOST_FIELD,
@@ -15,6 +15,7 @@ import {
 } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import { paletteColor } from "@/lib/endings/color-palette";
+import { useLocalStorage } from "@/lib/use-local-storage";
 import type {
   EndingFramework,
   EndingLogicRuleCondition,
@@ -37,8 +38,16 @@ type VariableState = {
   default_value_id: string | null;
   sort_order: number;
   color_index: number;
+  color_hex: string | null;
+  created_at: string;
   values: ValueState[];
 };
+
+type ViewMode = "grouped" | "list";
+type SortMode = "created_desc" | "alpha_asc";
+
+const VIEW_KEY = "endings-variables-view";
+const SORT_KEY = "endings-variables-sort";
 
 export function VariablesEditor({
   variables,
@@ -63,8 +72,6 @@ export function VariablesEditor({
     for (const list of byVar.values()) {
       list.sort((a, b) => a.sort_order - b.sort_order);
     }
-    // Hide number_ref variables — they're seeded by migration 0016 and
-    // surfaced only inside the frameworks chip picker.
     return variables
       .filter((v) => v.kind === "text")
       .map((v) => ({
@@ -73,6 +80,8 @@ export function VariablesEditor({
         default_value_id: v.default_value_id,
         sort_order: v.sort_order,
         color_index: v.color_index,
+        color_hex: v.color_hex,
+        created_at: v.created_at,
         values: byVar.get(v.id) ?? [],
       }));
   }, [variables, values]);
@@ -80,8 +89,15 @@ export function VariablesEditor({
   const [rows, setRows] = useState<VariableState[]>(initial);
   const [dirty, setDirty] = useState(false);
   const [pending, startSave] = useTransition();
+  const [view, setView] = useLocalStorage<ViewMode>(VIEW_KEY, "grouped");
+  const [sort, setSort] = useLocalStorage<SortMode>(SORT_KEY, "created_desc");
+  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [expandedVars, setExpandedVars] = useState<Set<string>>(
+    () => new Set()
+  );
 
-  // Reconcile server state, preserving local edits.
   useEffect(() => {
     if (!dirty) {
       setRows(initial);
@@ -92,25 +108,20 @@ export function VariablesEditor({
       const initialIds = new Set(initial.map((r) => r.id));
       const kept = prev.filter((r) => initialIds.has(r.id));
       const keptIds = new Set(kept.map((r) => r.id));
-      // Merge in new values that server has but prev didn't
       const merged = kept.map((r) => {
         const serverR = initial.find((s) => s.id === r.id)!;
         const prevValIds = new Set(r.values.map((v) => v.id));
         const serverValIds = new Set(serverR.values.map((v) => v.id));
-        // Drop local values removed on server; add server-only values.
         const keptVals = r.values.filter((v) => serverValIds.has(v.id));
         const addedVals = serverR.values.filter((v) => !prevValIds.has(v.id));
         return { ...r, values: [...keptVals, ...addedVals] };
       });
       const additions = initial.filter((s) => !prevById.has(s.id));
       if (additions.length === 0 && merged.length === prev.length) {
-        // Check whether we actually changed anything — if not, skip update.
-        const same =
-          merged.every(
-            (r, i) =>
-              r.id === prev[i].id && r.values.length === prev[i].values.length
-          ) &&
-          merged.every((r) => r.values.every((_, i) => true));
+        const same = merged.every(
+          (r, i) =>
+            r.id === prev[i].id && r.values.length === prev[i].values.length
+        );
         if (same) return prev;
       }
       return [...merged, ...additions.filter((a) => !keptIds.has(a.id))];
@@ -149,6 +160,7 @@ export function VariablesEditor({
       name: r.name,
       default_value_id: r.default_value_id,
       sort_order: i,
+      color_hex: r.color_hex,
       values: r.values.map((v, j) => ({
         id: v.id,
         value: v.value,
@@ -165,7 +177,6 @@ export function VariablesEditor({
     (r) => !r.name.trim() || r.values.some((v) => !v.value.trim())
   );
 
-  // Index of variable_id → which panels it appears in.
   const variableRefs = useMemo(() => {
     const byFramework = new Map<string, Set<string>>();
     for (const ref of frameworkVariableRefs) {
@@ -216,20 +227,94 @@ export function VariablesEditor({
     unreferencedPanel,
   ];
 
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    if (sort === "alpha_asc") {
+      copy.sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      // created_desc — most-recent first.
+      copy.sort((a, b) => b.created_at.localeCompare(a.created_at));
+    }
+    return copy;
+  }, [rows, sort]);
+
+  function togglePanel(key: string) {
+    setCollapsedPanels((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleVariable(id: string) {
+    setExpandedVars((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <>
-      <div className="mb-3 flex items-center justify-end gap-2">
-        {anyBlocked ? (
-          <span className="text-xs text-destructive">
-            Fill in every name and value to save.
-          </span>
-        ) : null}
-        <SaveRevert
-          dirty={dirty && !anyBlocked}
-          pending={pending}
-          onSave={save}
-          onRevert={revert}
-        />
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <div
+            role="tablist"
+            aria-label="View"
+            className="inline-flex rounded-md border border-border bg-card text-xs"
+          >
+            {(
+              [
+                { id: "grouped", label: "Grouped" },
+                { id: "list", label: "List" },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                role="tab"
+                aria-selected={view === opt.id}
+                onClick={() => setView(opt.id)}
+                className={cn(
+                  "px-3 py-1 transition-colors",
+                  view === opt.id
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:bg-accent/40"
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {view === "list" ? (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              Sort
+              <Select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as SortMode)}
+                className={cn("h-7 w-auto", GHOST_FIELD)}
+              >
+                <option value="created_desc">Created (newest first)</option>
+                <option value="alpha_asc">Name (A → Z)</option>
+              </Select>
+            </label>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-2">
+          {anyBlocked ? (
+            <span className="text-xs text-destructive">
+              Fill in every name and value to save.
+            </span>
+          ) : null}
+          <SaveRevert
+            dirty={dirty && !anyBlocked}
+            pending={pending}
+            onSave={save}
+            onRevert={revert}
+          />
+        </div>
       </div>
 
       <div className="flex flex-col gap-4">
@@ -237,22 +322,39 @@ export function VariablesEditor({
           <p className="rounded-md border border-border bg-card px-4 py-6 text-center text-sm text-muted-foreground">
             No ending variables yet.
           </p>
-        ) : null}
-
-        {rows.length > 0
-          ? panels.map((panel) => (
-              <GroupPanel
-                key={panel.key}
-                title={panel.title}
-                rows={panel.rows}
-                onChangeName={(id, name) => updateVariable(id, { name })}
-                onChangeDefault={(id, vid) =>
-                  updateVariable(id, { default_value_id: vid })
-                }
-                onChangeValue={updateValue}
-              />
-            ))
-          : null}
+        ) : view === "grouped" ? (
+          panels.map((panel) => (
+            <GroupPanel
+              key={panel.key}
+              title={panel.title}
+              rows={panel.rows}
+              collapsed={collapsedPanels.has(panel.key)}
+              onToggle={() => togglePanel(panel.key)}
+              expandedIds={expandedVars}
+              onToggleVariable={toggleVariable}
+              onChangeName={(id, name) => updateVariable(id, { name })}
+              onChangeDefault={(id, vid) =>
+                updateVariable(id, { default_value_id: vid })
+              }
+              onChangeColor={(id, hex) =>
+                updateVariable(id, { color_hex: hex })
+              }
+              onChangeValue={updateValue}
+            />
+          ))
+        ) : (
+          <ListView
+            rows={sortedRows}
+            expandedIds={expandedVars}
+            onToggleVariable={toggleVariable}
+            onChangeName={(id, name) => updateVariable(id, { name })}
+            onChangeDefault={(id, vid) =>
+              updateVariable(id, { default_value_id: vid })
+            }
+            onChangeColor={(id, hex) => updateVariable(id, { color_hex: hex })}
+            onChangeValue={updateValue}
+          />
+        )}
       </div>
 
       <div className="mt-4 flex justify-center">
@@ -269,31 +371,96 @@ export function VariablesEditor({
 function GroupPanel({
   title,
   rows,
+  collapsed,
+  onToggle,
+  expandedIds,
+  onToggleVariable,
   onChangeName,
   onChangeDefault,
+  onChangeColor,
   onChangeValue,
 }: {
   title: string;
   rows: VariableState[];
+  collapsed: boolean;
+  onToggle: () => void;
+  expandedIds: Set<string>;
+  onToggleVariable: (id: string) => void;
   onChangeName: (id: string, name: string) => void;
   onChangeDefault: (id: string, vid: string | null) => void;
+  onChangeColor: (id: string, hex: string | null) => void;
   onChangeValue: (varId: string, valId: string, text: string) => void;
 }) {
   return (
     <section className="overflow-hidden rounded-md border border-border bg-card">
-      <PanelHeader title={title} />
-      <div className="flex flex-col gap-3 p-3">
-        {rows.length === 0 ? (
-          <p className="rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
-            None.
-          </p>
-        ) : null}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span
+          aria-hidden
+          className="ml-2 inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        </span>
+        <PanelHeader title={`${title} (${rows.length})`} />
+      </button>
+      {collapsed ? null : (
+        <div className="flex flex-col gap-2 p-3">
+          {rows.length === 0 ? (
+            <p className="rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
+              None.
+            </p>
+          ) : null}
+          {rows.map((row) => (
+            <VariableCard
+              key={row.id}
+              row={row}
+              expanded={expandedIds.has(row.id)}
+              onToggle={() => onToggleVariable(row.id)}
+              onChangeName={(name) => onChangeName(row.id, name)}
+              onChangeDefault={(vid) => onChangeDefault(row.id, vid)}
+              onChangeColor={(hex) => onChangeColor(row.id, hex)}
+              onChangeValue={(valId, text) => onChangeValue(row.id, valId, text)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ListView({
+  rows,
+  expandedIds,
+  onToggleVariable,
+  onChangeName,
+  onChangeDefault,
+  onChangeColor,
+  onChangeValue,
+}: {
+  rows: VariableState[];
+  expandedIds: Set<string>;
+  onToggleVariable: (id: string) => void;
+  onChangeName: (id: string, name: string) => void;
+  onChangeDefault: (id: string, vid: string | null) => void;
+  onChangeColor: (id: string, hex: string | null) => void;
+  onChangeValue: (varId: string, valId: string, text: string) => void;
+}) {
+  return (
+    <section className="rounded-md border border-border bg-card p-3">
+      <div className="flex flex-col gap-2">
         {rows.map((row) => (
           <VariableCard
             key={row.id}
             row={row}
+            expanded={expandedIds.has(row.id)}
+            onToggle={() => onToggleVariable(row.id)}
             onChangeName={(name) => onChangeName(row.id, name)}
             onChangeDefault={(vid) => onChangeDefault(row.id, vid)}
+            onChangeColor={(hex) => onChangeColor(row.id, hex)}
             onChangeValue={(valId, text) => onChangeValue(row.id, valId, text)}
           />
         ))}
@@ -304,17 +471,25 @@ function GroupPanel({
 
 function VariableCard({
   row,
+  expanded,
+  onToggle,
   onChangeName,
   onChangeDefault,
+  onChangeColor,
   onChangeValue,
 }: {
   row: VariableState;
+  expanded: boolean;
+  onToggle: () => void;
   onChangeName: (name: string) => void;
   onChangeDefault: (valId: string | null) => void;
+  onChangeColor: (hex: string | null) => void;
   onChangeValue: (valId: string, text: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+
+  const effectiveColor = row.color_hex ?? paletteColor(row.color_index);
 
   async function confirmDeleteVariable() {
     const ok = await confirmDialog({
@@ -350,23 +525,63 @@ function VariableCard({
 
   return (
     <div className="rounded-md border border-border bg-background/40">
-      <div className="flex items-center gap-2 border-b border-border/60 bg-muted/10 px-3 py-1.5">
-        <span
+      <div className="grid grid-cols-[24px_20px_minmax(0,1fr)_auto_minmax(140px,200px)_28px] items-center gap-2 px-2 py-1.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse variable" : "Expand variable"}
+          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/40"
+        >
+          {expanded ? (
+            <ChevronDown size={14} aria-hidden />
+          ) : (
+            <ChevronRight size={14} aria-hidden />
+          )}
+        </button>
+        <label
           aria-label="Variable color"
-          title="Auto-assigned color (used for chips in the frameworks editor)"
-          className="inline-block h-3.5 w-3.5 shrink-0 rounded-sm border border-border/60"
-          style={{ backgroundColor: paletteColor(row.color_index) }}
-        />
+          title="Variable color (used for chips in the frameworks editor)"
+          className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
+        >
+          <span
+            aria-hidden
+            className="block h-4 w-4 rounded-sm border border-border/60"
+            style={{ backgroundColor: effectiveColor }}
+          />
+          <input
+            type="color"
+            value={effectiveColor}
+            onChange={(e) => onChangeColor(e.target.value)}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          />
+        </label>
         <Input
           value={row.name}
           onChange={(e) => onChangeName(e.target.value)}
           placeholder="Variable name"
           className={cn(
-            "h-8 font-medium",
+            "h-8 min-w-0 font-medium",
             GHOST_FIELD,
             !row.name.trim() && "ring-2 ring-destructive"
           )}
         />
+        <span className="hidden text-xs text-muted-foreground sm:inline">
+          Default
+        </span>
+        <Select
+          value={row.default_value_id ?? ""}
+          onChange={(e) => onChangeDefault(e.target.value || null)}
+          aria-label="Default value"
+          className={cn("h-8 w-full", GHOST_FIELD)}
+        >
+          <option value="">—</option>
+          {row.values.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.value || "(unnamed)"}
+            </option>
+          ))}
+        </Select>
         <button
           type="button"
           disabled={pending}
@@ -379,72 +594,72 @@ function VariableCard({
         </button>
       </div>
 
-      <div className="grid grid-cols-[60px_1fr_36px] items-center gap-2 border-b border-border/40 bg-muted/10 px-3 py-1">
-        <Label className="!text-xs">Default</Label>
-        <Label className="!text-xs">Value</Label>
-        <span />
-      </div>
-
-      {row.values.length === 0 ? (
-        <p className="px-3 py-3 text-center text-xs text-muted-foreground">
-          No values yet.
-        </p>
-      ) : (
-        row.values.map((val) => (
-          <div
-            key={val.id}
-            className="grid grid-cols-[60px_1fr_36px] items-center gap-2 border-t border-border/40 px-3 py-1 first:border-t-0"
-          >
-            <label className="flex h-8 items-center justify-center">
-              <input
-                type="radio"
-                name={`default__${row.id}`}
-                checked={row.default_value_id === val.id}
-                onChange={() => onChangeDefault(val.id)}
-                className="h-4 w-4 accent-primary"
-              />
-            </label>
-            <Input
-              value={val.value}
-              onChange={(e) => onChangeValue(val.id, e.target.value)}
-              placeholder="Value"
-              className={cn(
-                "h-8",
-                GHOST_FIELD,
-                !val.value.trim() && "ring-2 ring-destructive"
-              )}
-            />
+      {expanded ? (
+        <div className="border-t border-border/40">
+          {row.color_hex ? (
+            <div className="flex items-center justify-end px-3 py-1 text-[10px] text-muted-foreground/70">
+              <button
+                type="button"
+                onClick={() => onChangeColor(null)}
+                title="Clear custom color (use palette default)"
+                className="uppercase tracking-widest hover:text-foreground"
+              >
+                reset color
+              </button>
+            </div>
+          ) : null}
+          {row.values.length === 0 ? (
+            <p className="px-3 py-3 text-center text-xs text-muted-foreground">
+              No values yet.
+            </p>
+          ) : (
+            row.values.map((val) => (
+              <div
+                key={val.id}
+                className="grid grid-cols-[1fr_36px] items-center gap-2 border-t border-border/30 px-3 py-1 first:border-t-0"
+              >
+                <Input
+                  value={val.value}
+                  onChange={(e) => onChangeValue(val.id, e.target.value)}
+                  placeholder="Value"
+                  className={cn(
+                    "h-8",
+                    GHOST_FIELD,
+                    !val.value.trim() && "ring-2 ring-destructive"
+                  )}
+                />
+                <button
+                  type="button"
+                  disabled={pending}
+                  aria-label="Delete value"
+                  title="Delete value"
+                  onClick={() => confirmDeleteValue(val.id, val.value)}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
+                >
+                  <Trash2 size={12} aria-hidden />
+                </button>
+              </div>
+            ))
+          )}
+          <div className="flex justify-center border-t border-border/30 bg-muted/5 px-3 py-1.5">
             <button
               type="button"
+              onClick={addValue}
               disabled={pending}
-              aria-label="Delete value"
-              title="Delete value"
-              onClick={() => confirmDeleteValue(val.id, val.value)}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
+              className={MUTED_ADD_BTN}
             >
-              <Trash2 size={12} aria-hidden />
+              {pending ? (
+                <>
+                  <Spinner />
+                  …
+                </>
+              ) : (
+                "+ Value"
+              )}
             </button>
           </div>
-        ))
-      )}
-
-      <div className="flex justify-center border-t border-border/40 bg-muted/5 px-3 py-1.5">
-        <button
-          type="button"
-          onClick={addValue}
-          disabled={pending}
-          className={MUTED_ADD_BTN}
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              …
-            </>
-          ) : (
-            "+ Value"
-          )}
-        </button>
-      </div>
+        </div>
+      ) : null}
       {confirmDialogEl}
     </div>
   );

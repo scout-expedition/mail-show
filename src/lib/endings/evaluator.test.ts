@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_SELECTIONS,
+  evaluateDocument,
+  evaluateDocumentDetailed,
   evaluateFramework,
   evaluateChip,
   evaluateRow,
   matchingRowsByBlock,
+  resolveAggregatesDetailed,
   shadowedRowIds,
   type EvalBlock,
   type EvalChip,
+  type EvalInputs,
   type EvalRow,
   type EvalVariable,
   type PreviewSelections,
 } from "./evaluator";
+import type { EndingLogicKind } from "@/lib/db/enums";
 
 const textVar = (id: string): EvalVariable => ({
   id,
@@ -112,6 +117,22 @@ const condBlock = (
   parent_row_id: parentRowId,
   block_type: "condition",
   text: "",
+  sort_order: sortOrder,
+});
+
+const resultBlock = (
+  id: string,
+  resultValue: string,
+  parentBlockId: string | null = null,
+  parentRowId: string | null = null,
+  sortOrder = 0
+): EvalBlock => ({
+  id,
+  parent_block_id: parentBlockId,
+  parent_row_id: parentRowId,
+  block_type: "result",
+  text: "",
+  result_value: resultValue,
   sort_order: sortOrder,
 });
 
@@ -788,5 +809,798 @@ describe("shadowedRowIds", () => {
       selections: numSelections({ [world.id]: 2 }),
     });
     expect([...out]).toEqual([r2.id]);
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateDocument — generalised walk over text + result leaves
+// ----------------------------------------------------------------------
+
+describe("evaluateDocument", () => {
+  it("single text leaf at root → returns [text]", () => {
+    const out = evaluateDocument({
+      blocks: [textBlock("b1", "hello")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    });
+    expect(out).toEqual(["hello"]);
+  });
+
+  it("single result leaf at root → returns [result_value]", () => {
+    const out = evaluateDocument({
+      blocks: [resultBlock("b1", "proletariat")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    });
+    expect(out).toEqual(["proletariat"]);
+  });
+
+  it("nested condition+text — chip matches → returns child text", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id);
+    const child = textBlock("child", "winter rose lyric", cb.id, r1.id);
+    const out = evaluateDocument({
+      blocks: [cb, child],
+      rows: [r1],
+      chips: [textChip("c1", r1.id, performer.id, "WINTER")],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out).toEqual(["winter rose lyric"]);
+  });
+
+  it("nested condition+result — chip matches → returns child result_value", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id);
+    const child = resultBlock("child", "proletariat", cb.id, r1.id);
+    const out = evaluateDocument({
+      blocks: [cb, child],
+      rows: [r1],
+      chips: [textChip("c1", r1.id, performer.id, "WINTER")],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out).toEqual(["proletariat"]);
+  });
+
+  it("empty doc → returns []", () => {
+    const out = evaluateDocument({
+      blocks: [],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("first-match-wins across rows: only row 1's children render", () => {
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id, 0);
+    const r2 = row("r2", cb.id, 1);
+    // Both rows match the same selection.
+    const out = evaluateDocument({
+      blocks: [
+        cb,
+        resultBlock("res1", "framework-A", cb.id, r1.id),
+        resultBlock("res2", "framework-B", cb.id, r2.id),
+      ],
+      rows: [r1, r2],
+      chips: [
+        textChip("c1", r1.id, performer.id, "WINTER"),
+        textChip("c2", r2.id, performer.id, "WINTER"),
+      ],
+      variables: [performer],
+      selections: textSelections({ [performer.id]: "WINTER" }),
+    });
+    expect(out).toEqual(["framework-A"]);
+  });
+
+  it("cycle guard: a doc whose result references back into itself via a tied aggregate chip → returns empty (no infinite recursion)", () => {
+    // class_affinity_top doc: a single row whose chip is `top= proletariat`.
+    // Because the underlying scores tie, the chip would consult the same
+    // class_affinity_top doc to break the tie — that's the cycle. The
+    // evaluator's cycle guard breaks it by returning false, so no row
+    // matches and the doc resolves to [].
+    const klass = aggVar("VAR_CLASS", "class_affinity");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id);
+    const tiebreakDoc: EvalInputs = {
+      blocks: [cb, resultBlock("res1", "proletariat", cb.id, r1.id)],
+      rows: [r1],
+      chips: [aggChip("c1", r1.id, klass.id, "proletariat", "top=")],
+      variables: [klass],
+      selections: {
+        textValueIds: {},
+        numbers: { "var-proletariat": 5, "var-gentry": 5 },
+        numberRefByName: new Map([
+          ["proletariat", "var-proletariat"],
+          ["gentry", "var-gentry"],
+        ]),
+        // The tiebreak_docs here points to the same doc, creating the cycle.
+        // We need a self-reference: build a Map and then mutate the
+        // selections object so the doc references itself.
+      },
+    };
+    const tiebreak_docs = new Map<EndingLogicKind, EvalInputs>([
+      ["class_affinity_top", tiebreakDoc],
+    ]);
+    tiebreakDoc.selections.tiebreak_docs = tiebreak_docs;
+
+    // Run the doc directly; the chip's own tiebreak resolution would
+    // recurse into `class_affinity_top` (itself). The guard short-circuits
+    // and the chip returns false, so the row never matches.
+    const out = evaluateDocument(tiebreakDoc);
+    expect(out).toEqual([]);
+  });
+});
+
+// ----------------------------------------------------------------------
+// Tiebreak resolution — class_affinity, scores 5-5
+// ----------------------------------------------------------------------
+
+describe("evaluateChip / aggregate tiebreak resolution", () => {
+  const PROLETARIAT = "var-proletariat";
+  const GENTRY = "var-gentry";
+  const klass = aggVar("VAR_CLASS", "class_affinity");
+
+  function tiedClassSelections(
+    extra?: Partial<PreviewSelections>
+  ): PreviewSelections {
+    return {
+      textValueIds: {},
+      numbers: { [PROLETARIAT]: 5, [GENTRY]: 5 },
+      numberRefByName: new Map([
+        ["proletariat", PROLETARIAT],
+        ["gentry", GENTRY],
+      ]),
+      ...extra,
+    };
+  }
+
+  function buildTiebreakDoc(resultValue: string): EvalInputs {
+    // Single root-level result block — always resolves to `resultValue`.
+    return {
+      blocks: [resultBlock("res", resultValue)],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+  }
+
+  it("empty tiebreak doc (absent map entry) → tied aggregate chip returns false", () => {
+    const sel = tiedClassSelections({
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>(),
+    });
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("tiebreak doc resolves to proletariat → top= proletariat true", () => {
+    const sel = tiedClassSelections({
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["class_affinity_top", buildTiebreakDoc("proletariat")],
+      ]),
+    });
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(true);
+  });
+
+  it("tiebreak doc resolves to proletariat → top= gentry false", () => {
+    const sel = tiedClassSelections({
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["class_affinity_top", buildTiebreakDoc("proletariat")],
+      ]),
+    });
+    const chip = aggChip("c", "r", klass.id, "gentry", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("tiebreak doc resolves to proletariat → top≠ gentry true", () => {
+    const sel = tiedClassSelections({
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["class_affinity_top", buildTiebreakDoc("proletariat")],
+      ]),
+    });
+    const chip = aggChip("c", "r", klass.id, "gentry", "top≠");
+    expect(evaluateChip(chip, klass, sel)).toBe(true);
+  });
+
+  it("tiebreak doc returns null (no row matches) → falls back to false", () => {
+    // Doc with one row whose chip can't match (unset variable).
+    const performer = textVar("PERFORMER");
+    const cb = condBlock("cb");
+    const r1 = row("r1", cb.id);
+    const noMatchDoc: EvalInputs = {
+      blocks: [cb, resultBlock("res", "proletariat", cb.id, r1.id)],
+      rows: [r1],
+      chips: [textChip("c1", r1.id, performer.id, "WINTER")],
+      variables: [performer],
+      selections: EMPTY_SELECTIONS, // performer unset → no row matches
+    };
+    const sel = tiedClassSelections({
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["class_affinity_top", noMatchDoc],
+      ]),
+    });
+    const chip = aggChip("c", "r", klass.id, "proletariat", "top=");
+    expect(evaluateChip(chip, klass, sel)).toBe(false);
+  });
+
+  it("nation 3-way tie (folos=emberlyn=spokgrad=3, pelico=epicenter=0); doc returns emberlyn → top= emberlyn true", () => {
+    const FOLOS = "var-folos";
+    const EMBERLYN = "var-emberlyn";
+    const SPOKGRAD = "var-spokgrad";
+    const PELICO = "var-pelico";
+    const EPICENTER = "var-epicenter";
+    const nation = aggVar("VAR_NATION", "nation_affinity");
+    const sel: PreviewSelections = {
+      textValueIds: {},
+      numbers: {
+        [FOLOS]: 3,
+        [EMBERLYN]: 3,
+        [SPOKGRAD]: 3,
+        [PELICO]: 0,
+        [EPICENTER]: 0,
+      },
+      numberRefByName: new Map([
+        ["folos", FOLOS],
+        ["emberlyn", EMBERLYN],
+        ["spokgrad", SPOKGRAD],
+        ["pelico", PELICO],
+        ["epicenter", EPICENTER],
+      ]),
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["nation_affinity_top", buildTiebreakDoc("emberlyn")],
+      ]),
+    };
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "emberlyn", "top="),
+        nation,
+        sel
+      )
+    ).toBe(true);
+    // Doc returns emberlyn but chip is for folos → false (winner is emberlyn).
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "folos", "top="),
+        nation,
+        sel
+      )
+    ).toBe(false);
+  });
+
+  it("nation 3-way tie; doc returns a non-tied option (pelico) → falls back to false", () => {
+    const FOLOS = "var-folos";
+    const EMBERLYN = "var-emberlyn";
+    const SPOKGRAD = "var-spokgrad";
+    const PELICO = "var-pelico";
+    const EPICENTER = "var-epicenter";
+    const nation = aggVar("VAR_NATION", "nation_affinity");
+    const sel: PreviewSelections = {
+      textValueIds: {},
+      numbers: {
+        [FOLOS]: 3,
+        [EMBERLYN]: 3,
+        [SPOKGRAD]: 3,
+        [PELICO]: 0,
+        [EPICENTER]: 0,
+      },
+      numberRefByName: new Map([
+        ["folos", FOLOS],
+        ["emberlyn", EMBERLYN],
+        ["spokgrad", SPOKGRAD],
+        ["pelico", PELICO],
+        ["epicenter", EPICENTER],
+      ]),
+      // Doc returns "pelico" — but pelico isn't tied (it's at 0 not 3).
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["nation_affinity_top", buildTiebreakDoc("pelico")],
+      ]),
+    };
+    // Chip is for emberlyn — doc said pelico (non-tied option) → fall
+    // back to today's "tie → false". emberlyn ≠ pelico anyway.
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "emberlyn", "top="),
+        nation,
+        sel
+      )
+    ).toBe(false);
+    // Even pelico itself doesn't match — pelico isn't a tied option.
+    expect(
+      evaluateChip(
+        aggChip("c", "r", nation.id, "pelico", "top="),
+        nation,
+        sel
+      )
+    ).toBe(false);
+  });
+
+  it("tiebreak only fires on tie: scores 5-2 (no tie) → doc never consulted", () => {
+    // Doc would resolve to gentry, but scores aren't tied — proletariat
+    // wins by score alone, so `top= proletariat` true regardless.
+    const sel: PreviewSelections = {
+      textValueIds: {},
+      numbers: { [PROLETARIAT]: 5, [GENTRY]: 2 },
+      numberRefByName: new Map([
+        ["proletariat", PROLETARIAT],
+        ["gentry", GENTRY],
+      ]),
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["class_affinity_top", buildTiebreakDoc("gentry")],
+      ]),
+    };
+    expect(
+      evaluateChip(
+        aggChip("c", "r", klass.id, "proletariat", "top="),
+        klass,
+        sel
+      )
+    ).toBe(true);
+    expect(
+      evaluateChip(
+        aggChip("c", "r", klass.id, "gentry", "top="),
+        klass,
+        sel
+      )
+    ).toBe(false);
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateFramework backwards-compat — alias delegates to evaluateDocument
+// ----------------------------------------------------------------------
+
+describe("evaluateFramework (backwards-compatible alias)", () => {
+  it("text-only docs render identically to evaluateDocument", () => {
+    const blocks: EvalBlock[] = [
+      textBlock("b1", "Hello", null, null, 0),
+      textBlock("b2", "World", null, null, 1),
+    ];
+    const inputs: EvalInputs = {
+      blocks,
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(evaluateFramework(inputs)).toEqual(["Hello", "World"]);
+    expect(evaluateFramework(inputs)).toEqual(evaluateDocument(inputs));
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateDocument — set-narrowing tiebreak (nation tiebreak docs)
+// ----------------------------------------------------------------------
+
+describe("evaluateDocument set-narrowing", () => {
+  const NATION = "VAR_NATION_AFFINITY";
+  const FOLOS = "FOLOS_VALUE";
+
+  const setChip = (
+    id: string,
+    rowId: string,
+    nation: string,
+    operator: "set_includes" | "set_excludes",
+    sortOrder = 0
+  ): EvalChip => ({
+    id,
+    row_id: rowId,
+    variable_id: NATION,
+    operator,
+    text_value_id: null,
+    number_value: null,
+    aggregate_value: nation,
+    sort_order: sortOrder,
+  });
+
+  const fallbackBlock = (id: string, value: string | null): EvalBlock => ({
+    id,
+    parent_block_id: null,
+    parent_row_id: null,
+    block_type: "fallback",
+    text: "",
+    result_value: value,
+    sort_order: 999999,
+  });
+
+  it("auto-resolves to the only remaining nation after a removal", () => {
+    // Initial set: folos, emberlyn. Doc removes emberlyn → folos wins.
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("rem1", "__remove__:emberlyn", null, null, 0)],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn"],
+      })
+    ).toEqual(["folos"]);
+  });
+
+  it("set_includes chip on a condition row gates a removal", () => {
+    // condition: tiebreak set includes spokgrad → remove spokgrad.
+    // Initial set folos+spokgrad → spokgrad removed → folos wins.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const removeSpok = resultBlock(
+      "rs",
+      "__remove__:spokgrad",
+      "c1",
+      "r1",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeSpok],
+      rows: [r1],
+      chips: [setChip("ch1", "r1", "spokgrad", "set_includes")],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "spokgrad"],
+      })
+    ).toEqual(["folos"]);
+  });
+
+  it("evaluates every matching row in a condition block (not first-match-wins)", () => {
+    // Two matching rows; both remove different nations. Working set
+    // should narrow to the one not removed.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const r2 = row("r2", "c1", 1);
+    const removeFolos = resultBlock(
+      "rf",
+      "__remove__:folos",
+      "c1",
+      "r1",
+      0
+    );
+    const removeSpok = resultBlock(
+      "rs",
+      "__remove__:spokgrad",
+      "c1",
+      "r2",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeFolos, removeSpok],
+      rows: [r1, r2],
+      chips: [
+        setChip("ch1", "r1", "folos", "set_includes"),
+        setChip("ch2", "r2", "spokgrad", "set_includes"),
+      ],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "spokgrad", "emberlyn"],
+      })
+    ).toEqual(["emberlyn"]);
+  });
+
+  it("definite result wins immediately, skipping later rows", () => {
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const r2 = row("r2", "c1", 1);
+    // r1 returns epicenter directly; r2's removal should never run.
+    const epicenter = resultBlock("ep", "epicenter", "c1", "r1", 0);
+    const removeAll = resultBlock(
+      "rm",
+      "__remove__:emberlyn",
+      "c1",
+      "r2",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, epicenter, removeAll],
+      rows: [r1, r2],
+      chips: [
+        setChip("ch1", "r1", "epicenter", "set_includes"),
+        setChip("ch2", "r2", "emberlyn", "set_includes"),
+      ],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn", "epicenter"],
+      })
+    ).toEqual(["epicenter"]);
+  });
+
+  it("falls through to fallback when working set goes empty", () => {
+    // Initial set is just { folos }. Removing folos drains the set to
+    // empty (size→0); the auto-resolve check that would normally
+    // catch the size-1 transition doesn't fire here because the
+    // removal already finalized at size 0. Fallback returns spokgrad.
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:folos", null, null, 0),
+        fallbackBlock("fb", "spokgrad"),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, { initialTiebreakSet: ["folos"] })
+    ).toEqual(["spokgrad"]);
+  });
+
+  it("__random_remaining__ rolls from the working set", () => {
+    // After removing folos, set is { emberlyn }; random_remaining must
+    // return emberlyn (only option).
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:folos", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn"],
+      })
+    ).toEqual(["emberlyn"]);
+  });
+
+  it("set_excludes returns false when the nation is in the set", () => {
+    // set_excludes folos with folos in set → row doesn't fire → no removal.
+    const cond = condBlock("c1", null, null, 0);
+    const r1 = row("r1", "c1", 0);
+    const removeEmber = resultBlock(
+      "rem",
+      "__remove__:emberlyn",
+      "c1",
+      "r1",
+      0
+    );
+    const inputs: EvalInputs = {
+      blocks: [cond, removeEmber, fallbackBlock("fb", "spokgrad")],
+      rows: [r1],
+      chips: [setChip("ch1", "r1", "folos", "set_excludes")],
+      variables: [aggVar(NATION, "nation_affinity")],
+      selections: EMPTY_SELECTIONS,
+    };
+    // Initial set has folos → set_excludes folos is false → no removal
+    // → no auto-resolve → fallback fires → spokgrad.
+    expect(
+      evaluateDocument(inputs, {
+        initialTiebreakSet: ["folos", "emberlyn", "spokgrad"],
+      })
+    ).toEqual(["spokgrad"]);
+    // Suppress unused-var lint on the seeded value id constant.
+    void FOLOS;
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateDocumentDetailed — exposes rollPool / rollSentinel for the
+// preview UI when a narrowing-mode random sentinel resolves; the
+// runtime `evaluateDocument` would have rolled it eagerly.
+// ----------------------------------------------------------------------
+
+describe("evaluateDocumentDetailed", () => {
+  it("non-narrowing path returns null rollPool / rollSentinel", () => {
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("res", "proletariat")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs);
+    expect(out.paragraphs).toEqual(["proletariat"]);
+    expect(out.rollPool).toBeNull();
+    expect(out.rollSentinel).toBeNull();
+  });
+
+  it("narrowing path with concrete result returns null rollPool", () => {
+    // Initial set { folos, emberlyn }; doc removes emberlyn → folos
+    // wins by auto-resolve. No random sentinel involved.
+    const inputs: EvalInputs = {
+      blocks: [resultBlock("rm", "__remove__:emberlyn", null, null, 0)],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn"],
+    });
+    expect(out.paragraphs).toEqual(["folos"]);
+    expect(out.rollPool).toBeNull();
+    expect(out.rollSentinel).toBeNull();
+  });
+
+  it("narrowing path with __random_remaining__ returns the working set as rollPool", () => {
+    // Initial set { folos, emberlyn, spokgrad }; doc removes spokgrad
+    // first, then __random_remaining__ — pool is the post-removal set.
+    const inputs: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:spokgrad", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn", "spokgrad"],
+    });
+    expect(out.rollSentinel).toBe("__random_remaining__");
+    expect(out.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn"])
+    );
+    expect(out.rollPool).toHaveLength(2);
+    // Paragraphs surface the sentinel verbatim — caller is expected to
+    // roll. evaluateDocument (eager path) returns a concrete value
+    // instead; we don't assert paragraphs here beyond the sentinel.
+    expect(out.paragraphs).toEqual(["__random_remaining__"]);
+  });
+
+  it("narrowing fallback path with __random_remaining__ returns rollPool from final working set", () => {
+    // Tree exhausts without picking; fallback is __random_remaining__.
+    // Working set = original tied set.
+    const inputs: EvalInputs = {
+      blocks: [
+        {
+          id: "fb",
+          parent_block_id: null,
+          parent_row_id: null,
+          block_type: "fallback",
+          text: "",
+          result_value: "__random_remaining__",
+          sort_order: 999999,
+        },
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const out = evaluateDocumentDetailed(inputs, {
+      initialTiebreakSet: ["folos", "emberlyn", "pelico"],
+    });
+    expect(out.rollSentinel).toBe("__random_remaining__");
+    expect(out.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn", "pelico"])
+    );
+    expect(out.rollPool).toHaveLength(3);
+  });
+});
+
+// ----------------------------------------------------------------------
+// resolveAggregatesDetailed — fromRandom + rollPool plumbing for the
+// framework preview's nation-tiebreak reroll button. Verifies the
+// narrowing-random branch threads the working set up as the chip's
+// rollPool.
+// ----------------------------------------------------------------------
+
+describe("resolveAggregatesDetailed / nation tiebreak random", () => {
+  const FOLOS = "var-folos";
+  const EMBERLYN = "var-emberlyn";
+  const SPOKGRAD = "var-spokgrad";
+  const PELICO = "var-pelico";
+  const EPICENTER = "var-epicenter";
+  const nation = aggVar("VAR_NATION", "nation_affinity");
+
+  function tiedNationSelections(
+    tiebreakDoc: EvalInputs
+  ): PreviewSelections {
+    return {
+      textValueIds: {},
+      numbers: {
+        [FOLOS]: 3,
+        [EMBERLYN]: 3,
+        [SPOKGRAD]: 3,
+        [PELICO]: 0,
+        [EPICENTER]: 0,
+      },
+      numberRefByName: new Map([
+        ["folos", FOLOS],
+        ["emberlyn", EMBERLYN],
+        ["spokgrad", SPOKGRAD],
+        ["pelico", PELICO],
+        ["epicenter", EPICENTER],
+      ]),
+      tiebreak_docs: new Map<EndingLogicKind, EvalInputs>([
+        ["nation_affinity_top", tiebreakDoc],
+      ]),
+    };
+  }
+
+  it("nation tiebreak doc resolving to __random_remaining__ → fromRandom + rollPool from working set", () => {
+    const tiebreakDoc: EvalInputs = {
+      blocks: [resultBlock("rr", "__random_remaining__")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "folos", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res).toBeDefined();
+    expect(res?.fromRandom).toBe(true);
+    expect(res?.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn", "spokgrad"])
+    );
+    expect(res?.rollPool).toHaveLength(3);
+    // The rolled value must be one of the tied options.
+    expect(["folos", "emberlyn", "spokgrad"]).toContain(res?.value);
+  });
+
+  it("nation tiebreak doc resolving to a concrete tied option → fromRandom false", () => {
+    const tiebreakDoc: EvalInputs = {
+      blocks: [resultBlock("res", "emberlyn")],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "emberlyn", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res?.fromRandom).toBe(false);
+    expect(res?.value).toBe("emberlyn");
+    expect(res?.rollPool).toBeUndefined();
+  });
+
+  it("narrowing chain (__remove__: + __random_remaining__) surfaces the post-removal working set as rollPool", () => {
+    // Tiebreak doc removes spokgrad first, then random_remaining over
+    // what survives. Pool should be { folos, emberlyn } — the tied set
+    // minus spokgrad.
+    const tiebreakDoc: EvalInputs = {
+      blocks: [
+        resultBlock("rm", "__remove__:spokgrad", null, null, 0),
+        resultBlock("rr", "__random_remaining__", null, null, 1),
+      ],
+      rows: [],
+      chips: [],
+      variables: [],
+      selections: EMPTY_SELECTIONS,
+    };
+    const sel = tiedNationSelections(tiebreakDoc);
+    const variableIndex = new Map([[nation.id, nation]]);
+    const chips: EvalChip[] = [
+      aggChip("c", "r", nation.id, "folos", "top="),
+    ];
+    const out = resolveAggregatesDetailed(chips, variableIndex, sel);
+    const res = out.get("nation_affinity|top");
+    expect(res?.fromRandom).toBe(true);
+    expect(res?.rollPool).toEqual(
+      expect.arrayContaining(["folos", "emberlyn"])
+    );
+    expect(res?.rollPool).toHaveLength(2);
+    expect(["folos", "emberlyn"]).toContain(res?.value);
   });
 });

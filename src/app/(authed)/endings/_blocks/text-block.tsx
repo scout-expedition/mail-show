@@ -5,7 +5,7 @@ import { GripVertical, Trash2 } from "lucide-react";
 import { AutoTextarea, GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type { BlockState } from "@/lib/endings/block-state";
-import { useDrag, type DragTarget } from "../lib/drag";
+import { useDrag, type DragTarget } from "../_shared/lib/drag";
 
 export function TextBlock({
   block,

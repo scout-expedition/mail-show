@@ -37,4 +37,5 @@ export const AFFINITY_NUMBER_REFS = new Set<string>([
 export const AGGREGATE_CHIP_COLORS: Record<string, string> = {
   class_affinity: "#f59e0b", // amber-500 — ties to the class-axis hue
   nation_affinity: "#10b981", // emerald-500 — distinct from any nation color
+  nation_tiebreak_set: "#a855f7", // purple-500 — set-membership concept, distinct from scoring
 };

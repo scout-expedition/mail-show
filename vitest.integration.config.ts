@@ -14,7 +14,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
-      "src/app/**/actions.test.ts",
+      "src/app/**/*actions.test.ts",
       "tests/integration/**/*.test.ts",
     ],
     exclude: ["node_modules", ".next", "tests/e2e/**"],

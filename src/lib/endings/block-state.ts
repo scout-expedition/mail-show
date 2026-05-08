@@ -3,20 +3,31 @@
 // The workspace keeps frameworks as three flat arrays — blocks, rows,
 // chips — mirroring the schema. The two indexers below are the work-horse
 // lookups used by the recursive renderer and the drag-drop wiring.
+//
+// Post-0022 the same shapes back the unified Logic-tab documents too —
+// a `BlockState` carries `document_id` (the parent ending_documents row)
+// and a `block_type` that widens to `result` for tiebreak / framework-
+// selection leaves.
 
 import type {
   AggregateRef,
+  EndingBlockType,
   EndingChipOperator,
   EndingVariableKind,
 } from "@/lib/db/enums";
 
 export interface BlockState {
   id: string;
-  framework_id: string;
+  document_id: string;
   parent_block_id: string | null;
   parent_row_id: string | null;
-  block_type: "text" | "condition";
+  block_type: EndingBlockType;
+  /** Set when block_type === 'text'. Empty string is the editor default. */
   text: string;
+  /** Set when block_type === 'result'. Aggregate column name (proletariat,
+   *  folos, …) for tiebreak docs, or a framework document UUID for the
+   *  `framework_selection` doc. Null on text and condition blocks. */
+  result_value: string | null;
   sort_order: number;
 }
 
