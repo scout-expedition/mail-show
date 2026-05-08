@@ -208,37 +208,36 @@ export function ChipPill({
       : "—";
   }
 
-  // Word-style operators ("top is", "tiebreak set includes", …) are
-  // longer than the single-symbol ops (`=`, `<`, …); the icon segment
-  // shrinks them to ~⅔ size so the chip stays compact and symbol ops
-  // don't look oddly small next to them.
-  const operatorIsWordy = AGGREGATE_OPERATOR_LABELS[chip.operator] != null;
+  // Both segments share text-[10px] leading-[16px] so the operator
+  // baseline aligns with the value baseline — no per-size shrinking.
+  // Word-style operators ("top is", "tiebreak set includes") just let
+  // the operator segment widen to fit.
+  // The colored segments use the parent block backdrop color
+  // (--block-result-bg) for the text, producing a knockout effect that
+  // stays legible against any saturation level the variable picks.
 
   return (
     <span
-      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase"
+      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-[16px]"
       style={{
         borderColor: color,
         backgroundColor: "var(--row-cell-bg)",
       }}
     >
-      {/* Operator segment — colored background, white text. The
+      {/* Operator segment — colored background, knockout text. The
           invisible <select> over it lets authors swap operators
           without the chip's chrome having to host a chevron. */}
       <span
         className={cn(
-          "relative inline-flex items-center justify-center px-1 text-white",
+          "relative inline-flex items-center justify-center px-1",
           allowedOps.length > 1 && "cursor-pointer"
         )}
-        style={{ backgroundColor: color }}
+        style={{
+          backgroundColor: color,
+          color: "var(--block-result-bg)",
+        }}
       >
-        <span
-          aria-hidden
-          className={cn(
-            "px-px tracking-[0.025em]",
-            operatorIsWordy && "text-[8px] leading-tight"
-          )}
-        >
+        <span aria-hidden className="px-px tracking-[0.025em]">
           {operatorLabel(chip.operator)}
         </span>
         {allowedOps.length > 1 ? (
@@ -333,7 +332,7 @@ export function ChipPill({
         type="button"
         onClick={onRemove}
         aria-label="Remove chip"
-        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 opacity-0 transition-opacity hover:text-white group-hover/chip:opacity-100"
+        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:text-white"
       >
         <X size={10} aria-hidden />
       </button>
@@ -361,8 +360,8 @@ export function VariableChip({
     variable.color_hex ?? paletteColor(variable.color_index);
   return (
     <span
-      className="group/headerchip inline-flex h-5 items-center gap-1 rounded-md px-1 text-[10px] font-mono uppercase tracking-[0.025em] text-white"
-      style={{ backgroundColor: color }}
+      className="inline-flex h-5 items-center gap-1 rounded-md px-1 text-[10px] font-mono uppercase leading-[16px] tracking-[0.025em]"
+      style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
       <span className="px-px">{chipDisplayName(variable)}</span>
       {onRemove ? (
@@ -371,7 +370,7 @@ export function VariableChip({
           onClick={onRemove}
           disabled={disabled}
           aria-label={`Remove ${variable.name} from this condition block`}
-          className="opacity-0 transition-opacity hover:text-white group-hover/headerchip:opacity-100 disabled:opacity-30"
+          className="opacity-50 transition-opacity hover:opacity-100 disabled:opacity-30"
         >
           <X size={10} aria-hidden />
         </button>
