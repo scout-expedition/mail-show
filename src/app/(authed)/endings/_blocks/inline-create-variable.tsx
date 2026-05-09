@@ -84,7 +84,7 @@ export function InlineCreateVariableForm({
         onChange={(e) => setName(e.target.value)}
         placeholder="name"
         disabled={pending}
-        className="h-7 w-32 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 w-32 border-0 bg-transparent pl-2 pr-1 text-[11px] focus:!ring-0"
       />
       <Input
         value={firstValue}
@@ -97,7 +97,7 @@ export function InlineCreateVariableForm({
             submit();
           }
         }}
-        className="h-7 w-32 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 w-32 border-0 bg-transparent pl-2 pr-1 text-[11px] focus:!ring-0"
       />
       <button
         type="button"
@@ -179,7 +179,7 @@ export function InlineCreateValueForm({
             submit();
           }
         }}
-        className="h-7 w-32 border-0 bg-transparent px-1 text-[11px] focus:!ring-0"
+        className="h-7 w-32 border-0 bg-transparent pl-2 pr-1 text-[11px] focus:!ring-0"
       />
       <button
         type="button"
