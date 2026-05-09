@@ -18,7 +18,10 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
-import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
+import {
+  AGGREGATE_OPTIONS_BY_REF,
+  type EndingChipOperator,
+} from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
@@ -33,7 +36,6 @@ import {
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
 import {
-  ChipPickerForm,
   ChipPill,
   VariableChip,
   type AddChipInput,
@@ -526,33 +528,43 @@ function RowChipAdder({
   values: EndingVariableValue[];
   onAdd: (input: AddChipInput) => void;
 }) {
-  const [step, setStep] = useState<"closed" | "choose" | "fill">("closed");
-  const [pickedVar, setPickedVar] = useState<VariableState | null>(null);
+  void values;
   const declaredVarStates = declaredVariables
     .map((d) => variableIndex.get(d.variable_id))
     .filter((v): v is VariableState => Boolean(v));
   if (declaredVarStates.length === 0) return null;
 
-  function reset() {
-    setStep("closed");
-    setPickedVar(null);
+  // Add a chip directly — no intermediate fill form. Operator picks
+  // the kind/aref-appropriate default; values stay null/zero so the
+  // chip renders inline and the author edits via the chip's own
+  // dropdown overlays.
+  function addDefault(variable: VariableState) {
+    const operator: EndingChipOperator =
+      variable.kind === "aggregate_ref"
+        ? variable.aggregate_ref === "nation_tiebreak_set"
+          ? "set_includes"
+          : "top="
+        : "=";
+    const aggregateValue =
+      variable.kind === "aggregate_ref" && variable.aggregate_ref
+        ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? null
+        : null;
+    onAdd({
+      variable_id: variable.id,
+      operator,
+      text_value_id: null,
+      number_value: variable.kind === "number_ref" ? 0 : null,
+      aggregate_value: aggregateValue,
+    });
   }
 
-  if (step === "closed") {
-    const onlyOne =
-      declaredVarStates.length === 1 ? declaredVarStates[0] : null;
+  if (declaredVarStates.length === 1) {
+    const v = declaredVarStates[0];
     return (
       <button
         type="button"
-        onClick={() => {
-          if (onlyOne) {
-            setPickedVar(onlyOne);
-            setStep("fill");
-          } else {
-            setStep("choose");
-          }
-        }}
-        aria-label={onlyOne ? `Add ${onlyOne.name} chip` : "Add chip"}
+        onClick={() => addDefault(v)}
+        aria-label={`Add ${v.name} chip`}
         className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
       >
         +
@@ -560,50 +572,39 @@ function RowChipAdder({
     );
   }
 
-  if (step === "choose") {
-    return (
-      <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-1 py-0.5 text-[11px]">
-        {declaredVarStates.map((v) => (
-          <button
-            key={v.id}
-            type="button"
-            onClick={() => {
-              setPickedVar(v);
-              setStep("fill");
-            }}
-            aria-label={`Add ${v.name} chip`}
-            className="rounded-full border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest hover:bg-accent/40"
-          >
-            {v.name}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={reset}
-          aria-label="Cancel"
-          className="px-1 opacity-60 hover:opacity-100"
-        >
-          <X size={10} aria-hidden />
-        </button>
-      </span>
-    );
-  }
-
-  // fill
-  if (!pickedVar) {
-    reset();
-    return null;
-  }
+  // 2+ declared variables — invisible <select> overlay on the +
+  // button so clicking it opens the native dropdown. Picking a var
+  // immediately seeds a default chip on that variable.
   return (
-    <ChipPickerForm
-      pinnedVariable={pickedVar}
-      values={values}
-      onConfirm={(input) => {
-        onAdd(input);
-        reset();
-      }}
-      onCancel={reset}
-    />
+    <span className="relative inline-block">
+      <button
+        type="button"
+        aria-hidden
+        tabIndex={-1}
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
+      >
+        +
+      </button>
+      <select
+        aria-label="Add chip — pick a variable"
+        defaultValue=""
+        onChange={(e) => {
+          const v = declaredVarStates.find((dv) => dv.id === e.target.value);
+          if (v) addDefault(v);
+          e.currentTarget.value = "";
+        }}
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        <option value="" disabled>
+          variable…
+        </option>
+        {declaredVarStates.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }
 
