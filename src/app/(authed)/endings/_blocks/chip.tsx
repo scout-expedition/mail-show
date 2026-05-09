@@ -218,19 +218,20 @@ export function ChipPill({
 
   return (
     <span
-      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-none"
+      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-[16px]"
       style={{
         borderColor: color,
         backgroundColor: "var(--row-cell-bg)",
       }}
     >
-      {/* Operator segment — colored background, knockout text. Inner
-          text is bottom-anchored so word-style operators ("top is",
-          "tiebreak set includes") share the same baseline-floor as
-          the value cell to the right. */}
+      {/* Operator segment — colored background, knockout text. Both
+          segments use leading-[16px] (matching the chip height) on
+          their inner text spans so the operator's baseline floor
+          coincides with the value cell's, regardless of width or
+          content (works for symbol ops AND word ops like "top is"). */}
       <span
         className={cn(
-          "relative inline-flex items-end justify-center px-1 pb-[3px]",
+          "relative inline-flex items-center justify-center px-1",
           allowedOps.length > 1 && "cursor-pointer"
         )}
         style={{
@@ -238,7 +239,10 @@ export function ChipPill({
           color: "var(--block-result-bg)",
         }}
       >
-        <span aria-hidden className="px-px tracking-[0.025em]">
+        <span
+          aria-hidden
+          className="block px-px leading-[16px] tracking-[0.025em]"
+        >
           {operatorLabel(chip.operator)}
         </span>
         {allowedOps.length > 1 ? (
@@ -260,11 +264,13 @@ export function ChipPill({
       </span>
 
       {/* Value segment — dark cell with white text. Click-through
-          select / number input depending on variable.kind. Bottom-
-          anchored to share the operator segment's baseline-floor. */}
+          select / number input depending on variable.kind. */}
       {variable.kind === "text" ? (
-        <span className="relative inline-flex flex-1 items-end px-1 pb-[3px] text-white">
-          <span aria-hidden className="truncate tracking-[0.025em]">
+        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+          <span
+            aria-hidden
+            className="block truncate leading-[16px] tracking-[0.025em]"
+          >
             {valueLabel}
           </span>
           <select
@@ -305,11 +311,14 @@ export function ChipPill({
             const raw = e.target.value;
             onChange({ number_value: raw === "" ? null : Number(raw) });
           }}
-          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent px-1 pb-[3px] pt-0 font-mono text-[10px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
+          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent px-1 py-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
         />
       ) : (
-        <span className="relative inline-flex flex-1 items-end px-1 pb-[3px] text-white">
-          <span aria-hidden className="truncate tracking-[0.025em]">
+        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+          <span
+            aria-hidden
+            className="block truncate leading-[16px] tracking-[0.025em]"
+          >
             {valueLabel}
           </span>
           <select
@@ -334,7 +343,7 @@ export function ChipPill({
         type="button"
         onClick={onRemove}
         aria-label="Remove chip"
-        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/25 transition-colors hover:text-white"
+        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white opacity-15 transition-opacity hover:opacity-100"
       >
         <X size={10} aria-hidden />
       </button>
@@ -372,7 +381,7 @@ export function VariableChip({
           onClick={onRemove}
           disabled={disabled}
           aria-label={`Remove ${variable.name} from this condition block`}
-          className="opacity-25 transition-opacity hover:opacity-100 disabled:opacity-30"
+          className="opacity-15 transition-opacity hover:opacity-100 disabled:opacity-30"
         >
           <X size={10} aria-hidden />
         </button>
