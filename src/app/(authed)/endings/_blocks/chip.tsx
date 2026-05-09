@@ -241,7 +241,16 @@ export function ChipPill({
       >
         <span
           aria-hidden
-          className="block px-px font-semibold leading-[16px] tracking-[0.025em]"
+          // ≠ / ≤ / ≥ are single Unicode glyphs that stack two strokes
+          // each — at font-semibold they render visibly heavier than =
+          // / < / >. Drop the bold on those so the rendered weight
+          // reads consistent with the plain operators next to them.
+          className={cn(
+            "block px-px leading-[16px] tracking-[0.025em]",
+            /[≠≤≥]/.test(chip.operator)
+              ? "font-normal"
+              : "font-semibold"
+          )}
         >
           {operatorLabel(chip.operator)}
         </span>
