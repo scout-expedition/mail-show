@@ -1,7 +1,7 @@
 "use client";
 
 import { useContext, useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { Minus, Plus, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -241,7 +241,7 @@ export function ChipPill({
       >
         <span
           aria-hidden
-          className="block px-px leading-[16px] tracking-[0.025em]"
+          className="block px-px font-semibold leading-[16px] tracking-[0.025em]"
         >
           {operatorLabel(chip.operator)}
         </span>
@@ -304,15 +304,39 @@ export function ChipPill({
           </select>
         </span>
       ) : variable.kind === "number_ref" ? (
-        <Input
-          type="number"
-          value={chip.number_value == null ? "" : String(chip.number_value)}
-          onChange={(e) => {
-            const raw = e.target.value;
-            onChange({ number_value: raw === "" ? null : Number(raw) });
-          }}
-          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent py-0 pl-2 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
-        />
+        <span className="relative inline-flex flex-1 items-center pl-2 text-white">
+          <Input
+            type="number"
+            value={chip.number_value == null ? "" : String(chip.number_value)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              onChange({ number_value: raw === "" ? null : Number(raw) });
+            }}
+            className="h-full w-12 min-w-0 flex-1 rounded-none border-0 bg-transparent py-0 pl-0 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          />
+          <button
+            type="button"
+            onClick={() =>
+              onChange({ number_value: (chip.number_value ?? 0) - 1 })
+            }
+            aria-label="Decrement"
+            tabIndex={-1}
+            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <Minus size={10} aria-hidden />
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onChange({ number_value: (chip.number_value ?? 0) + 1 })
+            }
+            aria-label="Increment"
+            tabIndex={-1}
+            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            <Plus size={10} aria-hidden />
+          </button>
+        </span>
       ) : (
         <span className="relative inline-flex flex-1 items-center pl-2 text-white">
           <span
