@@ -330,7 +330,7 @@ export function ChipPill({
             }
             aria-label="Decrement"
             tabIndex={-1}
-            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:bg-white/10 hover:text-white"
+            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/60 opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover/chip:opacity-100"
           >
             <Minus size={10} aria-hidden />
           </button>
@@ -341,7 +341,7 @@ export function ChipPill({
             }
             aria-label="Increment"
             tabIndex={-1}
-            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:bg-white/10 hover:text-white"
+            className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/60 opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover/chip:opacity-100"
           >
             <Plus size={10} aria-hidden />
           </button>
