@@ -578,7 +578,7 @@ function RowChipAdder({
         type="button"
         onClick={() => addDefault(v)}
         aria-label={`Add ${v.name} chip`}
-        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/row:opacity-100 focus-visible:opacity-100"
+        className="inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/row:opacity-100 focus-visible:opacity-100"
       >
         <Plus size={12} aria-hidden />
       </button>
@@ -589,7 +589,7 @@ function RowChipAdder({
   // button so clicking it opens the native dropdown. Picking a var
   // immediately seeds a default chip on that variable.
   return (
-    <span className="relative inline-block opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
+    <span className="relative inline-flex h-5 items-center self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
       <button
         type="button"
         aria-hidden
@@ -763,7 +763,7 @@ function AddHeaderVariablePicker({
   ];
 
   return (
-    <span className="relative inline-block opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
+    <span className="relative inline-flex h-5 items-center opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
       <button
         type="button"
         aria-label="Add variable to this condition block"
