@@ -404,7 +404,7 @@ export function VariableChip({
     variable.color_hex ?? paletteColor(variable.color_index);
   return (
     <span
-      className="inline-flex h-5 items-center gap-1 rounded-md pl-2 pr-1 text-[10px] font-mono uppercase leading-[16px] tracking-[0.025em]"
+      className="inline-flex h-5 items-center gap-1 rounded-md pl-2 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
       style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
       <span>{chipDisplayName(variable)}</span>

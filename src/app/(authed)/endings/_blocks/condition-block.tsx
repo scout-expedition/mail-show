@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -625,11 +625,27 @@ function HeaderVariableStrip({
   variables: VariableState[];
 }) {
   const [pending, startTransition] = useTransition();
+  // Optimistic shadow of just-added variables — keeps the chip on screen
+  // while the addBlockVariable server action runs and revalidatePath
+  // ripples back. Pruned automatically once the prop's
+  // declaredVariables catches up.
+  const [optimisticVarIds, setOptimisticVarIds] = useState<string[]>([]);
   const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
-  const eligible = variables.filter((v) => !declaredIds.has(v.id));
+  useEffect(() => {
+    setOptimisticVarIds((prev) =>
+      prev.filter((id) => !declaredIds.has(id))
+    );
+    // declaredIds is derived from declaredVariables on every render; depend
+    // on declaredVariables (stable identity from the parent reducer)
+    // rather than recomputing the Set in the dep list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [declaredVariables]);
+  const eligible = variables.filter(
+    (v) => !declaredIds.has(v.id) && !optimisticVarIds.includes(v.id)
+  );
 
   return (
-    <span className="ml-1 inline-flex flex-wrap items-center gap-1">
+    <span className="ml-1 inline-flex flex-wrap items-center gap-2">
       {declaredVariables.map((dv) => {
         const v = variableIndex.get(dv.variable_id);
         if (!v) return null;
@@ -648,18 +664,34 @@ function HeaderVariableStrip({
           />
         );
       })}
+      {optimisticVarIds.map((vid) => {
+        const v = variableIndex.get(vid);
+        if (!v) return null;
+        return <VariableChip key={`optimistic-${vid}`} variable={v} disabled />;
+      })}
       {eligible.length > 0 ? (
         <AddHeaderVariablePicker
           variables={eligible}
           disabled={pending}
-          onPick={(variable_id) =>
+          onPick={(variable_id) => {
+            setOptimisticVarIds((prev) =>
+              prev.includes(variable_id) ? prev : [...prev, variable_id]
+            );
             startTransition(async () => {
-              await addBlockVariable({
-                block_id: blockId,
-                variable_id,
-              });
-            })
-          }
+              try {
+                await addBlockVariable({
+                  block_id: blockId,
+                  variable_id,
+                });
+              } catch (err) {
+                // Roll back the optimistic chip if the server rejected it.
+                setOptimisticVarIds((prev) =>
+                  prev.filter((id) => id !== variable_id)
+                );
+                throw err;
+              }
+            });
+          }}
         />
       ) : null}
     </span>
@@ -675,33 +707,16 @@ function AddHeaderVariablePicker({
   disabled: boolean;
   onPick: (variable_id: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [creatingNew, setCreatingNew] = useState(false);
   if (creatingNew) {
     return (
       <InlineCreateVariableForm
         onCreated={({ variableId }) => {
           setCreatingNew(false);
-          setOpen(false);
           onPick(variableId);
         }}
-        onCancel={() => {
-          setCreatingNew(false);
-          setOpen(false);
-        }}
+        onCancel={() => setCreatingNew(false)}
       />
-    );
-  }
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        disabled={disabled}
-        className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
-      >
-        + var
-      </button>
     );
   }
 
@@ -735,11 +750,20 @@ function AddHeaderVariablePicker({
   ];
 
   return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        aria-hidden
+        tabIndex={-1}
+        disabled={disabled}
+        className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+      >
+        + var
+      </button>
     <select
-      autoFocus
+      aria-label="Add variable to this condition block"
       defaultValue=""
       disabled={disabled}
-      onBlur={() => setOpen(false)}
       onChange={(e) => {
         const id = e.target.value;
         if (id === CREATE_VARIABLE_SENTINEL) {
@@ -747,9 +771,9 @@ function AddHeaderVariablePicker({
           return;
         }
         if (id) onPick(id);
-        setOpen(false);
+        e.currentTarget.value = "";
       }}
-      className="h-6 rounded-md border border-border bg-background px-1 text-[10px] font-mono"
+      className="absolute inset-0 cursor-pointer opacity-0"
     >
       <option value="">variable…</option>
       {textVariables.length > 0 ? (
@@ -791,6 +815,7 @@ function AddHeaderVariablePicker({
       ) : null}
       <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
     </select>
+    </span>
   );
 }
 
