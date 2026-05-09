@@ -528,16 +528,15 @@ function RowChipAdder({
   values: EndingVariableValue[];
   onAdd: (input: AddChipInput) => void;
 }) {
-  void values;
   const declaredVarStates = declaredVariables
     .map((d) => variableIndex.get(d.variable_id))
     .filter((v): v is VariableState => Boolean(v));
   if (declaredVarStates.length === 0) return null;
 
   // Add a chip directly — no intermediate fill form. Operator picks
-  // the kind/aref-appropriate default; values stay null/zero so the
-  // chip renders inline and the author edits via the chip's own
-  // dropdown overlays.
+  // the kind/aref-appropriate default; values seed from the variable's
+  // default (or first available) so the server's value-shape CHECK
+  // passes on first save.
   function addDefault(variable: VariableState) {
     const operator: EndingChipOperator =
       variable.kind === "aggregate_ref"
@@ -549,10 +548,24 @@ function RowChipAdder({
       variable.kind === "aggregate_ref" && variable.aggregate_ref
         ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? null
         : null;
+    let textValueId: string | null = null;
+    if (variable.kind === "text") {
+      const fallback =
+        variable.default_value_id ??
+        values.find((v) => v.variable_id === variable.id)?.id ??
+        null;
+      if (!fallback) {
+        // No values on this variable yet — bail out gracefully. The
+        // user needs to create a value via the variables page (or via
+        // "+ New value…" once a chip exists) first.
+        return;
+      }
+      textValueId = fallback;
+    }
     onAdd({
       variable_id: variable.id,
       operator,
-      text_value_id: null,
+      text_value_id: textValueId,
       number_value: variable.kind === "number_ref" ? 0 : null,
       aggregate_value: aggregateValue,
     });
