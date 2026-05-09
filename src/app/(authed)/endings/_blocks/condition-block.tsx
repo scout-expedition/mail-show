@@ -134,7 +134,8 @@ export function ConditionBlock({
           drag.commit();
         }}
         className={cn(
-          "group/condition relative rounded-md border border-border bg-muted/20 p-2",
+          "group/condition relative rounded-md border bg-[var(--block-card)] p-2",
+          "border-[var(--block-border)]",
           isDragging && "opacity-40"
         )}
       >
@@ -214,7 +215,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-3 rounded-md bg-[var(--block-result-bg)] p-2">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -265,17 +266,16 @@ export function ConditionBlock({
             </ConditionRow>
           );
         })}
-      </div>
-
-      <div className="mt-2 flex justify-center">
-        <button
-          type="button"
-          onClick={handleAddRow}
-          disabled={pending}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40"
-        >
-          <Plus size={11} aria-hidden /> row
-        </button>
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={handleAddRow}
+            disabled={pending}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--block-border)] px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-white/5"
+          >
+            <Plus size={11} aria-hidden /> row
+          </button>
+        </div>
       </div>
         </>
       )}
@@ -329,9 +329,9 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-border/60 bg-card/40 p-2",
+        "grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-2",
         (shadowedByOrdinal != null || fullyOverlapped) &&
-          "border-amber-500/50 bg-amber-500/5"
+          "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40"
       )}
     >
       <div className="flex flex-col items-start gap-1 self-start">
