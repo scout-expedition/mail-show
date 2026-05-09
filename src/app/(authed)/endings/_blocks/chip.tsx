@@ -381,7 +381,7 @@ export function VariableChip({
           onClick={onRemove}
           disabled={disabled}
           aria-label={`Remove ${variable.name} from this condition block`}
-          className="opacity-25 transition-opacity hover:opacity-100 disabled:opacity-30"
+          className="pl-1 opacity-[0.45] transition-opacity hover:opacity-100 disabled:opacity-30"
         >
           <X size={10} aria-hidden />
         </button>
