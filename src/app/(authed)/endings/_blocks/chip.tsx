@@ -218,18 +218,19 @@ export function ChipPill({
 
   return (
     <span
-      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-[16px]"
+      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-none"
       style={{
         borderColor: color,
         backgroundColor: "var(--row-cell-bg)",
       }}
     >
-      {/* Operator segment — colored background, knockout text. The
-          invisible <select> over it lets authors swap operators
-          without the chip's chrome having to host a chevron. */}
+      {/* Operator segment — colored background, knockout text. Inner
+          text is bottom-anchored so word-style operators ("top is",
+          "tiebreak set includes") share the same baseline-floor as
+          the value cell to the right. */}
       <span
         className={cn(
-          "relative inline-flex items-center justify-center px-1",
+          "relative inline-flex items-end justify-center px-1 pb-[3px]",
           allowedOps.length > 1 && "cursor-pointer"
         )}
         style={{
@@ -259,9 +260,10 @@ export function ChipPill({
       </span>
 
       {/* Value segment — dark cell with white text. Click-through
-          select / number input depending on variable.kind. */}
+          select / number input depending on variable.kind. Bottom-
+          anchored to share the operator segment's baseline-floor. */}
       {variable.kind === "text" ? (
-        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+        <span className="relative inline-flex flex-1 items-end px-1 pb-[3px] text-white">
           <span aria-hidden className="truncate tracking-[0.025em]">
             {valueLabel}
           </span>
@@ -303,10 +305,10 @@ export function ChipPill({
             const raw = e.target.value;
             onChange({ number_value: raw === "" ? null : Number(raw) });
           }}
-          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent px-1 font-mono text-[10px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
+          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent px-1 pb-[3px] pt-0 font-mono text-[10px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
         />
       ) : (
-        <span className="relative inline-flex flex-1 items-center px-1 text-white">
+        <span className="relative inline-flex flex-1 items-end px-1 pb-[3px] text-white">
           <span aria-hidden className="truncate tracking-[0.025em]">
             {valueLabel}
           </span>
@@ -332,7 +334,7 @@ export function ChipPill({
         type="button"
         onClick={onRemove}
         aria-label="Remove chip"
-        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/40 transition-colors hover:text-white"
+        className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/25 transition-colors hover:text-white"
       >
         <X size={10} aria-hidden />
       </button>
@@ -370,7 +372,7 @@ export function VariableChip({
           onClick={onRemove}
           disabled={disabled}
           aria-label={`Remove ${variable.name} from this condition block`}
-          className="opacity-50 transition-opacity hover:opacity-100 disabled:opacity-30"
+          className="opacity-25 transition-opacity hover:opacity-100 disabled:opacity-30"
         >
           <X size={10} aria-hidden />
         </button>
