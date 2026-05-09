@@ -334,7 +334,7 @@ function ConditionRow({
           "border-amber-500/50 bg-amber-500/5"
       )}
     >
-      <div className="flex flex-wrap items-start gap-1 self-start">
+      <div className="flex flex-col items-start gap-1 self-start">
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
