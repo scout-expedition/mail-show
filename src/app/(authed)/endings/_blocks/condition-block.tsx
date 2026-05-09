@@ -139,7 +139,7 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("flex items-center justify-between gap-2 px-1", collapsed ? "pb-0" : "pb-2") }>
+      <div className={cn("group/header flex items-center justify-between gap-2 px-1", collapsed ? "pb-0" : "pb-2") }>
         <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
@@ -329,7 +329,7 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-2",
+        "group/row grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-2",
         (shadowedByOrdinal != null || fullyOverlapped) &&
           "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40"
       )}
@@ -578,9 +578,9 @@ function RowChipAdder({
         type="button"
         onClick={() => addDefault(v)}
         aria-label={`Add ${v.name} chip`}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
+        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/row:opacity-100 focus-visible:opacity-100"
       >
-        +
+        <Plus size={12} aria-hidden />
       </button>
     );
   }
@@ -589,14 +589,14 @@ function RowChipAdder({
   // button so clicking it opens the native dropdown. Picking a var
   // immediately seeds a default chip on that variable.
   return (
-    <span className="relative inline-block">
+    <span className="relative inline-block opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
       <button
         type="button"
         aria-hidden
         tabIndex={-1}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
+        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5"
       >
-        +
+        <Plus size={12} aria-hidden />
       </button>
       <select
         aria-label="Add chip — pick a variable"
@@ -763,15 +763,15 @@ function AddHeaderVariablePicker({
   ];
 
   return (
-    <span className="relative inline-block">
+    <span className="relative inline-block opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
       <button
         type="button"
-        aria-hidden
+        aria-label="Add variable to this condition block"
         tabIndex={-1}
         disabled={disabled}
-        className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
+        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5 disabled:opacity-50"
       >
-        + var
+        <Plus size={12} aria-hidden />
       </button>
     <select
       aria-label="Add variable to this condition block"
