@@ -266,7 +266,7 @@ export function ChipPill({
       {/* Value segment — dark cell with white text. Click-through
           select / number input depending on variable.kind. */}
       {variable.kind === "text" ? (
-        <span className="relative inline-flex flex-1 items-center pl-1 text-white">
+        <span className="relative inline-flex flex-1 items-center pl-2 text-white">
           <span
             aria-hidden
             className="block truncate leading-[16px] tracking-[0.025em]"
@@ -311,10 +311,10 @@ export function ChipPill({
             const raw = e.target.value;
             onChange({ number_value: raw === "" ? null : Number(raw) });
           }}
-          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent py-0 pl-1 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
+          className="h-full w-16 flex-1 rounded-none border-0 bg-transparent py-0 pl-2 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0"
         />
       ) : (
-        <span className="relative inline-flex flex-1 items-center pl-1 text-white">
+        <span className="relative inline-flex flex-1 items-center pl-2 text-white">
           <span
             aria-hidden
             className="block truncate leading-[16px] tracking-[0.025em]"
