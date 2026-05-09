@@ -371,17 +371,17 @@ export function VariableChip({
     variable.color_hex ?? paletteColor(variable.color_index);
   return (
     <span
-      className="inline-flex h-5 items-center gap-1 rounded-md px-1 text-[10px] font-mono uppercase leading-[16px] tracking-[0.025em]"
+      className="inline-flex h-5 items-center gap-1 rounded-md pl-2 pr-1 text-[10px] font-mono uppercase leading-[16px] tracking-[0.025em]"
       style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
-      <span className="px-px">{chipDisplayName(variable)}</span>
+      <span>{chipDisplayName(variable)}</span>
       {onRemove ? (
         <button
           type="button"
           onClick={onRemove}
           disabled={disabled}
           aria-label={`Remove ${variable.name} from this condition block`}
-          className="pl-1 opacity-[0.45] transition-opacity hover:opacity-100 disabled:opacity-30"
+          className="opacity-[0.45] transition-opacity hover:opacity-100 disabled:opacity-30"
         >
           <X size={10} aria-hidden />
         </button>
