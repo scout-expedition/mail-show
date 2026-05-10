@@ -3,7 +3,6 @@
 import { GripVertical } from "lucide-react";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import {
   formatRandomSubset,
@@ -108,11 +107,14 @@ export function FallbackBlock({
         </Label>
         <p className="text-[11px] text-muted-foreground">{helperText}</p>
       </div>
-      <div className="relative flex items-start gap-1 rounded-md border border-transparent bg-card transition-colors hover:border-border">
-        <span aria-hidden className="invisible mt-2">
+      <div
+        className="relative flex items-start gap-0.5 rounded-md border border-[var(--block-border)] px-0.5 py-1"
+        style={{ backgroundColor: "var(--block-card)" }}
+      >
+        <span aria-hidden className="invisible mt-1">
           <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-1">
+        <div className="flex flex-1 flex-col gap-2">
           <div className="flex items-center gap-2">
             <span
               aria-hidden
@@ -123,9 +125,9 @@ export function FallbackBlock({
             <Select
               value={isSubset ? SUBSET_PICKER_VALUE : value}
               onChange={(e) => handleSelectChange(e.target.value)}
+              style={{ backgroundColor: "var(--block-result-bg)" }}
               className={cn(
-                "ml-auto h-8 w-auto min-w-[200px]",
-                GHOST_FIELD,
+                "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
                 isEmpty &&
                   "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
               )}
@@ -172,7 +174,10 @@ function FallbackSubsetPicker({
   const known = new Set(frameworks.map((f) => f.value));
   const missing = selectedIds.filter((id) => !known.has(id));
   return (
-    <div className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-border/60 bg-muted/10 p-2 sm:grid-cols-2">
+    <div
+      className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-transparent p-2 sm:grid-cols-2"
+      style={{ backgroundColor: "var(--block-result-bg)" }}
+    >
       {frameworks.length === 0 ? (
         <p className="col-span-full text-[11px] italic text-muted-foreground">
           No frameworks available.

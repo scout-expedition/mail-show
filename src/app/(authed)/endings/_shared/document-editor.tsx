@@ -321,6 +321,27 @@ export function DocumentEditor({
       }),
     [variables, nationColorByName]
   );
+
+  // Authoring scope: tiebreak documents (class_affinity_top /
+  // nation_affinity_top / nation_affinity_bottom) author against the
+  // tiebreak set, while frameworks + framework_selection author against
+  // the affinity aggregates. Filter the picker pool accordingly so the
+  // header + chip pickers only surface variables that make sense on
+  // this surface. The unfiltered list stays available for preview /
+  // evaluation paths.
+  const isTiebreakDoc =
+    document.kind === "class_affinity_top" ||
+    document.kind === "nation_affinity_top" ||
+    document.kind === "nation_affinity_bottom";
+  const authoringVariableState = useMemo(() => {
+    return variableState.filter((v) => {
+      if (v.kind !== "aggregate_ref" || !v.aggregate_ref) return true;
+      if (isTiebreakDoc) {
+        return v.aggregate_ref === "nation_tiebreak_set";
+      }
+      return v.aggregate_ref !== "nation_tiebreak_set";
+    });
+  }, [variableState, isTiebreakDoc]);
   const variableIndex = useMemo(() => {
     const m = new Map<string, VariableState>();
     for (const v of variableState) m.set(v.id, v);
@@ -857,7 +878,7 @@ export function DocumentEditor({
                 chipsByRow={chipsByRow}
                 declaredByBlock={declaredByBlock}
                 variableIndex={variableIndex}
-                variables={variableState}
+                variables={authoringVariableState}
                 values={values}
                 document_id={document.id}
                 leaves={leaves}

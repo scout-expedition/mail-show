@@ -204,7 +204,7 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
                 setOpen(false);
               }}
               className={cn(
-                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[11px] tracking-tight transition-colors",
                 item.intent === "destructive"
                   ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
                   : "text-foreground hover:bg-accent/40"

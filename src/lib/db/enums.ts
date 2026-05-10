@@ -253,7 +253,7 @@ export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
   "bottom=": "bottom is",
   "bottom≠": "bottom is not",
   set_includes: "includes",
-  set_excludes: "does not include",
+  set_excludes: "excludes",
 };
 
 // Endings — document kinds + block types. Mirrored from

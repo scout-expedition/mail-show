@@ -225,9 +225,9 @@ describe("shared document actions", () => {
       expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
     });
 
-    it("creates a condition block AND seeds one empty row at sort 0", async () => {
+    it("creates a condition block with no rows — rows seed when the first variable is added", async () => {
       const fwId = await seedFrameworkDoc();
-      const { id, row_id } = await addBlock({
+      const { id } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
@@ -241,11 +241,9 @@ describe("shared document actions", () => {
       expect(block?.block_type).toBe("condition");
       const { data: rows } = await sb
         .from("ending_condition_rows")
-        .select("id, sort_order")
+        .select("id")
         .eq("condition_block_id", id);
-      expect(rows).toHaveLength(1);
-      expect(rows?.[0].id).toBe(row_id);
-      expect(rows?.[0].sort_order).toBe(0);
+      expect(rows).toEqual([]);
     });
 
     it("rejects a result block on a framework doc", async () => {
@@ -423,12 +421,13 @@ describe("shared document actions", () => {
   describe("rows + chips + headers", () => {
     it("addRow appends rows in sort_order", async () => {
       const fwId = await seedFrameworkDoc();
-      const { id: condId, row_id: firstRow } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: firstRow } = await addRow({ block_id: condId });
       const { id: secondRow } = await addRow({ block_id: condId });
       const { data: rows } = await sb
         .from("ending_condition_rows")
@@ -441,12 +440,13 @@ describe("shared document actions", () => {
 
     it("addChip ties the chip to the row + auto-declares its variable on the parent block", async () => {
       const fwId = await seedFrameworkDoc();
-      const { id: condId, row_id } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: row_id } = await addRow({ block_id: condId });
       const { id: variableId } = await createVariableInline({
         name: `${TEST_PREFIX}performer`,
       });
@@ -455,7 +455,7 @@ describe("shared document actions", () => {
         value: "WINTER",
       });
       const { id: chipId } = await addChip({
-        row_id: row_id!,
+        row_id,
         variable_id: variableId,
         operator: "=",
         text_value_id: valueId,
@@ -484,17 +484,18 @@ describe("shared document actions", () => {
 
     it("addChip rejects when neither value field is set", async () => {
       const fwId = await seedFrameworkDoc();
-      const { row_id } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: row_id } = await addRow({ block_id: condId });
       const { id: variableId } = await createVariableInline({
         name: `${TEST_PREFIX}vinvalid`,
       });
       await expect(
-        addChip({ row_id: row_id!, variable_id: variableId, operator: "=" })
+        addChip({ row_id, variable_id: variableId, operator: "=" })
       ).rejects.toThrow(/exactly one/i);
     });
 
@@ -522,12 +523,13 @@ describe("shared document actions", () => {
 
     it("removeBlockVariable purges chips on that variable + deletes the header row", async () => {
       const fwId = await seedFrameworkDoc();
-      const { id: condId, row_id } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: row_id } = await addRow({ block_id: condId });
       const { id: variableId } = await createVariableInline({
         name: `${TEST_PREFIX}purge`,
       });
@@ -536,7 +538,7 @@ describe("shared document actions", () => {
         value: "X",
       });
       const { id: chipId } = await addChip({
-        row_id: row_id!,
+        row_id,
         variable_id: variableId,
         operator: "=",
         text_value_id: valueId,
@@ -612,12 +614,13 @@ describe("shared document actions", () => {
 
     it("deleteChip removes the chip", async () => {
       const fwId = await seedFrameworkDoc();
-      const { row_id } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: row_id } = await addRow({ block_id: condId });
       const { id: variableId } = await createVariableInline({
         name: `${TEST_PREFIX}delchip`,
       });
@@ -626,7 +629,7 @@ describe("shared document actions", () => {
         value: "Y",
       });
       const { id: chipId } = await addChip({
-        row_id: row_id!,
+        row_id,
         variable_id: variableId,
         operator: "=",
         text_value_id: valueId,
@@ -656,12 +659,13 @@ describe("shared document actions", () => {
         parent_row_id: null,
         block_type: "text",
       });
-      const { id: condId, row_id } = await addBlock({
+      const { id: condId } = await addBlock({
         document_id: fwId,
         parent_block_id: null,
         parent_row_id: null,
         block_type: "condition",
       });
+      const { id: row_id } = await addRow({ block_id: condId });
       const { id: variableId } = await createVariableInline({
         name: `${TEST_PREFIX}saveVar`,
       });
@@ -670,7 +674,7 @@ describe("shared document actions", () => {
         value: "X",
       });
       const { id: chipId } = await addChip({
-        row_id: row_id!,
+        row_id,
         variable_id: variableId,
         operator: "=",
         text_value_id: valueId,
@@ -687,7 +691,7 @@ describe("shared document actions", () => {
       const { count: chipsBefore } = await sb
         .from("ending_condition_row_chips")
         .select("id", { count: "exact", head: true })
-        .eq("row_id", row_id!);
+        .eq("row_id", row_id);
 
       await saveDocument({
         document_id: fwId,
@@ -712,11 +716,11 @@ describe("shared document actions", () => {
             sort_order: 1,
           },
         ],
-        rows: [{ id: row_id!, condition_block_id: condId, sort_order: 0 }],
+        rows: [{ id: row_id, condition_block_id: condId, sort_order: 0 }],
         chips: [
           {
             id: chipId,
-            row_id: row_id!,
+            row_id,
             variable_id: variableId,
             operator: "=",
             text_value_id: valueId,
@@ -738,7 +742,7 @@ describe("shared document actions", () => {
       const { count: chipsAfter } = await sb
         .from("ending_condition_row_chips")
         .select("id", { count: "exact", head: true })
-        .eq("row_id", row_id!);
+        .eq("row_id", row_id);
 
       expect(blocksAfter).toBe(blocksBefore);
       expect(rowsAfter).toBe(rowsBefore);

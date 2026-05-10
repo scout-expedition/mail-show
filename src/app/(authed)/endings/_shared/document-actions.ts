@@ -151,10 +151,10 @@ async function fetchSiblings(
   documentId: string,
   parentBlockId: string | null,
   parentRowId: string | null
-): Promise<Array<{ id: string; block_type: string }>> {
+): Promise<Array<{ id: string; block_type: string; sort_order: number }>> {
   let q = supabase
     .from("ending_blocks")
-    .select("id, block_type")
+    .select("id, block_type, sort_order")
     .eq("document_id", documentId);
   q = parentBlockId
     ? q.eq("parent_block_id", parentBlockId)
@@ -302,6 +302,9 @@ export interface AddBlockInput {
   text?: string | null;
   /** For block_type === 'result'. */
   result_value?: string | null;
+  /** When set, insert before this sibling and shift later siblings'
+   *  sort_orders by +1. When null/undefined, append (default). */
+  before_block_id?: string | null;
 }
 
 /**
@@ -317,7 +320,7 @@ export interface AddBlockInput {
  */
 export async function addBlock(
   input: AddBlockInput
-): Promise<{ id: string; row_id?: string }> {
+): Promise<{ id: string }> {
   const supabase = await createSupabaseServerClient();
   const kind = await getDocumentKind(supabase, input.document_id);
   if (!kind) throw new Error(`Unknown document ${input.document_id}.`);
@@ -374,12 +377,54 @@ export async function addBlock(
     resultValue = input.result_value;
   }
 
-  const nextSort = await nextSiblingSort(
-    supabase,
-    input.document_id,
-    input.parent_block_id,
-    input.parent_row_id
-  );
+  // Resolve insertion point. before_block_id pins the new block at
+  // the target's sort_order and shifts later siblings down by 1; the
+  // bare append path keeps the existing nextSiblingSort behavior.
+  let insertSort: number;
+  if (input.before_block_id) {
+    const { data: target } = await supabase
+      .from("ending_blocks")
+      .select("sort_order")
+      .eq("id", input.before_block_id)
+      .single();
+    if (!target) {
+      throw new Error(
+        `before_block_id ${input.before_block_id} not found.`
+      );
+    }
+    insertSort = target.sort_order as number;
+    // Shift all siblings with sort_order >= insertSort up by 1 to
+    // make room. Operates on the fetched siblings list to avoid an
+    // extra round-trip — fallback rows are already filtered out.
+    const toShift = siblings.filter((b) => b.sort_order >= insertSort);
+    if (toShift.length > 0) {
+      // Two-step shift: bump up by a large offset first to dodge the
+      // unique (parent, sort_order) constraint, then settle into the
+      // intended slots. Without this, two rows could briefly collide
+      // mid-update.
+      for (const b of toShift) {
+        const { error: bumpErr } = await supabase
+          .from("ending_blocks")
+          .update({ sort_order: b.sort_order + 100000 })
+          .eq("id", b.id);
+        if (bumpErr) throw new Error(bumpErr.message);
+      }
+      for (const b of toShift) {
+        const { error: settleErr } = await supabase
+          .from("ending_blocks")
+          .update({ sort_order: b.sort_order + 1 })
+          .eq("id", b.id);
+        if (settleErr) throw new Error(settleErr.message);
+      }
+    }
+  } else {
+    insertSort = await nextSiblingSort(
+      supabase,
+      input.document_id,
+      input.parent_block_id,
+      input.parent_row_id
+    );
+  }
 
   const { data: block, error } = await supabase
     .from("ending_blocks")
@@ -390,31 +435,18 @@ export async function addBlock(
       block_type: input.block_type,
       text: textValue,
       result_value: resultValue,
-      sort_order: nextSort,
+      sort_order: insertSort,
     })
     .select("id")
     .single();
   if (error) throw new Error(error.message);
 
-  let rowId: string | undefined;
-  if (input.block_type === "condition") {
-    const { data: row, error: rowErr } = await supabase
-      .from("ending_condition_rows")
-      .insert({ condition_block_id: block.id, sort_order: 0 })
-      .select("id")
-      .single();
-    if (rowErr) throw new Error(rowErr.message);
-    rowId = row.id as string;
-    // Seed a default leaf under the auto-created row (matches the
-    // explicit `addRow` path so authors get a workable starting point
-    // regardless of how the row was created).
-    await seedDefaultLeafForRow(supabase, block.id as string, rowId);
-  }
-
+  // Condition blocks no longer seed a row at create-time — the first
+  // row + default chip auto-create the moment the user adds the
+  // block's first declared header variable (see addBlockVariable).
+  // This avoids dangling empty rows on blocks the author abandons.
   revalidateEndings();
-  return rowId !== undefined
-    ? { id: block.id as string, row_id: rowId }
-    : { id: block.id as string };
+  return { id: block.id as string };
 }
 
 export async function deleteBlock(formData: FormData) {
@@ -436,6 +468,224 @@ export async function deleteBlock(formData: FormData) {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidateEndings();
+}
+
+/**
+ * Deep-clone a block + every row, chip, header-variable and child
+ * block underneath it, inserting the clone immediately after the
+ * original. Mirrors `addBlock`'s sibling-shift behaviour so the
+ * existing siblings settle past the new clone in sort_order.
+ *
+ * Fallback blocks aren't author-created and a result block is
+ * exclusive in its sibling group — both reject so the result-uniqueness
+ * + fallback invariants stay intact.
+ */
+export async function duplicateBlock(input: {
+  id: string;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: original, error: lookupErr } = await supabase
+    .from("ending_blocks")
+    .select(
+      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+    )
+    .eq("id", input.id)
+    .single();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!original) throw new Error(`Block ${input.id} not found.`);
+  if (original.block_type === "fallback") {
+    throw new Error("Fallback blocks can't be duplicated.");
+  }
+  if (original.block_type === "result") {
+    // Sibling group already contains exactly one block (the original);
+    // adding the clone alongside violates result-uniqueness.
+    throw new Error("Result blocks can't be duplicated.");
+  }
+
+  // BFS-collect the subtree so we can remap ids in one pass.
+  const blocks: Array<{
+    id: string;
+    document_id: string;
+    parent_block_id: string | null;
+    parent_row_id: string | null;
+    block_type: string;
+    text: string | null;
+    result_value: string | null;
+    sort_order: number;
+  }> = [original as typeof blocks[number]];
+  const rows: Array<{
+    id: string;
+    condition_block_id: string;
+    sort_order: number;
+  }> = [];
+  const chips: Array<{
+    row_id: string;
+    variable_id: string;
+    operator: EndingChipOperator;
+    text_value_id: string | null;
+    number_value: number | null;
+    aggregate_value: string | null;
+    sort_order: number;
+  }> = [];
+  const blockVars: Array<{
+    condition_block_id: string;
+    variable_id: string;
+    sort_order: number;
+  }> = [];
+
+  let frontier: string[] = [original.id as string];
+  while (frontier.length > 0) {
+    const conditionIds = blocks
+      .filter(
+        (b) =>
+          b.block_type === "condition" &&
+          frontier.includes(b.id) === true
+      )
+      .map((b) => b.id);
+    if (conditionIds.length > 0) {
+      const [{ data: rowBatch }, { data: bvBatch }, { data: childBatch }] =
+        await Promise.all([
+          supabase
+            .from("ending_condition_rows")
+            .select("id, condition_block_id, sort_order")
+            .in("condition_block_id", conditionIds),
+          supabase
+            .from("ending_condition_block_variables")
+            .select("condition_block_id, variable_id, sort_order")
+            .in("condition_block_id", conditionIds),
+          supabase
+            .from("ending_blocks")
+            .select(
+              "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+            )
+            .in("parent_block_id", conditionIds),
+        ]);
+      const newRows = (rowBatch ?? []) as typeof rows;
+      rows.push(...newRows);
+      blockVars.push(...((bvBatch ?? []) as typeof blockVars));
+      const newRowIds = newRows.map((r) => r.id);
+      if (newRowIds.length > 0) {
+        const { data: chipBatch } = await supabase
+          .from("ending_condition_row_chips")
+          .select(
+            "row_id, variable_id, operator, text_value_id, number_value, aggregate_value, sort_order"
+          )
+          .in("row_id", newRowIds);
+        chips.push(...((chipBatch ?? []) as typeof chips));
+      }
+      const newChildren = (childBatch ?? []) as typeof blocks;
+      blocks.push(...newChildren);
+      frontier = newChildren.map((b) => b.id);
+    } else {
+      frontier = [];
+    }
+  }
+
+  // Build id maps for blocks + rows. Chips and block-variables don't
+  // need stable ids of their own — they reference blocks/rows by FK.
+  const blockIdMap = new Map<string, string>();
+  for (const b of blocks) blockIdMap.set(b.id, randomUUID());
+  const rowIdMap = new Map<string, string>();
+  for (const r of rows) rowIdMap.set(r.id, randomUUID());
+
+  // Insertion point: original.sort_order + 1, shift later siblings.
+  const siblings = (
+    await fetchSiblings(
+      supabase,
+      original.document_id,
+      original.parent_block_id,
+      original.parent_row_id
+    )
+  ).filter((b) => b.block_type !== "fallback");
+  const insertSort = original.sort_order + 1;
+  const toShift = siblings.filter(
+    (b) => b.sort_order >= insertSort && b.id !== original.id
+  );
+  if (toShift.length > 0) {
+    for (const b of toShift) {
+      const { error: bumpErr } = await supabase
+        .from("ending_blocks")
+        .update({ sort_order: b.sort_order + 100000 })
+        .eq("id", b.id);
+      if (bumpErr) throw new Error(bumpErr.message);
+    }
+    for (const b of toShift) {
+      const { error: settleErr } = await supabase
+        .from("ending_blocks")
+        .update({ sort_order: b.sort_order + 1 })
+        .eq("id", b.id);
+      if (settleErr) throw new Error(settleErr.message);
+    }
+  }
+
+  // Insert the cloned blocks in the same order they were collected
+  // (parents before children). The root takes insertSort; descendants
+  // keep their relative sort_orders within their own parent.
+  const newBlockRows = blocks.map((b) => ({
+    id: blockIdMap.get(b.id)!,
+    document_id: b.document_id,
+    parent_block_id:
+      b.id === original.id
+        ? b.parent_block_id
+        : blockIdMap.get(b.parent_block_id ?? "") ?? null,
+    parent_row_id:
+      b.id === original.id
+        ? b.parent_row_id
+        : rowIdMap.get(b.parent_row_id ?? "") ?? null,
+    block_type: b.block_type,
+    text: b.text,
+    result_value: b.result_value,
+    sort_order: b.id === original.id ? insertSort : b.sort_order,
+  }));
+  if (newBlockRows.length > 0) {
+    const { error: insertBlocksErr } = await supabase
+      .from("ending_blocks")
+      .insert(newBlockRows);
+    if (insertBlocksErr) throw new Error(insertBlocksErr.message);
+  }
+
+  if (rows.length > 0) {
+    const newRows = rows.map((r) => ({
+      id: rowIdMap.get(r.id)!,
+      condition_block_id: blockIdMap.get(r.condition_block_id)!,
+      sort_order: r.sort_order,
+    }));
+    const { error: insertRowsErr } = await supabase
+      .from("ending_condition_rows")
+      .insert(newRows);
+    if (insertRowsErr) throw new Error(insertRowsErr.message);
+  }
+
+  if (blockVars.length > 0) {
+    const newBlockVars = blockVars.map((bv) => ({
+      condition_block_id: blockIdMap.get(bv.condition_block_id)!,
+      variable_id: bv.variable_id,
+      sort_order: bv.sort_order,
+    }));
+    const { error: insertBvErr } = await supabase
+      .from("ending_condition_block_variables")
+      .insert(newBlockVars);
+    if (insertBvErr) throw new Error(insertBvErr.message);
+  }
+
+  if (chips.length > 0) {
+    const newChips = chips.map((c) => ({
+      row_id: rowIdMap.get(c.row_id)!,
+      variable_id: c.variable_id,
+      operator: c.operator,
+      text_value_id: c.text_value_id,
+      number_value: c.number_value,
+      aggregate_value: c.aggregate_value,
+      sort_order: c.sort_order,
+    }));
+    const { error: insertChipsErr } = await supabase
+      .from("ending_condition_row_chips")
+      .insert(newChips);
+    if (insertChipsErr) throw new Error(insertChipsErr.message);
+  }
+
+  revalidateEndings();
+  return { id: blockIdMap.get(original.id as string)! };
 }
 
 // --- Rows ---------------------------------------------------------------
@@ -461,69 +711,272 @@ export async function addRow(input: {
     .single();
   if (error) throw new Error(error.message);
 
-  // Seed a default leaf block under the new row so authors don't have
-  // to add one manually each time. Frameworks → blank text block;
-  // logic docs → result block with the kind's default option (first
-  // framework, "proletariat", "folos", etc.). Skip the seed if the
-  // doc kind has no default available (e.g. framework_selection with
-  // zero frameworks).
-  await seedDefaultLeafForRow(supabase, input.block_id, data.id as string);
+  // Auto-seed a chip on the parent block's first declared header
+  // variable. Leaves under the row stay empty — authors add
+  // text/result/condition blocks themselves via the row's insertion
+  // zone, so unfinished rows don't leave behind a dangling text
+  // block.
+  const { data: firstHeader } = await supabase
+    .from("ending_condition_block_variables")
+    .select("variable_id")
+    .eq("condition_block_id", input.block_id)
+    .order("sort_order")
+    .limit(1)
+    .maybeSingle();
+  if (firstHeader) {
+    const chipDefaults = await computeDefaultChip(
+      supabase,
+      firstHeader.variable_id as string
+    );
+    if (chipDefaults) {
+      const { error: chipErr } = await supabase
+        .from("ending_condition_row_chips")
+        .insert({
+          row_id: data.id as string,
+          variable_id: firstHeader.variable_id as string,
+          ...chipDefaults,
+          sort_order: 0,
+        });
+      if (chipErr) throw new Error(chipErr.message);
+    }
+  }
 
   revalidateEndings();
   return { id: data.id as string };
 }
 
-async function seedDefaultLeafForRow(
-  supabase: Supabase,
-  conditionBlockId: string,
-  rowId: string
-): Promise<void> {
-  const { data: parent } = await supabase
-    .from("ending_blocks")
-    .select("document_id")
-    .eq("id", conditionBlockId)
-    .maybeSingle();
-  if (!parent?.document_id) return;
-  const docId = parent.document_id as string;
-  const kind = await getDocumentKind(supabase, docId);
-  if (!kind) return;
+/**
+ * Deep-clone a row + every chip on it + every block (and descendant)
+ * underneath it. Inserts the clone immediately after the original row
+ * and shifts later rows in the same condition block by +1.
+ */
+export async function duplicateRow(input: {
+  id: string;
+}): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: original, error: lookupErr } = await supabase
+    .from("ending_condition_rows")
+    .select("id, condition_block_id, sort_order")
+    .eq("id", input.id)
+    .single();
+  if (lookupErr) throw new Error(lookupErr.message);
+  if (!original) throw new Error(`Row ${input.id} not found.`);
 
-  if (kind === "framework") {
-    await supabase.from("ending_blocks").insert({
-      document_id: docId,
-      parent_block_id: conditionBlockId,
-      parent_row_id: rowId,
-      block_type: "text",
-      text: "",
-      sort_order: 0,
+  const conditionBlockId = original.condition_block_id as string;
+
+  // Shift later rows down by 1 to make room. Two-step bump+settle to
+  // dodge the unique (block, sort_order) constraint mid-update.
+  const { data: later } = await supabase
+    .from("ending_condition_rows")
+    .select("id, sort_order")
+    .eq("condition_block_id", conditionBlockId)
+    .gt("sort_order", original.sort_order);
+  const toShift = (later ?? []) as Array<{ id: string; sort_order: number }>;
+  if (toShift.length > 0) {
+    for (const r of toShift) {
+      const { error: bumpErr } = await supabase
+        .from("ending_condition_rows")
+        .update({ sort_order: r.sort_order + 100000 })
+        .eq("id", r.id);
+      if (bumpErr) throw new Error(bumpErr.message);
+    }
+    for (const r of toShift) {
+      const { error: settleErr } = await supabase
+        .from("ending_condition_rows")
+        .update({ sort_order: r.sort_order + 1 })
+        .eq("id", r.id);
+      if (settleErr) throw new Error(settleErr.message);
+    }
+  }
+
+  // Insert the new row right after the original.
+  const newRowId = randomUUID();
+  const { error: rowErr } = await supabase
+    .from("ending_condition_rows")
+    .insert({
+      id: newRowId,
+      condition_block_id: conditionBlockId,
+      sort_order: (original.sort_order as number) + 1,
     });
-    return;
+  if (rowErr) throw new Error(rowErr.message);
+
+  // Clone chips on the original row.
+  const { data: chipBatch } = await supabase
+    .from("ending_condition_row_chips")
+    .select(
+      "variable_id, operator, text_value_id, number_value, aggregate_value, sort_order"
+    )
+    .eq("row_id", input.id);
+  if (chipBatch && chipBatch.length > 0) {
+    const newChips = chipBatch.map((c) => ({
+      row_id: newRowId,
+      variable_id: c.variable_id,
+      operator: c.operator,
+      text_value_id: c.text_value_id,
+      number_value: c.number_value,
+      aggregate_value: c.aggregate_value,
+      sort_order: c.sort_order,
+    }));
+    const { error: chipErr } = await supabase
+      .from("ending_condition_row_chips")
+      .insert(newChips);
+    if (chipErr) throw new Error(chipErr.message);
   }
 
-  // Logic doc: pick a default result_value per kind.
-  const allowed = ENDING_LOGIC_RESULT_OPTIONS_BY_KIND[kind as EndingLogicKind];
-  let defaultValue: string | null = null;
-  if (allowed && allowed.length > 0) {
-    defaultValue = allowed[0];
-  } else if (kind === "framework_selection") {
-    const { data: firstFramework } = await supabase
-      .from("ending_documents")
-      .select("id")
-      .eq("kind", "framework")
-      .order("sort_order")
-      .limit(1)
-      .maybeSingle();
-    defaultValue = (firstFramework?.id as string | undefined) ?? null;
+  // BFS-collect the subtree rooted at child blocks under this row.
+  const blocks: Array<{
+    id: string;
+    document_id: string;
+    parent_block_id: string | null;
+    parent_row_id: string | null;
+    block_type: string;
+    text: string | null;
+    result_value: string | null;
+    sort_order: number;
+  }> = [];
+  const childRows: Array<{
+    id: string;
+    condition_block_id: string;
+    sort_order: number;
+  }> = [];
+  const childChips: Array<{
+    row_id: string;
+    variable_id: string;
+    operator: EndingChipOperator;
+    text_value_id: string | null;
+    number_value: number | null;
+    aggregate_value: string | null;
+    sort_order: number;
+  }> = [];
+  const blockVars: Array<{
+    condition_block_id: string;
+    variable_id: string;
+    sort_order: number;
+  }> = [];
+
+  // Seed the frontier with direct child blocks of the row.
+  const { data: directChildren } = await supabase
+    .from("ending_blocks")
+    .select(
+      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+    )
+    .eq("parent_row_id", input.id);
+  blocks.push(...((directChildren ?? []) as typeof blocks));
+  let frontier: string[] = blocks
+    .filter((b) => b.block_type === "condition")
+    .map((b) => b.id);
+
+  while (frontier.length > 0) {
+    const conditionIds = frontier;
+    const [{ data: rowB }, { data: bvB }, { data: childB }] =
+      await Promise.all([
+        supabase
+          .from("ending_condition_rows")
+          .select("id, condition_block_id, sort_order")
+          .in("condition_block_id", conditionIds),
+        supabase
+          .from("ending_condition_block_variables")
+          .select("condition_block_id, variable_id, sort_order")
+          .in("condition_block_id", conditionIds),
+        supabase
+          .from("ending_blocks")
+          .select(
+            "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+          )
+          .in("parent_block_id", conditionIds),
+      ]);
+    const newRows = (rowB ?? []) as typeof childRows;
+    childRows.push(...newRows);
+    blockVars.push(...((bvB ?? []) as typeof blockVars));
+    const newRowIds = newRows.map((r) => r.id);
+    if (newRowIds.length > 0) {
+      const { data: cB } = await supabase
+        .from("ending_condition_row_chips")
+        .select(
+          "row_id, variable_id, operator, text_value_id, number_value, aggregate_value, sort_order"
+        )
+        .in("row_id", newRowIds);
+      childChips.push(...((cB ?? []) as typeof childChips));
+    }
+    const newChildBlocks = (childB ?? []) as typeof blocks;
+    blocks.push(...newChildBlocks);
+    frontier = newChildBlocks
+      .filter((b) => b.block_type === "condition")
+      .map((b) => b.id);
   }
-  if (defaultValue == null) return; // nothing valid to seed; leave row empty
-  await supabase.from("ending_blocks").insert({
-    document_id: docId,
-    parent_block_id: conditionBlockId,
-    parent_row_id: rowId,
-    block_type: "result",
-    result_value: defaultValue,
-    sort_order: 0,
-  });
+
+  // Build id maps. The original row maps to newRowId.
+  const blockIdMap = new Map<string, string>();
+  for (const b of blocks) blockIdMap.set(b.id, randomUUID());
+  const rowIdMap = new Map<string, string>();
+  rowIdMap.set(input.id, newRowId);
+  for (const r of childRows) rowIdMap.set(r.id, randomUUID());
+
+  if (blocks.length > 0) {
+    const newBlocks = blocks.map((b) => ({
+      id: blockIdMap.get(b.id)!,
+      document_id: b.document_id,
+      parent_block_id:
+        b.parent_block_id && blockIdMap.has(b.parent_block_id)
+          ? blockIdMap.get(b.parent_block_id)!
+          : b.parent_block_id,
+      parent_row_id:
+        b.parent_row_id && rowIdMap.has(b.parent_row_id)
+          ? rowIdMap.get(b.parent_row_id)!
+          : b.parent_row_id,
+      block_type: b.block_type,
+      text: b.text,
+      result_value: b.result_value,
+      sort_order: b.sort_order,
+    }));
+    const { error: insertBlocksErr } = await supabase
+      .from("ending_blocks")
+      .insert(newBlocks);
+    if (insertBlocksErr) throw new Error(insertBlocksErr.message);
+  }
+
+  if (childRows.length > 0) {
+    const newChildRows = childRows.map((r) => ({
+      id: rowIdMap.get(r.id)!,
+      condition_block_id: blockIdMap.get(r.condition_block_id)!,
+      sort_order: r.sort_order,
+    }));
+    const { error: rowErr2 } = await supabase
+      .from("ending_condition_rows")
+      .insert(newChildRows);
+    if (rowErr2) throw new Error(rowErr2.message);
+  }
+
+  if (blockVars.length > 0) {
+    const newBlockVars = blockVars.map((bv) => ({
+      condition_block_id: blockIdMap.get(bv.condition_block_id)!,
+      variable_id: bv.variable_id,
+      sort_order: bv.sort_order,
+    }));
+    const { error: bvErr } = await supabase
+      .from("ending_condition_block_variables")
+      .insert(newBlockVars);
+    if (bvErr) throw new Error(bvErr.message);
+  }
+
+  if (childChips.length > 0) {
+    const newChildChips = childChips.map((c) => ({
+      row_id: rowIdMap.get(c.row_id)!,
+      variable_id: c.variable_id,
+      operator: c.operator,
+      text_value_id: c.text_value_id,
+      number_value: c.number_value,
+      aggregate_value: c.aggregate_value,
+      sort_order: c.sort_order,
+    }));
+    const { error: chipErr2 } = await supabase
+      .from("ending_condition_row_chips")
+      .insert(newChildChips);
+    if (chipErr2) throw new Error(chipErr2.message);
+  }
+
+  revalidateEndings();
+  return { id: newRowId };
 }
 
 export async function deleteRow(formData: FormData) {
@@ -564,6 +1017,8 @@ export async function addBlockVariable(input: {
     )
     .select("id");
   if (error) throw new Error(error.message);
+  let resultId: string;
+  let isNewVariable: boolean;
   if (!data || data.length === 0) {
     const { data: existingRow } = await supabase
       .from("ending_condition_block_variables")
@@ -573,11 +1028,126 @@ export async function addBlockVariable(input: {
       .single();
     if (!existingRow)
       throw new Error("addBlockVariable: row missing post-upsert");
-    revalidateEndings();
-    return { id: existingRow.id as string };
+    resultId = existingRow.id as string;
+    isNewVariable = false;
+  } else {
+    resultId = data[0].id as string;
+    isNewVariable = true;
   }
+
+  // Auto-seed the block's first row + default chip on the variable
+  // being added the first time it's added to a block that has zero
+  // rows. Skips the leaf-block seed (rows start empty until the
+  // author adds a text/result/condition via the row toolbar).
+  if (isNewVariable) {
+    const { data: existingRows } = await supabase
+      .from("ending_condition_rows")
+      .select("id")
+      .eq("condition_block_id", input.block_id)
+      .limit(1);
+    if (!existingRows || existingRows.length === 0) {
+      const chipDefaults = await computeDefaultChip(
+        supabase,
+        input.variable_id
+      );
+      if (chipDefaults) {
+        const { data: row, error: rowErr } = await supabase
+          .from("ending_condition_rows")
+          .insert({
+            condition_block_id: input.block_id,
+            sort_order: 0,
+          })
+          .select("id")
+          .single();
+        if (rowErr) throw new Error(rowErr.message);
+        const { error: chipErr } = await supabase
+          .from("ending_condition_row_chips")
+          .insert({
+            row_id: row.id as string,
+            variable_id: input.variable_id,
+            ...chipDefaults,
+            sort_order: 0,
+          });
+        if (chipErr) throw new Error(chipErr.message);
+      }
+    }
+  }
+
   revalidateEndings();
-  return { id: data[0].id as string };
+  return { id: resultId };
+}
+
+/**
+ * Compute the default chip values for a freshly-added header variable.
+ * Returns null when the variable is text-typed but has no values yet
+ * (caller should skip auto-row creation in that case).
+ */
+async function computeDefaultChip(
+  supabase: Supabase,
+  variable_id: string
+): Promise<{
+  operator: EndingChipOperator;
+  text_value_id: string | null;
+  number_value: number | null;
+  aggregate_value: string | null;
+} | null> {
+  const { data: variable } = await supabase
+    .from("ending_variables")
+    .select("kind, aggregate_ref, default_value_id")
+    .eq("id", variable_id)
+    .maybeSingle();
+  if (!variable) return null;
+
+  if (variable.kind === "text") {
+    let textValueId = (variable.default_value_id as string | null) ?? null;
+    if (!textValueId) {
+      const { data: firstValue } = await supabase
+        .from("ending_variable_values")
+        .select("id")
+        .eq("variable_id", variable_id)
+        .order("sort_order")
+        .limit(1)
+        .maybeSingle();
+      textValueId = (firstValue?.id as string | undefined) ?? null;
+    }
+    if (!textValueId) return null;
+    return {
+      operator: "=",
+      text_value_id: textValueId,
+      number_value: null,
+      aggregate_value: null,
+    };
+  }
+
+  if (variable.kind === "number_ref") {
+    return {
+      operator: "=",
+      text_value_id: null,
+      number_value: 0,
+      aggregate_value: null,
+    };
+  }
+
+  if (variable.kind === "aggregate_ref") {
+    const aref = variable.aggregate_ref as
+      | "nation_affinity"
+      | "class_affinity"
+      | "nation_tiebreak_set"
+      | null;
+    if (!aref) return null;
+    const operator: EndingChipOperator =
+      aref === "nation_tiebreak_set" ? "set_includes" : "top=";
+    const aggregateValue = AGGREGATE_OPTIONS_BY_REF[aref]?.[0] ?? null;
+    if (!aggregateValue) return null;
+    return {
+      operator,
+      text_value_id: null,
+      number_value: null,
+      aggregate_value: aggregateValue,
+    };
+  }
+
+  return null;
 }
 
 export async function removeBlockVariable(formData: FormData) {

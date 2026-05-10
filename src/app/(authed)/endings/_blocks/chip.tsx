@@ -138,6 +138,7 @@ export function ChipPill({
   values,
   onChange,
   onRemove,
+  closeRight,
 }: {
   chip: ChipState;
   variable: VariableState | null;
@@ -151,6 +152,11 @@ export function ChipPill({
   compact?: boolean;
   onChange: (patch: Partial<ChipState>) => void;
   onRemove: () => void;
+  /** When true, the pill renders with a right border and full
+   *  rounding — used when the row has no child blocks so the chip
+   *  reads as a self-contained shape rather than a tab connecting
+   *  into the row content. */
+  closeRight?: boolean;
 }) {
   const [creatingValue, setCreatingValue] = useState(false);
   const [optimisticValue, setOptimisticValue] = useState<
@@ -217,12 +223,24 @@ export function ChipPill({
   // stays legible against any saturation level the variable picks.
 
   return (
+    <span className="group/chip flex h-5 items-stretch">
+      {/* X — outside the pill, on the left, only visible on hover.
+          Positioned with mr-1 so the pill border still hugs the row
+          edge cleanly when X is hidden. */}
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Remove chip"
+        className="mr-1 inline-flex h-5 w-3 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/chip:opacity-100 focus-visible:opacity-100"
+      >
+        <X size={10} aria-hidden />
+      </button>
     <span
-      className="group/chip inline-flex h-5 items-stretch overflow-clip rounded-md border text-[10px] font-mono uppercase leading-[16px]"
-      style={{
-        borderColor: color,
-        backgroundColor: "var(--row-cell-bg)",
-      }}
+      className={cn(
+        "flex h-5 flex-1 items-stretch overflow-clip text-[10px] font-mono uppercase leading-[16px]",
+        closeRight ? "rounded-md border" : "rounded-l-md border-y border-l"
+      )}
+      style={{ borderColor: color }}
     >
       {/* Operator segment — colored background, knockout text. Both
           segments use leading-[16px] (matching the chip height) on
@@ -372,14 +390,7 @@ export function ChipPill({
         </span>
       )}
 
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove chip"
-        className="inline-flex h-full shrink-0 items-center px-1 text-white opacity-25 transition-opacity hover:opacity-100"
-      >
-        <X size={10} aria-hidden />
-      </button>
+    </span>
     </span>
   );
 }

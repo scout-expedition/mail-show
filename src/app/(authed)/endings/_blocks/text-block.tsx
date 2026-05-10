@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef } from "react";
-import { GripVertical, Trash2 } from "lucide-react";
-import { AutoTextarea, GHOST_FIELD } from "@/components/panel";
+import { useRef, useTransition } from "react";
+import { Copy, GripVertical, Trash2 } from "lucide-react";
+import { AutoTextarea, OverflowMenu } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type { BlockState } from "@/lib/endings/block-state";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
+import { duplicateBlock } from "../_shared/document-actions";
+import { useConfirm } from "@/components/confirm-dialog";
 
 export function TextBlock({
   block,
@@ -16,6 +18,8 @@ export function TextBlock({
   onChange: (text: string) => void;
   onDelete: () => void;
 }) {
+  const [, startTransition] = useTransition();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
@@ -69,9 +73,10 @@ export function TextBlock({
           drag.commit();
         }}
         className={cn(
-          "group/textblock relative flex items-start gap-1 rounded-md border border-transparent bg-card transition-colors hover:border-border",
+          "group/textblock relative flex items-start gap-0.5 rounded-md border border-[var(--block-border)] px-0.5 py-1 transition-colors",
           isDragging && "opacity-40"
         )}
+        style={{ backgroundColor: "var(--block-card)" }}
       >
         <span
           aria-hidden
@@ -89,7 +94,7 @@ export function TextBlock({
               );
             }
           }}
-          className="mt-2 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
+          className="mt-1 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
         >
           <GripVertical size={14} />
         </span>
@@ -99,20 +104,46 @@ export function TextBlock({
           placeholder="Paragraph text…"
           // Disable programming ligatures so authors see the characters they
           // typed (e.g. `<=` doesn't auto-combine into `⩽`).
-          style={{ fontVariantLigatures: "none" }}
-          className={cn("flex-1 min-h-[2.25rem] !text-sm", GHOST_FIELD)}
+          style={{
+            fontVariantLigatures: "none",
+            backgroundColor: "var(--block-result-bg)",
+          }}
+          className={cn(
+            "flex-1 min-h-[2.25rem] !text-sm border-transparent shadow-none focus:border-border focus-visible:shadow-sm"
+          )}
         />
-        <button
-          type="button"
-          onClick={onDelete}
-          aria-label="Delete block"
-          title="Delete block"
-          className="mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-opacity opacity-0 hover:bg-destructive/15 hover:text-destructive group-hover/textblock:opacity-100"
-        >
-          <Trash2 size={12} aria-hidden />
-        </button>
+        <div className="opacity-0 transition-opacity group-hover/textblock:opacity-100 focus-within:opacity-100">
+          <OverflowMenu
+            items={[
+              {
+                label: "Duplicate Text Block",
+                icon: <Copy size={10} aria-hidden />,
+                onClick: () => {
+                  startTransition(async () => {
+                    await duplicateBlock({ id: block.id });
+                  });
+                },
+              },
+              {
+                label: "Delete Text Block",
+                intent: "destructive",
+                icon: <Trash2 size={10} aria-hidden />,
+                onClick: async () => {
+                  const ok = await confirm({
+                    title: "Delete text block?",
+                    message: "This can't be undone.",
+                    confirmLabel: "Delete",
+                    intent: "destructive",
+                  });
+                  if (ok) onDelete();
+                },
+              },
+            ]}
+          />
+        </div>
       </div>
       <DropLine active={targetAfter} side="bottom" />
+      {confirmDialog}
     </div>
   );
 }

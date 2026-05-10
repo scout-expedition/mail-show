@@ -4,12 +4,16 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
-  ChevronLeft,
+  ChevronRight,
+  Copy,
   GripVertical,
   Plus,
   Trash2,
   X,
 } from "lucide-react";
+import { IconArrowsSplit2 } from "@tabler/icons-react";
+import { OverflowMenu } from "@/components/panel";
+import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
@@ -31,6 +35,8 @@ import {
   addRow,
   deleteChip,
   deleteRow,
+  duplicateBlock,
+  duplicateRow,
   removeBlockVariable,
 } from "../_shared/document-actions";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
@@ -57,6 +63,7 @@ export function ConditionBlock({
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
+  getRowBlockCount,
 }: {
   block: BlockState;
   rows: RowState[];
@@ -69,6 +76,10 @@ export function ConditionBlock({
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
   renderRowContent: (row: RowState) => React.ReactNode;
+  /** Number of blocks under each row's children area. Used to close
+   *  off the row's chip pills with a right border when the row has
+   *  no child blocks. */
+  getRowBlockCount?: (rowId: string) => number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -78,6 +89,7 @@ export function ConditionBlock({
   const [pending, startTransition] = useTransition();
   const [collapsed, setCollapsed] = useState(false);
   const [uncoveredOpen, setUncoveredOpen] = useState(false);
+  const { confirm, dialog: confirmDialog } = useConfirm({ scoped: false });
   const blockAnalysis = analysis.blockAnalysis.get(block.id);
   const targetBefore =
     drag.target?.kind === "near" &&
@@ -139,8 +151,8 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("group/header flex items-center justify-between gap-2 px-1", collapsed ? "pb-0" : "pb-2") }>
-        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
+        <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
             draggable
@@ -157,9 +169,9 @@ export function ConditionBlock({
                 );
               }
             }}
-            className="cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/condition:opacity-100"
+            className="-ml-1 -mr-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/header:opacity-100"
           >
-            <GripVertical size={12} />
+            <GripVertical size={14} />
           </span>
           <button
             type="button"
@@ -167,21 +179,28 @@ export function ConditionBlock({
             aria-label={collapsed ? "Expand condition block" : "Collapse condition block"}
             aria-expanded={!collapsed}
             title={collapsed ? "Expand" : "Collapse"}
-            className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent/40 hover:text-foreground"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent/40 hover:text-foreground"
           >
             {collapsed ? (
-              <ChevronLeft size={12} aria-hidden />
+              <ChevronRight size={14} aria-hidden />
             ) : (
-              <ChevronDown size={12} aria-hidden />
+              <ChevronDown size={14} aria-hidden />
             )}
           </button>
-          Condition · {rows.length} {rows.length === 1 ? "row" : "rows"}
+          <IconArrowsSplit2
+            size={14}
+            aria-label={`Condition block with ${rows.length} ${rows.length === 1 ? "row" : "rows"}`}
+            className="text-muted-foreground/70"
+          />
           <HeaderVariableStrip
             blockId={block.id}
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}
             variables={variables}
+            confirm={confirm}
           />
+        </div>
+        <div className="flex items-center gap-2">
           {blockAnalysis ? (
             <BlockAnalysisBadge
               analysis={blockAnalysis}
@@ -191,16 +210,37 @@ export function ConditionBlock({
               onToggle={() => setUncoveredOpen((v) => !v)}
             />
           ) : null}
+          <div className="opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
+            <OverflowMenu
+              items={[
+                {
+                  label: "Duplicate Condition Block",
+                  icon: <Copy size={10} aria-hidden />,
+                  onClick: () => {
+                    startTransition(async () => {
+                      await duplicateBlock({ id: block.id });
+                    });
+                  },
+                },
+                {
+                  label: "Delete Condition Block",
+                  intent: "destructive",
+                  icon: <Trash2 size={10} aria-hidden />,
+                  onClick: async () => {
+                    const ok = await confirm({
+                      title: "Delete condition block?",
+                      message:
+                        "This removes the block and every row, chip, and child block inside it. This can't be undone.",
+                      confirmLabel: "Delete",
+                      intent: "destructive",
+                    });
+                    if (ok) onDeleteBlock();
+                  },
+                },
+              ]}
+            />
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onDeleteBlock}
-          aria-label="Delete condition block"
-          title="Delete condition block"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover/condition:opacity-100"
-        >
-          <Trash2 size={11} aria-hidden />
-        </button>
       </div>
 
       {collapsed ? null : (
@@ -215,7 +255,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-3 rounded-md bg-[var(--block-result-bg)] p-2">
+      <div className="flex flex-col gap-3 rounded-md bg-[var(--block-result-bg)] p-2 pt-5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -261,19 +301,27 @@ export function ConditionBlock({
                   await deleteRow(fd);
                 })
               }
+              onDuplicateRow={() =>
+                startTransition(async () => {
+                  await duplicateRow({ id: row.id });
+                })
+              }
+              closeChips={(getRowBlockCount?.(row.id) ?? 1) === 0}
             >
               {renderRowContent(row)}
             </ConditionRow>
           );
         })}
-        <div className="flex justify-center">
+        <div className="flex h-5 justify-center">
           <button
             type="button"
             onClick={handleAddRow}
             disabled={pending}
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--block-border)] px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-white/5"
+            aria-label="Add row"
+            title="Add row"
+            className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5 disabled:opacity-50"
           >
-            <Plus size={11} aria-hidden /> row
+            <Plus size={12} aria-hidden />
           </button>
         </div>
       </div>
@@ -281,6 +329,7 @@ export function ConditionBlock({
       )}
       </div>
       <DropLine active={targetAfter} side="bottom" />
+      {confirmDialog}
     </div>
   );
 }
@@ -298,6 +347,8 @@ function ConditionRow({
   onRemoveChip,
   onChangeChip,
   onRemoveRow,
+  onDuplicateRow,
+  closeChips,
   children,
 }: {
   chips: ChipState[];
@@ -312,8 +363,11 @@ function ConditionRow({
   onRemoveChip: (chipId: string) => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   onRemoveRow: () => void;
+  onDuplicateRow: () => void;
+  closeChips?: boolean;
   children: React.ReactNode;
 }) {
+  const { confirm: confirmRow, dialog: rowDialog } = useConfirm();
   const fullyOverlapped = overlap?.fullShadow ?? false;
   // Render the row's chips grouped by declared variable order, then any
   // orphan chips (chips on a variable not in the header — shouldn't
@@ -329,12 +383,12 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "group/row grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-2",
+        "group/row relative grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-x-0",
         (shadowedByOrdinal != null || fullyOverlapped) &&
           "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40"
       )}
     >
-      <div className="flex flex-col items-start gap-1 self-start">
+      <div className="mt-1 flex flex-col gap-2">
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -349,6 +403,7 @@ function ConditionRow({
                 compact
                 onChange={(patch) => onChangeChip(chip.id, patch)}
                 onRemove={() => onRemoveChip(chip.id)}
+                closeRight={closeChips}
               />
             ));
           })
@@ -362,6 +417,7 @@ function ConditionRow({
             values={values}
             onChange={(patch) => onChangeChip(chip.id, patch)}
             onRemove={() => onRemoveChip(chip.id)}
+            closeRight={closeChips}
           />
         ))}
         {declaredVariables.length > 0 ? (
@@ -390,15 +446,33 @@ function ConditionRow({
         ) : null}
       </div>
       <div className="flex flex-col gap-1">{children}</div>
-      <button
-        type="button"
-        onClick={onRemoveRow}
-        aria-label="Delete row"
-        title="Delete row"
-        className="self-start text-muted-foreground/60 hover:text-destructive"
-      >
-        <Trash2 size={11} aria-hidden />
-      </button>
+      <div className="ml-2 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
+        <OverflowMenu
+          items={[
+            {
+              label: "Duplicate Row",
+              icon: <Copy size={10} aria-hidden />,
+              onClick: () => onDuplicateRow(),
+            },
+            {
+              label: "Delete Row",
+              intent: "destructive",
+              icon: <Trash2 size={10} aria-hidden />,
+              onClick: async () => {
+                const ok = await confirmRow({
+                  title: "Delete row?",
+                  message:
+                    "This removes the row, every chip on it, and every block under it. This can't be undone.",
+                  confirmLabel: "Delete",
+                  intent: "destructive",
+                });
+                if (ok) onRemoveRow();
+              },
+            },
+          ]}
+        />
+      </div>
+      {rowDialog}
     </div>
   );
 }
@@ -471,11 +545,13 @@ function BlockAnalysisBadge({
       title={
         (open ? "Hide uncovered list" : "Show uncovered list") + partialTitle
       }
-      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200 hover:bg-amber-500/20"
+      className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200/80 hover:bg-amber-500/10"
     >
       <AlertTriangle size={10} aria-hidden />
-      {count}
-      {partialSuffix} {count === 1 ? "assignment" : "assignments"} uncovered
+      <span className="text-[9px]">
+        {count}
+        {partialSuffix}
+      </span>
     </button>
   );
 }
@@ -631,11 +707,13 @@ function HeaderVariableStrip({
   declaredVariables,
   variableIndex,
   variables,
+  confirm,
 }: {
   blockId: string;
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
+  confirm: ReturnType<typeof useConfirm>["confirm"];
 }) {
   const [pending, startTransition] = useTransition();
   // Optimistic shadow of just-added variables — keeps the chip on screen
@@ -667,13 +745,21 @@ function HeaderVariableStrip({
             key={dv.id}
             variable={v}
             disabled={pending}
-            onRemove={() =>
+            onRemove={async () => {
+              const ok = await confirm({
+                title: `Remove ${v.name} from this condition block?`,
+                message:
+                  "This also removes every chip on the block's rows that referenced this variable.",
+                confirmLabel: "Remove",
+                intent: "destructive",
+              });
+              if (!ok) return;
               startTransition(async () => {
                 const fd = new FormData();
                 fd.set("id", dv.id);
                 await removeBlockVariable(fd);
-              })
-            }
+              });
+            }}
           />
         );
       })}
@@ -789,15 +875,14 @@ function AddHeaderVariablePicker({
       className="absolute inset-0 cursor-pointer opacity-0"
     >
       <option value="">variable…</option>
-      {textVariables.length > 0 ? (
-        <optgroup label="Ending Variables">
-          {textVariables.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.name}
-            </option>
-          ))}
-        </optgroup>
-      ) : null}
+      <optgroup label="Ending Variables">
+        {textVariables.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}
+          </option>
+        ))}
+        <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
+      </optgroup>
       {numberRefGroups.map((group) => {
         const opts = group.columns
           .map((col) => numberVariablesByRef.get(col))
@@ -826,7 +911,6 @@ function AddHeaderVariablePicker({
           })}
         </optgroup>
       ) : null}
-      <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
     </select>
     </span>
   );
