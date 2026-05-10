@@ -23,7 +23,13 @@ import {
   useTransition,
   type ReactNode,
 } from "react";
-import { Eye, Trash2 } from "lucide-react";
+import {
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Eye,
+  ListCollapse,
+  Trash2,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -89,6 +95,11 @@ import {
   indexShadow,
   type AnalysisContext,
 } from "./lib/analysis";
+import {
+  TotalCollapseCtx,
+  type CollapseContext,
+  type CollapseMode,
+} from "./lib/total-collapse";
 
 export type EditorHandle = {
   dirty: boolean;
@@ -248,6 +259,55 @@ export function DocumentEditor({
   const [previewOn, setPreviewOn] = useState(false);
   const [previewSelections, setPreviewSelections] =
     useState<PreviewSelections>(EMPTY_SELECTIONS);
+  const collapseModeStorageKey = `endings.collapseMode.${document.id}`;
+  const [collapseMode, setCollapseModeState] = useState<CollapseMode>("expanded");
+  const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
+    () => new Map()
+  );
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(collapseModeStorageKey);
+      if (raw === "headers" || raw === "all") setCollapseModeState(raw);
+      else setCollapseModeState("expanded");
+    } catch {
+      // localStorage unavailable — keep default (expanded).
+    }
+    setCollapseOverrides(new Map());
+  }, [collapseModeStorageKey]);
+  const applyCollapseMode = useCallback(
+    (next: CollapseMode) => {
+      setCollapseModeState(next);
+      setCollapseOverrides(new Map());
+      try {
+        if (next === "expanded")
+          window.localStorage.removeItem(collapseModeStorageKey);
+        else window.localStorage.setItem(collapseModeStorageKey, next);
+      } catch {
+        // ignore — preference is best-effort.
+      }
+    },
+    [collapseModeStorageKey]
+  );
+  const setCollapseOverride = useCallback(
+    (blockId: string, collapsed: boolean) => {
+      setCollapseOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(blockId, collapsed);
+        return next;
+      });
+    },
+    []
+  );
+  const collapseCtx = useMemo<CollapseContext>(
+    () => ({
+      mode: collapseMode,
+      overrides: collapseOverrides,
+      setOverride: setCollapseOverride,
+      cascadeSeen: null,
+    }),
+    [collapseMode, collapseOverrides, setCollapseOverride]
+  );
+  const collapseDirty = collapseOverrides.size > 0;
 
   // Reconcile incoming server state with local edits.
   useEffect(() => {
@@ -871,34 +931,36 @@ export function DocumentEditor({
         <DragCtx.Provider value={dragCtx}>
           <PickerCtx.Provider value={pickerCtx}>
             <AnalysisCtx.Provider value={analysisCtx}>
-              <BlockList
-                parent={{ parent_block_id: null, parent_row_id: null }}
-                byParent={byParent}
-                rowsByConditionBlock={rowsByConditionBlock}
-                chipsByRow={chipsByRow}
-                declaredByBlock={declaredByBlock}
-                variableIndex={variableIndex}
-                variables={authoringVariableState}
-                values={values}
-                document_id={document.id}
-                leaves={leaves}
-                onUpdateBlock={updateBlock}
-                onChangeChip={updateChip}
-              />
-              {fallback && fallbackBlock ? (
-                <FallbackBlock
-                  block={fallbackBlock}
-                  options={fallback.options}
-                  subsetFrameworks={fallback.subsetFrameworks}
-                  subsetEnabled={fallback.subsetEnabled}
-                  helperText={fallback.helperText}
-                  emptyLabel={fallback.emptyLabel}
-                  title={fallback.title}
-                  onChange={(result_value) =>
-                    updateBlock(fallbackBlock.id, { result_value })
-                  }
+              <TotalCollapseCtx.Provider value={collapseCtx}>
+                <BlockList
+                  parent={{ parent_block_id: null, parent_row_id: null }}
+                  byParent={byParent}
+                  rowsByConditionBlock={rowsByConditionBlock}
+                  chipsByRow={chipsByRow}
+                  declaredByBlock={declaredByBlock}
+                  variableIndex={variableIndex}
+                  variables={authoringVariableState}
+                  values={values}
+                  document_id={document.id}
+                  leaves={leaves}
+                  onUpdateBlock={updateBlock}
+                  onChangeChip={updateChip}
                 />
-              ) : null}
+                {fallback && fallbackBlock ? (
+                  <FallbackBlock
+                    block={fallbackBlock}
+                    options={fallback.options}
+                    subsetFrameworks={fallback.subsetFrameworks}
+                    subsetEnabled={fallback.subsetEnabled}
+                    helperText={fallback.helperText}
+                    emptyLabel={fallback.emptyLabel}
+                    title={fallback.title}
+                    onChange={(result_value) =>
+                      updateBlock(fallbackBlock.id, { result_value })
+                    }
+                  />
+                ) : null}
+              </TotalCollapseCtx.Provider>
             </AnalysisCtx.Provider>
           </PickerCtx.Provider>
         </DragCtx.Provider>
@@ -925,27 +987,79 @@ export function DocumentEditor({
           />
         }
         menu={
-          renderPreview ? (
-            <button
-              type="button"
-              onClick={() => setPreviewOn((v) => !v)}
-              aria-label={previewOn ? "Exit preview" : "Preview"}
-              title={previewOn ? "Exit preview" : "Preview"}
-              className={cn(
-                "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-                previewOn
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
-              <Eye size={14} aria-hidden />
-            </button>
-          ) : null
+          <div className="flex items-center gap-1">
+            <CollapseModeToggleGroup
+              mode={collapseMode}
+              dirty={collapseDirty}
+              onSelect={applyCollapseMode}
+            />
+            {renderPreview ? (
+              <button
+                type="button"
+                onClick={() => setPreviewOn((v) => !v)}
+                aria-label={previewOn ? "Exit preview" : "Preview"}
+                title={previewOn ? "Exit preview" : "Preview"}
+                className={cn(
+                  "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                  previewOn
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <Eye size={14} aria-hidden />
+              </button>
+            ) : null}
+          </div>
         }
       />
       {body}
       {confirmDialogEl}
     </section>
+  );
+}
+
+function CollapseModeToggleGroup({
+  mode,
+  dirty,
+  onSelect,
+}: {
+  mode: CollapseMode;
+  dirty: boolean;
+  onSelect: (mode: CollapseMode) => void;
+}) {
+  const items: {
+    id: CollapseMode;
+    label: string;
+    icon: React.ReactNode;
+  }[] = [
+    { id: "expanded", label: "Expand all", icon: <ChevronsUpDown size={14} aria-hidden /> },
+    { id: "headers", label: "Collapse to headers", icon: <ListCollapse size={14} aria-hidden /> },
+    { id: "all", label: "Collapse all", icon: <ChevronsDownUp size={14} aria-hidden /> },
+  ];
+  return (
+    <div role="group" aria-label="Collapse mode" className="flex items-center gap-0.5">
+      {items.map((item) => {
+        const active = !dirty && mode === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onSelect(item.id)}
+            aria-pressed={active}
+            aria-label={item.label}
+            title={item.label}
+            className={cn(
+              "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+              active
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+            )}
+          >
+            {item.icon}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

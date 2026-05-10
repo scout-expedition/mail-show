@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { Fragment, useEffect, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -41,6 +41,7 @@ import {
 } from "../_shared/document-actions";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
+import { TotalCollapseCtx, useCollapseCtx } from "../_shared/lib/total-collapse";
 import {
   ChipPill,
   VariableChip,
@@ -85,9 +86,17 @@ export function ConditionBlock({
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
   const analysis = useAnalysis();
+  const collapseCtx = useCollapseCtx();
+  const collapseMode = collapseCtx.mode;
   const isDragging = drag.dragId === block.id;
   const [pending, startTransition] = useTransition();
-  const [collapsed, setCollapsed] = useState(false);
+  const override = collapseCtx.overrides.get(block.id);
+  const panelCollapsed = collapseMode !== "expanded";
+  const collapsed = override ?? panelCollapsed;
+  const headersOnly = collapseMode === "headers" && override === undefined;
+  const handleToggleCollapsed = () => {
+    collapseCtx.setOverride(block.id, !collapsed);
+  };
   const [uncoveredOpen, setUncoveredOpen] = useState(false);
   const { confirm, dialog: confirmDialog } = useConfirm({ scoped: false });
   const blockAnalysis = analysis.blockAnalysis.get(block.id);
@@ -151,7 +160,7 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
+      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed && !headersOnly ? "pb-0" : "pb-2") }>
         <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
@@ -175,7 +184,7 @@ export function ConditionBlock({
           </span>
           <button
             type="button"
-            onClick={() => setCollapsed((c) => !c)}
+            onClick={handleToggleCollapsed}
             aria-label={collapsed ? "Expand condition block" : "Collapse condition block"}
             aria-expanded={!collapsed}
             title={collapsed ? "Expand" : "Collapse"}
@@ -243,7 +252,17 @@ export function ConditionBlock({
         </div>
       </div>
 
-      {collapsed ? null : (
+      {headersOnly ? (
+        <TotalCollapseCtx.Provider
+          value={{ ...collapseCtx, cascadeSeen: new Set<string>() }}
+        >
+          <div className="flex flex-col gap-1">
+            {rows.map((row) => (
+              <Fragment key={row.id}>{renderRowContent(row)}</Fragment>
+            ))}
+          </div>
+        </TotalCollapseCtx.Provider>
+      ) : collapsed ? null : (
         <>
       {blockAnalysis &&
       uncoveredOpen &&
@@ -255,7 +274,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-5 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] p-2 pt-5 [&>*+*]:pt-5">
+      <div className="flex flex-col gap-5 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] px-2 py-5 [&>*+*]:pt-5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
