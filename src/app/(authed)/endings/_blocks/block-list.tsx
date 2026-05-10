@@ -211,7 +211,7 @@ export function BlockList({
         }
       }}
       className={cn(
-        "flex flex-col",
+        "flex flex-col [&>*+*]:-mt-px",
         blocks.length === 0 && isEmptyTarget && "rounded-md ring-2 ring-blue-400"
       )}
     >
@@ -232,6 +232,7 @@ export function BlockList({
             options={addOptions}
             onAdd={(kind) => handleAdd(kind, null)}
             disabled={pending}
+            alwaysVisible
           />
         )
       ) : null}
@@ -364,7 +365,7 @@ function InsertionZone({
     <div className="group/zone relative flex h-10 items-center justify-center">
       <span
         className={cn(
-          "relative inline-flex h-5 items-center transition-opacity",
+          "group/insertbtn relative inline-flex h-5 items-center transition-opacity",
           alwaysVisible
             ? "opacity-100"
             : "opacity-0 group-hover/zone:opacity-100 focus-within:opacity-100"
@@ -375,7 +376,10 @@ function InsertionZone({
           aria-hidden
           tabIndex={-1}
           disabled={disabled}
-          className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground transition-colors hover:border-solid hover:bg-white/10 hover:text-foreground disabled:opacity-50"
+          className={cn(
+            "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/insertbtn:border-solid group-hover/insertbtn:bg-white/10 group-hover/insertbtn:text-foreground disabled:opacity-50",
+            alwaysVisible ? "border-solid" : "border-dashed"
+          )}
         >
           <Plus size={12} aria-hidden />
         </button>

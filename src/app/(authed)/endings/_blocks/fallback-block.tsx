@@ -114,7 +114,7 @@ export function FallbackBlock({
         <span aria-hidden className="invisible w-2.5 shrink-0">
           <GripVertical size={10} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-1">
+        <div className="flex flex-1 flex-col gap-2 py-2">
           <div className="flex items-center gap-2">
             <span
               aria-hidden

@@ -185,7 +185,7 @@ export function OverflowMenu({
   }, []);
   const buttonClass =
     size === "sm"
-      ? "inline-flex h-2.5 w-2.5 items-center justify-center overflow-visible rounded text-muted-foreground transition-colors hover:text-foreground"
+      ? "inline-flex h-4 w-4 items-center justify-center overflow-visible rounded text-muted-foreground transition-colors hover:text-foreground"
       : "inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
   const iconSize = size === "sm" ? 16 : 14;
   return (

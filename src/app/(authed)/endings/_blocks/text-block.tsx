@@ -46,7 +46,7 @@ export function TextBlock({
   }
 
   return (
-    <div ref={ref} className="relative flex flex-col">
+    <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
       <div
         ref={cardRef}
@@ -96,7 +96,7 @@ export function TextBlock({
           }}
           className="flex w-2.5 shrink-0 cursor-grab items-center justify-center overflow-visible text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
         >
-          <GripVertical size={16} />
+          <GripVertical size={14} />
         </span>
         <AutoTextarea
           value={block.text}

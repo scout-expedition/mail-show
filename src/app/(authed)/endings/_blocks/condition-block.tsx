@@ -146,7 +146,7 @@ export function ConditionBlock({
           drag.commit();
         }}
         className={cn(
-          "group/condition relative h-full min-h-full rounded-md border bg-[var(--block-card)] pt-1 px-2 pb-2",
+          "group/condition relative h-full min-h-full rounded-md border bg-[var(--block-card)] p-2",
           "border-[var(--block-border)]",
           isDragging && "opacity-40"
         )}
@@ -255,7 +255,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-4 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] p-2 pt-5">
+      <div className="flex flex-col gap-5 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] p-2 pt-5 [&>*+*]:pt-5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -312,18 +312,22 @@ export function ConditionBlock({
             </ConditionRow>
           );
         })}
-        <div className="flex h-5 justify-center">
-          <button
-            type="button"
-            onClick={handleAddRow}
-            disabled={pending}
-            aria-label="Add row"
-            title="Add row"
-            className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5 disabled:opacity-50"
-          >
-            <Plus size={12} aria-hidden />
-          </button>
-        </div>
+        {declaredVariables.length > 0 ? (
+          <div className="grid grid-cols-[minmax(120px,160px)_1fr_auto] gap-x-0 !pt-0">
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleAddRow}
+                disabled={pending}
+                aria-label="Add row"
+                title="Add row"
+                className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-40 transition-[opacity,colors,border-style] duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground hover:opacity-100 disabled:opacity-50"
+              >
+                <Plus size={12} aria-hidden />
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
         </>
       )}
@@ -385,10 +389,25 @@ function ConditionRow({
       className={cn(
         "group/row relative grid grid-cols-[minmax(120px,160px)_1fr_auto] items-stretch gap-x-0",
         (shadowedByOrdinal != null || fullyOverlapped) &&
-          "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40"
+          "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40",
+        // Reserve vertical space at the top of the row for the
+        // shadow-warning pill so it sits in its own padding strip
+        // instead of overlapping the block in the children column.
+        shadowedByOrdinal != null && "!pt-8"
       )}
     >
-      <div className="group/chips mt-1 flex flex-col gap-2">
+      {shadowedByOrdinal != null ? (
+        <span
+          title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
+          className="absolute right-9 top-1 z-10 inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200"
+        >
+          <AlertTriangle size={10} aria-hidden className="text-amber-200" />
+          <span className="text-[9px] text-amber-200">
+            Overlap with Row {shadowedByOrdinal}
+          </span>
+        </span>
+      ) : null}
+      <div className="group/chips mt-1 flex flex-col gap-2 pb-2">
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -426,16 +445,8 @@ function ConditionRow({
             variableIndex={variableIndex}
             values={values}
             onAdd={onAddChip}
+            alwaysVisible={chips.length === 0}
           />
-        ) : null}
-        {shadowedByOrdinal != null ? (
-          <span
-            title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
-            className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200"
-          >
-            <AlertTriangle size={10} aria-hidden />
-            shadowed by row {shadowedByOrdinal}
-          </span>
         ) : null}
         {overlap ? (
           <OverlapBadge
@@ -446,7 +457,10 @@ function ConditionRow({
         ) : null}
       </div>
       <div className="flex flex-col gap-1 [&>*]:flex-1 [&>*]:min-h-0">{children}</div>
-      <div className="ml-2 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
+      <div
+        data-row-kebab
+        className="ml-0.5 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100"
+      >
         <OverflowMenu
           items={[
             {
@@ -545,10 +559,10 @@ function BlockAnalysisBadge({
       title={
         (open ? "Hide uncovered list" : "Show uncovered list") + partialTitle
       }
-      className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200/80 hover:bg-amber-500/10"
+      className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200 hover:bg-amber-500/10"
     >
-      <AlertTriangle size={10} aria-hidden />
-      <span className="text-[9px]">
+      <AlertTriangle size={10} aria-hidden className="text-amber-200" />
+      <span className="text-[9px] text-amber-200">
         {count}
         {partialSuffix}
       </span>
@@ -598,11 +612,15 @@ function RowChipAdder({
   variableIndex,
   values,
   onAdd,
+  alwaysVisible,
 }: {
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   values: EndingVariableValue[];
   onAdd: (input: AddChipInput) => void;
+  /** When true, the + button is always visible (no hover required).
+   *  Used when the row has zero chips so the affordance is obvious. */
+  alwaysVisible?: boolean;
 }) {
   const declaredVarStates = declaredVariables
     .map((d) => variableIndex.get(d.variable_id))
@@ -654,7 +672,12 @@ function RowChipAdder({
         type="button"
         onClick={() => addDefault(v)}
         aria-label={`Add ${v.name} chip`}
-        className="inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/chips:opacity-100 focus-visible:opacity-100"
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-[opacity,colors,border-style] duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground focus-visible:opacity-100",
+          alwaysVisible
+            ? "opacity-100 border-solid"
+            : "opacity-0 border-dashed group-hover/chips:opacity-100"
+        )}
       >
         <Plus size={12} aria-hidden />
       </button>
@@ -665,12 +688,20 @@ function RowChipAdder({
   // button so clicking it opens the native dropdown. Picking a var
   // immediately seeds a default chip on that variable.
   return (
-    <span className="relative inline-flex h-5 items-center self-center opacity-0 transition-opacity group-hover/chips:opacity-100 focus-within:opacity-100">
+    <span className={cn(
+      "group/chipbtn relative inline-flex h-5 items-center self-center transition-opacity focus-within:opacity-100",
+      alwaysVisible
+        ? "opacity-100"
+        : "opacity-0 group-hover/chips:opacity-100"
+    )}>
       <button
         type="button"
         aria-hidden
         tabIndex={-1}
-        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5"
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/chipbtn:border-solid group-hover/chipbtn:bg-white/10 group-hover/chipbtn:text-foreground",
+          alwaysVisible ? "border-solid" : "border-dashed"
+        )}
       >
         <Plus size={12} aria-hidden />
       </button>
@@ -772,6 +803,9 @@ function HeaderVariableStrip({
         <AddHeaderVariablePicker
           variables={eligible}
           disabled={pending}
+          alwaysVisible={
+            declaredVariables.length === 0 && optimisticVarIds.length === 0
+          }
           onPick={(variable_id) => {
             setOptimisticVarIds((prev) =>
               prev.includes(variable_id) ? prev : [...prev, variable_id]
@@ -801,10 +835,14 @@ function AddHeaderVariablePicker({
   variables,
   disabled,
   onPick,
+  alwaysVisible,
 }: {
   variables: VariableState[];
   disabled: boolean;
   onPick: (variable_id: string) => void;
+  /** When true, the + button is always visible. Used in the empty
+   *  condition-block state so authors immediately see the affordance. */
+  alwaysVisible?: boolean;
 }) {
   const [creatingNew, setCreatingNew] = useState(false);
   if (creatingNew) {
@@ -849,13 +887,21 @@ function AddHeaderVariablePicker({
   ];
 
   return (
-    <span className="relative inline-flex h-5 items-center opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
+    <span className={cn(
+      "group/varbtn relative inline-flex h-5 items-center transition-opacity focus-within:opacity-100",
+      alwaysVisible
+        ? "opacity-100"
+        : "opacity-0 group-hover/header:opacity-100"
+    )}>
       <button
         type="button"
         aria-label="Add variable to this condition block"
         tabIndex={-1}
         disabled={disabled}
-        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground hover:bg-white/5 disabled:opacity-50"
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/varbtn:border-solid group-hover/varbtn:bg-white/10 group-hover/varbtn:text-foreground disabled:opacity-50",
+          alwaysVisible ? "border-solid" : "border-dashed"
+        )}
       >
         <Plus size={12} aria-hidden />
       </button>

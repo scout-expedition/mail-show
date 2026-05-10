@@ -105,6 +105,17 @@ button {
   color: var(--muted-foreground);
 }
 
+/* Endings condition rows: the row kebab uses `group-hover/row` to
+   reveal on row hover, but `:hover` cascades up — so hovering a nested
+   row also marks every ancestor row as hovered, revealing every
+   ancestor row's kebab too. Suppress the outer kebabs when a deeper
+   row is currently hovered, so only the deepest hovered row shows
+   its menu. Hooked via the `[data-row-kebab]` attribute on the row's
+   kebab wrapper. */
+.group\/row:has(.group\/row:hover) > [data-row-kebab] {
+  opacity: 0 !important;
+}
+
 /* Subtle scrollbars. */
 *::-webkit-scrollbar {
   width: 10px;

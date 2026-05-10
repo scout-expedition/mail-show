@@ -147,7 +147,7 @@ export function ResultBlock({
   }
 
   return (
-    <div ref={ref} className="relative flex flex-col">
+    <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
       <div
         ref={cardRef}
@@ -195,11 +195,11 @@ export function ResultBlock({
               );
             }
           }}
-          className="flex w-2.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
+          className="flex w-6 shrink-0 cursor-grab items-start justify-center pt-[17px] text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
         >
-          <GripVertical size={10} />
+          <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-1">
+        <div className="flex flex-1 flex-col gap-2 py-2 pl-2">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
               →
@@ -240,9 +240,8 @@ export function ResultBlock({
             />
           ) : null}
         </div>
-        <div className="flex w-2.5 shrink-0 items-center justify-center">
+        <div className="flex w-6 shrink-0 items-start justify-center pt-[12px]">
           <OverflowMenu
-            size="sm"
             items={[
               {
                 label: "Duplicate Result Block",
