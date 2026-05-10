@@ -45,7 +45,7 @@ export function LogicTabBar<TId extends string>({
               "-mb-px inline-flex h-9 items-center border-b-2 px-3 transition-colors",
               active
                 ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
+                : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-white/[0.04] hover:text-foreground"
             )}
           >
             {t.label}

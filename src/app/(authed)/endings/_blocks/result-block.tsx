@@ -147,7 +147,7 @@ export function ResultBlock({
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative flex flex-col">
       <DropLine active={targetBefore} side="top" />
       <div
         ref={cardRef}
@@ -174,7 +174,7 @@ export function ResultBlock({
           drag.commit();
         }}
         className={cn(
-          "group/resultblock relative flex items-start gap-0.5 rounded-md border border-[var(--block-border)] px-0.5 py-1 transition-colors",
+          "group/resultblock relative flex h-full min-h-full flex-1 items-stretch rounded-md border border-[var(--block-border)] transition-colors",
           isDragging && "opacity-40"
         )}
         style={{ backgroundColor: "var(--block-card)" }}
@@ -195,11 +195,11 @@ export function ResultBlock({
               );
             }
           }}
-          className="mt-1 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
+          className="flex w-2.5 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
         >
-          <GripVertical size={14} />
+          <GripVertical size={10} />
         </span>
-        <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-1 flex-col gap-2 py-1">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
               →
@@ -240,8 +240,9 @@ export function ResultBlock({
             />
           ) : null}
         </div>
-        <div className="mt-1 opacity-0 transition-opacity group-hover/resultblock:opacity-100 focus-within:opacity-100">
+        <div className="flex w-2.5 shrink-0 items-center justify-center">
           <OverflowMenu
+            size="sm"
             items={[
               {
                 label: "Duplicate Result Block",

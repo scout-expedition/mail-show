@@ -249,9 +249,9 @@ export const AGGREGATE_OPTIONS_BY_REF: Record<AggregateRef, string[]> = {
 /** Friendly labels for aggregate operators in the picker / chip UI. */
 export const AGGREGATE_OPERATOR_LABELS: Record<string, string> = {
   "top=": "top is",
-  "top≠": "top is not",
+  "top≠": "top not",
   "bottom=": "bottom is",
-  "bottom≠": "bottom is not",
+  "bottom≠": "bottom not",
   set_includes: "includes",
   set_excludes: "excludes",
 };
@@ -286,9 +286,9 @@ export type EndingLogicKind = (typeof ENDING_LOGIC_KINDS)[number];
 export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
   framework: "Framework",
   framework_selection: "Framework Logic",
-  class_affinity_top: "Tiebreak",
-  nation_affinity_top: "Top",
-  nation_affinity_bottom: "Bottom",
+  class_affinity_top: "Tiebreak Logic",
+  nation_affinity_top: "Top Tiebreak Logic",
+  nation_affinity_bottom: "Bottom Tiebreak Logic",
 };
 
 /** Tab grouping for the Logic page. */

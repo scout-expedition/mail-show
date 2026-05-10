@@ -100,21 +100,21 @@ export function FallbackBlock({
   }
 
   return (
-    <section className="mt-4 grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-dashed border-border bg-muted/20 p-2">
-      <div className="self-start">
+    <section className="mt-4 grid grid-cols-[minmax(120px,160px)_1fr_auto] gap-x-0 rounded-md border border-dashed border-border bg-muted/20 p-2">
+      <div className="self-start pr-3">
         <Label className="mb-1 block text-[11px] uppercase tracking-wide">
           {title ?? "Fallback ending"}
         </Label>
         <p className="text-[11px] text-muted-foreground">{helperText}</p>
       </div>
       <div
-        className="relative flex items-start gap-0.5 rounded-md border border-[var(--block-border)] px-0.5 py-1"
+        className="relative flex items-stretch rounded-md border border-[var(--block-border)]"
         style={{ backgroundColor: "var(--block-card)" }}
       >
-        <span aria-hidden className="invisible mt-1">
-          <GripVertical size={14} />
+        <span aria-hidden className="invisible w-2.5 shrink-0">
+          <GripVertical size={10} />
         </span>
-        <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-1 flex-col gap-2 py-1">
           <div className="flex items-center gap-2">
             <span
               aria-hidden

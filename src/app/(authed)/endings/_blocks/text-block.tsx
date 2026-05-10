@@ -46,7 +46,7 @@ export function TextBlock({
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative flex flex-col">
       <DropLine active={targetBefore} side="top" />
       <div
         ref={cardRef}
@@ -73,7 +73,7 @@ export function TextBlock({
           drag.commit();
         }}
         className={cn(
-          "group/textblock relative flex items-start gap-0.5 rounded-md border border-[var(--block-border)] px-0.5 py-1 transition-colors",
+          "group/textblock relative flex h-full min-h-full flex-1 items-stretch rounded-md border border-[var(--block-border)] transition-colors",
           isDragging && "opacity-40"
         )}
         style={{ backgroundColor: "var(--block-card)" }}
@@ -94,9 +94,9 @@ export function TextBlock({
               );
             }
           }}
-          className="mt-1 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
+          className="flex w-2.5 shrink-0 cursor-grab items-center justify-center overflow-visible text-muted-foreground/40 transition-opacity opacity-0 group-hover/textblock:opacity-100"
         >
-          <GripVertical size={14} />
+          <GripVertical size={16} />
         </span>
         <AutoTextarea
           value={block.text}
@@ -109,11 +109,12 @@ export function TextBlock({
             backgroundColor: "var(--block-result-bg)",
           }}
           className={cn(
-            "flex-1 min-h-[2.25rem] !text-sm border-transparent shadow-none focus:border-border focus-visible:shadow-sm"
+            "my-2 flex-1 min-h-[2.25rem] !text-sm border-transparent shadow-none focus:border-border focus-visible:shadow-sm"
           )}
         />
-        <div className="opacity-0 transition-opacity group-hover/textblock:opacity-100 focus-within:opacity-100">
+        <div className="flex w-2.5 shrink-0 items-center justify-center">
           <OverflowMenu
+            size="sm"
             items={[
               {
                 label: "Duplicate Text Block",

@@ -146,7 +146,7 @@ export function ConditionBlock({
           drag.commit();
         }}
         className={cn(
-          "group/condition relative rounded-md border bg-[var(--block-card)] p-2",
+          "group/condition relative h-full min-h-full rounded-md border bg-[var(--block-card)] pt-1 px-2 pb-2",
           "border-[var(--block-border)]",
           isDragging && "opacity-40"
         )}
@@ -210,7 +210,7 @@ export function ConditionBlock({
               onToggle={() => setUncoveredOpen((v) => !v)}
             />
           ) : null}
-          <div className="opacity-0 transition-opacity group-hover/header:opacity-100 focus-within:opacity-100">
+          <div>
             <OverflowMenu
               items={[
                 {
@@ -255,7 +255,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-3 rounded-md bg-[var(--block-result-bg)] p-2 pt-5">
+      <div className="flex flex-col gap-4 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] p-2 pt-5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -383,12 +383,12 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "group/row relative grid grid-cols-[minmax(120px,160px)_1fr_auto] items-start gap-x-0",
+        "group/row relative grid grid-cols-[minmax(120px,160px)_1fr_auto] items-stretch gap-x-0",
         (shadowedByOrdinal != null || fullyOverlapped) &&
           "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40"
       )}
     >
-      <div className="mt-1 flex flex-col gap-2">
+      <div className="group/chips mt-1 flex flex-col gap-2">
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -445,7 +445,7 @@ function ConditionRow({
           />
         ) : null}
       </div>
-      <div className="flex flex-col gap-1">{children}</div>
+      <div className="flex flex-col gap-1 [&>*]:flex-1 [&>*]:min-h-0">{children}</div>
       <div className="ml-2 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
         <OverflowMenu
           items={[
@@ -654,7 +654,7 @@ function RowChipAdder({
         type="button"
         onClick={() => addDefault(v)}
         aria-label={`Add ${v.name} chip`}
-        className="inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/row:opacity-100 focus-visible:opacity-100"
+        className="inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-0 transition-opacity hover:bg-white/5 group-hover/chips:opacity-100 focus-visible:opacity-100"
       >
         <Plus size={12} aria-hidden />
       </button>
@@ -665,7 +665,7 @@ function RowChipAdder({
   // button so clicking it opens the native dropdown. Picking a var
   // immediately seeds a default chip on that variable.
   return (
-    <span className="relative inline-flex h-5 items-center self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
+    <span className="relative inline-flex h-5 items-center self-center opacity-0 transition-opacity group-hover/chips:opacity-100 focus-within:opacity-100">
       <button
         type="button"
         aria-hidden
