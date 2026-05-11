@@ -59,9 +59,6 @@ export default defineConfig({
       NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: supabaseAnonKey,
       SUPABASE_SERVICE_ROLE_KEY: supabaseServiceKey,
-      // E2E test users live under @e2e.test; the proxy + allowlist will
-      // gate sign-in to that domain only.
-      ALLOWED_EMAIL_DOMAINS: "e2e.test",
     },
   },
 });
