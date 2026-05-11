@@ -30,10 +30,12 @@
   --nation-emberlyn: #d18a2e;
   --nation-spokgrad: #7a7fbf;
   --nation-pelico: #4fb07a;
+}
 
-  /* Endings-redesign block chrome (docs/endings-figma-redesign-plan.md
-     Phase 1). Used by `src/app/(authed)/endings/_blocks/*`; the rest of
-     the app keeps `--card` / `--accent` / `--background`. */
+/* Endings-redesign block chrome (Phase 1 of the endings figma redesign).
+   Kept in its own :root block so the surrounding comment can't include
+   characters that the CSS bundler's comment parser misreads. */
+:root {
   --block-card: #21252b;
   --block-border: #606771;
   --block-result-bg: #000000;

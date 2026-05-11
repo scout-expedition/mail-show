@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -41,7 +41,7 @@ import {
 } from "../_shared/document-actions";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
-import { TotalCollapseCtx, useCollapseCtx } from "../_shared/lib/total-collapse";
+import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import {
   ChipPill,
   VariableChip,
@@ -93,7 +93,6 @@ export function ConditionBlock({
   const override = collapseCtx.overrides.get(block.id);
   const panelCollapsed = collapseMode !== "expanded";
   const collapsed = override ?? panelCollapsed;
-  const headersOnly = collapseMode === "headers" && override === undefined;
   const handleToggleCollapsed = () => {
     collapseCtx.setOverride(block.id, !collapsed);
   };
@@ -160,7 +159,7 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed && !headersOnly ? "pb-0" : "pb-2") }>
+      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
         <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
@@ -252,17 +251,7 @@ export function ConditionBlock({
         </div>
       </div>
 
-      {headersOnly ? (
-        <TotalCollapseCtx.Provider
-          value={{ ...collapseCtx, cascadeSeen: new Set<string>() }}
-        >
-          <div className="flex flex-col gap-1">
-            {rows.map((row) => (
-              <Fragment key={row.id}>{renderRowContent(row)}</Fragment>
-            ))}
-          </div>
-        </TotalCollapseCtx.Provider>
-      ) : collapsed ? null : (
+      {collapsed ? null : (
         <>
       {blockAnalysis &&
       uncoveredOpen &&

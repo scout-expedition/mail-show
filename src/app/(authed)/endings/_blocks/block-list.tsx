@@ -15,10 +15,6 @@ import { parentKey } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { addBlock, deleteBlock } from "../_shared/document-actions";
 import { useDrag } from "../_shared/lib/drag";
-import {
-  declaredVariableFingerprint,
-  useCollapseCtx,
-} from "../_shared/lib/total-collapse";
 import { ConditionBlock } from "./condition-block";
 
 type BlockKind = "text" | "result" | "condition";
@@ -100,51 +96,8 @@ export function BlockList({
   rowContext?: boolean;
 }) {
   const drag = useDrag();
-  const collapseCtx = useCollapseCtx();
-  const collapseMode = collapseCtx.mode;
-  const collapseDirty = collapseCtx.overrides.size > 0;
-  const allBlocks =
+  const blocks =
     byParent.get(parentKey(parent.parent_block_id, parent.parent_row_id)) ?? [];
-  // Pure headers mode: every condition block collapses to its header,
-  // sibling text / result blocks hide, and condition blocks across rows
-  // that declare the same variables dedup to one visible header. As soon
-  // as the panel is "dirty" (any per-block override exists) we drop the
-  // dedup + filter — text blocks reappear so the user can see prose
-  // alongside the structure they're editing.
-  const headersFilterActive = collapseMode === "headers" && !collapseDirty;
-  const cascadeSeen = collapseCtx.cascadeSeen;
-  // Top-level (root) text blocks stay visible in headers mode — they
-  // aren't collapsible yet, so hiding them would lose the doc's prose
-  // entirely. Nested rows still hide text blocks because the cascade
-  // there reads as a structural outline.
-  const isRoot =
-    parent.parent_block_id == null && parent.parent_row_id == null;
-  const blocks = headersFilterActive
-    ? (() => {
-        // Dedup spans the whole cascade of a single ConditionBlock's
-        // headers view (Set provided via context, mutated as siblings
-        // render). Outside a cascade — e.g. the document root — we
-        // dedup locally instead. Blocks with no declared variables
-        // share the empty fingerprint but aren't visually duplicate
-        // headers, so they always pass through.
-        const seen = cascadeSeen ?? new Set<string>();
-        const out: BlockState[] = [];
-        for (const b of allBlocks) {
-          if (b.block_type === "text" && isRoot) {
-            out.push(b);
-            continue;
-          }
-          if (b.block_type !== "condition") continue;
-          const fp = declaredVariableFingerprint(
-            (declaredByBlock.get(b.id) ?? []).map((d) => d.variable_id)
-          );
-          if (fp !== "" && seen.has(fp)) continue;
-          if (fp !== "") seen.add(fp);
-          out.push(b);
-        }
-        return out;
-      })()
-    : allBlocks;
   const [pending, startTransition] = useTransition();
 
   function handleAdd(kind: BlockKind, beforeBlockId: string | null) {
@@ -274,7 +227,7 @@ export function BlockList({
           >
             (no blocks)
           </p>
-        ) : disableInsertion || headersFilterActive ? null : (
+        ) : disableInsertion ? null : (
           <InsertionZone
             options={addOptions}
             onAdd={(kind) => handleAdd(kind, null)}
@@ -362,7 +315,7 @@ export function BlockList({
                 chip-empty rows (children won't ever fire), and inside
                 row context once at least one block is already
                 present (only the trailing zone remains useful). */}
-            {!hasResultBlock && !disableInsertion && !rowContext && !headersFilterActive ? (
+            {!hasResultBlock && !disableInsertion && !rowContext ? (
               <InsertionZone
                 options={addOptions}
                 onAdd={(kind) => handleAdd(kind, b.id)}
@@ -374,7 +327,7 @@ export function BlockList({
         );
       })}
 
-      {hasResultBlock || disableInsertion || headersFilterActive ? null : blocks.length > 0 ? (
+      {hasResultBlock || disableInsertion ? null : blocks.length > 0 ? (
         <InsertionZone
           options={addOptions}
           onAdd={(kind) => handleAdd(kind, null)}

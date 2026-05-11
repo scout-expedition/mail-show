@@ -23,13 +23,7 @@ import {
   useTransition,
   type ReactNode,
 } from "react";
-import {
-  ChevronsDownUp,
-  ChevronsUpDown,
-  Eye,
-  ListCollapse,
-  Trash2,
-} from "lucide-react";
+import { ChevronsDownUp, ChevronsUpDown, Eye, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -267,7 +261,7 @@ export function DocumentEditor({
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(collapseModeStorageKey);
-      if (raw === "headers" || raw === "all") setCollapseModeState(raw);
+      if (raw === "all") setCollapseModeState("all");
       else setCollapseModeState("expanded");
     } catch {
       // localStorage unavailable — keep default (expanded).
@@ -1033,7 +1027,6 @@ function CollapseModeToggleGroup({
     icon: React.ReactNode;
   }[] = [
     { id: "expanded", label: "Expand all", icon: <ChevronsUpDown size={14} aria-hidden /> },
-    { id: "headers", label: "Collapse to headers", icon: <ListCollapse size={14} aria-hidden /> },
     { id: "all", label: "Collapse all", icon: <ChevronsDownUp size={14} aria-hidden /> },
   ];
   return (

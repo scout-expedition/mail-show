@@ -3,20 +3,21 @@
 import { createContext, useContext } from "react";
 
 /**
- * Panel-level collapse mode. Three states:
+ * Panel-level collapse mode. Two states:
  *   - "expanded": every block fully visible.
- *   - "headers":  every condition block displays as collapsed, but
- *                 descendant condition block headers cascade through
- *                 (rows + chips + prose hidden, nested headers shown).
  *   - "all":      every condition block fully collapsed; nothing inside
  *                 a block renders.
  *
  * The user can also toggle a single block's chevron to override the
- * panel mode for that one block. When any override is set, none of the
- * three mode buttons read as "active" — clicking any of them clears
- * every override and resets the mode.
+ * panel mode for that one block. When any override is set, neither
+ * mode button reads as "active" — clicking either of them clears every
+ * override and resets the mode.
+ *
+ * The "collapse to headers" intermediate mode was prototyped on this
+ * branch and reverted; see the followup issue for the design + impl
+ * plan we want to revisit later.
  */
-export type CollapseMode = "expanded" | "headers" | "all";
+export type CollapseMode = "expanded" | "all";
 
 export interface CollapseContext {
   mode: CollapseMode;
@@ -24,30 +25,16 @@ export interface CollapseContext {
    *  has overridden the panel mode for that block. */
   overrides: Map<string, boolean>;
   setOverride: (blockId: string, collapsed: boolean) => void;
-  /** Mutable dedup set used during a ConditionBlock's headers cascade.
-   *  Each ConditionBlock entering headers-only rendering swaps in a
-   *  fresh set so dedup spans every row inside that block but doesn't
-   *  leak across siblings. `null` outside a cascade. */
-  cascadeSeen: Set<string> | null;
 }
 
 const NOOP_CTX: CollapseContext = {
   mode: "expanded",
   overrides: new Map(),
   setOverride: () => {},
-  cascadeSeen: null,
 };
 
 export const TotalCollapseCtx = createContext<CollapseContext>(NOOP_CTX);
 
 export function useCollapseCtx(): CollapseContext {
   return useContext(TotalCollapseCtx);
-}
-
-/** Fingerprint of a block's declared variable list — used to dedup
- *  siblings in headers view that read identically. */
-export function declaredVariableFingerprint(
-  variableIds: string[]
-): string {
-  return [...variableIds].sort().join("|");
 }
