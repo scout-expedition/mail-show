@@ -127,7 +127,10 @@ function buildFallbackProp(
       helperText:
         "If nothing above resolves a tied nation, return this winner.",
       emptyLabel: "— pick a nation —",
-      title: "Tiebreak Fallback",
+      title:
+        kind === "nation_affinity_top"
+          ? "Top Tiebreak Fallback"
+          : "Bottom Tiebreak Fallback",
     };
   }
   return undefined;

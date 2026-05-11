@@ -34,8 +34,13 @@ export const AFFINITY_NUMBER_REFS = new Set<string>([
  * ref rather than borrowing from a single underlying column — the chip
  * represents the *competition* across columns, not any one of them.
  */
+// Aggregate header chips (Class Affinity / Nation Affinity / Tiebreak
+// Set) all read as the same kind of "aggregate-of-multiple-columns"
+// concept, so they share a neutral gray hue rather than fighting each
+// other for distinct color slots.
+const AGGREGATE_CHIP_GRAY = "#9ca3af"; // gray-400
 export const AGGREGATE_CHIP_COLORS: Record<string, string> = {
-  class_affinity: "#f59e0b", // amber-500 — ties to the class-axis hue
-  nation_affinity: "#10b981", // emerald-500 — distinct from any nation color
-  nation_tiebreak_set: "#a855f7", // purple-500 — set-membership concept, distinct from scoring
+  class_affinity: AGGREGATE_CHIP_GRAY,
+  nation_affinity: AGGREGATE_CHIP_GRAY,
+  nation_tiebreak_set: AGGREGATE_CHIP_GRAY,
 };

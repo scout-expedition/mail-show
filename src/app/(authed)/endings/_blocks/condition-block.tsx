@@ -1,15 +1,19 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
-  ChevronLeft,
+  ChevronRight,
+  Copy,
   GripVertical,
   Plus,
   Trash2,
   X,
 } from "lucide-react";
+import { IconArrowsSplit2 } from "@tabler/icons-react";
+import { OverflowMenu } from "@/components/panel";
+import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type {
   BlockState,
@@ -18,9 +22,11 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
-import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
+import {
+  AGGREGATE_OPTIONS_BY_REF,
+  type EndingChipOperator,
+} from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
-import { paletteColor } from "@/lib/endings/color-palette";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableValue } from "@/lib/db/types";
 import {
@@ -29,13 +35,16 @@ import {
   addRow,
   deleteChip,
   deleteRow,
+  duplicateBlock,
+  duplicateRow,
   removeBlockVariable,
 } from "../_shared/document-actions";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
+import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import {
-  ChipPickerForm,
   ChipPill,
+  VariableChip,
   type AddChipInput,
 } from "./chip";
 import { DropLine } from "./text-block";
@@ -55,6 +64,7 @@ export function ConditionBlock({
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
+  getRowBlockCount,
 }: {
   block: BlockState;
   rows: RowState[];
@@ -67,15 +77,27 @@ export function ConditionBlock({
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
   renderRowContent: (row: RowState) => React.ReactNode;
+  /** Number of blocks under each row's children area. Used to close
+   *  off the row's chip pills with a right border when the row has
+   *  no child blocks. */
+  getRowBlockCount?: (rowId: string) => number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
   const analysis = useAnalysis();
+  const collapseCtx = useCollapseCtx();
+  const collapseMode = collapseCtx.mode;
   const isDragging = drag.dragId === block.id;
   const [pending, startTransition] = useTransition();
-  const [collapsed, setCollapsed] = useState(false);
+  const override = collapseCtx.overrides.get(block.id);
+  const panelCollapsed = collapseMode !== "expanded";
+  const collapsed = override ?? panelCollapsed;
+  const handleToggleCollapsed = () => {
+    collapseCtx.setOverride(block.id, !collapsed);
+  };
   const [uncoveredOpen, setUncoveredOpen] = useState(false);
+  const { confirm, dialog: confirmDialog } = useConfirm({ scoped: false });
   const blockAnalysis = analysis.blockAnalysis.get(block.id);
   const targetBefore =
     drag.target?.kind === "near" &&
@@ -132,12 +154,13 @@ export function ConditionBlock({
           drag.commit();
         }}
         className={cn(
-          "group/condition relative rounded-md border border-border bg-muted/20 p-2",
+          "group/condition relative h-full min-h-full rounded-md border bg-[var(--block-card)] p-2",
+          "border-[var(--block-border)]",
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("flex items-center justify-between gap-2 px-1", collapsed ? "pb-0" : "pb-2") }>
-        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
+        <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
             draggable
@@ -154,31 +177,38 @@ export function ConditionBlock({
                 );
               }
             }}
-            className="cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/condition:opacity-100"
+            className="-ml-1 -mr-0.5 cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover/header:opacity-100"
           >
-            <GripVertical size={12} />
+            <GripVertical size={14} />
           </span>
           <button
             type="button"
-            onClick={() => setCollapsed((c) => !c)}
+            onClick={handleToggleCollapsed}
             aria-label={collapsed ? "Expand condition block" : "Collapse condition block"}
             aria-expanded={!collapsed}
             title={collapsed ? "Expand" : "Collapse"}
-            className="inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent/40 hover:text-foreground"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 hover:bg-accent/40 hover:text-foreground"
           >
             {collapsed ? (
-              <ChevronLeft size={12} aria-hidden />
+              <ChevronRight size={14} aria-hidden />
             ) : (
-              <ChevronDown size={12} aria-hidden />
+              <ChevronDown size={14} aria-hidden />
             )}
           </button>
-          Condition · {rows.length} {rows.length === 1 ? "row" : "rows"}
+          <IconArrowsSplit2
+            size={14}
+            aria-label={`Condition block with ${rows.length} ${rows.length === 1 ? "row" : "rows"}`}
+            className="text-muted-foreground/70"
+          />
           <HeaderVariableStrip
             blockId={block.id}
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}
             variables={variables}
+            confirm={confirm}
           />
+        </div>
+        <div className="flex items-center gap-2">
           {blockAnalysis ? (
             <BlockAnalysisBadge
               analysis={blockAnalysis}
@@ -188,16 +218,37 @@ export function ConditionBlock({
               onToggle={() => setUncoveredOpen((v) => !v)}
             />
           ) : null}
+          <div>
+            <OverflowMenu
+              items={[
+                {
+                  label: "Duplicate Condition Block",
+                  icon: <Copy size={10} aria-hidden />,
+                  onClick: () => {
+                    startTransition(async () => {
+                      await duplicateBlock({ id: block.id });
+                    });
+                  },
+                },
+                {
+                  label: "Delete Condition Block",
+                  intent: "destructive",
+                  icon: <Trash2 size={10} aria-hidden />,
+                  onClick: async () => {
+                    const ok = await confirm({
+                      title: "Delete condition block?",
+                      message:
+                        "This removes the block and every row, chip, and child block inside it. This can't be undone.",
+                      confirmLabel: "Delete",
+                      intent: "destructive",
+                    });
+                    if (ok) onDeleteBlock();
+                  },
+                },
+              ]}
+            />
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={onDeleteBlock}
-          aria-label="Delete condition block"
-          title="Delete condition block"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive group-hover/condition:opacity-100"
-        >
-          <Trash2 size={11} aria-hidden />
-        </button>
       </div>
 
       {collapsed ? null : (
@@ -212,7 +263,7 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-5 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] px-2 py-5 [&>*+*]:pt-5">
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -258,27 +309,39 @@ export function ConditionBlock({
                   await deleteRow(fd);
                 })
               }
+              onDuplicateRow={() =>
+                startTransition(async () => {
+                  await duplicateRow({ id: row.id });
+                })
+              }
+              closeChips={(getRowBlockCount?.(row.id) ?? 1) === 0}
             >
               {renderRowContent(row)}
             </ConditionRow>
           );
         })}
-      </div>
-
-      <div className="mt-2 flex justify-center">
-        <button
-          type="button"
-          onClick={handleAddRow}
-          disabled={pending}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/40"
-        >
-          <Plus size={11} aria-hidden /> row
-        </button>
+        {declaredVariables.length > 0 ? (
+          <div className="grid grid-cols-[minmax(120px,160px)_1fr_auto] gap-x-0 !pt-0">
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleAddRow}
+                disabled={pending}
+                aria-label="Add row"
+                title="Add row"
+                className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-[var(--block-border)] text-muted-foreground opacity-40 transition-[opacity,colors,border-style] duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground hover:opacity-100 disabled:opacity-50"
+              >
+                <Plus size={12} aria-hidden />
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
         </>
       )}
       </div>
       <DropLine active={targetAfter} side="bottom" />
+      {confirmDialog}
     </div>
   );
 }
@@ -296,6 +359,8 @@ function ConditionRow({
   onRemoveChip,
   onChangeChip,
   onRemoveRow,
+  onDuplicateRow,
+  closeChips,
   children,
 }: {
   chips: ChipState[];
@@ -310,8 +375,11 @@ function ConditionRow({
   onRemoveChip: (chipId: string) => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   onRemoveRow: () => void;
+  onDuplicateRow: () => void;
+  closeChips?: boolean;
   children: React.ReactNode;
 }) {
+  const { confirm: confirmRow, dialog: rowDialog } = useConfirm();
   const fullyOverlapped = overlap?.fullShadow ?? false;
   // Render the row's chips grouped by declared variable order, then any
   // orphan chips (chips on a variable not in the header — shouldn't
@@ -327,12 +395,27 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "grid grid-cols-[minmax(160px,260px)_1fr_auto] gap-2 rounded-md border border-border/60 bg-card/40 p-2",
+        "group/row relative grid grid-cols-[minmax(120px,160px)_1fr_auto] items-stretch gap-x-0",
         (shadowedByOrdinal != null || fullyOverlapped) &&
-          "border-amber-500/50 bg-amber-500/5"
+          "rounded-md bg-amber-500/5 p-1 ring-1 ring-amber-500/40",
+        // Reserve vertical space at the top of the row for the
+        // shadow-warning pill so it sits in its own padding strip
+        // instead of overlapping the block in the children column.
+        shadowedByOrdinal != null && "!pt-8"
       )}
     >
-      <div className="flex flex-wrap items-start gap-1 self-start">
+      {shadowedByOrdinal != null ? (
+        <span
+          title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
+          className="absolute right-9 top-1 z-10 inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200"
+        >
+          <AlertTriangle size={10} aria-hidden className="text-amber-200" />
+          <span className="text-[9px] text-amber-200">
+            Overlap with Row {shadowedByOrdinal}
+          </span>
+        </span>
+      ) : null}
+      <div className="group/chips mt-1 flex flex-col gap-2 pb-2">
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -347,6 +430,7 @@ function ConditionRow({
                 compact
                 onChange={(patch) => onChangeChip(chip.id, patch)}
                 onRemove={() => onRemoveChip(chip.id)}
+                closeRight={closeChips}
               />
             ));
           })
@@ -360,6 +444,7 @@ function ConditionRow({
             values={values}
             onChange={(patch) => onChangeChip(chip.id, patch)}
             onRemove={() => onRemoveChip(chip.id)}
+            closeRight={closeChips}
           />
         ))}
         {declaredVariables.length > 0 ? (
@@ -368,16 +453,8 @@ function ConditionRow({
             variableIndex={variableIndex}
             values={values}
             onAdd={onAddChip}
+            alwaysVisible={chips.length === 0}
           />
-        ) : null}
-        {shadowedByOrdinal != null ? (
-          <span
-            title={`This row's chips are fully covered by row ${shadowedByOrdinal}, so first-match-wins means it can never fire.`}
-            className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200"
-          >
-            <AlertTriangle size={10} aria-hidden />
-            shadowed by row {shadowedByOrdinal}
-          </span>
         ) : null}
         {overlap ? (
           <OverlapBadge
@@ -387,16 +464,37 @@ function ConditionRow({
           />
         ) : null}
       </div>
-      <div className="flex flex-col gap-1">{children}</div>
-      <button
-        type="button"
-        onClick={onRemoveRow}
-        aria-label="Delete row"
-        title="Delete row"
-        className="self-start text-muted-foreground/60 hover:text-destructive"
+      <div className="flex flex-col gap-1 [&>*]:flex-1 [&>*]:min-h-0">{children}</div>
+      <div
+        data-row-kebab
+        className="ml-0.5 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100"
       >
-        <Trash2 size={11} aria-hidden />
-      </button>
+        <OverflowMenu
+          items={[
+            {
+              label: "Duplicate Row",
+              icon: <Copy size={10} aria-hidden />,
+              onClick: () => onDuplicateRow(),
+            },
+            {
+              label: "Delete Row",
+              intent: "destructive",
+              icon: <Trash2 size={10} aria-hidden />,
+              onClick: async () => {
+                const ok = await confirmRow({
+                  title: "Delete row?",
+                  message:
+                    "This removes the row, every chip on it, and every block under it. This can't be undone.",
+                  confirmLabel: "Delete",
+                  intent: "destructive",
+                });
+                if (ok) onRemoveRow();
+              },
+            },
+          ]}
+        />
+      </div>
+      {rowDialog}
     </div>
   );
 }
@@ -469,11 +567,13 @@ function BlockAnalysisBadge({
       title={
         (open ? "Hide uncovered list" : "Show uncovered list") + partialTitle
       }
-      className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-amber-200 hover:bg-amber-500/20"
+      className="inline-flex h-5 items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] text-amber-200 hover:bg-amber-500/10"
     >
-      <AlertTriangle size={10} aria-hidden />
-      {count}
-      {partialSuffix} {count === 1 ? "assignment" : "assignments"} uncovered
+      <AlertTriangle size={10} aria-hidden className="text-amber-200" />
+      <span className="text-[9px] text-amber-200">
+        {count}
+        {partialSuffix}
+      </span>
     </button>
   );
 }
@@ -520,90 +620,119 @@ function RowChipAdder({
   variableIndex,
   values,
   onAdd,
+  alwaysVisible,
 }: {
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   values: EndingVariableValue[];
   onAdd: (input: AddChipInput) => void;
+  /** When true, the + button is always visible (no hover required).
+   *  Used when the row has zero chips so the affordance is obvious. */
+  alwaysVisible?: boolean;
 }) {
-  const [step, setStep] = useState<"closed" | "choose" | "fill">("closed");
-  const [pickedVar, setPickedVar] = useState<VariableState | null>(null);
   const declaredVarStates = declaredVariables
     .map((d) => variableIndex.get(d.variable_id))
     .filter((v): v is VariableState => Boolean(v));
   if (declaredVarStates.length === 0) return null;
 
-  function reset() {
-    setStep("closed");
-    setPickedVar(null);
+  // Add a chip directly — no intermediate fill form. Operator picks
+  // the kind/aref-appropriate default; values seed from the variable's
+  // default (or first available) so the server's value-shape CHECK
+  // passes on first save.
+  function addDefault(variable: VariableState) {
+    const operator: EndingChipOperator =
+      variable.kind === "aggregate_ref"
+        ? variable.aggregate_ref === "nation_tiebreak_set"
+          ? "set_includes"
+          : "top="
+        : "=";
+    const aggregateValue =
+      variable.kind === "aggregate_ref" && variable.aggregate_ref
+        ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? null
+        : null;
+    let textValueId: string | null = null;
+    if (variable.kind === "text") {
+      const fallback =
+        variable.default_value_id ??
+        values.find((v) => v.variable_id === variable.id)?.id ??
+        null;
+      if (!fallback) {
+        // No values on this variable yet — bail out gracefully. The
+        // user needs to create a value via the variables page (or via
+        // "+ New value…" once a chip exists) first.
+        return;
+      }
+      textValueId = fallback;
+    }
+    onAdd({
+      variable_id: variable.id,
+      operator,
+      text_value_id: textValueId,
+      number_value: variable.kind === "number_ref" ? 0 : null,
+      aggregate_value: aggregateValue,
+    });
   }
 
-  if (step === "closed") {
-    const onlyOne =
-      declaredVarStates.length === 1 ? declaredVarStates[0] : null;
+  if (declaredVarStates.length === 1) {
+    const v = declaredVarStates[0];
     return (
       <button
         type="button"
-        onClick={() => {
-          if (onlyOne) {
-            setPickedVar(onlyOne);
-            setStep("fill");
-          } else {
-            setStep("choose");
-          }
-        }}
-        aria-label={onlyOne ? `Add ${onlyOne.name} chip` : "Add chip"}
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-dashed border-border text-[11px] leading-none text-muted-foreground hover:bg-accent/40"
+        onClick={() => addDefault(v)}
+        aria-label={`Add ${v.name} chip`}
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center self-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-[opacity,colors,border-style] duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground focus-visible:opacity-100",
+          alwaysVisible
+            ? "opacity-100 border-solid"
+            : "opacity-0 border-dashed group-hover/chips:opacity-100"
+        )}
       >
-        +
+        <Plus size={12} aria-hidden />
       </button>
     );
   }
 
-  if (step === "choose") {
-    return (
-      <span className="inline-flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 px-1 py-0.5 text-[11px]">
-        {declaredVarStates.map((v) => (
-          <button
-            key={v.id}
-            type="button"
-            onClick={() => {
-              setPickedVar(v);
-              setStep("fill");
-            }}
-            aria-label={`Add ${v.name} chip`}
-            className="rounded-full border border-border/60 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest hover:bg-accent/40"
-          >
-            {v.name}
-          </button>
-        ))}
-        <button
-          type="button"
-          onClick={reset}
-          aria-label="Cancel"
-          className="px-1 opacity-60 hover:opacity-100"
-        >
-          <X size={10} aria-hidden />
-        </button>
-      </span>
-    );
-  }
-
-  // fill
-  if (!pickedVar) {
-    reset();
-    return null;
-  }
+  // 2+ declared variables — invisible <select> overlay on the +
+  // button so clicking it opens the native dropdown. Picking a var
+  // immediately seeds a default chip on that variable.
   return (
-    <ChipPickerForm
-      pinnedVariable={pickedVar}
-      values={values}
-      onConfirm={(input) => {
-        onAdd(input);
-        reset();
-      }}
-      onCancel={reset}
-    />
+    <span className={cn(
+      "group/chipbtn relative inline-flex h-5 items-center self-center transition-opacity focus-within:opacity-100",
+      alwaysVisible
+        ? "opacity-100"
+        : "opacity-0 group-hover/chips:opacity-100"
+    )}>
+      <button
+        type="button"
+        aria-hidden
+        tabIndex={-1}
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/chipbtn:border-solid group-hover/chipbtn:bg-white/10 group-hover/chipbtn:text-foreground",
+          alwaysVisible ? "border-solid" : "border-dashed"
+        )}
+      >
+        <Plus size={12} aria-hidden />
+      </button>
+      <select
+        aria-label="Add chip — pick a variable"
+        defaultValue=""
+        onChange={(e) => {
+          const v = declaredVarStates.find((dv) => dv.id === e.target.value);
+          if (v) addDefault(v);
+          e.currentTarget.value = "";
+        }}
+        className="absolute inset-0 cursor-pointer opacity-0"
+      >
+        <option value="" disabled>
+          variable…
+        </option>
+        {declaredVarStates.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }
 
@@ -617,139 +746,122 @@ function HeaderVariableStrip({
   declaredVariables,
   variableIndex,
   variables,
+  confirm,
 }: {
   blockId: string;
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
+  confirm: ReturnType<typeof useConfirm>["confirm"];
 }) {
   const [pending, startTransition] = useTransition();
+  // Optimistic shadow of just-added variables — keeps the chip on screen
+  // while the addBlockVariable server action runs and revalidatePath
+  // ripples back. Pruned automatically once the prop's
+  // declaredVariables catches up.
+  const [optimisticVarIds, setOptimisticVarIds] = useState<string[]>([]);
   const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
-  const eligible = variables.filter((v) => !declaredIds.has(v.id));
+  useEffect(() => {
+    setOptimisticVarIds((prev) =>
+      prev.filter((id) => !declaredIds.has(id))
+    );
+    // declaredIds is derived from declaredVariables on every render; depend
+    // on declaredVariables (stable identity from the parent reducer)
+    // rather than recomputing the Set in the dep list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [declaredVariables]);
+  const eligible = variables.filter(
+    (v) => !declaredIds.has(v.id) && !optimisticVarIds.includes(v.id)
+  );
 
   return (
-    <span className="ml-1 inline-flex flex-wrap items-center gap-1">
+    <span className="ml-1 inline-flex flex-wrap items-center gap-2">
       {declaredVariables.map((dv) => {
         const v = variableIndex.get(dv.variable_id);
         if (!v) return null;
         return (
-          <HeaderVariableChip
+          <VariableChip
             key={dv.id}
-            blockVariableId={dv.id}
             variable={v}
             disabled={pending}
-            onRemove={() =>
+            onRemove={async () => {
+              const ok = await confirm({
+                title: `Remove ${v.name} from this condition block?`,
+                message:
+                  "This also removes every chip on the block's rows that referenced this variable.",
+                confirmLabel: "Remove",
+                intent: "destructive",
+              });
+              if (!ok) return;
               startTransition(async () => {
                 const fd = new FormData();
                 fd.set("id", dv.id);
                 await removeBlockVariable(fd);
-              })
-            }
+              });
+            }}
           />
         );
+      })}
+      {optimisticVarIds.map((vid) => {
+        const v = variableIndex.get(vid);
+        if (!v) return null;
+        return <VariableChip key={`optimistic-${vid}`} variable={v} disabled />;
       })}
       {eligible.length > 0 ? (
         <AddHeaderVariablePicker
           variables={eligible}
           disabled={pending}
-          onPick={(variable_id) =>
-            startTransition(async () => {
-              await addBlockVariable({
-                block_id: blockId,
-                variable_id,
-              });
-            })
+          alwaysVisible={
+            declaredVariables.length === 0 && optimisticVarIds.length === 0
           }
+          onPick={(variable_id) => {
+            setOptimisticVarIds((prev) =>
+              prev.includes(variable_id) ? prev : [...prev, variable_id]
+            );
+            startTransition(async () => {
+              try {
+                await addBlockVariable({
+                  block_id: blockId,
+                  variable_id,
+                });
+              } catch (err) {
+                // Roll back the optimistic chip if the server rejected it.
+                setOptimisticVarIds((prev) =>
+                  prev.filter((id) => id !== variable_id)
+                );
+                throw err;
+              }
+            });
+          }}
         />
       ) : null}
     </span>
   );
 }
 
-function HeaderVariableChip({
-  blockVariableId,
-  variable,
-  disabled,
-  onRemove,
-}: {
-  blockVariableId: string;
-  variable: VariableState;
-  disabled: boolean;
-  onRemove: () => void;
-}) {
-  void blockVariableId;
-  return (
-    <span
-      className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest"
-      style={{
-        borderColor: headerChipColor(variable),
-        color: headerChipColor(variable),
-        backgroundColor: `${headerChipColor(variable)}1a`,
-      }}
-    >
-      {variable.name}
-      <button
-        type="button"
-        onClick={onRemove}
-        disabled={disabled}
-        aria-label={`Remove ${variable.name} from this condition block`}
-        className="opacity-60 hover:opacity-100 disabled:opacity-30"
-      >
-        <X size={10} aria-hidden />
-      </button>
-    </span>
-  );
-}
-
-function headerChipColor(variable: VariableState): string {
-  // Aggregate variables don't pick a color of their own — their chips
-  // resolve to the underlying class/nation color once the value is
-  // committed. Render the header pill white so the header reads as
-  // "this block branches on Class Affinity" without committing to a
-  // specific palette slot.
-  if (variable.kind === "aggregate_ref") return "#ffffff";
-  // Otherwise: same rule as ChipPill — nation/impact override first,
-  // palette fallback. Keeps the header chips visually identical to the
-  // row chips for text + number_ref variables.
-  return variable.color_hex ?? paletteColor(variable.color_index);
-}
-
 function AddHeaderVariablePicker({
   variables,
   disabled,
   onPick,
+  alwaysVisible,
 }: {
   variables: VariableState[];
   disabled: boolean;
   onPick: (variable_id: string) => void;
+  /** When true, the + button is always visible. Used in the empty
+   *  condition-block state so authors immediately see the affordance. */
+  alwaysVisible?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const [creatingNew, setCreatingNew] = useState(false);
   if (creatingNew) {
     return (
       <InlineCreateVariableForm
         onCreated={({ variableId }) => {
           setCreatingNew(false);
-          setOpen(false);
           onPick(variableId);
         }}
-        onCancel={() => {
-          setCreatingNew(false);
-          setOpen(false);
-        }}
+        onCancel={() => setCreatingNew(false)}
       />
-    );
-  }
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        disabled={disabled}
-        className="inline-flex items-center rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground hover:bg-accent/40 disabled:opacity-50"
-      >
-        + var
-      </button>
     );
   }
 
@@ -783,11 +895,28 @@ function AddHeaderVariablePicker({
   ];
 
   return (
+    <span className={cn(
+      "group/varbtn relative inline-flex h-5 items-center transition-opacity focus-within:opacity-100",
+      alwaysVisible
+        ? "opacity-100"
+        : "opacity-0 group-hover/header:opacity-100"
+    )}>
+      <button
+        type="button"
+        aria-label="Add variable to this condition block"
+        tabIndex={-1}
+        disabled={disabled}
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/varbtn:border-solid group-hover/varbtn:bg-white/10 group-hover/varbtn:text-foreground disabled:opacity-50",
+          alwaysVisible ? "border-solid" : "border-dashed"
+        )}
+      >
+        <Plus size={12} aria-hidden />
+      </button>
     <select
-      autoFocus
+      aria-label="Add variable to this condition block"
       defaultValue=""
       disabled={disabled}
-      onBlur={() => setOpen(false)}
       onChange={(e) => {
         const id = e.target.value;
         if (id === CREATE_VARIABLE_SENTINEL) {
@@ -795,20 +924,19 @@ function AddHeaderVariablePicker({
           return;
         }
         if (id) onPick(id);
-        setOpen(false);
+        e.currentTarget.value = "";
       }}
-      className="h-6 rounded-md border border-border bg-background px-1 text-[10px] font-mono"
+      className="absolute inset-0 cursor-pointer opacity-0"
     >
       <option value="">variable…</option>
-      {textVariables.length > 0 ? (
-        <optgroup label="Ending Variables">
-          {textVariables.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.name}
-            </option>
-          ))}
-        </optgroup>
-      ) : null}
+      <optgroup label="Ending Variables">
+        {textVariables.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}
+          </option>
+        ))}
+        <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
+      </optgroup>
       {numberRefGroups.map((group) => {
         const opts = group.columns
           .map((col) => numberVariablesByRef.get(col))
@@ -837,8 +965,8 @@ function AddHeaderVariablePicker({
           })}
         </optgroup>
       ) : null}
-      <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
     </select>
+    </span>
   );
 }
 

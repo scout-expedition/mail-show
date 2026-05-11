@@ -32,6 +32,17 @@
   --nation-pelico: #4fb07a;
 }
 
+/* Endings-redesign block chrome (Phase 1 of the endings figma redesign).
+   Kept in its own :root block so the surrounding comment can't include
+   characters that the CSS bundler's comment parser misreads. */
+:root {
+  --block-card: #21252b;
+  --block-border: #606771;
+  --block-result-bg: #000000;
+  --block-text-card: #474a4d;
+  --row-cell-bg: #0c0e12;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -54,6 +65,11 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-block-card: var(--block-card);
+  --color-block-border: var(--block-border);
+  --color-block-result-bg: var(--block-result-bg);
+  --color-block-text-card: var(--block-text-card);
+  --color-row-cell-bg: var(--row-cell-bg);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -89,6 +105,17 @@ button {
 
 ::placeholder {
   color: var(--muted-foreground);
+}
+
+/* Endings condition rows: the row kebab uses `group-hover/row` to
+   reveal on row hover, but `:hover` cascades up — so hovering a nested
+   row also marks every ancestor row as hovered, revealing every
+   ancestor row's kebab too. Suppress the outer kebabs when a deeper
+   row is currently hovered, so only the deepest hovered row shows
+   its menu. Hooked via the `[data-row-kebab]` attribute on the row's
+   kebab wrapper. */
+.group\/row:has(.group\/row:hover) > [data-row-kebab] {
+  opacity: 0 !important;
 }
 
 /* Subtle scrollbars. */

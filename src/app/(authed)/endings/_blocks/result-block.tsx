@@ -14,10 +14,11 @@
 // list are bound in by the `makeResultBlock` factory below — the editor
 // builds one per logic doc.
 
-import { useMemo, useRef, type ComponentType } from "react";
-import { GripVertical, Trash2 } from "lucide-react";
+import { useMemo, useRef, useTransition, type ComponentType } from "react";
+import { Copy, GripVertical, Trash2 } from "lucide-react";
 import { Select } from "@/components/ui/select";
-import { GHOST_FIELD } from "@/components/panel";
+import { OverflowMenu } from "@/components/panel";
+import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import {
   AGGREGATE_OPTIONS_BY_REF,
@@ -36,6 +37,7 @@ import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { BlockState } from "@/lib/endings/block-state";
 import type { EndingDocument } from "@/lib/db/types";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
+import { duplicateBlock } from "../_shared/document-actions";
 import { DropLine } from "./text-block";
 
 export type ResultOption = { value: string; label: string };
@@ -65,6 +67,8 @@ export function ResultBlock({
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
+  const [, startTransition] = useTransition();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const isDragging = drag.dragId === block.id;
   const targetBefore =
     drag.target?.kind === "near" &&
@@ -143,7 +147,7 @@ export function ResultBlock({
   }
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
       <div
         ref={cardRef}
@@ -170,9 +174,10 @@ export function ResultBlock({
           drag.commit();
         }}
         className={cn(
-          "group/resultblock relative flex items-start gap-1 rounded-md border border-transparent bg-card transition-colors hover:border-border",
+          "group/resultblock relative flex h-full min-h-full flex-1 items-stretch rounded-md border border-[var(--block-border)] transition-colors",
           isDragging && "opacity-40"
         )}
+        style={{ backgroundColor: "var(--block-card)" }}
       >
         <span
           aria-hidden
@@ -190,11 +195,11 @@ export function ResultBlock({
               );
             }
           }}
-          className="mt-2 cursor-grab text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
+          className="flex w-6 shrink-0 cursor-grab items-start justify-center pt-[17px] text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
         >
           <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-1">
+        <div className="flex flex-1 flex-col gap-2 py-2 pl-2">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
               →
@@ -202,9 +207,9 @@ export function ResultBlock({
             <Select
               value={isSubset ? SUBSET_PICKER_VALUE : value}
               onChange={(e) => handleSelectChange(e.target.value)}
+              style={{ backgroundColor: "var(--block-result-bg)" }}
               className={cn(
-                "ml-auto h-8 w-auto min-w-[200px]",
-                GHOST_FIELD,
+                "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
                 isEmpty &&
                   "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
               )}
@@ -235,17 +240,38 @@ export function ResultBlock({
             />
           ) : null}
         </div>
-        <button
-          type="button"
-          onClick={onDelete}
-          aria-label="Delete block"
-          title="Delete block"
-          className="mt-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-opacity opacity-0 hover:bg-destructive/15 hover:text-destructive group-hover/resultblock:opacity-100"
-        >
-          <Trash2 size={12} aria-hidden />
-        </button>
+        <div className="flex w-6 shrink-0 items-start justify-center pt-[12px]">
+          <OverflowMenu
+            items={[
+              {
+                label: "Duplicate Result Block",
+                icon: <Copy size={10} aria-hidden />,
+                onClick: () => {
+                  startTransition(async () => {
+                    await duplicateBlock({ id: block.id });
+                  });
+                },
+              },
+              {
+                label: "Delete Result Block",
+                intent: "destructive",
+                icon: <Trash2 size={10} aria-hidden />,
+                onClick: async () => {
+                  const ok = await confirm({
+                    title: "Delete result block?",
+                    message: "This can't be undone.",
+                    confirmLabel: "Delete",
+                    intent: "destructive",
+                  });
+                  if (ok) onDelete();
+                },
+              },
+            ]}
+          />
+        </div>
       </div>
       <DropLine active={targetAfter} side="bottom" />
+      {confirmDialog}
     </div>
   );
 }
@@ -383,7 +409,10 @@ function SubsetPicker({
   const known = new Set(frameworks.map((f) => f.value));
   const missing = selectedIds.filter((id) => !known.has(id));
   return (
-    <div className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-border/60 bg-muted/10 p-2 sm:grid-cols-2">
+    <div
+      className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-transparent p-2 sm:grid-cols-2"
+      style={{ backgroundColor: "var(--block-result-bg)" }}
+    >
       {frameworks.length === 0 ? (
         <p className="col-span-full text-[11px] italic text-muted-foreground">
           No frameworks available.

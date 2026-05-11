@@ -166,7 +166,13 @@ export type OverflowMenuItem = {
   icon?: React.ReactNode;
 };
 
-export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
+export function OverflowMenu({
+  items,
+  size = "default",
+}: {
+  items: OverflowMenuItem[];
+  size?: "default" | "sm";
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -177,6 +183,11 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+  const buttonClass =
+    size === "sm"
+      ? "inline-flex h-4 w-4 items-center justify-center overflow-visible rounded text-muted-foreground transition-colors hover:text-foreground"
+      : "inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+  const iconSize = size === "sm" ? 16 : 14;
   return (
     <div ref={ref} className="relative">
       <button
@@ -185,9 +196,9 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="More actions"
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className={buttonClass}
       >
-        <MoreVertical size={14} aria-hidden />
+        <MoreVertical size={iconSize} aria-hidden />
       </button>
       {open ? (
         <div
@@ -204,7 +215,7 @@ export function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
                 setOpen(false);
               }}
               className={cn(
-                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[11px] tracking-tight transition-colors",
                 item.intent === "destructive"
                   ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
                   : "text-foreground hover:bg-accent/40"
