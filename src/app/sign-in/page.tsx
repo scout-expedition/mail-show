@@ -12,7 +12,7 @@ export default function SignInPage({
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            Magic-link sign-in. Only allow-listed emails can access the app.
+            Sign in with email and password, or get a magic link.
           </CardDescription>
         </CardHeader>
         <CardContent>

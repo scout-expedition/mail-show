@@ -1,37 +1,57 @@
 "use server";
 
+import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  createSupabaseServerClient,
+  createSupabaseServiceClient,
+} from "@/lib/supabase/server";
+import { canDeleteUser, validateEmail } from "@/lib/auth/validation";
 
-function normalizeEmail(v: string): string {
-  return v.trim().toLowerCase();
-}
-function normalizeDomain(v: string): string {
-  return v.trim().toLowerCase().replace(/^@/, "");
-}
+export type InviteState =
+  | { status: "idle" }
+  | { status: "success"; email: string }
+  | { status: "error"; error: string };
 
-export async function addAllowlistEntry(formData: FormData) {
-  const kind = String(formData.get("kind") ?? "");
-  const raw = String(formData.get("value") ?? "");
-  if (kind !== "email" && kind !== "domain") return;
-  const value = kind === "email" ? normalizeEmail(raw) : normalizeDomain(raw);
-  if (!value) return;
-  if (kind === "email" && !value.includes("@")) return;
-  if (kind === "domain" && value.includes("@")) return;
+export async function inviteUser(
+  _prev: InviteState,
+  formData: FormData
+): Promise<InviteState> {
+  const check = validateEmail(formData.get("email"));
+  if (!check.ok) return { status: "error", error: check.error };
 
-  const supabase = await createSupabaseServerClient();
-  const { error } = await supabase
-    .from("allowed_emails")
-    .insert({ kind, value });
-  if (error && error.code !== "23505") throw new Error(error.message);
+  const h = await headers();
+  const host = h.get("host") ?? "localhost:3000";
+  const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
+  const redirectTo = `${protocol}://${host}/auth/callback?next=${encodeURIComponent(
+    "/auth/set-password"
+  )}`;
+
+  const service = createSupabaseServiceClient();
+  const { error } = await service.auth.admin.inviteUserByEmail(check.email, {
+    redirectTo,
+  });
+  if (error) return { status: "error", error: error.message };
+
   revalidatePath("/settings");
+  return { status: "success", email: check.email };
 }
 
-export async function removeAllowlistEntry(formData: FormData) {
-  const id = String(formData.get("id") ?? "");
-  if (!id) return;
-  const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.from("allowed_emails").delete().eq("id", id);
+export async function deleteUser(formData: FormData) {
+  const targetUserId = String(formData.get("userId") ?? "");
+  if (!targetUserId) throw new Error("Missing userId");
+
+  const server = await createSupabaseServerClient();
+  const { data: me } = await server.auth.getUser();
+  const currentUserId = me.user?.id;
+  if (!currentUserId) throw new Error("Not signed in");
+  if (!canDeleteUser(currentUserId, targetUserId)) {
+    throw new Error("You can't delete your own account here");
+  }
+
+  const service = createSupabaseServiceClient();
+  const { error } = await service.auth.admin.deleteUser(targetUserId);
   if (error) throw new Error(error.message);
+
   revalidatePath("/settings");
 }
