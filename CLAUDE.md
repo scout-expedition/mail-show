@@ -80,3 +80,9 @@ Before starting feature work in either area, read the corresponding plan first.
 - Server Actions live next to the page that calls them (e.g. `src/app/(authed)/inspection/letters/actions.ts`). When an action mutates data that another page reads, `revalidatePath()` both routes (e.g. `/inspection/letters` and `/graph`).
 - Shared confirm/discard flows go through `useConfirm()` (`src/components/confirm-dialog.tsx`) and `useUnsavedDialog()` (`src/components/unsaved-dialog.tsx`) — don't reach for native `confirm()`.
 - Forms use react-hook-form + zod when validation is non-trivial, otherwise plain controlled state with the `auto-save-form` helper.
+
+## Deployment
+
+Hosted on Vercel under the `coreylubos-projects` team. The repo is connected to a Vercel project that deploys **only** the `main` branch — PR preview deployments are disabled via `vercel.json` (`git.deploymentEnabled: { "main": true }`). Merges to `main` build + deploy to production automatically; PRs do nothing on the Vercel side. To temporarily preview a branch, add it to `deploymentEnabled` and push, or use the Redeploy button in the Vercel dashboard.
+
+Env vars live in the Vercel project settings (not in the repo). The proxy + Supabase clients read the usual `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / service-role key plus `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS`.
