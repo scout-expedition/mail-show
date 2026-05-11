@@ -32,7 +32,7 @@
   --nation-pelico: #4fb07a;
 
   --block-card: #21252b;
-  --block-border: #606771;
+  --block-border: var(--border);
   --block-result-bg: #000000;
   --block-text-card: #474a4d;
   --row-cell-bg: #0c0e12;
