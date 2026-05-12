@@ -11,6 +11,26 @@ import {
   validateEmail,
   validatePassword,
 } from "@/lib/auth/validation";
+import { ICON_TYPES, type IconType } from "@/lib/db/enums";
+
+function parseAvatarFields(formData: FormData): {
+  avatar_icon_type: IconType | null;
+  avatar_icon_value: string | null;
+  avatar_color_hex: string | null;
+} {
+  const rawType = String(formData.get("avatar_icon_type") ?? "");
+  const rawValue = String(formData.get("avatar_icon_value") ?? "").trim();
+  const rawColor = String(formData.get("avatar_color_hex") ?? "").trim();
+  const iconType = (ICON_TYPES as readonly string[]).includes(rawType)
+    ? (rawType as IconType)
+    : null;
+  const color = /^#[0-9a-fA-F]{6}$/.test(rawColor) ? rawColor : null;
+  return {
+    avatar_icon_type: iconType,
+    avatar_icon_value: rawValue ? rawValue : null,
+    avatar_color_hex: color,
+  };
+}
 
 async function siteOrigin(): Promise<string> {
   const h = await headers();
@@ -108,6 +128,75 @@ export async function changeOwnPassword(formData: FormData) {
     password: String(formData.get("password")),
   });
   if (updateErr) throw new Error(updateErr.message);
+}
+
+export async function updateOwnProfile(formData: FormData) {
+  const display_name = String(formData.get("display_name") ?? "").trim();
+  const avatar = parseAvatarFields(formData);
+
+  const supabase = await createSupabaseServerClient();
+  const { data: me } = await supabase.auth.getUser();
+  if (!me.user) throw new Error("Not signed in");
+
+  const merged = {
+    ...(me.user.user_metadata ?? {}),
+    display_name: display_name || null,
+    ...avatar,
+  };
+
+  const { error } = await supabase.auth.updateUser({ data: merged });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+}
+
+export async function adminUpdateUserDisplayName(formData: FormData) {
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) throw new Error("Missing userId");
+  const display_name = String(formData.get("display_name") ?? "").trim();
+
+  const service = createSupabaseServiceClient();
+  const { data: existing, error: getErr } =
+    await service.auth.admin.getUserById(userId);
+  if (getErr) throw new Error(getErr.message);
+
+  const merged = {
+    ...(existing.user?.user_metadata ?? {}),
+    display_name: display_name || null,
+  };
+
+  const { error } = await service.auth.admin.updateUserById(userId, {
+    user_metadata: merged,
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
+}
+
+export async function adminUpdateUserAvatar(formData: FormData) {
+  const userId = String(formData.get("userId") ?? "");
+  if (!userId) throw new Error("Missing userId");
+  const avatar = parseAvatarFields(formData);
+
+  const service = createSupabaseServiceClient();
+  const { data: existing, error: getErr } =
+    await service.auth.admin.getUserById(userId);
+  if (getErr) throw new Error(getErr.message);
+
+  const merged = {
+    ...(existing.user?.user_metadata ?? {}),
+    ...avatar,
+  };
+
+  const { error } = await service.auth.admin.updateUserById(userId, {
+    user_metadata: merged,
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  revalidatePath("/", "layout");
 }
 
 export async function deleteUser(formData: FormData) {

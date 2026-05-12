@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { IconMailOpened } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
+import { UserAvatar, type UserAvatarData } from "@/components/user-avatar";
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
 
@@ -53,7 +54,11 @@ const NAV_ITEMS: Array<{
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
 ];
 
-export function Nav() {
+export function Nav({
+  currentUser,
+}: {
+  currentUser: { email: string | null; profile: UserAvatarData } | null;
+}) {
   const pathname = usePathname();
   const sections = [
     "Game",
@@ -113,7 +118,7 @@ export function Nav() {
           <div className="text-sm font-semibold tracking-wide">Mail Show</div>
           <div className="text-xs text-muted-foreground">Planning tool</div>
         </div>
-        <div className="flex flex-col gap-4 overflow-y-auto">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto">
           {sections.map((section) => (
             <div key={section} className="flex flex-col gap-0.5">
               <div className="px-2 text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -143,6 +148,30 @@ export function Nav() {
             </div>
           ))}
         </div>
+        {currentUser ? (
+          <Link
+            href="/settings"
+            className="mt-auto flex items-center gap-2 rounded-md border border-border/40 bg-background/40 px-2 py-1.5 text-xs transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            <UserAvatar
+              user={currentUser.profile}
+              email={currentUser.email}
+              size={28}
+            />
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate text-foreground">
+                {currentUser.profile.display_name ??
+                  currentUser.email ??
+                  "Account"}
+              </span>
+              {currentUser.profile.display_name && currentUser.email ? (
+                <span className="truncate text-[10px] text-muted-foreground">
+                  {currentUser.email}
+                </span>
+              ) : null}
+            </span>
+          </Link>
+        ) : null}
       </nav>
     </>
   );
