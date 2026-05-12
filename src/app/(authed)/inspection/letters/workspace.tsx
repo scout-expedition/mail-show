@@ -329,10 +329,9 @@ export type LettersWorkspaceProps = {
  * Tables the workspace subscribes to via postgres_changes. UPDATE events
  * are column-merged into local mirrors (view-derived columns preserved);
  * DELETE events drop the row and surface a toast if it's the currently-
- * selected one. INSERT is intentionally skipped — structural creates still
- * `revalidatePath`, and INSERT payloads lack the view-derived columns
- * (`content_id`, etc.) the UI renders, so a freshly-seeded view row would
- * appear broken until the next page refresh.
+ * selected one; INSERT events trigger a debounced `router.refresh()` so
+ * the RSC layer re-derives view-mapped columns (`content_id`, `report_id`,
+ * `effective_day_id`) which aren't in the raw postgres payload.
  */
 const POSTGRES_TABLES = [
   "inspection_letters",
@@ -650,6 +649,30 @@ function LettersWorkspaceInner({
   const selectedSegmentIdRef = useRef(selectedSegmentId);
   selectedSegmentIdRef.current = selectedSegmentId;
 
+  // Coalesce bursts of INSERTs (e.g. a single create-action that inserts a
+  // group + letter + actions) into one RSC refetch. Refresh trip is cheap
+  // enough that we don't need to filter self-echoes — the creator's own
+  // revalidatePath already kicked the page; this debounced call lands as
+  // a near-no-op in that case.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+      }
+    },
+    []
+  );
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      router.refresh();
+    }, 100);
+  }, [router]);
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       const { table, eventType } = change;
@@ -766,10 +789,19 @@ function LettersWorkspaceInner({
         return;
       }
 
-      // INSERT intentionally skipped — structural creates still revalidate,
-      // and INSERT payloads lack the view-derived columns the UI renders.
+      if (eventType === "INSERT") {
+        // Creates from a peer need view-derived columns (content_id,
+        // report_id, etc.) which aren't in the postgres payload — and
+        // because adding a row can re-compute view fields for OTHER rows
+        // (e.g. a second letter in a group flips the existing letter's
+        // content_id to include a variant suffix), patching the mirror
+        // in-place would leave stale display ids. Fall back to a debounced
+        // RSC refetch which gets the views right and reseeds the mirrors.
+        scheduleRefresh();
+        return;
+      }
     });
-  }, [onPostgresChanges, toast]);
+  }, [onPostgresChanges, toast, scheduleRefresh]);
 
   const isControlled = !!onSelectionChange;
 
