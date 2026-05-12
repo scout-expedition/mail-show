@@ -2287,6 +2287,20 @@ function LettersWorkspaceInner({
                   : selectStoryline(null)
               }
               onSelectGroup={(id) => selectGroup(id)}
+              onCreateGroup={(created) => {
+                // Optimistically seed the mirror with the new row so
+                // `group = allGroups.find(...)` resolves on the very
+                // next render and slot 2 doesn't go blank while the
+                // RSC refetch is in flight. The subsequent
+                // revalidatePath / router.refresh both reseed to the
+                // same canonical row — idempotent.
+                setAllGroups((prev) =>
+                  prev.some((g) => g.id === created.id)
+                    ? prev
+                    : [...prev, created]
+                );
+                selectGroup(created.id);
+              }}
               onDeselectGroup={() =>
                 selectStoryline(inspectorStoryline.id)
               }
@@ -6020,6 +6034,7 @@ function StorylineInspector({
   onDirtyChange,
   onBack,
   onSelectGroup,
+  onCreateGroup,
   onDeselectGroup,
   onConfirmDialog,
 }: {
@@ -6032,6 +6047,10 @@ function StorylineInspector({
   onDirtyChange: (d: boolean) => void;
   onBack: () => void;
   onSelectGroup: (id: string) => void;
+  /** Called after the inspector creates a new letter group. Receives the
+   * full row so the parent can seed its local mirror before navigating —
+   * prevents slot 2 from going blank while the RSC refetch is in flight. */
+  onCreateGroup: (group: LetterGroup) => void;
   /** Called when the user clicks the currently-selected group row to toggle
    * it off. Should return the UI to storyline-only mode (inspector visible,
    * no group selected). */
@@ -6109,8 +6128,8 @@ function StorylineInspector({
 
   function handleAddGroup() {
     startRowAction(async () => {
-      const { groupId } = await createLetterGroupInStoryline(storyline.id);
-      onSelectGroup(groupId);
+      const { group } = await createLetterGroupInStoryline(storyline.id);
+      onCreateGroup(group);
     });
   }
 

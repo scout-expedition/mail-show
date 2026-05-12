@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { CitizenType, IconType } from "@/lib/db/enums";
+import type { LetterGroup } from "@/lib/db/types";
 
 /**
  * Reassign variants for every letter in a group based on current sort_order.
@@ -1072,7 +1073,7 @@ export async function createNextLetterGroupAndLetter(
  */
 export async function createLetterGroupInStoryline(
   storylineId: string
-): Promise<{ groupId: string }> {
+): Promise<{ group: LetterGroup }> {
   const supabase = await createSupabaseServerClient();
   const { data: existing } = await supabase
     .from("letter_groups")
@@ -1088,12 +1089,12 @@ export async function createLetterGroupInStoryline(
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
     })
-    .select("id")
+    .select("*")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
   revalidatePath(`/inspection/storylines/${storylineId}`);
-  return { groupId: data!.id as string };
+  return { group: data as LetterGroup };
 }
 
 export async function deleteReportSegment(segmentId: string) {
