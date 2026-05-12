@@ -21,34 +21,56 @@ $$;
 -- ------------------------------------------------------------------
 -- Enums
 -- ------------------------------------------------------------------
-create type public.icon_type as enum ('lucide', 'svg', 'emoji');
-create type public.citizen_type as enum ('hero', 'npc');
-create type public.day_of_week as enum (
-  'monday','tuesday','wednesday','thursday','friday','saturday','sunday'
-);
-create type public.phase as enum (
-  'top_of_day','sorting','inspection','end_of_day'
-);
-create type public.address_type as enum (
-  'full','lookup_1','lookup_2','lookup_3'
-);
-create type public.content_ref_type as enum ('sorting','inspection');
-create type public.rule_match_mode as enum ('all','any');
-create type public.rule_target as enum (
-  'sender_name','sender_citizen_id','sender_city_name','sender_city_code','sender_nation',
-  'recipient_name','recipient_citizen_id','recipient_city_name','recipient_city_code','recipient_nation',
-  'is_counterfeit','current_day_of_week'
-);
-create type public.rule_target_slice as enum ('whole','first_char','last_char');
-create type public.rule_operator as enum ('equals','contains','is','gt','gte','lt','lte');
-create type public.rule_reference_type as enum (
-  'string','number','even','odd','letter','true','false'
-);
+do $$ begin
+  create type public.icon_type as enum ('lucide', 'svg', 'emoji');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.citizen_type as enum ('hero', 'npc');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.day_of_week as enum (
+    'monday','tuesday','wednesday','thursday','friday','saturday','sunday'
+  );
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.phase as enum (
+    'top_of_day','sorting','inspection','end_of_day'
+  );
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.address_type as enum (
+    'full','lookup_1','lookup_2','lookup_3'
+  );
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.content_ref_type as enum ('sorting','inspection');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.rule_match_mode as enum ('all','any');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.rule_target as enum (
+    'sender_name','sender_citizen_id','sender_city_name','sender_city_code','sender_nation',
+    'recipient_name','recipient_citizen_id','recipient_city_name','recipient_city_code','recipient_nation',
+    'is_counterfeit','current_day_of_week'
+  );
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.rule_target_slice as enum ('whole','first_char','last_char');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.rule_operator as enum ('equals','contains','is','gt','gte','lt','lte');
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create type public.rule_reference_type as enum (
+    'string','number','even','odd','letter','true','false'
+  );
+exception when duplicate_object then null; end $$;
 
 -- ------------------------------------------------------------------
 -- nations, cities, citizens (reference data)
 -- ------------------------------------------------------------------
-create table public.nations (
+create table if not exists public.nations (
   id uuid primary key default uuid_generate_v4(),
   name text not null unique,
   abbreviation text,
@@ -57,10 +79,10 @@ create table public.nations (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger nations_set_updated_at before update on public.nations
+create or replace trigger nations_set_updated_at before update on public.nations
   for each row execute function public.set_updated_at();
 
-create table public.cities (
+create table if not exists public.cities (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
   code text not null,
@@ -70,11 +92,11 @@ create table public.cities (
   unique (name, nation_id),
   unique (code, nation_id)
 );
-create trigger cities_set_updated_at before update on public.cities
+create or replace trigger cities_set_updated_at before update on public.cities
   for each row execute function public.set_updated_at();
-create index cities_nation_idx on public.cities(nation_id);
+create index if not exists cities_nation_idx on public.cities(nation_id);
 
-create table public.citizens (
+create table if not exists public.citizens (
   id uuid primary key default uuid_generate_v4(),
   type public.citizen_type not null default 'npc',
   name text not null,
@@ -85,17 +107,17 @@ create table public.citizens (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger citizens_set_updated_at before update on public.citizens
+create or replace trigger citizens_set_updated_at before update on public.citizens
   for each row execute function public.set_updated_at();
-create index citizens_nation_idx on public.citizens(nation_id);
-create index citizens_city_idx on public.citizens(city_id);
-create unique index citizens_citizen_id_unique
+create index if not exists citizens_nation_idx on public.citizens(nation_id);
+create index if not exists citizens_city_idx on public.citizens(city_id);
+create unique index if not exists citizens_citizen_id_unique
   on public.citizens(citizen_id) where citizen_id is not null;
 
 -- ------------------------------------------------------------------
 -- days
 -- ------------------------------------------------------------------
-create table public.days (
+create table if not exists public.days (
   id uuid primary key default uuid_generate_v4(),
   number int not null unique,
   identifier text generated always as ('D' || number) stored,
@@ -113,13 +135,13 @@ create table public.days (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger days_set_updated_at before update on public.days
+create or replace trigger days_set_updated_at before update on public.days
   for each row execute function public.set_updated_at();
 
 -- ------------------------------------------------------------------
 -- storylines, letter_groups, report_groups
 -- ------------------------------------------------------------------
-create table public.storylines (
+create table if not exists public.storylines (
   id uuid primary key default uuid_generate_v4(),
   name text not null unique,
   abbreviation char(1) not null unique,
@@ -131,10 +153,10 @@ create table public.storylines (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger storylines_set_updated_at before update on public.storylines
+create or replace trigger storylines_set_updated_at before update on public.storylines
   for each row execute function public.set_updated_at();
 
-create table public.letter_groups (
+create table if not exists public.letter_groups (
   id uuid primary key default uuid_generate_v4(),
   storyline_id uuid not null references public.storylines(id) on delete cascade,
   name text not null,
@@ -145,10 +167,10 @@ create table public.letter_groups (
   updated_at timestamptz not null default now(),
   unique (storyline_id, sequence)
 );
-create trigger letter_groups_set_updated_at before update on public.letter_groups
+create or replace trigger letter_groups_set_updated_at before update on public.letter_groups
   for each row execute function public.set_updated_at();
 
-create table public.report_groups (
+create table if not exists public.report_groups (
   id uuid primary key default uuid_generate_v4(),
   letter_group_id uuid not null unique references public.letter_groups(id) on delete cascade,
   name text not null,
@@ -157,7 +179,7 @@ create table public.report_groups (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger report_groups_set_updated_at before update on public.report_groups
+create or replace trigger report_groups_set_updated_at before update on public.report_groups
   for each row execute function public.set_updated_at();
 
 -- Auto-create a report_group whenever a letter_group is created.
@@ -169,14 +191,14 @@ begin
   return new;
 end;
 $$;
-create trigger letter_groups_auto_report_group
+create or replace trigger letter_groups_auto_report_group
   after insert on public.letter_groups
   for each row execute function public.auto_create_report_group();
 
 -- ------------------------------------------------------------------
 -- inspection_letters, actions
 -- ------------------------------------------------------------------
-create table public.inspection_letters (
+create table if not exists public.inspection_letters (
   id uuid primary key default uuid_generate_v4(),
   letter_group_id uuid not null references public.letter_groups(id) on delete cascade,
   variant char(1),
@@ -191,12 +213,12 @@ create table public.inspection_letters (
   updated_at timestamptz not null default now(),
   unique (letter_group_id, variant, piece)
 );
-create trigger inspection_letters_set_updated_at before update on public.inspection_letters
+create or replace trigger inspection_letters_set_updated_at before update on public.inspection_letters
   for each row execute function public.set_updated_at();
-create index inspection_letters_group_idx on public.inspection_letters(letter_group_id);
+create index if not exists inspection_letters_group_idx on public.inspection_letters(letter_group_id);
 
 -- Typed-impact action rows (9 fixed impact columns per the plan).
-create table public.actions (
+create table if not exists public.actions (
   id uuid primary key default uuid_generate_v4(),
   inspection_letter_id uuid not null references public.inspection_letters(id) on delete cascade,
   name text not null,
@@ -218,14 +240,14 @@ create table public.actions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger actions_set_updated_at before update on public.actions
+create or replace trigger actions_set_updated_at before update on public.actions
   for each row execute function public.set_updated_at();
-create index actions_letter_idx on public.actions(inspection_letter_id);
+create index if not exists actions_letter_idx on public.actions(inspection_letter_id);
 
 -- ------------------------------------------------------------------
 -- report_segments
 -- ------------------------------------------------------------------
-create table public.report_segments (
+create table if not exists public.report_segments (
   id uuid primary key default uuid_generate_v4(),
   report_group_id uuid not null references public.report_groups(id) on delete cascade,
   variant text not null, -- roman numeral: i, ii, iii...
@@ -236,17 +258,19 @@ create table public.report_segments (
   updated_at timestamptz not null default now(),
   unique (report_group_id, variant)
 );
-create trigger report_segments_set_updated_at before update on public.report_segments
+create or replace trigger report_segments_set_updated_at before update on public.report_segments
   for each row execute function public.set_updated_at();
 
-alter table public.actions
-  add constraint actions_report_segment_fk
-  foreign key (report_segment_id) references public.report_segments(id) on delete set null;
+do $$ begin
+  alter table public.actions
+    add constraint actions_report_segment_fk
+    foreign key (report_segment_id) references public.report_segments(id) on delete set null;
+exception when duplicate_object then null; end $$;
 
 -- ------------------------------------------------------------------
 -- sorting_letters, physical_letters
 -- ------------------------------------------------------------------
-create table public.sorting_letters (
+create table if not exists public.sorting_letters (
   id uuid primary key default uuid_generate_v4(),
   day_id uuid not null references public.days(id) on delete cascade,
   sort_id int not null check (sort_id between 0 and 99),
@@ -276,10 +300,10 @@ create table public.sorting_letters (
   updated_at timestamptz not null default now(),
   unique (day_id, sort_id)
 );
-create trigger sorting_letters_set_updated_at before update on public.sorting_letters
+create or replace trigger sorting_letters_set_updated_at before update on public.sorting_letters
   for each row execute function public.set_updated_at();
 
-create table public.physical_letters (
+create table if not exists public.physical_letters (
   id uuid primary key default uuid_generate_v4(),
   letter_id int not null unique check (letter_id between 0 and 999999),
   rfid_payload text generated always as ('SL' || lpad(letter_id::text, 6, '0')) stored,
@@ -290,13 +314,13 @@ create table public.physical_letters (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger physical_letters_set_updated_at before update on public.physical_letters
+create or replace trigger physical_letters_set_updated_at before update on public.physical_letters
   for each row execute function public.set_updated_at();
 
 -- ------------------------------------------------------------------
 -- sorting_rules + conditions
 -- ------------------------------------------------------------------
-create table public.sorting_rules (
+create table if not exists public.sorting_rules (
   id uuid primary key default uuid_generate_v4(),
   letter char(1) not null unique check (letter between 'A' and 'Z'),
   storage_location text,
@@ -307,10 +331,10 @@ create table public.sorting_rules (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger sorting_rules_set_updated_at before update on public.sorting_rules
+create or replace trigger sorting_rules_set_updated_at before update on public.sorting_rules
   for each row execute function public.set_updated_at();
 
-create table public.sorting_rule_conditions (
+create table if not exists public.sorting_rule_conditions (
   id uuid primary key default uuid_generate_v4(),
   rule_id uuid not null references public.sorting_rules(id) on delete cascade,
   position int not null check (position between 1 and 3),
@@ -323,13 +347,13 @@ create table public.sorting_rule_conditions (
   updated_at timestamptz not null default now(),
   unique (rule_id, position)
 );
-create trigger sorting_rule_conditions_set_updated_at before update on public.sorting_rule_conditions
+create or replace trigger sorting_rule_conditions_set_updated_at before update on public.sorting_rule_conditions
   for each row execute function public.set_updated_at();
 
 -- ------------------------------------------------------------------
 -- playthroughs + action choices
 -- ------------------------------------------------------------------
-create table public.playthroughs (
+create table if not exists public.playthroughs (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
   notes text,
@@ -339,10 +363,10 @@ create table public.playthroughs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger playthroughs_set_updated_at before update on public.playthroughs
+create or replace trigger playthroughs_set_updated_at before update on public.playthroughs
   for each row execute function public.set_updated_at();
 
-create table public.playthrough_action_choices (
+create table if not exists public.playthrough_action_choices (
   id uuid primary key default uuid_generate_v4(),
   playthrough_id uuid not null references public.playthroughs(id) on delete cascade,
   inspection_letter_id uuid not null references public.inspection_letters(id) on delete cascade,
@@ -351,7 +375,7 @@ create table public.playthrough_action_choices (
   updated_at timestamptz not null default now(),
   unique (playthrough_id, inspection_letter_id)
 );
-create trigger playthrough_choices_set_updated_at before update on public.playthrough_action_choices
+create or replace trigger playthrough_choices_set_updated_at before update on public.playthrough_action_choices
   for each row execute function public.set_updated_at();
 
 -- ------------------------------------------------------------------
@@ -359,7 +383,7 @@ create trigger playthrough_choices_set_updated_at before update on public.playth
 -- ------------------------------------------------------------------
 
 -- Inspection-letter view: effective_day_id plus formatted content_id.
-create view public.inspection_letters_view as
+create or replace view public.inspection_letters_view as
 select
   il.*,
   coalesce(il.delivery_day_override_id, lg.delivery_day_id) as effective_day_id,
@@ -377,7 +401,7 @@ join public.letter_groups lg on lg.id = il.letter_group_id
 join public.storylines sl on sl.id = lg.storyline_id;
 
 -- Report-segment view: effective_day_id (triggering-letter day + 1) and report_id.
-create view public.report_segments_view as
+create or replace view public.report_segments_view as
 select
   rs.*,
   rg.letter_group_id,
@@ -407,7 +431,7 @@ join public.letter_groups lg on lg.id = rg.letter_group_id
 join public.storylines sl on sl.id = lg.storyline_id;
 
 -- Sorting-letter view: computed content_id.
-create view public.sorting_letters_view as
+create or replace view public.sorting_letters_view as
 select
   sl.*,
   d.number as day_number,
@@ -418,7 +442,7 @@ join public.days d on d.id = sl.day_id;
 -- ------------------------------------------------------------------
 -- Playthrough variable tally (view)
 -- ------------------------------------------------------------------
-create view public.playthrough_variables as
+create or replace view public.playthrough_variables as
 select
   p.id as playthrough_id,
   coalesce(sum(a.impact_world_status), 0) as world_status,
@@ -451,12 +475,16 @@ begin
     'sorting_rules','sorting_rule_conditions','playthroughs','playthrough_action_choices'
   ]) loop
     execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format('create policy %I on public.%I for select using (auth.role() = ''authenticated'')',
       t || '_select', t);
+    execute format('drop policy if exists %I on public.%I', t || '_insert', t);
     execute format('create policy %I on public.%I for insert with check (auth.role() = ''authenticated'')',
       t || '_insert', t);
+    execute format('drop policy if exists %I on public.%I', t || '_update', t);
     execute format('create policy %I on public.%I for update using (auth.role() = ''authenticated'') with check (auth.role() = ''authenticated'')',
       t || '_update', t);
+    execute format('drop policy if exists %I on public.%I', t || '_delete', t);
     execute format('create policy %I on public.%I for delete using (auth.role() = ''authenticated'')',
       t || '_delete', t);
   end loop;

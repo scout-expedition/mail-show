@@ -32,6 +32,8 @@ end $$;
 
 alter table public.ending_blocks
   drop constraint if exists ending_blocks_type_payload;
+alter table public.ending_blocks
+  drop constraint if exists ending_blocks_block_type_check;
 
 -- 2) Re-add CHECKs widened for 'fallback'. Fallback blocks have no
 -- text; result_value is nullable (unset until the author picks a

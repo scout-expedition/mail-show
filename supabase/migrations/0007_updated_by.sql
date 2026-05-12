@@ -13,7 +13,7 @@ alter table public.report_segments
 -- Views select * from the base tables, which snapshots the column list at
 -- creation time. Drop and recreate so updated_by flows through.
 drop view if exists public.inspection_letters_view;
-create view public.inspection_letters_view as
+create or replace view public.inspection_letters_view as
 select
   il.*,
   coalesce(il.delivery_day_override_id, lg.delivery_day_id) as effective_day_id,
@@ -31,7 +31,7 @@ join public.letter_groups lg on lg.id = il.letter_group_id
 join public.storylines sl on sl.id = lg.storyline_id;
 
 drop view if exists public.report_segments_view;
-create view public.report_segments_view as
+create or replace view public.report_segments_view as
 select
   rs.*,
   rg.letter_group_id,

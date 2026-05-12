@@ -1,5 +1,5 @@
 alter table public.inspection_letters
-  add column sort_order int not null default 0;
+  add column if not exists sort_order int not null default 0;
 
 update public.inspection_letters il
 set sort_order = sub.rn
@@ -13,5 +13,5 @@ from (
 ) sub
 where il.id = sub.id;
 
-create index inspection_letters_group_sort_idx
+create index if not exists inspection_letters_group_sort_idx
   on public.inspection_letters(letter_group_id, sort_order);
