@@ -731,6 +731,122 @@ export async function reorderLetterGroups(
   revalidatePath(`/inspection/storylines/${storylineId}`);
 }
 
+// ---------------------------------------------------------------------------
+// Narrow patch actions
+//
+// Used by the realtime instant-save layer: each one updates a partial set of
+// columns on a single row and intentionally does NOT call revalidatePath —
+// Supabase Realtime postgres_changes fan-out is what propagates the update
+// to other clients. Structural mutations above keep their revalidatePath.
+// ---------------------------------------------------------------------------
+
+type InspectionLetterPatchFields = {
+  piece: number | null;
+  delivery_day_override_id: string | null;
+  summary: string | null;
+  content: string | null;
+  sender_citizen_id: string | null;
+  receiver_citizen_id: string | null;
+  notes: string | null;
+};
+
+export async function patchInspectionLetter(
+  id: string,
+  patch: Partial<InspectionLetterPatchFields>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update({ ...patch, updated_by: updatedBy })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+type LetterGroupPatchFields = {
+  storyline_id: string;
+  name: string;
+  notes: string | null;
+  delivery_day_id: string | null;
+};
+
+export async function patchLetterGroup(
+  id: string,
+  patch: Partial<LetterGroupPatchFields>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("letter_groups")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+  // letter_groups.name is mirrored to its report_group (matches saveGroup).
+  if (patch.name !== undefined) {
+    await supabase
+      .from("report_groups")
+      .update({ name: patch.name })
+      .eq("letter_group_id", id);
+  }
+}
+
+type ActionPatchFields = {
+  report_segment_id: string | null;
+  next_letter_variant: string | null;
+  impact_world_status: number;
+  impact_demerits: number;
+  impact_proletariat: number;
+  impact_gentry: number;
+  impact_epicenter: number;
+  impact_folos: number;
+  impact_emberlyn: number;
+  impact_spokgrad: number;
+  impact_pelico: number;
+};
+
+export async function patchAction(
+  id: string,
+  patch: Partial<ActionPatchFields>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.from("actions").update(patch).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Replace an action's ending-variable assignments. Multi-row mutation
+ * (delete-then-insert in `inspection_action_ending_assignments`), so this
+ * sits alongside the per-column `patchAction` rather than inside it. No
+ * `revalidatePath` — caller relies on realtime to fan out.
+ */
+export async function patchActionEndingAssignments(
+  actionId: string,
+  assignments: EndingAssignmentPatch[]
+) {
+  await replaceEndingAssignments(actionId, assignments);
+}
+
+type ReportSegmentPatchFields = {
+  variant: string;
+  summary: string | null;
+  content: string | null;
+  delivery_day_override_id: string | null;
+};
+
+export async function patchReportSegment(
+  id: string,
+  patch: Partial<ReportSegmentPatchFields>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("report_segments")
+    .update({ ...patch, updated_by: updatedBy })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 export async function saveLetterWithActions(
   groupId: string,
   letter: LetterPatch,

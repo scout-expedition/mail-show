@@ -7,6 +7,7 @@ import {
 } from "@/lib/supabase/server";
 import { signOut } from "@/app/sign-in/actions";
 import { ChangePasswordSection } from "./change-password-section";
+import { RealtimeSmoke } from "./realtime-smoke";
 import { UsersSection, type UserRow } from "./users-section";
 
 export default async function SettingsPage() {
@@ -62,6 +63,23 @@ export default async function SettingsPage() {
           <ChangePasswordSection />
         </CardContent>
       </Card>
+
+      {currentUserId && currentEmail ? (
+        <Card className="mb-4">
+          <CardHeader>
+            <CardTitle>Realtime smoke</CardTitle>
+            <CardDescription>
+              Throwaway Phase 0 harness. Open in two browser profiles signed
+              in as different users to verify presence + focused-field
+              indicators. Removed once Phase 1 wires real presence into
+              LettersWorkspace.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RealtimeSmoke userId={currentUserId} email={currentEmail} />
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>

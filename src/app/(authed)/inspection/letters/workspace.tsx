@@ -56,6 +56,10 @@ import {
   deleteInspectionLetter,
   deleteReportSegment,
   ensureInspectionLetterVariant,
+  patchAction,
+  patchActionEndingAssignments,
+  patchInspectionLetter,
+  patchLetterGroup,
   quickCreateCitizen,
   reorderInspectionLetters,
   reorderLetterGroups,
@@ -73,6 +77,14 @@ import {
 } from "../storylines/actions";
 import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import { FieldPresence } from "@/lib/realtime/field-presence";
+import type { PresenceFocus } from "@/lib/realtime/presence";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -249,31 +261,7 @@ function useIsNarrow(): boolean {
   return narrow;
 }
 
-export function LettersWorkspace({
-  storylines,
-  groups: allGroups,
-  days,
-  letters: allLetters,
-  actions: allActions,
-  templates,
-  heroes: initialHeroes,
-  allCitizenIds,
-  cities,
-  nations,
-  segments: allSegments,
-  endingVariables,
-  endingValues,
-  endingAssignments,
-  initialGroupId,
-  initialLetterId,
-  initialSegmentId,
-  controlledSelection,
-  onSelectionChange,
-  onClose,
-  forceNarrow,
-  onDirtyChange,
-  saveAllRef,
-}: {
+export type LettersWorkspaceProps = {
   storylines: Storyline[];
   groups: LetterGroup[];
   days: Day[];
@@ -320,9 +308,61 @@ export function LettersWorkspace({
    * change. Returns once all in-flight saves complete.
    */
   saveAllRef?: React.MutableRefObject<(() => Promise<void>) | null>;
-}) {
+  /**
+   * Current signed-in user — required to activate realtime presence +
+   * instant-save. When either is missing (e.g. from a not-yet-updated
+   * graph embed), the workspace renders without presence chrome and
+   * fields fall through to their existing save-button paths.
+   */
+  currentUserId?: string;
+  currentEmail?: string;
+};
+
+/**
+ * Thin wrapper that provides shared presence + focus state to the
+ * workspace body. Read the live values via `usePresenceContext()` inside
+ * any child component.
+ */
+export function LettersWorkspace(props: LettersWorkspaceProps) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="letters-workspace"
+      userId={props.currentUserId}
+      email={props.currentEmail}
+    >
+      <LettersWorkspaceInner {...props} />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function LettersWorkspaceInner({
+  storylines,
+  groups: allGroups,
+  days,
+  letters: allLetters,
+  actions: allActions,
+  templates,
+  heroes: initialHeroes,
+  allCitizenIds,
+  cities,
+  nations,
+  segments: allSegments,
+  endingVariables,
+  endingValues,
+  endingAssignments,
+  initialGroupId,
+  initialLetterId,
+  initialSegmentId,
+  controlledSelection,
+  onSelectionChange,
+  onClose,
+  forceNarrow,
+  onDirtyChange,
+  saveAllRef,
+}: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const { peers, setFocus } = usePresenceContext();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
     scoped: true,
   });
@@ -426,8 +466,73 @@ export function LettersWorkspace({
     v: (typeof groupState)[K]
   ) {
     setGroupState((s) => ({ ...s, [k]: v }));
-    setGroupDirty(true);
   }
+
+  // ----- Group panel: instant-save fields -----
+  // Each field commits to the server via the narrow patchLetterGroup action
+  // after a 400ms debounce, and publishes the user's focus via presence.
+  const groupNameField = useInstantField<string>({
+    value: group?.name ?? "",
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { name: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? { table: "letter_groups", recordId: group.id, field: "name" }
+          : null
+      );
+    },
+  });
+  const groupDayField = useInstantField<string | null>({
+    value: group?.delivery_day_id ?? null,
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { delivery_day_id: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? {
+              table: "letter_groups",
+              recordId: group.id,
+              field: "delivery_day_id",
+            }
+          : null
+      );
+    },
+  });
+  const groupNotesField = useInstantField<string | null>({
+    value: group?.notes ?? null,
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { notes: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? { table: "letter_groups", recordId: group.id, field: "notes" }
+          : null
+      );
+    },
+  });
+  const groupNameFocus: PresenceFocus | null = group
+    ? { table: "letter_groups", recordId: group.id, field: "name" }
+    : null;
+  const groupDayFocus: PresenceFocus | null = group
+    ? {
+        table: "letter_groups",
+        recordId: group.id,
+        field: "delivery_day_id",
+      }
+    : null;
+  const groupNotesFocus: PresenceFocus | null = group
+    ? { table: "letter_groups", recordId: group.id, field: "notes" }
+    : null;
 
   // ----- Letter state -----
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -1298,17 +1403,68 @@ export function LettersWorkspace({
 
   function updateLetter(patch: Partial<LetterState>) {
     setLetterState((s) => (s ? { ...s, ...patch } : s));
-    setLetterDirty(true);
   }
 
+  // Per-action debounced patcher. Action fields (next_letter, segment, the
+  // 9 impacts) auto-save via the narrow patchAction. ending_assignments
+  // stay on the coarse saveLetterActionsOnly path because they're multi-row.
+  const actionPatchPendingRef = useRef<Map<string, Partial<ActionState>>>(
+    new Map()
+  );
+  const actionPatchTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const scheduleActionPatch = useCallback(
+    (actionId: string, patch: Partial<ActionState>) => {
+      const pending =
+        actionPatchPendingRef.current.get(actionId) ?? {};
+      actionPatchPendingRef.current.set(actionId, { ...pending, ...patch });
+      const existing = actionPatchTimersRef.current.get(actionId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(async () => {
+        const finalPatch =
+          actionPatchPendingRef.current.get(actionId);
+        actionPatchPendingRef.current.delete(actionId);
+        actionPatchTimersRef.current.delete(actionId);
+        if (!finalPatch) return;
+        try {
+          const { ending_assignments, ...narrow } = finalPatch;
+          if (Object.keys(narrow).length > 0) {
+            // Cast: remaining keys match patchAction's narrow shape.
+            await patchAction(actionId, narrow as never);
+          }
+          if (ending_assignments !== undefined) {
+            await patchActionEndingAssignments(actionId, ending_assignments);
+          }
+        } catch (e) {
+          console.error("patchAction failed:", e);
+        }
+      }, 400);
+      actionPatchTimersRef.current.set(actionId, timer);
+    },
+    []
+  );
+  useEffect(() => {
+    return () => {
+      for (const t of actionPatchTimersRef.current.values()) clearTimeout(t);
+      actionPatchTimersRef.current.clear();
+      actionPatchPendingRef.current.clear();
+    };
+  }, []);
+
   function updateAction(idx: number, patch: Partial<ActionState>) {
+    const actionId = letterState?.actions[idx]?.id;
     setLetterState((s) => {
       if (!s) return s;
       const next = s.actions.slice();
       next[idx] = { ...next[idx], ...patch };
       return { ...s, actions: next };
     });
-    setActionsDirty(true);
+    // Auto-save every field — including ending_assignments which fans out
+    // to patchActionEndingAssignments inside scheduleActionPatch.
+    if (actionId && Object.keys(patch).length > 0) {
+      scheduleActionPatch(actionId, patch);
+    }
   }
 
   function letterFieldsPatch(state: LetterState) {
@@ -1807,7 +1963,13 @@ export function LettersWorkspace({
 
   return (
     <div className="relative flex flex-col gap-6">
-      {isControlled ? null : (
+      {isControlled ? (
+        peers.length > 0 ? (
+          <div className="absolute right-2 top-2 z-10">
+            <AvatarStack peers={peers} />
+          </div>
+        ) : null
+      ) : (
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
         <BreadcrumbLink
           onClick={() => goToBreadcrumb("root")}
@@ -1879,6 +2041,9 @@ export function LettersWorkspace({
             </BreadcrumbPill>
           </>
         ) : null}
+        <div className="ml-auto">
+          <AvatarStack peers={peers} />
+        </div>
       </div>
       )}
 
@@ -1948,16 +2113,8 @@ export function LettersWorkspace({
             <PanelHeader
               title="Letter Group"
               icon={<Mails size={14} aria-hidden className="text-muted-foreground/70" />}
-              dirty={groupDirty || !!orderOverride}
+              dirty={!!orderOverride}
               showSaved={!!group}
-              saveRevert={
-                <SaveRevert
-                  dirty={groupDirty}
-                  pending={groupPending}
-                  onSave={handleSaveGroup}
-                  onRevert={revertGroup}
-                />
-              }
               menu={
                 <OverflowMenu
                   items={[
@@ -1980,29 +2137,60 @@ export function LettersWorkspace({
                 />
                 <Input
                   value={groupState.name}
-                  onChange={(e) => updateGroup("name", e.target.value)}
+                  onChange={(e) => {
+                    updateGroup("name", e.target.value);
+                    groupNameField.set(e.target.value);
+                  }}
+                  onFocus={groupNameField.onFocus}
+                  onBlur={groupNameField.onBlur}
                   placeholder="Group name"
                   className={cn(
                     "h-7 flex-1 px-1 text-base font-semibold text-foreground",
                     GHOST_FIELD
                   )}
                 />
+                {groupNameFocus ? (
+                  <FieldPresence peers={peers} focusKey={groupNameFocus} />
+                ) : null}
               </div>
               <div className="grid grid-cols-6 gap-3">
                 <div className="col-span-6 flex flex-col gap-1">
-                  <Label>Delivery day</Label>
-                  <DaySelect
-                    value={groupState.delivery_day_id ?? ""}
-                    days={days}
-                    onChange={(v) => updateGroup("delivery_day_id", v || null)}
-                    className={cn("h-8", GHOST_FIELD)}
-                  />
+                  <Label className="flex items-center gap-2">
+                    Delivery day
+                    {groupDayFocus ? (
+                      <FieldPresence peers={peers} focusKey={groupDayFocus} />
+                    ) : null}
+                  </Label>
+                  <div
+                    onFocus={groupDayField.onFocus}
+                    onBlur={groupDayField.onBlur}
+                  >
+                    <DaySelect
+                      value={groupState.delivery_day_id ?? ""}
+                      days={days}
+                      onChange={(v) => {
+                        updateGroup("delivery_day_id", v || null);
+                        groupDayField.set(v || null);
+                      }}
+                      className={cn("h-8", GHOST_FIELD)}
+                    />
+                  </div>
                 </div>
                 <div className="col-span-6 flex flex-col gap-1">
-                  <Label>Notes</Label>
+                  <Label className="flex items-center gap-2">
+                    Notes
+                    {groupNotesFocus ? (
+                      <FieldPresence peers={peers} focusKey={groupNotesFocus} />
+                    ) : null}
+                  </Label>
                   <AutoTextarea
                     value={groupState.notes ?? ""}
-                    onChange={(e) => updateGroup("notes", e.target.value || null)}
+                    onChange={(e) => {
+                      updateGroup("notes", e.target.value || null);
+                      groupNotesField.set(e.target.value || null);
+                    }}
+                    onFocus={groupNotesField.onFocus}
+                    onBlur={groupNotesField.onBlur}
                     minRows={2}
                     className={GHOST_FIELD}
                   />
@@ -2273,6 +2461,7 @@ export function LettersWorkspace({
         <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {letterState && letters.find((l) => l.id === letterState.id) ? (
             <LetterFieldsCard
+              key={letterState.id}
               state={letterState}
               letterView={letters.find((l) => l.id === letterState.id)!}
               storyline={currentStoryline}
@@ -2516,6 +2705,65 @@ function LetterFieldsCard({
 }) {
   // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
   const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
+  const { peers, setFocus } = usePresenceContext();
+
+  function focusKey(field: string): PresenceFocus {
+    return { table: "inspection_letters", recordId: state.id, field };
+  }
+  function onFocusChangeFor(field: string) {
+    return (focused: boolean) =>
+      setFocus(focused ? focusKey(field) : null);
+  }
+
+  // IMPORTANT: useInstantField's `value` must be the SERVER row, not local
+  // edit state. The parent's `state.X` is updated synchronously by
+  // updateLetter when the user types, so passing it here would make
+  // commitNow's equality check think the save was already applied and
+  // short-circuit. letterView carries the canonical row from the DB.
+  const deliveryOverrideField = useInstantField<string | null>({
+    value: letterView.delivery_day_override_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, {
+        delivery_day_override_id: next,
+      });
+    },
+    onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+  });
+  const summaryField = useInstantField<string | null>({
+    value: letterView.summary,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { summary: next });
+    },
+    onFocusChange: onFocusChangeFor("summary"),
+  });
+  const senderField = useInstantField<string | null>({
+    value: letterView.sender_citizen_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { sender_citizen_id: next });
+    },
+    onFocusChange: onFocusChangeFor("sender_citizen_id"),
+  });
+  const receiverField = useInstantField<string | null>({
+    value: letterView.receiver_citizen_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { receiver_citizen_id: next });
+    },
+    onFocusChange: onFocusChangeFor("receiver_citizen_id"),
+  });
+  const contentField = useInstantField<string | null>({
+    value: letterView.content,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { content: next });
+    },
+    onFocusChange: onFocusChangeFor("content"),
+  });
+  const notesField = useInstantField<string | null>({
+    value: letterView.notes,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { notes: next });
+    },
+    onFocusChange: onFocusChangeFor("notes"),
+  });
 
   return (
     <div className="rounded-md border border-border bg-card">
@@ -2524,14 +2772,6 @@ function LetterFieldsCard({
         icon={<MailOpen size={14} aria-hidden className="text-muted-foreground/70" />}
         dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={onSave}
-            onRevert={onRevert}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -2565,27 +2805,35 @@ function LetterFieldsCard({
           </div>
         </div>
         <div className="col-span-2 flex flex-col gap-1">
-          <Label>Delivery override</Label>
-          <DaySelect
-            value={currentDayId ?? ""}
-            days={days}
-            groupDefaultId={groupDeliveryDayId}
-            dashWhenGroupDefault
-            hideClear
-            onChange={(v) =>
-              onChange({
-                delivery_day_override_id:
-                  !v ? null : v === groupDeliveryDayId ? null : v,
-              })
-            }
-            className={cn(
-              "h-8",
-              GHOST_FIELD,
-              state.delivery_day_override_id
-                ? undefined
-                : "text-muted-foreground/60"
-            )}
-          />
+          <Label className="flex items-center gap-2">
+            Delivery override
+            <FieldPresence peers={peers} focusKey={focusKey("delivery_day_override_id")} />
+          </Label>
+          <div
+            onFocus={deliveryOverrideField.onFocus}
+            onBlur={deliveryOverrideField.onBlur}
+          >
+            <DaySelect
+              value={currentDayId ?? ""}
+              days={days}
+              groupDefaultId={groupDeliveryDayId}
+              dashWhenGroupDefault
+              hideClear
+              onChange={(v) => {
+                const next =
+                  !v ? null : v === groupDeliveryDayId ? null : v;
+                onChange({ delivery_day_override_id: next });
+                deliveryOverrideField.set(next);
+              }}
+              className={cn(
+                "h-8",
+                GHOST_FIELD,
+                state.delivery_day_override_id
+                  ? undefined
+                  : "text-muted-foreground/60"
+              )}
+            />
+          </div>
         </div>
         <div className="col-span-2 flex flex-col items-end gap-1">
           <Label>Actions</Label>
@@ -2620,60 +2868,105 @@ function LetterFieldsCard({
         </div>
 
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Summary</Label>
+          <Label className="flex items-center gap-2">
+            Summary
+            <FieldPresence peers={peers} focusKey={focusKey("summary")} />
+          </Label>
           <Input
             value={state.summary ?? ""}
-            onChange={(e) => onChange({ summary: e.target.value || null })}
+            onChange={(e) => {
+              const next = e.target.value || null;
+              onChange({ summary: next });
+              summaryField.set(next);
+            }}
+            onFocus={summaryField.onFocus}
+            onBlur={summaryField.onBlur}
             className={cn("h-8", GHOST_FIELD)}
           />
         </div>
 
         <div className="col-span-3 flex flex-col gap-1">
-          <Label>Sender</Label>
-          <HeroSearch
-            value={state.sender_citizen_id}
-            heroes={heroes}
-            cities={cities}
-            nations={nations}
-            onChange={(v) => onChange({ sender_citizen_id: v })}
-            onCreate={() => onQuickCreateHero("sender")}
-            onEdit={onEditCitizen}
-          />
+          <Label className="flex items-center gap-2">
+            Sender
+            <FieldPresence peers={peers} focusKey={focusKey("sender_citizen_id")} />
+          </Label>
+          <div onFocus={senderField.onFocus} onBlur={senderField.onBlur}>
+            <HeroSearch
+              value={state.sender_citizen_id}
+              heroes={heroes}
+              cities={cities}
+              nations={nations}
+              onChange={(v) => {
+                onChange({ sender_citizen_id: v });
+                senderField.set(v);
+              }}
+              onCreate={() => onQuickCreateHero("sender")}
+              onEdit={onEditCitizen}
+            />
+          </div>
         </div>
         <div className="col-span-3 flex flex-col gap-1">
-          <Label>Receiver</Label>
-          <HeroSearch
-            value={state.receiver_citizen_id}
-            heroes={heroes}
-            cities={cities}
-            nations={nations}
-            onChange={(v) => onChange({ receiver_citizen_id: v })}
-            onCreate={() => onQuickCreateHero("receiver")}
-            onEdit={onEditCitizen}
-          />
+          <Label className="flex items-center gap-2">
+            Receiver
+            <FieldPresence peers={peers} focusKey={focusKey("receiver_citizen_id")} />
+          </Label>
+          <div onFocus={receiverField.onFocus} onBlur={receiverField.onBlur}>
+            <HeroSearch
+              value={state.receiver_citizen_id}
+              heroes={heroes}
+              cities={cities}
+              nations={nations}
+              onChange={(v) => {
+                onChange({ receiver_citizen_id: v });
+                receiverField.set(v);
+              }}
+              onCreate={() => onQuickCreateHero("receiver")}
+              onEdit={onEditCitizen}
+            />
+          </div>
         </div>
 
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Content</Label>
-          <MarkdownTextarea
-            value={state.content ?? ""}
-            onChange={(e) => onChange({ content: e.target.value || null })}
-            minRows={6}
-            className={cn("font-mono text-xs", GHOST_FIELD)}
-          />
+          <Label className="flex items-center gap-2">
+            Content
+            <FieldPresence peers={peers} focusKey={focusKey("content")} />
+          </Label>
+          <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+            <MarkdownTextarea
+              value={state.content ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                onChange({ content: next });
+                contentField.set(next);
+              }}
+              minRows={6}
+              className={cn("font-mono text-xs", GHOST_FIELD)}
+            />
+          </div>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Notes</Label>
+          <Label className="flex items-center gap-2">
+            Notes
+            <FieldPresence peers={peers} focusKey={focusKey("notes")} />
+          </Label>
           <AutoTextarea
             value={state.notes ?? ""}
-            onChange={(e) => onChange({ notes: e.target.value || null })}
+            onChange={(e) => {
+              const next = e.target.value || null;
+              onChange({ notes: next });
+              notesField.set(next);
+            }}
+            onFocus={notesField.onFocus}
+            onBlur={notesField.onBlur}
             minRows={2}
             className={GHOST_FIELD}
           />
         </div>
       </div>
 
-      <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
+      {peers.some((p) => p.focus?.recordId === state.id) ? null : (
+        <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
+      )}
       </div>
     </div>
   );
@@ -2741,16 +3034,7 @@ function LetterActionsCard({
       <PanelHeader
         title="Letter Actions"
         icon={<Milestone size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={onSave}
-            onRevert={onRevert}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -4175,6 +4459,24 @@ function ActionEditor({
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
+  const { peers, setFocus } = usePresenceContext();
+  const actionFocus: PresenceFocus = {
+    table: "actions",
+    recordId: action.id,
+    field: "editing",
+  };
+
+  function handleEnterFocus(e: React.FocusEvent<HTMLDivElement>) {
+    const wrapper = e.currentTarget;
+    const movingWithin = wrapper.contains(e.relatedTarget as Node | null);
+    if (!movingWithin) setFocus(actionFocus);
+  }
+  function handleLeaveFocus(e: React.FocusEvent<HTMLDivElement>) {
+    const wrapper = e.currentTarget;
+    const stayingWithin = wrapper.contains(e.relatedTarget as Node | null);
+    if (!stayingWithin) setFocus(null);
+  }
+
   const currentDay = currentLetterDayId
     ? days.find((d) => d.id === currentLetterDayId) ?? null
     : null;
@@ -4195,7 +4497,11 @@ function ActionEditor({
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
   return (
-    <div className="rounded-md border border-border bg-black/20 p-3">
+    <div
+      className="rounded-md border border-border bg-black/20 p-3"
+      onFocus={handleEnterFocus}
+      onBlur={handleLeaveFocus}
+    >
       {/* Header row: icon + name + overflow menu. */}
       <div className="mb-2 flex items-center gap-2">
         <span
@@ -4207,6 +4513,7 @@ function ActionEditor({
           ) : null}
         </span>
         <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
+        <FieldPresence peers={peers} focusKey={actionFocus} />
         <OverflowMenu
           items={[
             {

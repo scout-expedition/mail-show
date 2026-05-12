@@ -32,6 +32,9 @@ export default async function InspectionLettersPage({
     report: reportParam,
   } = await searchParams;
   const supabase = await createSupabaseServerClient();
+  const { data: meData } = await supabase.auth.getUser();
+  const currentUserId = meData.user?.id;
+  const currentEmail = meData.user?.email;
   const [
     { data: sData },
     { data: gData },
@@ -175,6 +178,8 @@ export default async function InspectionLettersPage({
       initialGroupId={initialGroupId}
       initialLetterId={initialLetterId}
       initialSegmentId={initialSegmentId}
+      currentUserId={currentUserId}
+      currentEmail={currentEmail}
     />
   );
 }
