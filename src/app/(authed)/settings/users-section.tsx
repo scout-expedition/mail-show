@@ -4,11 +4,10 @@ import { useActionState, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { IconPicker } from "@/components/icon-picker";
+import { EditAvatarDialog } from "@/components/edit-avatar-dialog";
 import { OverflowMenu, type OverflowMenuItem } from "@/components/panel";
 import { UserAvatar, type UserAvatarData } from "@/components/user-avatar";
 import { useConfirm } from "@/components/confirm-dialog";
-import type { IconType } from "@/lib/db/enums";
 import {
   adminResetPassword,
   adminSendMagicLink,
@@ -18,8 +17,6 @@ import {
   inviteUser,
   type InviteState,
 } from "./actions";
-
-const DEFAULT_AVATAR_COLOR = "#4b8eff";
 
 export type UserRow = {
   id: string;
@@ -229,10 +226,24 @@ export function UsersSection({
         />
       ) : null}
       {edit.kind === "avatar" ? (
-        <AvatarDialog
-          user={edit.user}
+        <EditAvatarDialog
+          title={`Avatar — ${edit.user.email}`}
+          initial={edit.user.profile}
+          email={edit.user.email}
           onClose={() => setEdit({ kind: "none" })}
-          onResult={(state) => setActionState(state)}
+          onError={(error) => setActionState({ status: "error", error })}
+          onSave={async ({ icon_type, icon_value, color_hex }) => {
+            const fd = new FormData();
+            fd.set("userId", edit.user.id);
+            fd.set("avatar_icon_type", icon_type);
+            fd.set("avatar_icon_value", icon_value);
+            fd.set("avatar_color_hex", color_hex);
+            await adminUpdateUserAvatar(fd);
+            setActionState({
+              status: "success",
+              message: `Avatar updated for ${edit.user.email}.`,
+            });
+          }}
         />
       ) : null}
 
@@ -338,94 +349,3 @@ function DisplayNameDialog({
   );
 }
 
-function AvatarDialog({
-  user,
-  onClose,
-  onResult,
-}: {
-  user: UserRow;
-  onClose: () => void;
-  onResult: (state: ActionState) => void;
-}) {
-  const [iconType, setIconType] = useState<IconType>(
-    user.profile.avatar_icon_type ?? "lucide"
-  );
-  const [iconValue, setIconValue] = useState<string>(
-    user.profile.avatar_icon_value ?? ""
-  );
-  const [colorHex, setColorHex] = useState<string>(
-    user.profile.avatar_color_hex ?? DEFAULT_AVATAR_COLOR
-  );
-  const [pending, startTransition] = useTransition();
-
-  const preview: UserAvatarData = {
-    display_name: user.profile.display_name,
-    avatar_icon_type: iconValue ? iconType : null,
-    avatar_icon_value: iconValue || null,
-    avatar_color_hex: colorHex,
-  };
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    startTransition(async () => {
-      try {
-        const fd = new FormData();
-        fd.set("userId", user.id);
-        fd.set("avatar_icon_type", iconType);
-        fd.set("avatar_icon_value", iconValue.trim());
-        fd.set("avatar_color_hex", colorHex);
-        await adminUpdateUserAvatar(fd);
-        onResult({
-          status: "success",
-          message: `Avatar updated for ${user.email}.`,
-        });
-        onClose();
-      } catch (e) {
-        onResult({
-          status: "error",
-          error: e instanceof Error ? e.message : "Failed to update avatar",
-        });
-      }
-    });
-  }
-
-  return (
-    <DialogShell title={`Avatar — ${user.email}`} onClose={onClose}>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <div className="flex items-center gap-3">
-          <UserAvatar user={preview} email={user.email} size={48} />
-          <div className="text-xs text-muted-foreground">
-            Preview
-          </div>
-        </div>
-        <div className="rounded-md border border-border bg-accent/10 px-3 py-3">
-          <IconPicker
-            initialType={iconType}
-            initialValue={iconValue || null}
-            emitHiddenFields={false}
-            onChange={(next) => {
-              setIconType(next.type);
-              setIconValue(next.value);
-            }}
-            color={colorHex}
-            onColorChange={setColorHex}
-          />
-        </div>
-        <div className="flex justify-end gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={onClose}
-            disabled={pending}
-          >
-            Cancel
-          </Button>
-          <Button type="submit" size="sm" disabled={pending}>
-            {pending ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      </form>
-    </DialogShell>
-  );
-}
