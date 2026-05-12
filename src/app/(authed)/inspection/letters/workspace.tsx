@@ -267,6 +267,7 @@ export function LettersWorkspace({
   initialGroupId,
   initialLetterId,
   initialSegmentId,
+  initialView,
   controlledSelection,
   onSelectionChange,
   onClose,
@@ -291,6 +292,12 @@ export function LettersWorkspace({
   initialGroupId: string | null;
   initialLetterId: string | null;
   initialSegmentId: string | null;
+  /**
+   * Optional initial view override. Currently used to land the user on
+   * the actions panel when reloading a `?actions=<slug>-<variant>` URL.
+   * Requires `initialLetterId` to take effect.
+   */
+  initialView?: "actions" | null;
   /**
    * Optional controlled selection from a parent (e.g., the narrative
    * graph). When provided, the parent owns the URL and drives the
@@ -470,7 +477,9 @@ export function LettersWorkspace({
     initialSegmentId
       ? "segment"
       : initialLetterId
-        ? "main"
+        ? initialView === "actions"
+          ? "actions"
+          : "main"
         : initialGroupId
           ? "group"
           : "list"
@@ -494,14 +503,15 @@ export function LettersWorkspace({
       if (selectedSegmentId) {
         const seg = segments.find((s) => s.id === selectedSegmentId);
         if (seg?.variant) {
-          target = `${pathname}?report=${encodeURIComponent(`${slug}/${seg.variant}`)}`;
+          target = `${pathname}?report=${encodeURIComponent(`${slug}-${seg.variant}`)}`;
         } else {
           target = `${pathname}?group=${encodeURIComponent(slug)}`;
         }
       } else if (selectedId) {
         const l = letters.find((x) => x.id === selectedId);
         if (l?.variant) {
-          target = `${pathname}?letter=${encodeURIComponent(`${slug}/${l.variant}`)}`;
+          const param = view === "actions" ? "actions" : "letter";
+          target = `${pathname}?${param}=${encodeURIComponent(`${slug}-${l.variant}`)}`;
         } else {
           target = `${pathname}?group=${encodeURIComponent(slug)}`;
         }
@@ -511,7 +521,7 @@ export function LettersWorkspace({
     }
     router.replace(target, { scroll: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId, selectedId, selectedSegmentId, isControlled]);
+  }, [selectedGroupId, selectedId, selectedSegmentId, view, isControlled]);
 
   // Controlled mode: push the parent's selection into internal state.
   // The ref guard suppresses the reciprocal bubble-up effect on the same
