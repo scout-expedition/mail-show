@@ -35,6 +35,8 @@ begin
 end $$;
 
 alter table public.ending_condition_row_chips
+  drop constraint if exists ending_condition_row_chips_operator_check;
+alter table public.ending_condition_row_chips
   add constraint ending_condition_row_chips_operator_check
     check (operator in (
       '=','≠','<','≤','>','≥',

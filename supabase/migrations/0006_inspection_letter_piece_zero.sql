@@ -5,7 +5,7 @@
 update public.inspection_letters set piece = null where piece = 0;
 
 drop view if exists public.inspection_letters_view;
-create view public.inspection_letters_view as
+create or replace view public.inspection_letters_view as
 select
   il.*,
   coalesce(il.delivery_day_override_id, lg.delivery_day_id) as effective_day_id,

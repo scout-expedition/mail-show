@@ -5,8 +5,10 @@
 -- never matches and the author re-chips it).
 
 alter table public.ending_condition_row_chips
-  drop constraint ending_condition_row_chips_variable_id_fkey;
+  drop constraint if exists ending_condition_row_chips_variable_id_fkey;
 
-alter table public.ending_condition_row_chips
-  add constraint ending_condition_row_chips_variable_id_fkey
-    foreign key (variable_id) references public.ending_variables(id) on delete cascade;
+do $$ begin
+  alter table public.ending_condition_row_chips
+    add constraint ending_condition_row_chips_variable_id_fkey
+      foreign key (variable_id) references public.ending_variables(id) on delete cascade;
+exception when duplicate_object then null; end $$;

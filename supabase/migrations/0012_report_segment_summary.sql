@@ -9,7 +9,7 @@ alter table public.report_segments
 -- Views select * from the base table, which snapshots the column list at
 -- creation time. Drop and recreate so summary flows through.
 drop view if exists public.report_segments_view;
-create view public.report_segments_view as
+create or replace view public.report_segments_view as
 select
   rs.*,
   rg.letter_group_id,

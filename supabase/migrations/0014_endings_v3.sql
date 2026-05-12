@@ -27,36 +27,43 @@
 -- No data preservation: only test rows in dev.
 
 -- 1) Wipe v2 tree data so the new constraints can apply cleanly.
-delete from public.ending_framework_blocks;
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='ending_framework_blocks' and column_name='variable_id') then
+    delete from public.ending_framework_blocks;
+  end if;
+end $$;
 
 -- 2) Variables: add kind, number_ref, color_index.
 alter table public.ending_variables
-  add column kind text not null default 'text'
+  add column if not exists kind text not null default 'text'
     check (kind in ('text','number_ref')),
-  add column number_ref text,
-  add column color_index int not null default 0;
+  add column if not exists number_ref text,
+  add column if not exists color_index int not null default 0;
 
-alter table public.ending_variables
-  add constraint ending_variables_kind_shape
-    check (
-      (kind = 'text' and number_ref is null)
-      or (kind = 'number_ref' and number_ref is not null)
-    );
+do $$ begin
+  alter table public.ending_variables
+    add constraint ending_variables_kind_shape
+      check (
+        (kind = 'text' and number_ref is null)
+        or (kind = 'number_ref' and number_ref is not null)
+      );
+exception when duplicate_object then null; end $$;
 
 -- 3) Condition rows.
-create table public.ending_condition_rows (
+create table if not exists public.ending_condition_rows (
   id uuid primary key default uuid_generate_v4(),
   condition_block_id uuid not null references public.ending_framework_blocks(id) on delete cascade,
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger ending_condition_rows_set_updated_at before update on public.ending_condition_rows
+create or replace trigger ending_condition_rows_set_updated_at before update on public.ending_condition_rows
   for each row execute function public.set_updated_at();
-create index ending_condition_rows_block_idx on public.ending_condition_rows(condition_block_id);
+create index if not exists ending_condition_rows_block_idx on public.ending_condition_rows(condition_block_id);
 
 -- 4) Row chips.
-create table public.ending_condition_row_chips (
+create table if not exists public.ending_condition_row_chips (
   id uuid primary key default uuid_generate_v4(),
   row_id uuid not null references public.ending_condition_rows(id) on delete cascade,
   variable_id uuid not null references public.ending_variables(id) on delete restrict,
@@ -71,10 +78,10 @@ create table public.ending_condition_row_chips (
     or (text_value_id is null and number_value is not null)
   )
 );
-create trigger ending_condition_row_chips_set_updated_at before update on public.ending_condition_row_chips
+create or replace trigger ending_condition_row_chips_set_updated_at before update on public.ending_condition_row_chips
   for each row execute function public.set_updated_at();
-create index ending_condition_row_chips_row_idx on public.ending_condition_row_chips(row_id);
-create index ending_condition_row_chips_variable_idx on public.ending_condition_row_chips(variable_id);
+create index if not exists ending_condition_row_chips_row_idx on public.ending_condition_row_chips(row_id);
+create index if not exists ending_condition_row_chips_variable_idx on public.ending_condition_row_chips(variable_id);
 
 -- 5) Re-shape ending_framework_blocks: parent_value_id → parent_row_id;
 --    drop variable_id (vars derived from chips).
@@ -86,18 +93,20 @@ alter table public.ending_framework_blocks
 drop index if exists public.ending_framework_blocks_parent_value_idx;
 
 alter table public.ending_framework_blocks
-  drop column parent_value_id,
-  drop column variable_id,
-  add column parent_row_id uuid references public.ending_condition_rows(id) on delete cascade;
+  drop column if exists parent_value_id,
+  drop column if exists variable_id,
+  add column if not exists parent_row_id uuid references public.ending_condition_rows(id) on delete cascade;
 
-alter table public.ending_framework_blocks
-  add constraint ending_framework_blocks_parent_shape
-    check (
-      (parent_block_id is null and parent_row_id is null)
-      or (parent_block_id is not null and parent_row_id is not null)
-    );
+do $$ begin
+  alter table public.ending_framework_blocks
+    add constraint ending_framework_blocks_parent_shape
+      check (
+        (parent_block_id is null and parent_row_id is null)
+        or (parent_block_id is not null and parent_row_id is not null)
+      );
+exception when duplicate_object then null; end $$;
 
-create index ending_framework_blocks_parent_row_idx on public.ending_framework_blocks(parent_row_id);
+create index if not exists ending_framework_blocks_parent_row_idx on public.ending_framework_blocks(parent_row_id);
 
 -- 6) RLS: authenticated users full CRUD on the new tables.
 do $$
@@ -108,12 +117,16 @@ begin
     'ending_condition_rows','ending_condition_row_chips'
   ]) loop
     execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format('create policy %I on public.%I for select using (auth.role() = ''authenticated'')',
       t || '_select', t);
+    execute format('drop policy if exists %I on public.%I', t || '_insert', t);
     execute format('create policy %I on public.%I for insert with check (auth.role() = ''authenticated'')',
       t || '_insert', t);
+    execute format('drop policy if exists %I on public.%I', t || '_update', t);
     execute format('create policy %I on public.%I for update using (auth.role() = ''authenticated'') with check (auth.role() = ''authenticated'')',
       t || '_update', t);
+    execute format('drop policy if exists %I on public.%I', t || '_delete', t);
     execute format('create policy %I on public.%I for delete using (auth.role() = ''authenticated'')',
       t || '_delete', t);
   end loop;
