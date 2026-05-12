@@ -68,6 +68,26 @@ export async function signInWithPassword(formData: FormData) {
   redirect(next);
 }
 
+export async function requestPasswordReset(formData: FormData) {
+  const next = String(formData.get("next") ?? "/dashboard");
+  const emailCheck = validateEmail(formData.get("email"));
+
+  // Always land on /sign-in?reset=1 — generic banner avoids leaking which
+  // emails are registered. We only actually call Supabase when the input
+  // looks like a valid email.
+  if (emailCheck.ok) {
+    const supabase = await createSupabaseServerClient();
+    const origin = await siteOrigin();
+    await supabase.auth.resetPasswordForEmail(emailCheck.email, {
+      redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(
+        "/auth/set-password"
+      )}`,
+    });
+  }
+
+  redirect(buildRedirect({ reset: "1", next }));
+}
+
 export async function signOut() {
   const supabase = await createSupabaseServerClient();
   await supabase.auth.signOut();

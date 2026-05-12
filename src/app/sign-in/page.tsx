@@ -4,7 +4,7 @@ import { SignInForm } from "./sign-in-form";
 export default function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string; error?: string; sent?: string }>;
+  searchParams: Promise<{ next?: string; error?: string; sent?: string; reset?: string }>;
 }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -26,8 +26,15 @@ export default function SignInPage({
 async function SignInFormAsync({
   searchParams,
 }: {
-  searchParams: Promise<{ next?: string; error?: string; sent?: string }>;
+  searchParams: Promise<{ next?: string; error?: string; sent?: string; reset?: string }>;
 }) {
-  const { next, error, sent } = await searchParams;
-  return <SignInForm next={next} error={error} sent={sent === "1"} />;
+  const { next, error, sent, reset } = await searchParams;
+  return (
+    <SignInForm
+      next={next}
+      error={error}
+      sent={sent === "1"}
+      reset={reset === "1"}
+    />
+  );
 }

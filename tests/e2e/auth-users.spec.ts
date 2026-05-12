@@ -30,14 +30,19 @@ async function deleteUserByEmail(admin: SupabaseClient, email: string) {
   if (found) await admin.auth.admin.deleteUser(found.id);
 }
 
-/** Mint a session cookie for `email` and apply it to the Playwright context. */
+/**
+ * Mint a session cookie for `email` and apply it to the Playwright context.
+ * `type` controls which Supabase OTP flavor — "magiclink" for the post-invite
+ * sign-in path, "recovery" for password-reset link follow-through.
+ */
 async function signInAs(
   admin: SupabaseClient,
   context: import("@playwright/test").BrowserContext,
-  email: string
+  email: string,
+  type: "magiclink" | "recovery" = "magiclink"
 ) {
   const { data, error } = await admin.auth.admin.generateLink({
-    type: "magiclink",
+    type,
     email,
   });
   if (error) throw error;
@@ -59,7 +64,7 @@ async function signInAs(
   );
   const { error: verifyErr } = await ssr.auth.verifyOtp({
     token_hash: tokenHash,
-    type: "magiclink",
+    type,
   });
   if (verifyErr) throw verifyErr;
 
@@ -202,5 +207,182 @@ test.describe("settings user management", () => {
     await expect(ownRow).toBeVisible();
     await expect(ownRow.getByRole("button", { name: "Delete" })).toHaveCount(0);
     await expect(ownRow.getByText("you")).toBeVisible();
+  });
+
+  test("admin sends a password reset from /settings", async ({ page }) => {
+    const admin = makeAdmin();
+    const email = `reset-target-${Date.now()}@e2e.test`;
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password: "old-password-1",
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    try {
+      await page.goto("/settings");
+      const row = page.locator("li", { hasText: email });
+      await expect(row).toBeVisible();
+      await row.getByRole("button", { name: "Send reset link" }).click();
+      await expect(
+        page.getByText(`Reset link sent to ${email}`)
+      ).toBeVisible();
+    } finally {
+      await deleteUserByEmail(admin, email);
+    }
+  });
+
+  test("admin sends a magic link from /settings", async ({ page }) => {
+    const admin = makeAdmin();
+    const email = `magic-target-${Date.now()}@e2e.test`;
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    try {
+      await page.goto("/settings");
+      const row = page.locator("li", { hasText: email });
+      await expect(row).toBeVisible();
+      await row.getByRole("button", { name: "Send magic link" }).click();
+      await expect(
+        page.getByText(`Magic link sent to ${email}`)
+      ).toBeVisible();
+    } finally {
+      await deleteUserByEmail(admin, email);
+    }
+  });
+});
+
+test.describe("change own password", () => {
+  // Drop the storageState — we need to control the signed-in user precisely
+  // so we don't permanently change the password on the shared E2E account.
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test("signed-in user can change their own password", async ({
+    page,
+    context,
+  }) => {
+    const admin = makeAdmin();
+    const email = `self-change-${Date.now()}@e2e.test`;
+    const oldPassword = "old-password-1";
+    const newPassword = "new-password-2";
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password: oldPassword,
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    try {
+      // Mint a session for this throwaway user.
+      await signInAs(admin, context, email);
+
+      await page.goto("/settings");
+      await page.getByLabel("Current password").fill(oldPassword);
+      await page.getByLabel("New password", { exact: true }).fill(newPassword);
+      await page.getByLabel("Confirm new password").fill(newPassword);
+      await page.getByRole("button", { name: "Update password" }).click();
+      await expect(page.getByText("Password updated.")).toBeVisible();
+
+      // Sign out and back in with the new password to confirm it took.
+      await page.getByRole("button", { name: "Sign out" }).click();
+      await expect(page).toHaveURL(/\/sign-in/);
+      await page.getByLabel("Email").fill(email);
+      await page.getByLabel("Password").fill(newPassword);
+      await page.getByRole("button", { name: "Sign in" }).click();
+      await expect(page).toHaveURL(/\/dashboard/);
+    } finally {
+      await deleteUserByEmail(admin, email);
+    }
+  });
+
+  test("change-password fails when current password is wrong", async ({
+    page,
+    context,
+  }) => {
+    const admin = makeAdmin();
+    const email = `self-change-bad-${Date.now()}@e2e.test`;
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password: "the-real-password",
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    try {
+      await signInAs(admin, context, email);
+
+      await page.goto("/settings");
+      await page.getByLabel("Current password").fill("not-the-real-password");
+      await page
+        .getByLabel("New password", { exact: true })
+        .fill("brand-new-password");
+      await page.getByLabel("Confirm new password").fill("brand-new-password");
+      await page.getByRole("button", { name: "Update password" }).click();
+      await expect(
+        page.getByText("Current password is incorrect")
+      ).toBeVisible();
+    } finally {
+      await deleteUserByEmail(admin, email);
+    }
+  });
+});
+
+test.describe("password reset flow", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test("forgot-password shows generic banner regardless of email", async ({
+    page,
+  }) => {
+    await page.goto("/sign-in");
+    await page
+      .getByLabel("Email")
+      .fill(`nonexistent-${Date.now()}@e2e.test`);
+    await page.getByRole("button", { name: "Forgot your password?" }).click();
+    await expect(page).toHaveURL(/\/sign-in/);
+    await expect(
+      page.getByText(/password reset link is on its way/i)
+    ).toBeVisible();
+  });
+
+  test("user follows reset link, sets a new password, signs in with it", async ({
+    page,
+    context,
+  }) => {
+    const admin = makeAdmin();
+    const email = `reset-user-${Date.now()}@e2e.test`;
+    const oldPassword = "old-password-1";
+    const newPassword = "brand-new-password-2";
+    const { error } = await admin.auth.admin.createUser({
+      email,
+      password: oldPassword,
+      email_confirm: true,
+    });
+    if (error) throw error;
+
+    try {
+      // Simulate the user clicking the reset link by minting a recovery
+      // session directly. End state matches what they'd land on after the
+      // email link goes through /auth/callback.
+      await signInAs(admin, context, email, "recovery");
+      await page.goto("/auth/set-password");
+      await page.getByLabel("New password").fill(newPassword);
+      await page.getByLabel("Confirm password").fill(newPassword);
+      await page.getByRole("button", { name: "Save password" }).click();
+      await expect(page).toHaveURL(/\/dashboard/);
+
+      // Sign out and sign back in with the new password.
+      await page.goto("/settings");
+      await page.getByRole("button", { name: "Sign out" }).click();
+      await expect(page).toHaveURL(/\/sign-in/);
+      await page.getByLabel("Email").fill(email);
+      await page.getByLabel("Password").fill(newPassword);
+      await page.getByRole("button", { name: "Sign in" }).click();
+      await expect(page).toHaveURL(/\/dashboard/);
+    } finally {
+      await deleteUserByEmail(admin, email);
+    }
   });
 });
