@@ -12,16 +12,24 @@
 -- rows in dev), per project convention for endings rebuilds (0010,
 -- 0014).
 --
--- Idempotent-friendly: re-applies are safe.
+-- Idempotent-friendly: re-applies are safe and do not wipe data once
+-- the new schema is in place. The destructive drops at the top only
+-- fire when the OLD ending_frameworks table is still present.
 
--- 1) Drop old shape. Order matters — children first.
-drop table if exists public.ending_logic_rule_conditions cascade;
-drop table if exists public.ending_logic_rules cascade;
-drop table if exists public.ending_condition_block_variables cascade;
-drop table if exists public.ending_condition_row_chips cascade;
-drop table if exists public.ending_condition_rows cascade;
-drop table if exists public.ending_framework_blocks cascade;
-drop table if exists public.ending_frameworks cascade;
+-- 1) Drop old shape — only on first apply, signalled by the presence
+-- of the old ending_frameworks table. After that, this is a no-op.
+do $$ begin
+  if exists (select 1 from information_schema.tables
+             where table_schema='public' and table_name='ending_frameworks') then
+    drop table if exists public.ending_logic_rule_conditions cascade;
+    drop table if exists public.ending_logic_rules cascade;
+    drop table if exists public.ending_condition_block_variables cascade;
+    drop table if exists public.ending_condition_row_chips cascade;
+    drop table if exists public.ending_condition_rows cascade;
+    drop table if exists public.ending_framework_blocks cascade;
+    drop table if exists public.ending_frameworks cascade;
+  end if;
+end $$;
 
 -- 2) Document kind enum.
 do $$ begin
@@ -39,7 +47,7 @@ end $$;
 
 -- 3) Documents. Frameworks carry a user-facing name + sort_order; logic
 -- docs are anonymous singletons (one per non-'framework' kind).
-create table public.ending_documents (
+create table if not exists public.ending_documents (
   id uuid primary key default uuid_generate_v4(),
   kind ending_document_kind not null,
   name text,
@@ -52,16 +60,16 @@ create table public.ending_documents (
   )
 );
 
-create trigger ending_documents_set_updated_at before update on public.ending_documents
+create or replace trigger ending_documents_set_updated_at before update on public.ending_documents
   for each row execute function public.set_updated_at();
 
 -- Singleton enforcement for non-framework kinds.
-create unique index ending_documents_singleton_kinds
+create unique index if not exists ending_documents_singleton_kinds
   on public.ending_documents (kind)
   where kind <> 'framework';
 
 -- Framework names stay unique among frameworks.
-create unique index ending_documents_framework_name_unique
+create unique index if not exists ending_documents_framework_name_unique
   on public.ending_documents (name)
   where kind = 'framework';
 
@@ -91,7 +99,7 @@ end $$;
 -- 4) Blocks (replaces ending_framework_blocks). block_type widens to
 -- include 'result' leaves carrying a result_value. text + result_value
 -- are mutually exclusive; condition blocks have neither.
-create table public.ending_blocks (
+create table if not exists public.ending_blocks (
   id uuid primary key default uuid_generate_v4(),
   document_id uuid not null references public.ending_documents(id) on delete cascade,
   parent_block_id uuid references public.ending_blocks(id) on delete cascade,
@@ -113,34 +121,36 @@ create table public.ending_blocks (
   )
 );
 
-create trigger ending_blocks_set_updated_at before update on public.ending_blocks
+create or replace trigger ending_blocks_set_updated_at before update on public.ending_blocks
   for each row execute function public.set_updated_at();
 
-create index ending_blocks_document_idx on public.ending_blocks(document_id);
-create index ending_blocks_parent_idx on public.ending_blocks(parent_block_id);
+create index if not exists ending_blocks_document_idx on public.ending_blocks(document_id);
+create index if not exists ending_blocks_parent_idx on public.ending_blocks(parent_block_id);
 
 -- 5) Rows + chips + header variables. Names retain "condition_" because
 -- they only ever attach to condition-kind blocks; the table shapes
 -- mirror their pre-rebuild counterparts (0014/0020/0021).
-create table public.ending_condition_rows (
+create table if not exists public.ending_condition_rows (
   id uuid primary key default uuid_generate_v4(),
   condition_block_id uuid not null references public.ending_blocks(id) on delete cascade,
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-create trigger ending_condition_rows_set_updated_at before update on public.ending_condition_rows
+create or replace trigger ending_condition_rows_set_updated_at before update on public.ending_condition_rows
   for each row execute function public.set_updated_at();
-create index ending_condition_rows_block_idx on public.ending_condition_rows(condition_block_id);
+create index if not exists ending_condition_rows_block_idx on public.ending_condition_rows(condition_block_id);
 
 -- Now wire ending_blocks.parent_row_id to ending_condition_rows.
-alter table public.ending_blocks
-  add constraint ending_blocks_parent_row_fk
-  foreign key (parent_row_id)
-  references public.ending_condition_rows(id) on delete cascade;
-create index ending_blocks_parent_row_idx on public.ending_blocks(parent_row_id);
+do $$ begin
+  alter table public.ending_blocks
+    add constraint ending_blocks_parent_row_fk
+    foreign key (parent_row_id)
+    references public.ending_condition_rows(id) on delete cascade;
+exception when duplicate_object then null; end $$;
+create index if not exists ending_blocks_parent_row_idx on public.ending_blocks(parent_row_id);
 
-create table public.ending_condition_row_chips (
+create table if not exists public.ending_condition_row_chips (
   id uuid primary key default uuid_generate_v4(),
   row_id uuid not null references public.ending_condition_rows(id) on delete cascade,
   variable_id uuid not null references public.ending_variables(id) on delete cascade,
@@ -160,12 +170,12 @@ create table public.ending_condition_row_chips (
     or (aggregate_value is not null and text_value_id is null    and number_value    is null)
   )
 );
-create trigger ending_condition_row_chips_set_updated_at before update on public.ending_condition_row_chips
+create or replace trigger ending_condition_row_chips_set_updated_at before update on public.ending_condition_row_chips
   for each row execute function public.set_updated_at();
-create index ending_condition_row_chips_row_idx on public.ending_condition_row_chips(row_id);
-create index ending_condition_row_chips_variable_idx on public.ending_condition_row_chips(variable_id);
+create index if not exists ending_condition_row_chips_row_idx on public.ending_condition_row_chips(row_id);
+create index if not exists ending_condition_row_chips_variable_idx on public.ending_condition_row_chips(variable_id);
 
-create table public.ending_condition_block_variables (
+create table if not exists public.ending_condition_block_variables (
   id uuid primary key default uuid_generate_v4(),
   condition_block_id uuid not null references public.ending_blocks(id) on delete cascade,
   variable_id uuid not null references public.ending_variables(id) on delete cascade,
@@ -174,9 +184,9 @@ create table public.ending_condition_block_variables (
   updated_at timestamptz not null default now(),
   unique (condition_block_id, variable_id)
 );
-create trigger ending_condition_block_variables_set_updated_at before update on public.ending_condition_block_variables
+create or replace trigger ending_condition_block_variables_set_updated_at before update on public.ending_condition_block_variables
   for each row execute function public.set_updated_at();
-create index ending_condition_block_variables_block_idx on public.ending_condition_block_variables(condition_block_id);
+create index if not exists ending_condition_block_variables_block_idx on public.ending_condition_block_variables(condition_block_id);
 
 -- 6) RLS — same authenticated-user CRUD as v3.
 do $$
