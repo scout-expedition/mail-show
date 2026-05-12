@@ -134,15 +134,26 @@ export function useInstantField<T>(
     dispatch({ type: "remote", value });
   }, [value]);
 
-  // Clear pending timer on unmount so a late commit doesn't fire after the
-  // component is gone.
+  // On unmount: flush any pending edit synchronously so a card remount
+  // (e.g. `key={letterState.id}` switching between rows within the debounce
+  // window) doesn't silently drop the typed-but-unsaved value. The captured
+  // `onCommit` closure still points at the row this hook was instantiated
+  // for, so the edit lands on the right id even though the new instance has
+  // already taken over the DOM. Status transitions from this commit go to
+  // the unmounted state and are discarded, which is fine — the await
+  // chain still runs to completion.
   useEffect(() => {
     return () => {
-      if (timerRef.current !== null) {
+      if (stateRef.current.status === "dirty") {
+        // commitNow clears the timer + dispatches saveStart/saveSuccess;
+        // setState after unmount is a no-op + safe.
+        commitNow();
+      } else if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function commitNow() {

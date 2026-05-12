@@ -78,6 +78,7 @@ import {
 import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import type { PostgresChange } from "@/lib/realtime/channel";
 import { FieldPresence } from "@/lib/realtime/field-presence";
 import type { PresenceFocus } from "@/lib/realtime/presence";
 import {
@@ -88,6 +89,7 @@ import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast";
 import { useUnsavedDialog } from "@/components/unsaved-dialog";
 import type { UnsavedOutcome } from "@/components/unsaved-dialog";
 import {
@@ -323,12 +325,30 @@ export type LettersWorkspaceProps = {
  * workspace body. Read the live values via `usePresenceContext()` inside
  * any child component.
  */
+/**
+ * Tables the workspace subscribes to via postgres_changes. UPDATE events
+ * are column-merged into local mirrors (view-derived columns preserved);
+ * DELETE events drop the row and surface a toast if it's the currently-
+ * selected one. INSERT is intentionally skipped — structural creates still
+ * `revalidatePath`, and INSERT payloads lack the view-derived columns
+ * (`content_id`, etc.) the UI renders, so a freshly-seeded view row would
+ * appear broken until the next page refresh.
+ */
+const POSTGRES_TABLES = [
+  "inspection_letters",
+  "letter_groups",
+  "actions",
+  "report_segments",
+  "storylines",
+];
+
 export function LettersWorkspace(props: LettersWorkspaceProps) {
   return (
     <WorkspacePresenceProvider
       channelName="letters-workspace"
       userId={props.currentUserId}
       email={props.currentEmail}
+      postgresTables={POSTGRES_TABLES}
     >
       <LettersWorkspaceInner {...props} />
     </WorkspacePresenceProvider>
@@ -336,17 +356,17 @@ export function LettersWorkspace(props: LettersWorkspaceProps) {
 }
 
 function LettersWorkspaceInner({
-  storylines,
-  groups: allGroups,
+  storylines: storylinesProp,
+  groups: allGroupsProp,
   days,
-  letters: allLetters,
-  actions: allActions,
+  letters: allLettersProp,
+  actions: allActionsProp,
   templates,
   heroes: initialHeroes,
   allCitizenIds,
   cities,
   nations,
-  segments: allSegments,
+  segments: allSegmentsProp,
   endingVariables,
   endingValues,
   endingAssignments,
@@ -362,7 +382,44 @@ function LettersWorkspaceInner({
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { peers, setFocus } = usePresenceContext();
+  const { peers, setFocus, onPostgresChanges } = usePresenceContext();
+  const { toast, toaster } = useToast();
+
+  // Mirror server-provided arrays so postgres_changes events can fan out
+  // to the UI without a page reload. Structural mutations still revalidate;
+  // when the props change, the "adjust state during render" pattern below
+  // resyncs the mirrors back to canonical truth.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [storylines, setStorylines] = useState(storylinesProp);
+  const [allGroups, setAllGroups] = useState(allGroupsProp);
+  const [allLetters, setAllLetters] = useState(allLettersProp);
+  const [allActions, setAllActions] = useState(allActionsProp);
+  const [allSegments, setAllSegments] = useState(allSegmentsProp);
+  const [prevStorylinesProp, setPrevStorylinesProp] = useState(storylinesProp);
+  const [prevGroupsProp, setPrevGroupsProp] = useState(allGroupsProp);
+  const [prevLettersProp, setPrevLettersProp] = useState(allLettersProp);
+  const [prevActionsProp, setPrevActionsProp] = useState(allActionsProp);
+  const [prevSegmentsProp, setPrevSegmentsProp] = useState(allSegmentsProp);
+  if (storylinesProp !== prevStorylinesProp) {
+    setPrevStorylinesProp(storylinesProp);
+    setStorylines(storylinesProp);
+  }
+  if (allGroupsProp !== prevGroupsProp) {
+    setPrevGroupsProp(allGroupsProp);
+    setAllGroups(allGroupsProp);
+  }
+  if (allLettersProp !== prevLettersProp) {
+    setPrevLettersProp(allLettersProp);
+    setAllLetters(allLettersProp);
+  }
+  if (allActionsProp !== prevActionsProp) {
+    setPrevActionsProp(allActionsProp);
+    setAllActions(allActionsProp);
+  }
+  if (allSegmentsProp !== prevSegmentsProp) {
+    setPrevSegmentsProp(allSegmentsProp);
+    setAllSegments(allSegmentsProp);
+  }
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
     scoped: true,
   });
@@ -583,6 +640,136 @@ function LettersWorkspaceInner({
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     initialSegmentId
   );
+
+  // Latest-selection refs — the postgres_changes handler reads these without
+  // re-registering itself on every selection change.
+  const selectedGroupIdRef = useRef(selectedGroupId);
+  selectedGroupIdRef.current = selectedGroupId;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const selectedSegmentIdRef = useRef(selectedSegmentId);
+  selectedSegmentIdRef.current = selectedSegmentId;
+
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      const { table, eventType } = change;
+
+      if (eventType === "UPDATE") {
+        const newRow = change.new as Record<string, unknown>;
+        const id = newRow.id as string | undefined;
+        if (!id) return;
+        switch (table) {
+          case "inspection_letters":
+            setAllLetters((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as InspectionLetterView)
+                  : r
+              )
+            );
+            return;
+          case "letter_groups":
+            setAllGroups((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as LetterGroup)
+                  : r
+              )
+            );
+            return;
+          case "actions":
+            setAllActions((prev) =>
+              prev.map((r) =>
+                r.id === id ? ({ ...r, ...newRow } as unknown as ActionRow) : r
+              )
+            );
+            return;
+          case "report_segments":
+            setAllSegments((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as ReportSegmentView)
+                  : r
+              )
+            );
+            return;
+          case "storylines":
+            setStorylines((prev) =>
+              prev.map((r) =>
+                r.id === id ? ({ ...r, ...newRow } as unknown as Storyline) : r
+              )
+            );
+            return;
+        }
+        return;
+      }
+
+      if (eventType === "DELETE") {
+        const oldRow = change.old as Record<string, unknown> | undefined;
+        const id = oldRow?.id as string | undefined;
+        if (!id) return;
+        const deleterEmail =
+          (oldRow?.updated_by as string | undefined) ?? null;
+        const by = deleterEmail ?? "Someone";
+
+        switch (table) {
+          case "inspection_letters":
+            setAllLetters((prev) => prev.filter((r) => r.id !== id));
+            if (selectedIdRef.current === id) {
+              setSelectedId(null);
+              setLetterState(null);
+              setView("group");
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this letter`,
+              });
+            }
+            return;
+          case "letter_groups":
+            setAllGroups((prev) => prev.filter((r) => r.id !== id));
+            if (selectedGroupIdRef.current === id) {
+              setSelectedGroupId(null);
+              setSelectedId(null);
+              setLetterState(null);
+              setSelectedSegmentId(null);
+              segmentOpenedFromRef.current = null;
+              setView("list");
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this letter group`,
+              });
+            }
+            return;
+          case "actions":
+            setAllActions((prev) => prev.filter((r) => r.id !== id));
+            return;
+          case "report_segments":
+            setAllSegments((prev) => prev.filter((r) => r.id !== id));
+            if (selectedSegmentIdRef.current === id) {
+              const target =
+                segmentOpenedFromRef.current === "actions"
+                  ? "actions"
+                  : "group";
+              segmentOpenedFromRef.current = null;
+              setSelectedSegmentId(null);
+              setView(target);
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this report segment`,
+              });
+            }
+            return;
+          case "storylines":
+            setStorylines((prev) => prev.filter((r) => r.id !== id));
+            return;
+        }
+        return;
+      }
+
+      // INSERT intentionally skipped — structural creates still revalidate,
+      // and INSERT payloads lack the view-derived columns the UI renders.
+    });
+  }, [onPostgresChanges, toast]);
 
   const isControlled = !!onSelectionChange;
 
@@ -2617,6 +2804,7 @@ function LettersWorkspaceInner({
       ) : null}
       {confirmDialogEl}
       {unsavedDialogEl}
+      {toaster}
     </div>
   );
 }
