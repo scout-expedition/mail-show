@@ -60,6 +60,7 @@ import {
   patchActionEndingAssignments,
   patchInspectionLetter,
   patchLetterGroup,
+  patchReportSegment,
   quickCreateCitizen,
   reorderInspectionLetters,
   reorderLetterGroups,
@@ -68,7 +69,6 @@ import {
   saveLetterActionsOnly,
   saveLetterFields,
   saveLetterWithActions,
-  saveReportSegment,
   updateCitizen,
 } from "./actions";
 import {
@@ -1329,10 +1329,7 @@ function LettersWorkspaceInner({
     setView("main");
   }
 
-  async function closeSegmentPanel(
-    segmentDirty: boolean,
-    onSave: () => Promise<void>
-  ) {
+  function closeSegmentPanel() {
     // Always return to the surface that opened the segment. The ref is set
     // by openSegmentForAction / openSegmentFromGroup. When unknown (e.g.,
     // the graph picks a segment directly), fall back based on whether a
@@ -1346,20 +1343,6 @@ function LettersWorkspaceInner({
           : letterState
             ? "actions"
             : "group";
-    if (segmentDirty) {
-      const outcome = await askUnsaved("Unsaved Report Segment");
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        startRowAction(async () => {
-          await onSave();
-          setView(targetView);
-          setSelectedSegmentId(null);
-          segmentOpenedFromRef.current = null;
-        });
-        return;
-      }
-      // discard: drop the dirty edits and continue with navigation
-    }
     setView(targetView);
     setSelectedSegmentId(null);
     segmentOpenedFromRef.current = null;
@@ -1371,34 +1354,15 @@ function LettersWorkspaceInner({
    * selection if the trigger lives in a different letter group (e.g. a
    * sibling storyline's letter pointing at this segment).
    */
-  async function jumpToTrigger(
-    letterId: string,
-    segmentDirty: boolean,
-    onSave: () => Promise<void>
-  ) {
+  function jumpToTrigger(letterId: string) {
     const target = allLetters.find((l) => l.id === letterId);
     if (!target) return;
-    const doJump = () => {
-      if (target.letter_group_id !== selectedGroupId) {
-        setSelectedGroupId(target.letter_group_id);
-      }
-      setSelectedId(letterId);
-      setSelectedSegmentId(null);
-      setView("actions");
-    };
-    if (segmentDirty) {
-      const outcome = await askUnsaved("Unsaved Report Segment");
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        startRowAction(async () => {
-          await onSave();
-          doJump();
-        });
-        return;
-      }
-      // discard: drop pending edits and jump
+    if (target.letter_group_id !== selectedGroupId) {
+      setSelectedGroupId(target.letter_group_id);
     }
-    doJump();
+    setSelectedId(letterId);
+    setSelectedSegmentId(null);
+    setView("actions");
   }
 
   function updateLetter(patch: Partial<LetterState>) {
@@ -2528,7 +2492,7 @@ function LettersWorkspaceInner({
             />
           ) : selectedSegmentId ? (
             <LetterSegmentCard
-              key={`group-${selectedSegmentId}`}
+              key={selectedSegmentId}
               segment={
                 segments.find((s) => s.id === selectedSegmentId) ?? null
               }
@@ -3172,16 +3136,9 @@ function LetterSegmentCard({
   allLetters: InspectionLetterView[];
   storylines: Storyline[];
   templates: ActionTemplate[];
-  onBack: (
-    dirty: boolean,
-    onSave: () => Promise<void>
-  ) => void;
+  onBack: () => void;
   onDelete: (segmentId: string) => void;
-  onJumpToTrigger: (
-    letterId: string,
-    dirty: boolean,
-    onSave: () => Promise<void>
-  ) => void;
+  onJumpToTrigger: (letterId: string) => void;
   onConfirmDialog: (options: {
     title: string;
     message?: string;
@@ -3189,51 +3146,56 @@ function LetterSegmentCard({
     intent?: "destructive" | "default";
   }) => Promise<boolean>;
 }) {
-  const [state, setState] = useState(() =>
-    segment
-      ? {
-          variant: segment.variant,
-          summary: segment.summary,
-          content: segment.content,
-          delivery_day_override_id: segment.delivery_day_override_id,
-        }
-      : {
-          variant: "",
-          summary: null as string | null,
-          content: null as string | null,
-          delivery_day_override_id: null as string | null,
-        }
-  );
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
+  const { peers, setFocus } = usePresenceContext();
+  const segmentId = segment?.id ?? "";
 
-  useEffect(() => {
-    if (!segment) return;
-    setState({
-      variant: segment.variant,
-      summary: segment.summary,
-      content: segment.content,
-      delivery_day_override_id: segment.delivery_day_override_id,
-    });
-    setDirty(false);
-  }, [segment]);
-
-  async function saveNow() {
-    if (!segment) return;
-    await saveReportSegment({
-      id: segment.id,
-      variant: state.variant.trim() || segment.variant,
-      summary: state.summary,
-      content: state.content,
-      delivery_day_override_id: state.delivery_day_override_id,
-    });
-    setDirty(false);
+  function focusKey(field: string): PresenceFocus {
+    return { table: "report_segments", recordId: segmentId, field };
+  }
+  function onFocusChangeFor(field: string) {
+    return (focused: boolean) =>
+      setFocus(focused ? focusKey(field) : null);
   }
 
-  function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
-    setState((s) => ({ ...s, [k]: v }));
-    setDirty(true);
-  }
+  // IMPORTANT: useInstantField's `value` MUST be the canonical server row
+  // (segment.X), not local edit state — otherwise commitNow's equality
+  // check short-circuits the save. See Track B3 lesson in
+  // docs/multi-user-collab-plan.md.
+  const variantField = useInstantField<string>({
+    value: segment?.variant ?? "",
+    onCommit: async (next) => {
+      if (!segment) return;
+      const value = next.trim() || segment.variant;
+      await patchReportSegment(segment.id, { variant: value });
+    },
+    onFocusChange: onFocusChangeFor("variant"),
+  });
+  const dayField = useInstantField<string | null>({
+    value: segment?.delivery_day_override_id ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, {
+        delivery_day_override_id: next,
+      });
+    },
+    onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+  });
+  const summaryField = useInstantField<string | null>({
+    value: segment?.summary ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, { summary: next });
+    },
+    onFocusChange: onFocusChangeFor("summary"),
+  });
+  const contentField = useInstantField<string | null>({
+    value: segment?.content ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, { content: next });
+    },
+    onFocusChange: onFocusChangeFor("content"),
+  });
 
   type Trigger = {
     actionId: string;
@@ -3277,38 +3239,13 @@ function LetterSegmentCard({
     );
   }
 
-  const currentDayId = state.delivery_day_override_id;
+  const currentDayId = dayField.value;
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Report Segment"
         icon={<Megaphone size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={() => startSave(saveNow)}
-            onRevert={async () => {
-              if (!dirty || !segment) return;
-              const ok = await onConfirmDialog({
-                title: "Discard segment changes?",
-                message: "Any unsaved edits will be lost.",
-                confirmLabel: "Revert",
-                intent: "destructive",
-              });
-              if (!ok) return;
-              setState({
-                variant: segment.variant,
-                summary: segment.summary,
-                content: segment.content,
-                delivery_day_override_id: segment.delivery_day_override_id,
-              });
-              setDirty(false);
-            }}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -3333,10 +3270,7 @@ function LetterSegmentCard({
       />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
-        <BackLink
-          onNavigate={() => onBack(dirty, saveNow)}
-          label="Back to actions"
-        />
+        <BackLink onNavigate={onBack} label="Back to actions" />
         <ReportSegmentPill
           storyline={storylines.find((s) => s.id === segment.storyline_id)}
           reportId={segment.report_id}
@@ -3344,56 +3278,73 @@ function LetterSegmentCard({
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
-          <Label>Variant</Label>
+          <Label className="flex items-center gap-2">
+            Variant
+            <FieldPresence peers={peers} focusKey={focusKey("variant")} />
+          </Label>
           <Input
-            value={state.variant}
+            value={variantField.value}
             onChange={(e) =>
-              update("variant", formatRomanInput(e.target.value))
+              variantField.set(formatRomanInput(e.target.value))
             }
+            onFocus={variantField.onFocus}
+            onBlur={variantField.onBlur}
             placeholder="i"
             className={cn(
               "h-8 lowercase",
               GHOST_FIELD,
-              state.variant && !isValidRoman(state.variant)
+              variantField.value && !isValidRoman(variantField.value)
                 ? "ring-2 ring-destructive"
                 : undefined
             )}
           />
         </div>
         <div className="col-span-4 flex flex-col gap-1">
-          <Label>Delivery day</Label>
-          <DaySelect
-            value={
-              (state.delivery_day_override_id ?? groupDeliveryDayId) ?? ""
-            }
-            days={days}
-            groupDefaultId={groupDeliveryDayId}
-            defaultSuffix="(Following Day)"
-            onChange={(v) =>
-              update(
-                "delivery_day_override_id",
-                !v ? null : v === groupDeliveryDayId ? null : v
-              )
-            }
-            className={cn("h-8", GHOST_FIELD)}
-          />
+          <Label className="flex items-center gap-2">
+            Delivery day
+            <FieldPresence peers={peers} focusKey={focusKey("delivery_day_override_id")} />
+          </Label>
+          <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
+            <DaySelect
+              value={(currentDayId ?? groupDeliveryDayId) ?? ""}
+              days={days}
+              groupDefaultId={groupDeliveryDayId}
+              defaultSuffix="(Following Day)"
+              onChange={(v) =>
+                dayField.set(
+                  !v ? null : v === groupDeliveryDayId ? null : v
+                )
+              }
+              className={cn("h-8", GHOST_FIELD)}
+            />
+          </div>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Summary</Label>
+          <Label className="flex items-center gap-2">
+            Summary
+            <FieldPresence peers={peers} focusKey={focusKey("summary")} />
+          </Label>
           <Input
-            value={state.summary ?? ""}
-            onChange={(e) => update("summary", e.target.value || null)}
+            value={summaryField.value ?? ""}
+            onChange={(e) => summaryField.set(e.target.value || null)}
+            onFocus={summaryField.onFocus}
+            onBlur={summaryField.onBlur}
             className={cn("h-8", GHOST_FIELD)}
           />
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Content</Label>
-          <MarkdownTextarea
-            value={state.content ?? ""}
-            onChange={(e) => update("content", e.target.value || null)}
-            minRows={8}
-            className={cn("font-mono text-xs", GHOST_FIELD)}
-          />
+          <Label className="flex items-center gap-2">
+            Content
+            <FieldPresence peers={peers} focusKey={focusKey("content")} />
+          </Label>
+          <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+            <MarkdownTextarea
+              value={contentField.value ?? ""}
+              onChange={(e) => contentField.set(e.target.value || null)}
+              minRows={8}
+              className={cn("font-mono text-xs", GHOST_FIELD)}
+            />
+          </div>
         </div>
       </div>
       {triggers.length > 0 ? (
@@ -3408,9 +3359,7 @@ function LetterSegmentCard({
                 <button
                   key={t.actionId}
                   type="button"
-                  onClick={() =>
-                    onJumpToTrigger(t.letterId, dirty, saveNow)
-                  }
+                  onClick={() => onJumpToTrigger(t.letterId)}
                   title={`Jump to ${t.contentId} · ${t.actionName}`}
                   className="inline-flex items-center rounded-md transition-opacity hover:opacity-80"
                 >
@@ -3433,7 +3382,9 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
+      {peers.some((p) => p.focus?.recordId === segment.id) ? null : (
+        <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
+      )}
       </div>
     </div>
   );
