@@ -48,5 +48,5 @@ begin
       6,
       11002
     )
-  on conflict (name) do nothing;
+  on conflict (id) do nothing;
 end $$;
