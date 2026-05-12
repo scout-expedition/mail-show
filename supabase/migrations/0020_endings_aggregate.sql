@@ -134,5 +134,5 @@ begin
       5,
       11001
     )
-  on conflict (name) do nothing;
+  on conflict (id) do nothing;
 end $$;
