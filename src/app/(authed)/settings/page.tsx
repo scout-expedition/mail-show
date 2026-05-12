@@ -1,11 +1,11 @@
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   createSupabaseServerClient,
   createSupabaseServiceClient,
 } from "@/lib/supabase/server";
-import { signOut } from "@/app/sign-in/actions";
+import { profileFromMetadata } from "@/lib/auth/profile";
+import { AccountSection } from "./account-section";
 import { ChangePasswordSection } from "./change-password-section";
 import { UsersSection, type UserRow } from "./users-section";
 
@@ -14,6 +14,7 @@ export default async function SettingsPage() {
   const { data: me } = await supabase.auth.getUser();
   const currentEmail = me.user?.email ?? null;
   const currentUserId = me.user?.id ?? null;
+  const ownProfile = profileFromMetadata(me.user?.user_metadata);
 
   let users: UserRow[] = [];
   let usersError: string | null = null;
@@ -27,6 +28,7 @@ export default async function SettingsPage() {
         email: u.email ?? "(no email)",
         lastSignInAt: u.last_sign_in_at ?? null,
         createdAt: u.created_at,
+        profile: profileFromMetadata(u.user_metadata),
       }))
       .sort((a, b) => a.email.localeCompare(b.email));
   } catch (e) {
@@ -39,15 +41,14 @@ export default async function SettingsPage() {
 
       <Card className="mb-4">
         <CardHeader>
-          <CardTitle>Signed in</CardTitle>
-          <CardDescription>{currentEmail ?? "(no session)"}</CardDescription>
+          <CardTitle>Account</CardTitle>
+          <CardDescription>
+            Your display name and avatar appear in presence indicators
+            throughout the app.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <form action={signOut}>
-            <Button type="submit" variant="secondary" size="sm">
-              Sign out
-            </Button>
-          </form>
+          <AccountSection email={currentEmail} profile={ownProfile} />
         </CardContent>
       </Card>
 
