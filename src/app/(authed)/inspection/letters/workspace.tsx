@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -669,7 +670,14 @@ function LettersWorkspaceInner({
     }
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
-      router.refresh();
+      // Wrap in startTransition so Next 16 schedules the RSC refetch
+      // alongside React's concurrent work — without this, refreshes
+      // dispatched from inside a non-React callback (postgres event)
+      // can be coalesced away before they invalidate the route. Confirmed
+      // empirically: B doesn't see peer INSERTs without this wrap.
+      startTransition(() => {
+        router.refresh();
+      });
     }, 100);
   }, [router]);
 
