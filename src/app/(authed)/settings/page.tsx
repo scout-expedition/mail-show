@@ -6,6 +6,7 @@ import {
   createSupabaseServiceClient,
 } from "@/lib/supabase/server";
 import { signOut } from "@/app/sign-in/actions";
+import { ChangePasswordSection } from "./change-password-section";
 import { UsersSection, type UserRow } from "./users-section";
 
 export default async function SettingsPage() {
@@ -47,6 +48,18 @@ export default async function SettingsPage() {
               Sign out
             </Button>
           </form>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-4">
+        <CardHeader>
+          <CardTitle>Change your password</CardTitle>
+          <CardDescription>
+            Update the password on your account. You&apos;ll stay signed in.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ChangePasswordSection />
         </CardContent>
       </Card>
 

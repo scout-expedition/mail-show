@@ -85,4 +85,6 @@ Before starting feature work in either area, read the corresponding plan first.
 
 Hosted on Vercel under the `coreylubos-projects` team. The repo is connected to a Vercel project that deploys **only** the `main` branch — PR preview deployments are disabled via `vercel.json` (`git.deploymentEnabled: { "main": true }`). Merges to `main` build + deploy to production automatically; PRs do nothing on the Vercel side. To temporarily preview a branch, add it to `deploymentEnabled` and push, or use the Redeploy button in the Vercel dashboard.
 
-Env vars live in the Vercel project settings (not in the repo). The proxy + Supabase clients read the usual `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / service-role key plus `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS`.
+Env vars live in the Vercel project settings (not in the repo). The proxy + Supabase clients read `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`. Membership is governed by Supabase `auth.users` directly (no allowlist) — invites/deletes happen at `/settings`.
+
+Auth emails (invite, magic link, password reset) go through **Resend** SMTP — configured in the Supabase dashboard under Auth → SMTP Settings, not in code. The sender currently uses Resend's onboarding domain (`onboarding@resend.dev`); swap to a custom sending domain in a later branch. Setup checklist in `docs/auth-email-reset-plan.md`.
