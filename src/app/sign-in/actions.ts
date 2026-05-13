@@ -34,7 +34,7 @@ export async function signInWithMagicLink(formData: FormData) {
     email: emailCheck.email,
     options: {
       shouldCreateUser: false,
-      emailRedirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}`,
+      emailRedirectTo: `${origin}${next.startsWith("/") ? next : "/dashboard"}`,
     },
   });
 
@@ -79,9 +79,7 @@ export async function requestPasswordReset(formData: FormData) {
     const supabase = await createSupabaseServerClient();
     const origin = await siteOrigin();
     await supabase.auth.resetPasswordForEmail(emailCheck.email, {
-      redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(
-        "/auth/set-password"
-      )}`,
+      redirectTo: `${origin}/auth/set-password`,
     });
   }
 

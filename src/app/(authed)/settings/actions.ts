@@ -51,12 +51,8 @@ export async function inviteUser(
   const check = validateEmail(formData.get("email"));
   if (!check.ok) return { status: "error", error: check.error };
 
-  const h = await headers();
-  const host = h.get("host") ?? "localhost:3000";
-  const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
-  const redirectTo = `${protocol}://${host}/auth/callback?next=${encodeURIComponent(
-    "/auth/set-password"
-  )}`;
+  const origin = await siteOrigin();
+  const redirectTo = `${origin}/auth/set-password`;
 
   const service = createSupabaseServiceClient();
   const { error } = await service.auth.admin.inviteUserByEmail(check.email, {
@@ -73,9 +69,7 @@ export async function adminResetPassword(formData: FormData) {
   if (!check.ok) throw new Error(check.error);
 
   const origin = await siteOrigin();
-  const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent(
-    "/auth/set-password"
-  )}`;
+  const redirectTo = `${origin}/auth/set-password`;
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.resetPasswordForEmail(check.email, {
@@ -89,9 +83,7 @@ export async function adminSendMagicLink(formData: FormData) {
   if (!check.ok) throw new Error(check.error);
 
   const origin = await siteOrigin();
-  const emailRedirectTo = `${origin}/auth/callback?next=${encodeURIComponent(
-    "/dashboard"
-  )}`;
+  const emailRedirectTo = `${origin}/dashboard`;
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithOtp({
