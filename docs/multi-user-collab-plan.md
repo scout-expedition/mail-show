@@ -301,10 +301,14 @@ synced without waiting for the local user to re-select / re-focus.
 - **Click avatar → jump.** Workspace passes `onAvatarClick={jumpToPeer}` —
   applies the peer's selection chain via the same `applyingPanelSnapshot`
   guard used by mouse-back/forward, so the bubble-up effect doesn't loop.
-- **Mute peers not on same panel.** `sharesPanel(self, peer)` intersects
-  the four ids `{storyline, group, letter, segment}` across both chains;
-  empty intersection → `opacity-50` only (no grayscale, deliberately
-  distinct from inactive mute).
+- **Mute peers not on same panel.** `sharesPanel(self, peer, narrow)`
+  intersects the four ids `{storyline, group, letter, segment}` across
+  both chains; empty intersection → `opacity-50` only (no grayscale,
+  deliberately distinct from inactive mute). In narrow mode (slide-one-
+  panel-at-a-time layout) the full intersection is misleading — a peer
+  could have a group + letter loaded but only the letter is on screen,
+  so we collapse to `visibleRecordId(selection.view)` and compare just
+  that. Workspace threads `narrow` into `AvatarStack`.
 - **Mute inactive peers.** 120s hardcoded threshold. `lastActiveAt` is
   bucketed to 5s in `usePresence` to bound state churn during sustained
   typing — combined with a 5s `setInterval` inside `AvatarStack` that
@@ -350,6 +354,22 @@ settled value is always current. Avoids the `react-hooks/refs` lint
 violation that the older direct-assignment pattern (`selfFocusRef.current
 = self.focus`) trips. Pre-existing direct assignments left untouched
 (not my code to fix).
+
+**Lesson #5 — Realtime needs auth attached BEFORE
+`channel.subscribe()`.** Postgres_changes are RLS-gated server-side, so
+the channel needs the user's JWT on the `phx_join`. Without it, the
+channel joins fine for broadcasts but the server silently denies the
+postgres_changes subscription. The user-visible signature is a
+distinctive "focus rings work but content updates don't propagate until
+refresh." Two preconditions: (a) `createSupabaseBrowserClient()` must be
+a **singleton** — creating a fresh client per channel mount resets the
+embedded realtime client's `accessToken`; (b) `useRealtimeChannel` must
+`await supabase.auth.getSession()` and call
+`supabase.realtime.setAuth(token)` **before** `ch.subscribe()`, since
+the auth session restores from cookies asynchronously and the channel
+can otherwise race ahead of it. Both fixes ship together; either alone
+is insufficient. (`localStorage.debug_presence = "1"` enables console
+logs at the channel + workspace layers to verify.)
 
 #### Open follow-ups
 
