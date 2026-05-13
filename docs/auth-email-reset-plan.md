@@ -127,44 +127,55 @@ Fix: switched to the Supabase-recommended **token-hash flow**.
 
 ### Email templates to paste into Supabase → Auth → Email Templates
 
-Replace the body of each template. Use the URL exactly as shown — the only
-difference between templates is the `type=` value.
+Templates use `{{ .RedirectTo }}` as the base of the link (not `{{ .SiteURL }}`)
+so the email's host follows whatever environment triggered the action. The
+server action sets `redirectTo` to `${origin}/auth/confirm?next=<final>`, and
+the template appends `&token_hash=…&type=…`. Trigger from prod → email goes
+to prod. Trigger from a Vercel preview → email goes to that preview. Trigger
+from localhost → email goes to localhost. No Site URL swap needed for
+preview/local testing.
+
+Replace the body of each template. The only difference between templates is
+the `type=` value.
 
 **Confirm signup** (`type=signup`):
 ```html
 <h2>Confirm your signup</h2>
 <p>Follow this link to confirm your account:</p>
-<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=signup&next={{ .RedirectTo }}">Confirm your account</a></p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=signup">Confirm your account</a></p>
 ```
 
 **Invite user** (`type=invite`):
 ```html
 <h2>You're invited to Mail Show</h2>
 <p>Follow this link to accept your invite and set a password:</p>
-<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=invite&next={{ .RedirectTo }}">Accept invite</a></p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=invite">Accept invite</a></p>
 ```
 
 **Magic Link** (`type=magiclink`):
 ```html
 <h2>Sign in to Mail Show</h2>
 <p>Follow this link to sign in:</p>
-<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=magiclink&next={{ .RedirectTo }}">Sign in</a></p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=magiclink">Sign in</a></p>
 ```
 
 **Reset Password** (`type=recovery`):
 ```html
 <h2>Reset your password</h2>
 <p>Follow this link to set a new password:</p>
-<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next={{ .RedirectTo }}">Reset password</a></p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=recovery">Reset password</a></p>
 ```
 
 **Change Email Address** (`type=email_change`):
 ```html
 <h2>Confirm your new email</h2>
 <p>Follow this link to confirm your new email address:</p>
-<p><a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email_change&next={{ .RedirectTo }}">Confirm email change</a></p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=email_change">Confirm email change</a></p>
 ```
 
-Site URL stays `https://mail-show.vercel.app`. No redirect-URL allow-list
-changes are needed — the link sits on Site URL itself, and `next` is a
-relative path validated server-side.
+Note the leading `&` (not `?`) — the server action's `redirectTo` already
+contains a `?next=…`, so the template just appends additional params.
+
+Supabase Redirect URLs allow list must permit `…/auth/confirm` paths. The
+existing wildcards `https://*.vercel.app/**` and `http://localhost:3000/**`
+cover all preview deployments and local dev — no dashboard change needed.
