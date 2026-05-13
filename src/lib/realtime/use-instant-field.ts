@@ -81,7 +81,9 @@ export type UseInstantFieldOptions<T> = {
    * peer marked active without re-firing focus events.
    */
   onActivity?: () => void;
-  /** Throttle window for `onActivity` in ms. Default 1000. */
+  /** Throttle window for `onActivity` in ms. Default 5000 — aligned with
+   *  the 5s lastActiveAt bucketing in usePresence; broadcasting more often
+   *  yields no extra precision and just inflates channel traffic. */
   activityThrottleMs?: number;
 };
 
@@ -113,7 +115,7 @@ export function useInstantField<T>(
     equals = Object.is,
     onFocusChange,
     onActivity,
-    activityThrottleMs = 1000,
+    activityThrottleMs = 5000,
   } = opts;
 
   const [state, setState] = useState<InstantFieldState<T>>({

@@ -11,12 +11,25 @@ const INACTIVE_AFTER_MS = 120_000;
  * Compute whether the local user and a peer have at least one record loaded
  * in common — i.e. their open-panel chains intersect at any of storyline /
  * group / letter / segment. Used to dim peers who aren't on the same panel.
+ *
+ * In `narrow` mode the workspace shows one slot at a time, so "sharing a
+ * panel" reduces to "we're both looking at the same visible record" — derived
+ * from each side's `view` + the matching id. The full intersection would be
+ * misleading: in narrow mode a peer could have a group + a letter loaded but
+ * only the letter is on screen, so showing them as "co-located" via the
+ * background group would be wrong.
  */
 export function sharesPanel(
   self: PresenceSelection | null,
-  peer: PresenceSelection | null
+  peer: PresenceSelection | null,
+  narrow = false
 ): boolean {
   if (!self || !peer) return false;
+  if (narrow) {
+    const selfId = visibleRecordId(self);
+    const peerId = visibleRecordId(peer);
+    return !!selfId && selfId === peerId;
+  }
   const selfIds = new Set(
     [self.storylineId, self.groupId, self.letterId, self.segmentId].filter(
       (id): id is string => !!id
@@ -31,6 +44,26 @@ export function sharesPanel(
     if (id && selfIds.has(id)) return true;
   }
   return false;
+}
+
+/** The record id of the currently-visible slot in a peer's selection chain.
+ *  Mirrors the workspace's slide-to-view mapping (slot 0 = list/storyline,
+ *  slot 2 = group, slot 3 = letter, slot 4 = actions (still letter-scoped),
+ *  slot 5 = segment). */
+export function visibleRecordId(sel: PresenceSelection): string | null {
+  switch (sel.view) {
+    case "list":
+      return sel.storylineId;
+    case "group":
+      return sel.groupId;
+    case "main":
+    case "actions":
+      return sel.letterId;
+    case "segment":
+      return sel.segmentId;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -55,6 +88,7 @@ export function AvatarStack({
   peerLocations,
   onAvatarClick,
   inactiveAfterMs = INACTIVE_AFTER_MS,
+  narrow = false,
 }: {
   peers: PresencePeer[];
   className?: string;
@@ -73,6 +107,9 @@ export function AvatarStack({
   onAvatarClick?: (peer: PresencePeer) => void;
   /** Inactivity threshold in ms. Default 120s. */
   inactiveAfterMs?: number;
+  /** When true, only the currently-visible slot counts for "same panel" —
+   *  matches the workspace's slide-one-panel-at-a-time layout. */
+  narrow?: boolean;
 }) {
   // Re-render every 5s so the inactive-mute boundary flips without external
   // state changes. `now` is owned by state (not Date.now() in render) so the
@@ -98,7 +135,8 @@ export function AvatarStack({
         const inactive = peer.lastActiveAt > 0
           ? now - peer.lastActiveAt > inactiveAfterMs
           : false;
-        const offPanel = !!selfSelection && !sharesPanel(selfSelection, peer.selection);
+        const offPanel =
+          !!selfSelection && !sharesPanel(selfSelection, peer.selection, narrow);
         const location = peerLocations?.get(peer.userId) ?? "Idle";
         return (
           <PresenceAvatar

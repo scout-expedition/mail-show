@@ -4,7 +4,7 @@ import {
   parsePresenceIdentities,
   type RawPresenceState,
 } from "./presence";
-import { sharesPanel } from "./avatar-stack";
+import { sharesPanel, visibleRecordId } from "./avatar-stack";
 
 describe("colorFromUserId", () => {
   it("is deterministic — same input yields same color", () => {
@@ -108,6 +108,7 @@ describe("sharesPanel — open-panel intersection", () => {
       groupId: string | null;
       letterId: string | null;
       segmentId: string | null;
+      view: string;
     }> = {}
   ) => ({
     storylineId: null,
@@ -157,5 +158,96 @@ describe("sharesPanel — open-panel intersection", () => {
     expect(
       sharesPanel(sel({ groupId: null }), sel({ groupId: null }))
     ).toBe(false);
+  });
+
+  describe("narrow mode — only the visible slot counts", () => {
+    it("matches when both are looking at the same letter in main view", () => {
+      expect(
+        sharesPanel(
+          sel({ groupId: "G1", letterId: "L1", view: "main" }),
+          sel({ groupId: "G1", letterId: "L1", view: "main" }),
+          true
+        )
+      ).toBe(true);
+    });
+
+    it("does NOT match if peer has same group loaded but is viewing the letter", () => {
+      // Wide mode would match (shared group), narrow mode must not — only the
+      // visible record counts. Self is looking at the group panel, peer at a
+      // letter inside that group.
+      expect(
+        sharesPanel(
+          sel({ groupId: "G1", view: "group" }),
+          sel({ groupId: "G1", letterId: "L1", view: "main" }),
+          true
+        )
+      ).toBe(false);
+    });
+
+    it("falls back to false when visibleRecordId is null on either side", () => {
+      expect(
+        sharesPanel(sel({ view: "list" }), sel({ view: "list" }), true)
+      ).toBe(false);
+    });
+
+    it("matches actions view via letterId — same panel as 'main'", () => {
+      expect(
+        sharesPanel(
+          sel({ letterId: "L1", view: "main" }),
+          sel({ letterId: "L1", view: "actions" }),
+          true
+        )
+      ).toBe(true);
+    });
+  });
+});
+
+describe("visibleRecordId", () => {
+  it("maps each view to the right slot's record", () => {
+    expect(
+      visibleRecordId({
+        storylineId: "S1",
+        groupId: "G1",
+        letterId: "L1",
+        segmentId: null,
+        view: "list",
+      })
+    ).toBe("S1");
+    expect(
+      visibleRecordId({
+        storylineId: null,
+        groupId: "G1",
+        letterId: null,
+        segmentId: null,
+        view: "group",
+      })
+    ).toBe("G1");
+    expect(
+      visibleRecordId({
+        storylineId: null,
+        groupId: "G1",
+        letterId: "L1",
+        segmentId: null,
+        view: "main",
+      })
+    ).toBe("L1");
+    expect(
+      visibleRecordId({
+        storylineId: null,
+        groupId: "G1",
+        letterId: "L1",
+        segmentId: null,
+        view: "actions",
+      })
+    ).toBe("L1");
+    expect(
+      visibleRecordId({
+        storylineId: null,
+        groupId: "G1",
+        letterId: "L1",
+        segmentId: "Seg1",
+        view: "segment",
+      })
+    ).toBe("Seg1");
   });
 });

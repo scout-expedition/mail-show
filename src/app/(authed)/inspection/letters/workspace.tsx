@@ -657,6 +657,16 @@ function LettersWorkspaceInner({
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       const { table, eventType } = change;
+      // Diagnostic toggle: set `localStorage.debug_presence = "1"` in the
+      // browser console to log every incoming postgres event from peers.
+      // Used to verify the realtime fan-out is reaching this client when
+      // remote edits appear to not propagate.
+      if (
+        typeof window !== "undefined" &&
+        window.localStorage?.getItem("debug_presence") === "1"
+      ) {
+        console.warn("[presence] postgres", eventType, table, change);
+      }
 
       if (eventType === "UPDATE") {
         const newRow = change.new as Record<string, unknown>;
@@ -1364,12 +1374,12 @@ function LettersWorkspaceInner({
   }, []);
 
   // Throttle the action-edit activity heartbeat to match useInstantField's
-  // 1Hz throttle. Sustained impact-tile clicks or next-letter cycles fire
+  // 5s window. Sustained impact-tile clicks or next-letter cycles fire
   // updateAction rapidly; we don't need to broadcast on every keystroke.
   const lastActionActivityAtRef = useRef(0);
   function pingActionActivity() {
     const now = Date.now();
-    if (now - lastActionActivityAtRef.current < 1000) return;
+    if (now - lastActionActivityAtRef.current < 5000) return;
     lastActionActivityAtRef.current = now;
     pingActivity();
   }
@@ -1739,6 +1749,7 @@ function LettersWorkspaceInner({
               selfSelection={selfSelection}
               peerLocations={peerLocations}
               onAvatarClick={jumpToPeer}
+              narrow={narrow}
             />
           </div>
         ) : null
