@@ -314,7 +314,7 @@ export function AvatarStack({
           {overflow > 0 ? (
             <span
               className="z-10 inline-flex h-6 min-w-6 items-center justify-center rounded-full border border-background bg-muted px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground"
-              title={peers
+              title={byPriority
                 .slice(max)
                 .map((p) => p.profile?.displayName?.trim() || p.email)
                 .join(", ")}
