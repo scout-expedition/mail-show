@@ -64,6 +64,7 @@ const PRESENCE_POSTGRES_TABLES = [
   "actions",
   "report_segments",
   "storylines",
+  "inspection_action_ending_assignments",
 ];
 
 /**

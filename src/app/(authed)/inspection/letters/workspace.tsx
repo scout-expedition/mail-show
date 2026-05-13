@@ -332,6 +332,7 @@ const POSTGRES_TABLES = [
   "actions",
   "report_segments",
   "storylines",
+  "inspection_action_ending_assignments",
 ];
 
 export function LettersWorkspace(props: LettersWorkspaceProps) {
@@ -364,7 +365,7 @@ function LettersWorkspaceInner({
   segments: allSegmentsProp,
   endingVariables,
   endingValues,
-  endingAssignments,
+  endingAssignments: endingAssignmentsProp,
   initialGroupId,
   initialLetterId,
   initialSegmentId,
@@ -390,11 +391,17 @@ function LettersWorkspaceInner({
   const [allLetters, setAllLetters] = useState(allLettersProp);
   const [allActions, setAllActions] = useState(allActionsProp);
   const [allSegments, setAllSegments] = useState(allSegmentsProp);
+  const [endingAssignments, setEndingAssignments] = useState(
+    endingAssignmentsProp
+  );
   const [prevStorylinesProp, setPrevStorylinesProp] = useState(storylinesProp);
   const [prevGroupsProp, setPrevGroupsProp] = useState(allGroupsProp);
   const [prevLettersProp, setPrevLettersProp] = useState(allLettersProp);
   const [prevActionsProp, setPrevActionsProp] = useState(allActionsProp);
   const [prevSegmentsProp, setPrevSegmentsProp] = useState(allSegmentsProp);
+  const [prevEndingAssignmentsProp, setPrevEndingAssignmentsProp] = useState(
+    endingAssignmentsProp
+  );
   if (storylinesProp !== prevStorylinesProp) {
     setPrevStorylinesProp(storylinesProp);
     setStorylines(storylinesProp);
@@ -414,6 +421,10 @@ function LettersWorkspaceInner({
   if (allSegmentsProp !== prevSegmentsProp) {
     setPrevSegmentsProp(allSegmentsProp);
     setAllSegments(allSegmentsProp);
+  }
+  if (endingAssignmentsProp !== prevEndingAssignmentsProp) {
+    setPrevEndingAssignmentsProp(endingAssignmentsProp);
+    setEndingAssignments(endingAssignmentsProp);
   }
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
     scoped: true,
@@ -726,6 +737,15 @@ function LettersWorkspaceInner({
               )
             );
             return;
+          case "inspection_action_ending_assignments":
+            setEndingAssignments((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as InspectionActionEndingAssignment)
+                  : r
+              )
+            );
+            return;
         }
         return;
       }
@@ -788,6 +808,9 @@ function LettersWorkspaceInner({
           case "storylines":
             setStorylines((prev) => prev.filter((r) => r.id !== id));
             return;
+          case "inspection_action_ending_assignments":
+            setEndingAssignments((prev) => prev.filter((r) => r.id !== id));
+            return;
         }
         return;
       }
@@ -800,6 +823,20 @@ function LettersWorkspaceInner({
         // content_id to include a variant suffix), patching the mirror
         // in-place would leave stale display ids. Fall back to a debounced
         // RSC refetch which gets the views right and reseeds the mirrors.
+        //
+        // Exception: inspection_action_ending_assignments has no view
+        // derivation and no fan-out to other rows, so the raw payload is
+        // complete. Patching the mirror in-place avoids forcing an RSC
+        // refetch every time a peer adds an ending mapping.
+        if (table === "inspection_action_ending_assignments") {
+          const newRow = change.new as Record<string, unknown>;
+          const row = newRow as unknown as InspectionActionEndingAssignment;
+          if (!row.id) return;
+          setEndingAssignments((prev) =>
+            prev.some((r) => r.id === row.id) ? prev : [...prev, row]
+          );
+          return;
+        }
         scheduleRefresh();
         return;
       }
@@ -4212,6 +4249,78 @@ function readableOnHex(hex: string): string {
   return luminance > 0.65 ? "#0b0d10" : "#ffffff";
 }
 
+/**
+ * Impact-tile wrapper that adds two layers of collab chrome around the
+ * stock ImpactTile / NationImpactTile:
+ *
+ * - **Focus ring** via `<FieldHighlight>` so a peer focusing this tile shows
+ *   their color around it. The `data-focus-field` attribute stamped by
+ *   FieldHighlight is what `ActionEditor.handleEnterFocus` reads to derive
+ *   the column key from the bubbled focus event — no need to wire explicit
+ *   onFocus handlers into the underlying button/input.
+ * - **Remote-change flash** — when the `value` prop changes more than
+ *   ~250ms after the user's last click on this tile's own +/- (or any
+ *   typing), the wrapper assumes the change came from a peer and pulses a
+ *   yellow inset ring for ~600ms. Local clicks set `lastLocalChangeAtRef`
+ *   right before calling `onChange`, so they're correctly suppressed.
+ */
+function HighlightableImpactTile({
+  peers,
+  focusKey,
+  value,
+  onChange,
+  children,
+}: {
+  peers: PresencePeer[];
+  focusKey: PresenceFocus;
+  value: number;
+  onChange: (v: number) => void;
+  children: (value: number, onChange: (v: number) => void) => React.ReactNode;
+}) {
+  const [flashing, setFlashing] = useState(false);
+  const lastLocalChangeAtRef = useRef(0);
+  const prevValueRef = useRef(value);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      prevValueRef.current = value;
+      return;
+    }
+    if (prevValueRef.current === value) return;
+    prevValueRef.current = value;
+    const sinceLocal = Date.now() - lastLocalChangeAtRef.current;
+    if (sinceLocal < 250) return;
+    setFlashing(true);
+    const t = setTimeout(() => setFlashing(false), 600);
+    return () => clearTimeout(t);
+  }, [value]);
+
+  function handleChange(v: number) {
+    // `handleChange` is wired into the ImpactTile's onChange via the render
+    // prop below, so it only executes at click/keystroke time — safe to
+    // read Date.now(). The lint heuristic can't statically tell that, hence
+    // the disable.
+    // eslint-disable-next-line react-hooks/purity
+    lastLocalChangeAtRef.current = Date.now();
+    onChange(v);
+  }
+
+  return (
+    <FieldHighlight
+      peers={peers}
+      focusKey={focusKey}
+      className={cn(
+        "rounded-md p-0.5 transition-shadow",
+        flashing && "ring-2 ring-yellow-300/80"
+      )}
+    >
+      {children(value, handleChange)}
+    </FieldHighlight>
+  );
+}
+
 function ActionEditor({
   action,
   templates,
@@ -4615,61 +4724,113 @@ function ActionEditor({
       <div className="mt-1 flex flex-wrap items-start gap-1.5">
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           {CLASS_AFFINITY.map((c) => (
-            <ImpactTile
+            <HighlightableImpactTile
               key={c.key}
-              label={c.label}
-              icon={c.icon}
+              peers={peers}
+              focusKey={{
+                table: "actions",
+                recordId: action.id,
+                field: c.key,
+              }}
               value={action[c.key]}
               onChange={(v) =>
                 onChange({ [c.key]: v } as Partial<ActionState>)
               }
-            />
+            >
+              {(value, handleChange) => (
+                <ImpactTile
+                  label={c.label}
+                  icon={c.icon}
+                  value={value}
+                  onChange={handleChange}
+                />
+              )}
+            </HighlightableImpactTile>
           ))}
         </div>
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           {orderedNations.map((n) => {
             const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
             return (
-              <NationImpactTile
+              <HighlightableImpactTile
                 key={n.id}
-                nation={n}
+                peers={peers}
+                focusKey={{
+                  table: "actions",
+                  recordId: action.id,
+                  field: key,
+                }}
                 value={action[key]}
                 onChange={(v) =>
                   onChange({ [key]: v } as Partial<ActionState>)
                 }
-              />
+              >
+                {(value, handleChange) => (
+                  <NationImpactTile
+                    nation={n}
+                    value={value}
+                    onChange={handleChange}
+                  />
+                )}
+              </HighlightableImpactTile>
             );
           })}
         </div>
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-          <ImpactTile
-            label="Demerits"
-            icon={
-              <IconCircleMinus
-                size={14}
-                aria-hidden
-                className="text-red-500"
-              />
-            }
+          <HighlightableImpactTile
+            peers={peers}
+            focusKey={{
+              table: "actions",
+              recordId: action.id,
+              field: "impact_demerits",
+            }}
             value={action.impact_demerits}
             onChange={(v) =>
               onChange({ impact_demerits: v } as Partial<ActionState>)
             }
-          />
-          <ImpactTile
-            label="World Status"
-            icon={
-              <IconWorldBolt
-                size={14}
-                aria-hidden
-                className="text-cyan-400"
+          >
+            {(value, handleChange) => (
+              <ImpactTile
+                label="Demerits"
+                icon={
+                  <IconCircleMinus
+                    size={14}
+                    aria-hidden
+                    className="text-red-500"
+                  />
+                }
+                value={value}
+                onChange={handleChange}
               />
-            }
+            )}
+          </HighlightableImpactTile>
+          <HighlightableImpactTile
+            peers={peers}
+            focusKey={{
+              table: "actions",
+              recordId: action.id,
+              field: "impact_world_status",
+            }}
             value={action.impact_world_status}
             onChange={(v) =>
               onChange({ impact_world_status: v } as Partial<ActionState>)
             }
-          />
+          >
+            {(value, handleChange) => (
+              <ImpactTile
+                label="World Status"
+                icon={
+                  <IconWorldBolt
+                    size={14}
+                    aria-hidden
+                    className="text-cyan-400"
+                  />
+                }
+                value={value}
+                onChange={handleChange}
+              />
+            )}
+          </HighlightableImpactTile>
         </div>
       </div>
 
