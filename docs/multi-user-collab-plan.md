@@ -282,12 +282,87 @@ After every surface is converted: delete `src/components/auto-save-form.tsx`, th
 - ~~**Postgres INSERT events.**~~ Closed in B5 follow-up: INSERT triggers a debounced `router.refresh()` (100 ms coalesce window). Adds one RSC refetch per burst of inserts but keeps view-mapped columns correct without duplicating SQL view logic in JS.
 - **Storylines mirror is partial.** B5 mirrors the `storylines` array for UPDATE/DELETE on `letters-workspace`, but storyline edits actually happen on `/inspection/storylines`. Once that surface converts (Phase 4 long-tail #1), revisit whether the workspace mirror still adds value.
 
-### Presence-indicator polish (post-B6)
+### ✅ Presence-indicator polish (post-B6) — 2026-05-12
 
-Notes from the user, captured 2026-05-12 — to be picked up after B6/D land and before Phase 4 surfaces start:
+All five follow-ups shipped on `multi-user-collab-instant-save`. Foundation
+came first: a separate `peer-selection` broadcast event (parallel to
+`presence-focus`) plus a lightweight `presence-activity` heartbeat. Peer
+state now carries `selection` + `lastActiveAt` alongside `focus`. Both
+broadcasts are also re-emitted on `onPresenceSync` so late joiners get
+synced without waiting for the local user to re-select / re-focus.
 
-- **Hover popup with peer's location.** Hovering a peer's avatar should show where they're working — formatted as the deepest known entity, e.g. `Group A7` or `Letter L-A3/b`. If they have a field focused, use that field's panel; otherwise use the deepest panel they have open (e.g. peer has both Letter Group A1 and Letter L-A1/a open → location is `L-A1/a`).
-- **Click avatar → jump to their panel.** Clicking a peer's avatar should load the same panel context they're in. Needs a way to broadcast/derive the peer's full selection path (storyline → group → letter → segment) — today only their focused field is broadcast. Likely: extend the focus broadcast payload with the full selection, or send a separate `peer-selection` broadcast on selection change.
-- **Mute peers not on the same panel.** Avatar should render dimmed/grayscale when the peer isn't sharing at least one open panel with the current user. "Same panel" = the current user's open-panel-set and the peer's open-panel-set intersect.
-- **Mute peers inactive for a while.** Grayscale/dim the avatar after some inactivity threshold (TBD — start with 60s?). Resets on any focus/typing event.
-- **Field-edit highlight.** When a peer is editing a field, draw a highlight border around that input in the colocated user's view, in the peer's avatar color. Currently we only show `<FieldPresence>` (a small dot next to the label). The border is more visible mid-edit.
+- **Hover popup with peer's location.** `AvatarStack` accepts a
+  `peerLocations: Map<userId, string>` built in the workspace from the live
+  data mirrors. Lookup rule: peer's `focus.recordId` resolved against the
+  matching mirror (e.g. `inspection_letters` → `Letter ${content_id}`,
+  `letter_groups` → `Group ${storyline.abbreviation}${sequence}`), falling
+  back to the deepest non-null entity in `peer.selection`. No match →
+  "Idle".
+- **Click avatar → jump.** Workspace passes `onAvatarClick={jumpToPeer}` —
+  applies the peer's selection chain via the same `applyingPanelSnapshot`
+  guard used by mouse-back/forward, so the bubble-up effect doesn't loop.
+- **Mute peers not on same panel.** `sharesPanel(self, peer)` intersects
+  the four ids `{storyline, group, letter, segment}` across both chains;
+  empty intersection → `opacity-50` only (no grayscale, deliberately
+  distinct from inactive mute).
+- **Mute inactive peers.** 120s hardcoded threshold. `lastActiveAt` is
+  bucketed to 5s in `usePresence` to bound state churn during sustained
+  typing — combined with a 5s `setInterval` inside `AvatarStack` that
+  re-renders the mute boundary, the inactive flip is precise to ~5s
+  without re-renders mid-bucket. Inactive style = `opacity-50 grayscale`.
+- **Field-edit highlight border.** New `<FieldHighlight>` wrapper renders
+  an outset `box-shadow: 0 0 0 2px ${peer.color}` ring around the wrapped
+  input when any peer's focus matches its `focusKey`. Replaces every
+  `<FieldPresence>` dot site (group / letter / segment / action sub-fields
+  for next letter + report segment). The dot component is deleted; header
+  avatars carry identity now.
+
+#### Locked-in lessons
+
+**Lesson #1 — Separate broadcast events, not a single fattened focus
+payload.** Focus changes on every keystroke-burst boundary; selection
+changes when the user picks a panel; activity heartbeats fire 1Hz during
+sustained typing. Folding them into one event would have either dropped
+late-coalesced selections or churned the focus path. Mirror the existing
+`presence-focus` pattern (broadcast on change, re-broadcast on sync, drop
+on peer leave) once per signal.
+
+**Lesson #2 — Bucket `lastActiveAt` to bound state churn.** A
+state-stored `lastActiveAt` updated on every received broadcast would
+churn `peers` array identity at 1Hz during sustained typing, forcing
+all consumers (including the 6000-line workspace) to re-render. Bucketing
+to 5s collapses that to one identity change per peer per 5s. The 5s
+AvatarStack interval covers the mute-boundary flip independently.
+
+**Lesson #3 — `data-focus-field` on `FieldHighlight` doubles as a
+sub-field marker.** The action editor still uses a single bubbled
+`onFocus` on the wrapper (avoids threading explicit handlers through
+PillSelect, ImpactTile, etc.), but resolves *which* sub-field via
+`target.closest("[data-focus-field]")`. The data attribute is stamped by
+`FieldHighlight` automatically from its `focusKey`, so consumers don't
+need to remember it. Sub-fields without a marker fall through to the
+generic `"editing"` field key, which is harmless.
+
+**Lesson #4 — Refs assigned via `useEffect` are fine for async-only
+read sites.** `selfSelectionRef` is read only inside the realtime
+channel's `onPresenceSync` callback, which is async — so the effect-
+settled value is always current. Avoids the `react-hooks/refs` lint
+violation that the older direct-assignment pattern (`selfFocusRef.current
+= self.focus`) trips. Pre-existing direct assignments left untouched
+(not my code to fix).
+
+#### Open follow-ups
+
+- **Graph embed (Track D).** Still needs `currentUserId` / `currentEmail`
+  threaded into `<LettersWorkspace>` inside `graph-surface.tsx` so the
+  presence layer activates in the graph embed. Separate PR.
+- **Action-level sub-fields.** Only the two PillSelects (next letter,
+  report segment) get explicit `FieldHighlight` rings today. The 9 impact
+  tiles + ending-assignment selects fall through to the generic
+  `"editing"` focus key — no per-tile ring. Acceptable since impact tiles
+  are click-toggle UI; revisit if peers want finer granularity here.
+- **App-shell-wide AvatarStack (Phase 2).** Still pending. The polish
+  features land first on the workspace; the global avatar in
+  `app-shell.tsx` can adopt the same `peerLocations` / `onAvatarClick`
+  shape when it ships — but the "jump to peer" handler will need a
+  router push since the peer may be on a different surface entirely.

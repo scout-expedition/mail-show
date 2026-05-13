@@ -75,8 +75,12 @@ import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import { FieldPresence } from "@/lib/realtime/field-presence";
-import type { PresenceFocus } from "@/lib/realtime/presence";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type {
+  PresenceFocus,
+  PresencePeer,
+  PresenceSelection,
+} from "@/lib/realtime/presence";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
@@ -360,7 +364,8 @@ function LettersWorkspaceInner({
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { peers, setFocus, onPostgresChanges } = usePresenceContext();
+  const { peers, setFocus, setSelection, pingActivity, onPostgresChanges } =
+    usePresenceContext();
   const { toast, toaster } = useToast();
 
   // Mirror server-provided arrays so postgres_changes events can fan out
@@ -512,6 +517,7 @@ function LettersWorkspaceInner({
           : null
       );
     },
+    onActivity: pingActivity,
   });
   const groupDayField = useInstantField<string | null>({
     value: group?.delivery_day_id ?? null,
@@ -531,6 +537,7 @@ function LettersWorkspaceInner({
           : null
       );
     },
+    onActivity: pingActivity,
   });
   const groupNotesField = useInstantField<string | null>({
     value: group?.notes ?? null,
@@ -546,6 +553,7 @@ function LettersWorkspaceInner({
           : null
       );
     },
+    onActivity: pingActivity,
   });
   const groupNameFocus: PresenceFocus | null = group
     ? { table: "letter_groups", recordId: group.id, field: "name" }
@@ -981,6 +989,27 @@ function LettersWorkspaceInner({
     view,
   ]);
 
+  // Broadcast the local user's open-panel chain so peers can render a
+  // location label, jump to the panel, and gauge whether we're sharing a
+  // panel. Fires on every change to any of the five selection vars; the
+  // presence layer takes care of debouncing duplicates via JSON.stringify.
+  useEffect(() => {
+    setSelection({
+      storylineId: selectedStorylineId,
+      groupId: selectedGroupId,
+      letterId: selectedId,
+      segmentId: selectedSegmentId,
+      view,
+    });
+  }, [
+    setSelection,
+    selectedStorylineId,
+    selectedGroupId,
+    selectedId,
+    selectedSegmentId,
+    view,
+  ]);
+
   useEffect(() => {
     function applyPanelSnapshot(s: PanelSnapshot) {
       applyingPanelSnapshot.current = true;
@@ -1334,6 +1363,17 @@ function LettersWorkspaceInner({
     };
   }, []);
 
+  // Throttle the action-edit activity heartbeat to match useInstantField's
+  // 1Hz throttle. Sustained impact-tile clicks or next-letter cycles fire
+  // updateAction rapidly; we don't need to broadcast on every keystroke.
+  const lastActionActivityAtRef = useRef(0);
+  function pingActionActivity() {
+    const now = Date.now();
+    if (now - lastActionActivityAtRef.current < 1000) return;
+    lastActionActivityAtRef.current = now;
+    pingActivity();
+  }
+
   function updateAction(idx: number, patch: Partial<ActionState>) {
     const actionId = letterState?.actions[idx]?.id;
     setLetterState((s) => {
@@ -1346,6 +1386,7 @@ function LettersWorkspaceInner({
     // to patchActionEndingAssignments inside scheduleActionPatch.
     if (actionId && Object.keys(patch).length > 0) {
       scheduleActionPatch(actionId, patch);
+      pingActionActivity();
     }
   }
 
@@ -1584,12 +1625,121 @@ function LettersWorkspaceInner({
     }
   }
 
+  // Build a userId → location label map for the AvatarStack hover popup.
+  // Prefer the peer's focused entity (most precise); fall back to the
+  // deepest non-null id in their selection chain. Empty entries fall through
+  // to "Idle" inside AvatarStack.
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const peer of peers) {
+      const label = (() => {
+        if (peer.focus) {
+          const id = peer.focus.recordId;
+          switch (peer.focus.table) {
+            case "inspection_letters": {
+              const l = allLetters.find((x) => x.id === id);
+              if (l?.content_id) return `Letter ${l.content_id}`;
+              break;
+            }
+            case "letter_groups": {
+              const g = allGroups.find((x) => x.id === id);
+              if (g) {
+                const s = storylineById.get(g.storyline_id);
+                return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+              }
+              break;
+            }
+            case "actions": {
+              const a = allActions.find((x) => x.id === id);
+              const l = a
+                ? allLetters.find((x) => x.id === a.inspection_letter_id)
+                : null;
+              if (l?.content_id) return `Actions ${l.content_id}`;
+              break;
+            }
+            case "report_segments": {
+              const seg = allSegments.find((x) => x.id === id);
+              if (seg?.report_id) return `Report ${seg.report_id}`;
+              break;
+            }
+            case "storylines": {
+              const s = storylines.find((x) => x.id === id);
+              if (s) return `Storyline ${s.name}`;
+              break;
+            }
+          }
+        }
+        const sel = peer.selection;
+        if (sel) {
+          if (sel.segmentId) {
+            const seg = allSegments.find((x) => x.id === sel.segmentId);
+            if (seg?.report_id) return `Report ${seg.report_id}`;
+          }
+          if (sel.letterId) {
+            const l = allLetters.find((x) => x.id === sel.letterId);
+            if (l?.content_id) return `Letter ${l.content_id}`;
+          }
+          if (sel.groupId) {
+            const g = allGroups.find((x) => x.id === sel.groupId);
+            if (g) {
+              const s = storylineById.get(g.storyline_id);
+              return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+            }
+          }
+          if (sel.storylineId) {
+            const s = storylines.find((x) => x.id === sel.storylineId);
+            if (s) return `Storyline ${s.name}`;
+          }
+        }
+        return null;
+      })();
+      if (label) m.set(peer.userId, label);
+    }
+    return m;
+  }, [
+    peers,
+    allLetters,
+    allGroups,
+    allActions,
+    allSegments,
+    storylines,
+    storylineById,
+  ]);
+
+  const selfSelection: PresenceSelection = {
+    storylineId: selectedStorylineId,
+    groupId: selectedGroupId,
+    letterId: selectedId,
+    segmentId: selectedSegmentId,
+    view,
+  };
+
+  // Jump to the peer's panel by applying their selection chain to local state.
+  // Mirrors the panel-history snapshot apply path (back/forward navigation).
+  function jumpToPeer(peer: PresencePeer) {
+    const sel = peer.selection;
+    if (!sel) return;
+    applyingPanelSnapshot.current = true;
+    setSelectedStorylineId(sel.storylineId);
+    setSelectedGroupId(sel.groupId);
+    setSelectedId(sel.letterId);
+    setSelectedSegmentId(sel.segmentId);
+    setView(
+      (sel.view as "list" | "group" | "main" | "actions" | "segment") ?? "list"
+    );
+  }
+
   return (
     <div className="relative flex flex-col gap-6">
       {isControlled ? (
         peers.length > 0 ? (
           <div className="absolute right-2 top-2 z-10">
-            <AvatarStack peers={peers} />
+            <AvatarStack
+              peers={peers}
+              selfSelection={selfSelection}
+              peerLocations={peerLocations}
+              onAvatarClick={jumpToPeer}
+            />
           </div>
         ) : null
       ) : (
@@ -1665,7 +1815,12 @@ function LettersWorkspaceInner({
           </>
         ) : null}
         <div className="ml-auto">
-          <AvatarStack peers={peers} />
+          <AvatarStack
+            peers={peers}
+            selfSelection={selfSelection}
+            peerLocations={peerLocations}
+            onAvatarClick={jumpToPeer}
+          />
         </div>
       </div>
       )}
@@ -1770,65 +1925,62 @@ function LettersWorkspaceInner({
                   storyline={currentStoryline}
                   sequence={group.sequence}
                 />
-                <Input
-                  value={groupState.name}
-                  onChange={(e) => {
-                    updateGroup("name", e.target.value);
-                    groupNameField.set(e.target.value);
-                  }}
-                  onFocus={groupNameField.onFocus}
-                  onBlur={groupNameField.onBlur}
-                  placeholder="Group name"
-                  className={cn(
-                    "h-7 flex-1 px-1 text-base font-semibold text-foreground",
-                    GHOST_FIELD
-                  )}
-                />
-                {groupNameFocus ? (
-                  <FieldPresence peers={peers} focusKey={groupNameFocus} />
-                ) : null}
+                <FieldHighlight
+                  peers={peers}
+                  focusKey={groupNameFocus}
+                  className="flex-1"
+                >
+                  <Input
+                    value={groupState.name}
+                    onChange={(e) => {
+                      updateGroup("name", e.target.value);
+                      groupNameField.set(e.target.value);
+                    }}
+                    onFocus={groupNameField.onFocus}
+                    onBlur={groupNameField.onBlur}
+                    placeholder="Group name"
+                    className={cn(
+                      "h-7 w-full px-1 text-base font-semibold text-foreground",
+                      GHOST_FIELD
+                    )}
+                  />
+                </FieldHighlight>
               </div>
               <div className="grid grid-cols-6 gap-3">
                 <div className="col-span-6 flex flex-col gap-1">
-                  <Label className="flex items-center gap-2">
-                    Delivery day
-                    {groupDayFocus ? (
-                      <FieldPresence peers={peers} focusKey={groupDayFocus} />
-                    ) : null}
-                  </Label>
-                  <div
-                    onFocus={groupDayField.onFocus}
-                    onBlur={groupDayField.onBlur}
-                  >
-                    <DaySelect
-                      value={groupState.delivery_day_id ?? ""}
-                      days={days}
-                      onChange={(v) => {
-                        updateGroup("delivery_day_id", v || null);
-                        groupDayField.set(v || null);
-                      }}
-                      className={cn("h-8", GHOST_FIELD)}
-                    />
-                  </div>
+                  <Label>Delivery day</Label>
+                  <FieldHighlight peers={peers} focusKey={groupDayFocus}>
+                    <div
+                      onFocus={groupDayField.onFocus}
+                      onBlur={groupDayField.onBlur}
+                    >
+                      <DaySelect
+                        value={groupState.delivery_day_id ?? ""}
+                        days={days}
+                        onChange={(v) => {
+                          updateGroup("delivery_day_id", v || null);
+                          groupDayField.set(v || null);
+                        }}
+                        className={cn("h-8", GHOST_FIELD)}
+                      />
+                    </div>
+                  </FieldHighlight>
                 </div>
                 <div className="col-span-6 flex flex-col gap-1">
-                  <Label className="flex items-center gap-2">
-                    Notes
-                    {groupNotesFocus ? (
-                      <FieldPresence peers={peers} focusKey={groupNotesFocus} />
-                    ) : null}
-                  </Label>
-                  <AutoTextarea
-                    value={groupState.notes ?? ""}
-                    onChange={(e) => {
-                      updateGroup("notes", e.target.value || null);
-                      groupNotesField.set(e.target.value || null);
-                    }}
-                    onFocus={groupNotesField.onFocus}
-                    onBlur={groupNotesField.onBlur}
-                    minRows={2}
-                    className={GHOST_FIELD}
-                  />
+                  <Label>Notes</Label>
+                  <FieldHighlight peers={peers} focusKey={groupNotesFocus}>
+                    <AutoTextarea
+                      value={groupState.notes ?? ""}
+                      onChange={(e) => {
+                        updateGroup("notes", e.target.value || null);
+                        groupNotesField.set(e.target.value || null);
+                      }}
+                      onFocus={groupNotesField.onFocus}
+                      onBlur={groupNotesField.onBlur}
+                      minRows={2}
+                      className={GHOST_FIELD}
+                    />
+                  </FieldHighlight>
                 </div>
               </div>
 
@@ -2319,7 +2471,7 @@ function LetterFieldsCard({
 }) {
   // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
   const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
-  const { peers, setFocus } = usePresenceContext();
+  const { peers, setFocus, pingActivity } = usePresenceContext();
 
   function focusKey(field: string): PresenceFocus {
     return { table: "inspection_letters", recordId: state.id, field };
@@ -2342,6 +2494,7 @@ function LetterFieldsCard({
       });
     },
     onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+    onActivity: pingActivity,
   });
   const summaryField = useInstantField<string | null>({
     value: letterView.summary,
@@ -2349,6 +2502,7 @@ function LetterFieldsCard({
       await patchInspectionLetter(state.id, { summary: next });
     },
     onFocusChange: onFocusChangeFor("summary"),
+    onActivity: pingActivity,
   });
   const senderField = useInstantField<string | null>({
     value: letterView.sender_citizen_id,
@@ -2356,6 +2510,7 @@ function LetterFieldsCard({
       await patchInspectionLetter(state.id, { sender_citizen_id: next });
     },
     onFocusChange: onFocusChangeFor("sender_citizen_id"),
+    onActivity: pingActivity,
   });
   const receiverField = useInstantField<string | null>({
     value: letterView.receiver_citizen_id,
@@ -2363,6 +2518,7 @@ function LetterFieldsCard({
       await patchInspectionLetter(state.id, { receiver_citizen_id: next });
     },
     onFocusChange: onFocusChangeFor("receiver_citizen_id"),
+    onActivity: pingActivity,
   });
   const contentField = useInstantField<string | null>({
     value: letterView.content,
@@ -2370,6 +2526,7 @@ function LetterFieldsCard({
       await patchInspectionLetter(state.id, { content: next });
     },
     onFocusChange: onFocusChangeFor("content"),
+    onActivity: pingActivity,
   });
   const notesField = useInstantField<string | null>({
     value: letterView.notes,
@@ -2377,6 +2534,7 @@ function LetterFieldsCard({
       await patchInspectionLetter(state.id, { notes: next });
     },
     onFocusChange: onFocusChangeFor("notes"),
+    onActivity: pingActivity,
   });
 
   return (
@@ -2418,35 +2576,37 @@ function LetterFieldsCard({
           </div>
         </div>
         <div className="col-span-2 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Delivery override
-            <FieldPresence peers={peers} focusKey={focusKey("delivery_day_override_id")} />
-          </Label>
-          <div
-            onFocus={deliveryOverrideField.onFocus}
-            onBlur={deliveryOverrideField.onBlur}
+          <Label>Delivery override</Label>
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("delivery_day_override_id")}
           >
-            <DaySelect
-              value={currentDayId ?? ""}
-              days={days}
-              groupDefaultId={groupDeliveryDayId}
-              dashWhenGroupDefault
-              hideClear
-              onChange={(v) => {
-                const next =
-                  !v ? null : v === groupDeliveryDayId ? null : v;
-                onChange({ delivery_day_override_id: next });
-                deliveryOverrideField.set(next);
-              }}
-              className={cn(
-                "h-8",
-                GHOST_FIELD,
-                state.delivery_day_override_id
-                  ? undefined
-                  : "text-muted-foreground/60"
-              )}
-            />
-          </div>
+            <div
+              onFocus={deliveryOverrideField.onFocus}
+              onBlur={deliveryOverrideField.onBlur}
+            >
+              <DaySelect
+                value={currentDayId ?? ""}
+                days={days}
+                groupDefaultId={groupDeliveryDayId}
+                dashWhenGroupDefault
+                hideClear
+                onChange={(v) => {
+                  const next =
+                    !v ? null : v === groupDeliveryDayId ? null : v;
+                  onChange({ delivery_day_override_id: next });
+                  deliveryOverrideField.set(next);
+                }}
+                className={cn(
+                  "h-8",
+                  GHOST_FIELD,
+                  state.delivery_day_override_id
+                    ? undefined
+                    : "text-muted-foreground/60"
+                )}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-2 flex flex-col items-end gap-1">
           <Label>Actions</Label>
@@ -2481,99 +2641,100 @@ function LetterFieldsCard({
         </div>
 
         <div className="col-span-6 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Summary
-            <FieldPresence peers={peers} focusKey={focusKey("summary")} />
-          </Label>
-          <Input
-            value={state.summary ?? ""}
-            onChange={(e) => {
-              const next = e.target.value || null;
-              onChange({ summary: next });
-              summaryField.set(next);
-            }}
-            onFocus={summaryField.onFocus}
-            onBlur={summaryField.onBlur}
-            className={cn("h-8", GHOST_FIELD)}
-          />
-        </div>
-
-        <div className="col-span-3 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Sender
-            <FieldPresence peers={peers} focusKey={focusKey("sender_citizen_id")} />
-          </Label>
-          <div onFocus={senderField.onFocus} onBlur={senderField.onBlur}>
-            <HeroSearch
-              value={state.sender_citizen_id}
-              heroes={heroes}
-              cities={cities}
-              nations={nations}
-              onChange={(v) => {
-                onChange({ sender_citizen_id: v });
-                senderField.set(v);
-              }}
-              onCreate={() => onQuickCreateHero("sender")}
-              onEdit={onEditCitizen}
-            />
-          </div>
-        </div>
-        <div className="col-span-3 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Receiver
-            <FieldPresence peers={peers} focusKey={focusKey("receiver_citizen_id")} />
-          </Label>
-          <div onFocus={receiverField.onFocus} onBlur={receiverField.onBlur}>
-            <HeroSearch
-              value={state.receiver_citizen_id}
-              heroes={heroes}
-              cities={cities}
-              nations={nations}
-              onChange={(v) => {
-                onChange({ receiver_citizen_id: v });
-                receiverField.set(v);
-              }}
-              onCreate={() => onQuickCreateHero("receiver")}
-              onEdit={onEditCitizen}
-            />
-          </div>
-        </div>
-
-        <div className="col-span-6 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Content
-            <FieldPresence peers={peers} focusKey={focusKey("content")} />
-          </Label>
-          <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
-            <MarkdownTextarea
-              value={state.content ?? ""}
+          <Label>Summary</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("summary")}>
+            <Input
+              value={state.summary ?? ""}
               onChange={(e) => {
                 const next = e.target.value || null;
-                onChange({ content: next });
-                contentField.set(next);
+                onChange({ summary: next });
+                summaryField.set(next);
               }}
-              minRows={6}
-              className={cn("font-mono text-xs", GHOST_FIELD)}
+              onFocus={summaryField.onFocus}
+              onBlur={summaryField.onBlur}
+              className={cn("h-8 w-full", GHOST_FIELD)}
             />
-          </div>
+          </FieldHighlight>
+        </div>
+
+        <div className="col-span-3 flex flex-col gap-1">
+          <Label>Sender</Label>
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("sender_citizen_id")}
+          >
+            <div onFocus={senderField.onFocus} onBlur={senderField.onBlur}>
+              <HeroSearch
+                value={state.sender_citizen_id}
+                heroes={heroes}
+                cities={cities}
+                nations={nations}
+                onChange={(v) => {
+                  onChange({ sender_citizen_id: v });
+                  senderField.set(v);
+                }}
+                onCreate={() => onQuickCreateHero("sender")}
+                onEdit={onEditCitizen}
+              />
+            </div>
+          </FieldHighlight>
+        </div>
+        <div className="col-span-3 flex flex-col gap-1">
+          <Label>Receiver</Label>
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("receiver_citizen_id")}
+          >
+            <div onFocus={receiverField.onFocus} onBlur={receiverField.onBlur}>
+              <HeroSearch
+                value={state.receiver_citizen_id}
+                heroes={heroes}
+                cities={cities}
+                nations={nations}
+                onChange={(v) => {
+                  onChange({ receiver_citizen_id: v });
+                  receiverField.set(v);
+                }}
+                onCreate={() => onQuickCreateHero("receiver")}
+                onEdit={onEditCitizen}
+              />
+            </div>
+          </FieldHighlight>
+        </div>
+
+        <div className="col-span-6 flex flex-col gap-1">
+          <Label>Content</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("content")}>
+            <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+              <MarkdownTextarea
+                value={state.content ?? ""}
+                onChange={(e) => {
+                  const next = e.target.value || null;
+                  onChange({ content: next });
+                  contentField.set(next);
+                }}
+                minRows={6}
+                className={cn("font-mono text-xs", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Notes
-            <FieldPresence peers={peers} focusKey={focusKey("notes")} />
-          </Label>
-          <AutoTextarea
-            value={state.notes ?? ""}
-            onChange={(e) => {
-              const next = e.target.value || null;
-              onChange({ notes: next });
-              notesField.set(next);
-            }}
-            onFocus={notesField.onFocus}
-            onBlur={notesField.onBlur}
-            minRows={2}
-            className={GHOST_FIELD}
-          />
+          <Label>Notes</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("notes")}>
+            <AutoTextarea
+              value={state.notes ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                onChange({ notes: next });
+                notesField.set(next);
+              }}
+              onFocus={notesField.onFocus}
+              onBlur={notesField.onBlur}
+              minRows={2}
+              className={GHOST_FIELD}
+            />
+          </FieldHighlight>
         </div>
       </div>
 
@@ -2787,7 +2948,7 @@ function LetterSegmentCard({
     intent?: "destructive" | "default";
   }) => Promise<boolean>;
 }) {
-  const { peers, setFocus } = usePresenceContext();
+  const { peers, setFocus, pingActivity } = usePresenceContext();
   const segmentId = segment?.id ?? "";
 
   function focusKey(field: string): PresenceFocus {
@@ -2810,6 +2971,7 @@ function LetterSegmentCard({
       await patchReportSegment(segment.id, { variant: value });
     },
     onFocusChange: onFocusChangeFor("variant"),
+    onActivity: pingActivity,
   });
   const dayField = useInstantField<string | null>({
     value: segment?.delivery_day_override_id ?? null,
@@ -2820,6 +2982,7 @@ function LetterSegmentCard({
       });
     },
     onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+    onActivity: pingActivity,
   });
   const summaryField = useInstantField<string | null>({
     value: segment?.summary ?? null,
@@ -2828,6 +2991,7 @@ function LetterSegmentCard({
       await patchReportSegment(segment.id, { summary: next });
     },
     onFocusChange: onFocusChangeFor("summary"),
+    onActivity: pingActivity,
   });
   const contentField = useInstantField<string | null>({
     value: segment?.content ?? null,
@@ -2836,6 +3000,7 @@ function LetterSegmentCard({
       await patchReportSegment(segment.id, { content: next });
     },
     onFocusChange: onFocusChangeFor("content"),
+    onActivity: pingActivity,
   });
 
   type Trigger = {
@@ -2919,73 +3084,72 @@ function LetterSegmentCard({
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Variant
-            <FieldPresence peers={peers} focusKey={focusKey("variant")} />
-          </Label>
-          <Input
-            value={variantField.value}
-            onChange={(e) =>
-              variantField.set(formatRomanInput(e.target.value))
-            }
-            onFocus={variantField.onFocus}
-            onBlur={variantField.onBlur}
-            placeholder="i"
-            className={cn(
-              "h-8 lowercase",
-              GHOST_FIELD,
-              variantField.value && !isValidRoman(variantField.value)
-                ? "ring-2 ring-destructive"
-                : undefined
-            )}
-          />
+          <Label>Variant</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("variant")}>
+            <Input
+              value={variantField.value}
+              onChange={(e) =>
+                variantField.set(formatRomanInput(e.target.value))
+              }
+              onFocus={variantField.onFocus}
+              onBlur={variantField.onBlur}
+              placeholder="i"
+              className={cn(
+                "h-8 w-full lowercase",
+                GHOST_FIELD,
+                variantField.value && !isValidRoman(variantField.value)
+                  ? "ring-2 ring-destructive"
+                  : undefined
+              )}
+            />
+          </FieldHighlight>
         </div>
         <div className="col-span-4 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Delivery day
-            <FieldPresence peers={peers} focusKey={focusKey("delivery_day_override_id")} />
-          </Label>
-          <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
-            <DaySelect
-              value={(currentDayId ?? groupDeliveryDayId) ?? ""}
-              days={days}
-              groupDefaultId={groupDeliveryDayId}
-              defaultSuffix="(Following Day)"
-              onChange={(v) =>
-                dayField.set(
-                  !v ? null : v === groupDeliveryDayId ? null : v
-                )
-              }
-              className={cn("h-8", GHOST_FIELD)}
-            />
-          </div>
+          <Label>Delivery day</Label>
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("delivery_day_override_id")}
+          >
+            <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
+              <DaySelect
+                value={(currentDayId ?? groupDeliveryDayId) ?? ""}
+                days={days}
+                groupDefaultId={groupDeliveryDayId}
+                defaultSuffix="(Following Day)"
+                onChange={(v) =>
+                  dayField.set(
+                    !v ? null : v === groupDeliveryDayId ? null : v
+                  )
+                }
+                className={cn("h-8", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Summary
-            <FieldPresence peers={peers} focusKey={focusKey("summary")} />
-          </Label>
-          <Input
-            value={summaryField.value ?? ""}
-            onChange={(e) => summaryField.set(e.target.value || null)}
-            onFocus={summaryField.onFocus}
-            onBlur={summaryField.onBlur}
-            className={cn("h-8", GHOST_FIELD)}
-          />
+          <Label>Summary</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("summary")}>
+            <Input
+              value={summaryField.value ?? ""}
+              onChange={(e) => summaryField.set(e.target.value || null)}
+              onFocus={summaryField.onFocus}
+              onBlur={summaryField.onBlur}
+              className={cn("h-8 w-full", GHOST_FIELD)}
+            />
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
-          <Label className="flex items-center gap-2">
-            Content
-            <FieldPresence peers={peers} focusKey={focusKey("content")} />
-          </Label>
-          <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
-            <MarkdownTextarea
-              value={contentField.value ?? ""}
-              onChange={(e) => contentField.set(e.target.value || null)}
-              minRows={8}
-              className={cn("font-mono text-xs", GHOST_FIELD)}
-            />
-          </div>
+          <Label>Content</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("content")}>
+            <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+              <MarkdownTextarea
+                value={contentField.value ?? ""}
+                onChange={(e) => contentField.set(e.target.value || null)}
+                minRows={8}
+                className={cn("font-mono text-xs", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
       </div>
       {triggers.length > 0 ? (
@@ -4052,16 +4216,29 @@ function ActionEditor({
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
   const { peers, setFocus } = usePresenceContext();
-  const actionFocus: PresenceFocus = {
+  const nextLetterFocus: PresenceFocus = {
     table: "actions",
     recordId: action.id,
-    field: "editing",
+    field: "next_letter_variant",
+  };
+  const segmentFocus: PresenceFocus = {
+    table: "actions",
+    recordId: action.id,
+    field: "report_segment_id",
   };
 
+  // Resolve "which sub-field just got focus" by walking up from `e.target`
+  // to the nearest `[data-focus-field]` marker (stamped by FieldHighlight).
+  // Falls back to a generic "editing" field so peers still see the action is
+  // active even for sub-fields we haven't instrumented (impact tiles, ending
+  // selects). On focus leaving the entire action (`relatedTarget` outside
+  // the wrapper), clear focus.
   function handleEnterFocus(e: React.FocusEvent<HTMLDivElement>) {
-    const wrapper = e.currentTarget;
-    const movingWithin = wrapper.contains(e.relatedTarget as Node | null);
-    if (!movingWithin) setFocus(actionFocus);
+    const target = e.target as HTMLElement;
+    const fieldEl = target.closest("[data-focus-field]");
+    const field =
+      fieldEl?.getAttribute("data-focus-field") || "editing";
+    setFocus({ table: "actions", recordId: action.id, field });
   }
   function handleLeaveFocus(e: React.FocusEvent<HTMLDivElement>) {
     const wrapper = e.currentTarget;
@@ -4105,7 +4282,6 @@ function ActionEditor({
           ) : null}
         </span>
         <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
-        <FieldPresence peers={peers} focusKey={actionFocus} />
         <OverflowMenu
           items={[
             {
@@ -4130,6 +4306,7 @@ function ActionEditor({
             {creatingLetter ? (
               <CreatingPill />
             ) : (
+              <FieldHighlight peers={peers} focusKey={nextLetterFocus}>
               <PillSelect
                 pill={
                   action.next_letter_variant && storyline ? (
@@ -4245,6 +4422,7 @@ function ActionEditor({
                       },
                 ]}
               />
+              </FieldHighlight>
             )}
             {action.next_letter_variant ? (
               <button
@@ -4290,6 +4468,7 @@ function ActionEditor({
             {creatingSegment ? (
               <CreatingPill />
             ) : (
+              <FieldHighlight peers={peers} focusKey={segmentFocus}>
               <PillSelect
                 pill={(() => {
                   const seg = action.report_segment_id
@@ -4345,6 +4524,7 @@ function ActionEditor({
                   },
                 ]}
               />
+              </FieldHighlight>
             )}
             {action.report_segment_id ? (
               <button

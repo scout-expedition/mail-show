@@ -4,6 +4,7 @@ import {
   parsePresenceIdentities,
   type RawPresenceState,
 } from "./presence";
+import { sharesPanel } from "./avatar-stack";
 
 describe("colorFromUserId", () => {
   it("is deterministic — same input yields same color", () => {
@@ -97,5 +98,64 @@ describe("parsePresenceIdentities", () => {
     expect(Object.keys(out).length).toBe(2);
     expect(out["user-alice"]).toEqual(alice);
     expect(out["user-bob"]).toEqual(bob);
+  });
+});
+
+describe("sharesPanel — open-panel intersection", () => {
+  const sel = (
+    over: Partial<{
+      storylineId: string | null;
+      groupId: string | null;
+      letterId: string | null;
+      segmentId: string | null;
+    }> = {}
+  ) => ({
+    storylineId: null,
+    groupId: null,
+    letterId: null,
+    segmentId: null,
+    view: "list",
+    ...over,
+  });
+
+  it("returns false when either side has no selection", () => {
+    expect(sharesPanel(null, sel())).toBe(false);
+    expect(sharesPanel(sel(), null)).toBe(false);
+    expect(sharesPanel(null, null)).toBe(false);
+  });
+
+  it("returns false when neither side has any id loaded", () => {
+    expect(sharesPanel(sel(), sel())).toBe(false);
+  });
+
+  it("returns true when one shared record id appears in both chains", () => {
+    expect(
+      sharesPanel(
+        sel({ storylineId: "S1", groupId: "G1" }),
+        sel({ storylineId: "S1" })
+      )
+    ).toBe(true);
+  });
+
+  it("matches across heterogeneous slots — group id of one = letter id of other", () => {
+    // Cross-slot match: ids are globally unique so any positional match counts.
+    expect(
+      sharesPanel(sel({ groupId: "X" }), sel({ letterId: "X" }))
+    ).toBe(true);
+  });
+
+  it("returns false when no id overlaps", () => {
+    expect(
+      sharesPanel(
+        sel({ storylineId: "S1", groupId: "G1", letterId: "L1" }),
+        sel({ storylineId: "S2", groupId: "G2" })
+      )
+    ).toBe(false);
+  });
+
+  it("ignores null entries", () => {
+    expect(
+      sharesPanel(sel({ groupId: null }), sel({ groupId: null }))
+    ).toBe(false);
   });
 });

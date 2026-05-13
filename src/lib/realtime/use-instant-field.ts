@@ -74,6 +74,15 @@ export type UseInstantFieldOptions<T> = {
   equals?: (a: T, b: T) => boolean;
   /** Notified `true` on focus, `false` on blur. */
   onFocusChange?: (focused: boolean) => void;
+  /**
+   * Throttled "still typing" heartbeat. Fired at most once per
+   * `activityThrottleMs` while the field is in `dirty` status (i.e. the user
+   * has typed since the last commit). Lets presence-aware consumers keep the
+   * peer marked active without re-firing focus events.
+   */
+  onActivity?: () => void;
+  /** Throttle window for `onActivity` in ms. Default 1000. */
+  activityThrottleMs?: number;
 };
 
 export type UseInstantFieldReturn<T> = {
@@ -103,6 +112,8 @@ export function useInstantField<T>(
     debounceMs = 400,
     equals = Object.is,
     onFocusChange,
+    onActivity,
+    activityThrottleMs = 1000,
   } = opts;
 
   const [state, setState] = useState<InstantFieldState<T>>({
@@ -121,6 +132,11 @@ export function useInstantField<T>(
   equalsRef.current = equals;
   const onFocusChangeRef = useRef(onFocusChange);
   onFocusChangeRef.current = onFocusChange;
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
+  const activityThrottleMsRef = useRef(activityThrottleMs);
+  activityThrottleMsRef.current = activityThrottleMs;
+  const lastActivityAtRef = useRef(0);
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -185,9 +201,25 @@ export function useInstantField<T>(
     timerRef.current = setTimeout(commitNow, debounceMs);
   }
 
+  function pingActivity() {
+    const fn = onActivityRef.current;
+    if (!fn) return;
+    const now = Date.now();
+    if (now - lastActivityAtRef.current < activityThrottleMsRef.current) return;
+    lastActivityAtRef.current = now;
+    fn();
+  }
+
   function set(next: T) {
     dispatch({ type: "set", value: next });
     scheduleCommit();
+    // Throttled "still typing" signal. Skipped when the value didn't actually
+    // change (reducer's no-op) — we still attempt because the input event
+    // fired, but the dirty status check below filters re-emits during a
+    // saving window where local === server.
+    if (!equalsRef.current(next, valueRef.current)) {
+      pingActivity();
+    }
   }
 
   function onFocus() {

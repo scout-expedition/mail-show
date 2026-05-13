@@ -10,7 +10,12 @@ import {
   type ReactNode,
 } from "react";
 import type { PostgresChange, PostgresSubscription } from "./channel";
-import { usePresence, type PresenceFocus, type PresencePeer } from "./presence";
+import {
+  usePresence,
+  type PresenceFocus,
+  type PresencePeer,
+  type PresenceSelection,
+} from "./presence";
 
 type PostgresHandler = (change: PostgresChange) => void;
 
@@ -19,8 +24,18 @@ type PresenceContextValue = {
   focus: PresenceFocus | null;
   /** Imperative setter — typically wired into useInstantField.onFocusChange. */
   setFocus: (focus: PresenceFocus | null) => void;
+  /** The local user's open-panel chain, or null pre-selection. */
+  selection: PresenceSelection | null;
+  /** Imperative setter — typically wired into the surface's selection effect. */
+  setSelection: (selection: PresenceSelection | null) => void;
   /** Other users on this channel (excludes self). */
   peers: PresencePeer[];
+  /**
+   * Broadcast a lightweight activity heartbeat. Throttled callers (e.g.
+   * useInstantField while typing) keep peers marked active without re-firing
+   * focus/selection. No-op when presence is inactive.
+   */
+  pingActivity: () => void;
   /**
    * Register a postgres_changes handler on the surface's shared channel.
    * Returns an unregister fn. Multiple handlers stack and are invoked in
@@ -32,7 +47,10 @@ type PresenceContextValue = {
 const PresenceContext = createContext<PresenceContextValue>({
   focus: null,
   setFocus: () => {},
+  selection: null,
+  setSelection: () => {},
   peers: [],
+  pingActivity: () => {},
   onPostgresChanges: () => () => {},
 });
 
@@ -96,6 +114,7 @@ function ActivePresenceProvider({
   children: ReactNode;
 }) {
   const [focus, setFocus] = useState<PresenceFocus | null>(null);
+  const [selection, setSelection] = useState<PresenceSelection | null>(null);
 
   // Handlers are kept in a ref so registering/unregistering doesn't cause a
   // channel re-subscribe. Iteration order matches insertion order (Set guarantee).
@@ -123,16 +142,24 @@ function ActivePresenceProvider({
     }
   }, []);
 
-  const { peers } = usePresence({
+  const { peers, pingActivity } = usePresence({
     name: channelName,
-    self: { userId, email, focus },
+    self: { userId, email, focus, selection },
     postgres,
     onPostgres,
   });
 
   const value = useMemo<PresenceContextValue>(
-    () => ({ focus, setFocus, peers, onPostgresChanges }),
-    [focus, peers, onPostgresChanges]
+    () => ({
+      focus,
+      setFocus,
+      selection,
+      setSelection,
+      peers,
+      pingActivity,
+      onPostgresChanges,
+    }),
+    [focus, selection, peers, pingActivity, onPostgresChanges]
   );
 
   return (
@@ -143,13 +170,24 @@ function ActivePresenceProvider({
 }
 
 function InactivePresenceProvider({ children }: { children: ReactNode }) {
-  // Track focus locally even without realtime so consumers' onFocusChange
-  // wiring works identically — broadcast is just inert.
+  // Track focus + selection locally even without realtime so consumers'
+  // onFocusChange / setSelection wiring works identically — broadcast is
+  // just inert.
   const [focus, setFocus] = useState<PresenceFocus | null>(null);
+  const [selection, setSelection] = useState<PresenceSelection | null>(null);
   const onPostgresChanges = useCallback(() => () => {}, []);
+  const pingActivity = useCallback(() => {}, []);
   const value = useMemo<PresenceContextValue>(
-    () => ({ focus, setFocus, peers: [], onPostgresChanges }),
-    [focus, onPostgresChanges]
+    () => ({
+      focus,
+      setFocus,
+      selection,
+      setSelection,
+      peers: [],
+      pingActivity,
+      onPostgresChanges,
+    }),
+    [focus, selection, pingActivity, onPostgresChanges]
   );
   return (
     <PresenceContext.Provider value={value}>
