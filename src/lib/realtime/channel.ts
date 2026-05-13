@@ -68,6 +68,9 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
     const ch = presenceKey
       ? supabase.channel(name, { config: { presence: { key: presenceKey } } })
       : supabase.channel(name);
+    const debug =
+      typeof window !== "undefined" &&
+      window.localStorage?.getItem("debug_presence") === "1";
 
     const subs = JSON.parse(postgresKey) as PostgresSubscription[];
     for (const sub of subs) {
@@ -82,6 +85,9 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
           ...(sub.filter ? { filter: sub.filter } : {}),
         } as never,
         ((payload: PostgresChange) => {
+          if (debug) {
+            console.warn("[channel]", name, "postgres", payload.eventType, payload.table);
+          }
           onPostgresRef.current?.(payload);
         }) as never
       );
@@ -104,12 +110,41 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
       });
     }
 
-    ch.subscribe((status) => {
-      setSubscribed(status === "SUBSCRIBED");
-    });
     setChannel(ch);
 
+    // Postgres_changes subscriptions are RLS-gated server-side, so the
+    // channel needs the user's JWT attached before `subscribe()` sends the
+    // phx_join. The realtime client picks up the access token from
+    // `realtime.setAuth(...)`. We await `getSession()` and explicitly
+    // setAuth before subscribing — without this, broadcasts join the
+    // channel fine but postgres_changes are silently denied (the user-
+    // visible signature is "focus rings work, content updates don't
+    // propagate until refresh").
+    let cancelled = false;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      const token = data.session?.access_token;
+      if (token) {
+        supabase.realtime.setAuth(token);
+      }
+      if (debug) {
+        console.warn(
+          "[channel]",
+          name,
+          "subscribing with auth=",
+          !!token
+        );
+      }
+      ch.subscribe((status, err) => {
+        if (debug) {
+          console.warn("[channel]", name, "subscribe status", status, err);
+        }
+        setSubscribed(status === "SUBSCRIBED");
+      });
+    });
+
     return () => {
+      cancelled = true;
       setSubscribed(false);
       void supabase.removeChannel(ch);
       setChannel(null);
