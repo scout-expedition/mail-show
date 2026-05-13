@@ -4335,10 +4335,14 @@ function HighlightableImpactTile({
     onChange(v);
   }
 
+  // While flashing, suppress FieldHighlight's own ring (passing focusKey=null)
+  // so the flash is the single visible indicator. Otherwise the outer
+  // FieldHighlight ring + the inner flash ring rendered concentrically as a
+  // distinctive "double ring" — same color but at two radii.
   return (
     <FieldHighlight
       peers={peers}
-      focusKey={focusKey}
+      focusKey={flashColor ? null : focusKey}
       className="rounded-md p-0.5 transition-shadow"
     >
       <div
@@ -4895,19 +4899,14 @@ function EndingAssignmentsSection({
   values: EndingVariableValue[];
   onChange: (next: EndingAssignmentState[]) => void;
 }) {
-  // Picker-open rows (variable_id still empty) live in component-local state
-  // until the user binds them to a variable. The realtime/postgres path
-  // wipes-and-reinserts on every save, so a row with no variable_id would
-  // be silently dropped by the next reconciliation — the user's symptom was
-  // "dropdown briefly appears then disappears." Promoting on first variable
-  // pick keeps the picker stable AND lets multiple new rows coexist.
-  const [pending, setPending] = useState<EndingAssignmentState[]>([]);
-  const pendingKeyRef = useRef(0);
-  const [pendingKeys, setPendingKeys] = useState<number[]>([]);
-
-  function setAt(idx: number, patch: Partial<EndingAssignmentState>) {
+  // Variable is locked-in at insert time — to switch which variable an
+  // action drives, delete the row and add a new one. Removes the entire
+  // class of "picker-open with no variable yet" intermediate state, which
+  // used to require a separate pending list and led to the dropdown
+  // disappearing on reconciliation.
+  function setValue(idx: number, valueId: string | null) {
     const next = assignments.slice();
-    next[idx] = { ...next[idx], ...patch };
+    next[idx] = { ...next[idx], value_id: valueId };
     onChange(next);
   }
   function removeAt(idx: number) {
@@ -4915,50 +4914,28 @@ function EndingAssignmentsSection({
     next.splice(idx, 1);
     onChange(next);
   }
-  function add() {
-    const k = ++pendingKeyRef.current;
-    setPending((prev) => [...prev, { variable_id: "", value_id: "" }]);
-    setPendingKeys((prev) => [...prev, k]);
-  }
-  function setPendingAt(
-    idx: number,
-    patch: Partial<EndingAssignmentState>
-  ) {
-    const updated = pending.map((r, i) => (i === idx ? { ...r, ...patch } : r));
-    const row = updated[idx];
-    if (row.variable_id) {
-      // Promote to server-confirmed. The patch path persists it; once the
-      // postgres INSERT echoes back into `assignments`, the pending slot is
-      // already gone so we won't render a duplicate.
-      setPending((prev) => prev.filter((_, i) => i !== idx));
-      setPendingKeys((prev) => prev.filter((_, i) => i !== idx));
-      onChange([...assignments, row]);
-    } else {
-      setPending(updated);
-    }
-  }
-  function removePendingAt(idx: number) {
-    setPending((prev) => prev.filter((_, i) => i !== idx));
-    setPendingKeys((prev) => prev.filter((_, i) => i !== idx));
+  function addWithVariable(variableId: string) {
+    onChange([
+      ...assignments,
+      { variable_id: variableId, value_id: null },
+    ]);
   }
 
   const chosenVariableIds = new Set(
     assignments.map((a) => a.variable_id).filter(Boolean)
   );
 
-  // Variables already claimed (server-confirmed) shouldn't appear in the
-  // pending picker, otherwise two rows could try to pick the same variable
-  // and the wholesale replace would dedupe one away.
-  function availableForPending(): EndingVariable[] {
-    return variables.filter((v) => !chosenVariableIds.has(v.id));
-  }
+  const availableVariables = variables.filter(
+    (v) => !chosenVariableIds.has(v.id)
+  );
 
-  const hasAnyRow = assignments.length > 0 || pending.length > 0;
+  const variableById = new Map(variables.map((v) => [v.id, v]));
+  const hasAnyRow = assignments.length > 0;
 
   return (
     <>
       <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-        Endings
+        Set Ending Variables
       </div>
       <div className="mt-1 flex flex-col gap-1">
         {!hasAnyRow ? (
@@ -4967,17 +4944,10 @@ function EndingAssignmentsSection({
           </p>
         ) : null}
         {assignments.map((a, idx) => {
+          const variable = variableById.get(a.variable_id);
           const valuesForVar = values.filter(
             (v) => v.variable_id === a.variable_id
           );
-          const availableVariables = variables.filter(
-            (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
-          );
-          const varFocus = {
-            table: "actions",
-            recordId: actionId,
-            field: `ending_var_${idx}`,
-          };
           const valFocus = {
             table: "actions",
             recordId: actionId,
@@ -4988,37 +4958,34 @@ function EndingAssignmentsSection({
               key={`saved-${idx}`}
               className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
             >
-              <FieldHighlight peers={peers} focusKey={varFocus}>
-                <Select
-                  value={a.variable_id || ""}
-                  onChange={(e) =>
-                    setAt(idx, {
-                      variable_id: e.target.value,
-                      value_id: null,
-                    })
-                  }
-                  className="h-7 w-full text-xs"
-                >
-                  <option value="">— variable —</option>
-                  {availableVariables.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </Select>
-              </FieldHighlight>
+              {/* Variable is locked once a row exists — change requires
+                  delete + re-add. Rendered as a read-only chip with the
+                  variable's color accent so it reads as "set" rather than
+                  "editable." */}
+              <span
+                className="inline-flex h-7 items-center gap-1 truncate rounded-md border border-border/40 px-2 font-mono text-xs"
+                style={
+                  variable?.color_hex
+                    ? {
+                        borderColor: variable.color_hex,
+                        color: variable.color_hex,
+                      }
+                    : undefined
+                }
+                title={variable?.name ?? "Unknown variable"}
+              >
+                {variable?.name ?? "Unknown"}
+              </span>
               <FieldHighlight peers={peers} focusKey={valFocus}>
                 <Select
                   value={a.value_id ?? ""}
-                  onChange={(e) =>
-                    setAt(idx, { value_id: e.target.value || null })
-                  }
+                  onChange={(e) => {
+                    setValue(idx, e.target.value || null);
+                    e.target.blur();
+                  }}
                   className="h-7 w-full text-xs"
-                  disabled={!a.variable_id}
                 >
-                  <option value="">
-                    {a.variable_id ? "— value —" : "(pick var)"}
-                  </option>
+                  <option value="">— value —</option>
                   {valuesForVar.map((v) => (
                     <option key={v.id} value={v.id}>
                       {v.value}
@@ -5050,83 +5017,90 @@ function EndingAssignmentsSection({
             </div>
           );
         })}
-        {pending.map((p, idx) => {
-          const availableVariables = availableForPending();
-          const pendingFocus = {
-            table: "actions",
-            recordId: actionId,
-            field: `ending_var_pending_${pendingKeys[idx]}`,
-          };
-          return (
-            <div
-              key={`pending-${pendingKeys[idx]}`}
-              className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
-            >
-              <FieldHighlight peers={peers} focusKey={pendingFocus}>
-                <Select
-                  value=""
-                  onChange={(e) =>
-                    setPendingAt(idx, { variable_id: e.target.value })
-                  }
-                  className="h-7 w-full text-xs"
-                >
-                  <option value="">— variable —</option>
-                  {availableVariables.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </Select>
-              </FieldHighlight>
-              <Select value="" disabled className="h-7 w-full text-xs">
-                <option value="">(pick var)</option>
-              </Select>
-              <button
-                type="button"
-                aria-label="Remove ending assignment"
-                title="Remove"
-                onClick={() => removePendingAt(idx)}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-              >
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-          );
-        })}
         <div className="flex justify-start">
-          <button
-            type="button"
-            onClick={add}
-            disabled={
-              variables.length === 0 ||
-              availableForPending().length === 0
-            }
-            title={
+          <AddEndingVariableMenu
+            variables={availableVariables}
+            onPick={addWithVariable}
+            disabled={variables.length === 0 || availableVariables.length === 0}
+            disabledReason={
               variables.length === 0
                 ? "Create an ending variable first"
-                : availableForPending().length === 0
+                : availableVariables.length === 0
                   ? "All variables are already assigned"
                   : undefined
             }
-            className={MUTED_ADD_BTN}
-          >
-            + Ending
-          </button>
+          />
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * "+ Ending" button that opens a list of unassigned variables. Picking one
+ * inserts a new ending assignment row already bound to that variable —
+ * there's no intermediate "row exists but no variable picked yet" state,
+ * which the previous flow allowed and which let the realtime patch path
+ * silently drop unbound rows.
+ */
+function AddEndingVariableMenu({
+  variables,
+  onPick,
+  disabled,
+  disabledReason,
+}: {
+  variables: EndingVariable[];
+  onPick: (variableId: string) => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
+        title={disabledReason}
+        className={MUTED_ADD_BTN}
+      >
+        + Ending
+      </button>
+      {open && variables.length > 0 ? (
+        <div
+          role="listbox"
+          className="absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md"
+        >
+          {variables.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="option"
+              aria-selected={false}
+              onClick={() => {
+                onPick(v.id);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs hover:bg-accent/40"
+              style={v.color_hex ? { color: v.color_hex } : undefined}
+            >
+              {v.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

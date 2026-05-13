@@ -206,10 +206,14 @@ export function PresenceAvatar({
 }) {
   const initial = peer.email.charAt(0).toUpperCase();
   const interactive = !!onClick;
+  // Use saturate/brightness filters (not `opacity-*`) so the avatar circle
+  // stays opaque — overlapping siblings used to bleed through when the
+  // muted avatar dropped to 50% alpha. inactive = grayscale + dim;
+  // offPanel = dim only, so the two states stay visually distinct.
   const muteClass = inactive
-    ? "opacity-50 grayscale"
+    ? "grayscale brightness-75 saturate-50"
     : offPanel
-      ? "opacity-50"
+      ? "saturate-50 brightness-75"
       : "";
   const avatar = (
     <span
