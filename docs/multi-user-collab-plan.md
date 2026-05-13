@@ -375,16 +375,37 @@ logs at the channel + workspace layers to verify.)
 
 #### Open follow-ups
 
-- **Graph embed (Track D).** Still needs `currentUserId` / `currentEmail`
-  threaded into `<LettersWorkspace>` inside `graph-surface.tsx` so the
-  presence layer activates in the graph embed. Separate PR.
-- **Action-level sub-fields.** Only the two PillSelects (next letter,
-  report segment) get explicit `FieldHighlight` rings today. The 9 impact
-  tiles + ending-assignment selects fall through to the generic
-  `"editing"` focus key — no per-tile ring. Acceptable since impact tiles
-  are click-toggle UI; revisit if peers want finer granularity here.
+- **Display name + avatar + color from `auth.users.user_metadata`.**
+  Main now stores per-user `display_name`, `avatar_icon_type`,
+  `avatar_icon_value`, `color_hex` on `auth.users.user_metadata` (see
+  `f9aff26 settings: add user display names + avatars` on main, no
+  migration needed). The presence layer is structurally ready to absorb
+  these — additive changes only, ~20 lines across 4 files:
+    1. `PresenceIdentity` gains optional `displayName`, `avatarIconType`,
+       `avatarIconValue`, `colorHex`. The `track()` payload carries them
+       through; `parsePresenceIdentities` already takes the last entry
+       per key so old peers without these fields keep working.
+    2. `PresencePeer` gains the same optional fields.
+       `colorFromUserId(userId)` stays as the fallback when `colorHex`
+       is unset.
+    3. `PresenceAvatar` swaps the first-letter rendering for
+       `<IconDisplay type={avatarIconType} value={avatarIconValue}/>`
+       when present; falls back to the email initial otherwise.
+       `backgroundColor` uses `peer.colorHex ?? peer.color`.
+    4. Hover popup label becomes `peer.displayName ?? peer.email`.
+    5. `WorkspacePresenceProvider` picks up new optional props and
+       forwards into `usePresence({ self: {...} })`. The two page-level
+       callsites read them off `meData.user?.user_metadata`.
+  Should be a small additive follow-up PR after this branch merges.
 - **App-shell-wide AvatarStack (Phase 2).** Still pending. The polish
   features land first on the workspace; the global avatar in
   `app-shell.tsx` can adopt the same `peerLocations` / `onAvatarClick`
   shape when it ships — but the "jump to peer" handler will need a
   router push since the peer may be on a different surface entirely.
+- **StorylineInspector + Phase 4 long-tail conversions.** The storyline
+  inspector embedded in the LettersWorkspace's slot 1 still uses the
+  pre-instant-save dirty-state machinery (it tracks its own dirty flag
+  locally — parent doesn't mirror). Same for the `/inspection/storylines`
+  editor and the other Phase 4 surfaces (`actions`, `sorting`, `cities`,
+  `citizens`, `nations`, `playthroughs`, `physical`, `days`, ending
+  variables, endings documents). Each ships as its own PR.
