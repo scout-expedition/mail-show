@@ -303,6 +303,14 @@ export type LettersWorkspaceProps = {
    */
   currentUserId?: string;
   currentEmail?: string;
+  /**
+   * When true, the workspace assumes its parent already wraps it in a
+   * `WorkspacePresenceProvider`. Skips the internal provider wrap (which
+   * would otherwise create a second channel of the same name) AND the
+   * floating top-right AvatarStack that mounts in controlled mode — the
+   * parent is expected to render presence chrome wherever it wants.
+   */
+  presenceProvided?: boolean;
 };
 
 /**
@@ -327,6 +335,9 @@ const POSTGRES_TABLES = [
 ];
 
 export function LettersWorkspace(props: LettersWorkspaceProps) {
+  if (props.presenceProvided) {
+    return <LettersWorkspaceInner {...props} />;
+  }
   return (
     <WorkspacePresenceProvider
       channelName="letters-workspace"
@@ -361,6 +372,7 @@ function LettersWorkspaceInner({
   onSelectionChange,
   onClose,
   forceNarrow,
+  presenceProvided,
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -1019,6 +1031,17 @@ function LettersWorkspaceInner({
     selectedSegmentId,
     view,
   ]);
+
+  // Clear our selection on unmount so a parent surface (e.g. the graph,
+  // which keeps the presence provider alive even when the inspector
+  // closes) doesn't keep broadcasting a stale "I'm viewing Letter L-…"
+  // long after the user has left the panel.
+  useEffect(() => {
+    return () => {
+      setSelection(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     function applyPanelSnapshot(s: PanelSnapshot) {
@@ -1742,7 +1765,11 @@ function LettersWorkspaceInner({
   return (
     <div className="relative flex flex-col gap-6">
       {isControlled ? (
-        peers.length > 0 ? (
+        // In controlled mode the parent surface owns the avatar chrome
+        // (graph header). The internal floating stack only renders when
+        // no parent provider is wrapping us — i.e. a standalone embed
+        // that hasn't adopted the `presenceProvided` contract.
+        !presenceProvided && peers.length > 0 ? (
           <div className="absolute right-2 top-2 z-10">
             <AvatarStack
               peers={peers}

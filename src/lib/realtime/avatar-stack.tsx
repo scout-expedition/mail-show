@@ -241,7 +241,9 @@ export function PresenceAvatar({
       >
         <span className="block text-foreground">{peer.email}</span>
         {location ? (
-          <span className="block text-muted-foreground">{location}</span>
+          <span className="block whitespace-pre-line text-muted-foreground">
+            {location}
+          </span>
         ) : null}
       </span>
     </span>

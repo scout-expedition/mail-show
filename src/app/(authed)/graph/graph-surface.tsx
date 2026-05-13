@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconArrowBackUp,
   IconCirclePlusMinus,
@@ -45,30 +45,33 @@ import {
   LettersWorkspace,
   type ControlledSelection,
 } from "../inspection/letters/workspace";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import type {
+  PresencePeer,
+  PresenceSelection,
+} from "@/lib/realtime/presence";
+
+/** Tables the presence channel mirrors. Must match the workspace's list so
+ *  postgres_changes consumers (the embedded LettersWorkspace) get the same
+ *  events regardless of which surface hosts the provider. */
+const PRESENCE_POSTGRES_TABLES = [
+  "inspection_letters",
+  "letter_groups",
+  "actions",
+  "report_segments",
+  "storylines",
+];
 
 /**
  * Client wrapper that holds the impact-overlay filter (persisted to
  * localStorage), the inspector selection (graph node click → panel state),
  * and renders the graph next to the inspector panel when a node is selected.
  */
-export function GraphSurface({
-  storylines,
-  letterGroups,
-  letters,
-  actions,
-  actionTemplates,
-  days,
-  segments,
-  nations,
-  endingAssignments,
-  heroes,
-  allCitizenIds,
-  cities,
-  endingVariables,
-  endingValues,
-  currentUserId,
-  currentEmail,
-}: {
+type GraphSurfaceProps = {
   storylines: Storyline[];
   letterGroups: LetterGroup[];
   letters: InspectionLetterView[];
@@ -85,7 +88,46 @@ export function GraphSurface({
   endingValues: EndingVariableValue[];
   currentUserId?: string;
   currentEmail?: string;
-}) {
+};
+
+/**
+ * Wrapper: hosts the shared presence provider for the entire graph surface
+ * so peers stay visible (and postgres_changes keep flowing) even when the
+ * inspector is closed. The embedded `<LettersWorkspace>` adopts the same
+ * provider via `presenceProvided`.
+ */
+export function GraphSurface(props: GraphSurfaceProps) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="letters-workspace"
+      userId={props.currentUserId}
+      email={props.currentEmail}
+      postgresTables={PRESENCE_POSTGRES_TABLES}
+    >
+      <GraphSurfaceInner {...props} />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function GraphSurfaceInner({
+  storylines,
+  letterGroups,
+  letters,
+  actions,
+  actionTemplates,
+  days,
+  segments,
+  nations,
+  endingAssignments,
+  heroes,
+  allCitizenIds,
+  cities,
+  endingVariables,
+  endingValues,
+  currentUserId,
+  currentEmail,
+}: GraphSurfaceProps) {
+  const { peers } = usePresenceContext();
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -162,6 +204,50 @@ export function GraphSurface({
 
   const initial = selectionToInitial(selection, letters, segments);
 
+  // ---------- Presence: location label + jump-to-peer ----------
+  //
+  // Header avatars are always "Graph"-prefixed regardless of which surface
+  // a peer is technically on; the page-scoped label is more useful here
+  // than chasing the peer's surface. Panel suffix is the deepest known
+  // entity (focused field → focused row's display id, else deepest non-null
+  // id in `peer.selection`). When no panel info is known, just "Graph".
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const peer of peers) {
+      const panel = resolvePeerPanel(peer, {
+        letters,
+        letterGroups,
+        segments,
+        storylines,
+        actions,
+      });
+      m.set(peer.userId, panel ? `Graph\n${panel}` : "Graph");
+    }
+    return m;
+  }, [peers, letters, letterGroups, segments, storylines, actions]);
+
+  // Derive the local user's PresenceSelection from the graph's GraphSelection
+  // so AvatarStack can dim peers who aren't sharing the visible panel.
+  // Null when the inspector is closed (no panel = nothing to be off from).
+  const selfSelection = useMemo<PresenceSelection | null>(() => {
+    if (!inspectorOpen || !selection) return null;
+    return graphSelectionToPresence(selection, letters);
+  }, [inspectorOpen, selection, letters]);
+
+  // Click a peer's avatar → open the inspector and load their panel.
+  const jumpToPeer = useCallback(
+    (peer: PresencePeer) => {
+      const sel = peer.selection;
+      if (!sel) return;
+      const next = presenceSelectionToGraph(sel, letters);
+      if (!next) return;
+      setSelection(next);
+      setOverlayOpen(false);
+      setInspectorOpen(true);
+    },
+    [letters]
+  );
+
   // Inspector edits auto-save via instant-save, so navigation no longer
   // needs an unsaved-changes gate.
   const handleSelectionChange = useCallback(
@@ -225,6 +311,14 @@ export function GraphSurface({
         title="Narrative Graph"
         actions={
           <div className="flex items-center gap-2">
+            <AvatarStack
+              peers={peers}
+              selfSelection={selfSelection}
+              peerLocations={peerLocations}
+              onAvatarClick={jumpToPeer}
+              narrow
+              className="mr-1"
+            />
             <Button
               type="button"
               variant="outline"
@@ -338,6 +432,7 @@ export function GraphSurface({
                 initialSegmentId={initial.segmentId}
                 currentUserId={currentUserId}
                 currentEmail={currentEmail}
+                presenceProvided
                 controlledSelection={selection as ControlledSelection}
                 onSelectionChange={(sel) => {
                   // Panel-driven selection changes (user clicking within
@@ -397,4 +492,149 @@ function selectionToInitial(
     letterId: null,
     segmentId: sel.segmentId,
   };
+}
+
+/**
+ * Resolve a peer's deepest known entity to a display string ("Letter L-A3/b",
+ * "Group A7", "Report R-A3/i", or "Storyline …"). Prefers `peer.focus`
+ * (most precise — the actual focused row) and falls back to the deepest
+ * non-null id in `peer.selection`. Returns null when nothing's known so the
+ * caller can fall back to a surface-only label ("Graph").
+ */
+function resolvePeerPanel(
+  peer: PresencePeer,
+  mirrors: {
+    letters: InspectionLetterView[];
+    letterGroups: LetterGroup[];
+    segments: ReportSegmentView[];
+    storylines: Storyline[];
+    actions: ActionRow[];
+  }
+): string | null {
+  const { letters, letterGroups, segments, storylines, actions } = mirrors;
+  const storylineById = new Map(storylines.map((s) => [s.id, s]));
+
+  if (peer.focus) {
+    const id = peer.focus.recordId;
+    switch (peer.focus.table) {
+      case "inspection_letters": {
+        const l = letters.find((x) => x.id === id);
+        if (l?.content_id) return `Letter ${l.content_id}`;
+        break;
+      }
+      case "letter_groups": {
+        const g = letterGroups.find((x) => x.id === id);
+        if (g) {
+          const s = storylineById.get(g.storyline_id);
+          return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+        }
+        break;
+      }
+      case "actions": {
+        const a = actions.find((x) => x.id === id);
+        const l = a
+          ? letters.find((x) => x.id === a.inspection_letter_id)
+          : null;
+        if (l?.content_id) return `Actions ${l.content_id}`;
+        break;
+      }
+      case "report_segments": {
+        const seg = segments.find((x) => x.id === id);
+        if (seg?.report_id) return `Report ${seg.report_id}`;
+        break;
+      }
+      case "storylines": {
+        const s = storylines.find((x) => x.id === id);
+        if (s) return `Storyline ${s.name}`;
+        break;
+      }
+    }
+  }
+  const sel = peer.selection;
+  if (sel) {
+    if (sel.segmentId) {
+      const seg = segments.find((x) => x.id === sel.segmentId);
+      if (seg?.report_id) return `Report ${seg.report_id}`;
+    }
+    if (sel.letterId) {
+      const l = letters.find((x) => x.id === sel.letterId);
+      if (l?.content_id) return `Letter ${l.content_id}`;
+    }
+    if (sel.groupId) {
+      const g = letterGroups.find((x) => x.id === sel.groupId);
+      if (g) {
+        const s = storylineById.get(g.storyline_id);
+        return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+      }
+    }
+    if (sel.storylineId) {
+      const s = storylines.find((x) => x.id === sel.storylineId);
+      if (s) return `Storyline ${s.name}`;
+    }
+  }
+  return null;
+}
+
+/** Project a `GraphSelection` into a presence-shaped selection so AvatarStack's
+ *  `sharesPanel(narrow=true)` can compute the same visible-record predicate
+ *  that the workspace uses. */
+function graphSelectionToPresence(
+  sel: GraphSelection,
+  letters: InspectionLetterView[]
+): PresenceSelection {
+  if (sel.kind === "segment") {
+    return {
+      storylineId: null,
+      groupId: null,
+      letterId: null,
+      segmentId: sel.segmentId,
+      view: "segment",
+    };
+  }
+  if (sel.kind === "group") {
+    return {
+      storylineId: null,
+      groupId: sel.groupId,
+      letterId: null,
+      segmentId: null,
+      view: "group",
+    };
+  }
+  // letter | actions — resolve the variant to a letter id so visibleRecordId
+  // matches by letterId across both surfaces.
+  const letter = letters.find(
+    (l) =>
+      l.letter_group_id === sel.groupId &&
+      (l.variant ?? "") === sel.variantKey
+  );
+  return {
+    storylineId: null,
+    groupId: sel.groupId,
+    letterId: letter?.id ?? null,
+    segmentId: null,
+    view: sel.kind === "actions" ? "actions" : "main",
+  };
+}
+
+/** Inverse of `graphSelectionToPresence`: turn a peer's chain into a graph
+ *  selection so jump-to-peer can apply it. Returns null when the peer has
+ *  no actionable selection (e.g. they're at the storylines list). */
+function presenceSelectionToGraph(
+  sel: PresenceSelection,
+  letters: InspectionLetterView[]
+): GraphSelection | null {
+  if (sel.segmentId) {
+    return { kind: "segment", segmentId: sel.segmentId };
+  }
+  if (sel.letterId && sel.groupId) {
+    const letter = letters.find((l) => l.id === sel.letterId);
+    const variantKey = letter?.variant ?? "";
+    return sel.view === "actions"
+      ? { kind: "actions", groupId: sel.groupId, variantKey }
+      : { kind: "letter", groupId: sel.groupId, variantKey };
+  }
+  if (sel.groupId) {
+    return { kind: "group", groupId: sel.groupId };
+  }
+  return null;
 }
