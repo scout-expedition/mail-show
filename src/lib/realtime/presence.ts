@@ -2,11 +2,26 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import type { IconType } from "@/lib/db/enums";
 import {
   useRealtimeChannel,
   type PostgresChange,
   type PostgresSubscription,
 } from "./channel";
+
+/**
+ * Optional user-profile fields broadcast alongside identity. Mirrors the
+ * `UserAvatarData` shape from `src/components/user-avatar.tsx` (which reads
+ * from `auth.users.user_metadata`) so consumers can plug the peer object
+ * straight into `<UserAvatar>`. All fields are nullable — peers who haven't
+ * set a display name / avatar fall back to email + `colorFromUserId`.
+ */
+export type PresenceProfile = {
+  displayName: string | null;
+  avatarIconType: IconType | null;
+  avatarIconValue: string | null;
+  avatarColorHex: string | null;
+};
 
 export type PresenceFocus = {
   /** Postgres table name, e.g. "inspection_letters". */
@@ -22,6 +37,15 @@ export type PresenceFocus = {
  * "deepest" so consumers can render a location label without re-deriving it
  * from the id presence. All ids default to null when the peer hasn't drilled
  * that far yet.
+ *
+ * `narrow` reflects the peer's viewport mode at the moment they broadcast.
+ * In narrow mode the workspace shows ONE panel; in wide mode it shows two
+ * adjacent panels. `sharesPanel` uses this to compute visible-slot overlap
+ * accurately — a wide peer on view=group can see slot 1 (storyline) and a
+ * narrow peer on view=list shares slot 1, so they're co-located. A wide
+ * peer on view=segment sees slots 4–5, which doesn't overlap with another
+ * peer on view=group (slot 2). Defaults to false (assume wide) for older
+ * clients that don't publish it.
  */
 export type PresenceSelection = {
   storylineId: string | null;
@@ -29,6 +53,7 @@ export type PresenceSelection = {
   letterId: string | null;
   segmentId: string | null;
   view: string;
+  narrow?: boolean;
 };
 
 export type PresenceSelf = {
@@ -38,10 +63,16 @@ export type PresenceSelf = {
   focus: PresenceFocus | null;
   /** Open-panel chain. Null until the peer makes any selection. */
   selection: PresenceSelection | null;
+  /** User-customized display name / avatar / color from `user_metadata`.
+   *  Null when the user hasn't set anything — consumers fall back to email
+   *  + `colorFromUserId`. */
+  profile?: PresenceProfile | null;
 };
 
 export type PresencePeer = PresenceSelf & {
-  /** Deterministic hex color derived from userId — same across every client. */
+  /** Deterministic hex color derived from userId — used as the fallback when
+   *  the peer hasn't picked an `avatarColorHex`. Consumers should prefer
+   *  `profile.avatarColorHex ?? color`. */
   color: string;
   /**
    * Last time we heard ANY broadcast from this peer (focus, selection,
@@ -81,8 +112,16 @@ export function colorFromUserId(userId: string): string {
   return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
-/** Identity payload published via `channel.track()` — stays stable per user. */
-type PresenceIdentity = { userId: string; email: string };
+/** Identity payload published via `channel.track()` — stays stable per user.
+ *  Profile is bundled here (not a separate broadcast) because it's stable
+ *  per-session like userId/email, so the once-per-subscribe `track()` is the
+ *  right vehicle. Older clients that don't publish profile still parse cleanly
+ *  via the Partial wrapper below. */
+type PresenceIdentity = {
+  userId: string;
+  email: string;
+  profile?: PresenceProfile | null;
+};
 
 export type RawPresenceEntry = Partial<PresenceIdentity> & {
   presence_ref?: string;
@@ -130,7 +169,11 @@ export function parsePresenceIdentities(
     if (key === selfUserId) continue;
     const latest = entries[entries.length - 1];
     if (!latest?.userId || !latest?.email) continue;
-    out[latest.userId] = { userId: latest.userId, email: latest.email };
+    out[latest.userId] = {
+      userId: latest.userId,
+      email: latest.email,
+      profile: latest.profile ?? null,
+    };
   }
   return out;
 }
@@ -317,13 +360,21 @@ export function usePresence(opts: UsePresenceOptions): {
     };
   }, [channel]);
 
-  // Track stable identity once per subscribe — userId/email don't change
-  // mid-session. Gated on SUBSCRIBED: track() before subscribe completes
-  // can be silently dropped.
+  // Track stable identity once per subscribe — userId/email/profile don't
+  // change mid-session at the data-flow level. Gated on SUBSCRIBED:
+  // track() before subscribe completes can be silently dropped. Profile is
+  // JSON-stringified into the dep array so an object identity churn from a
+  // re-render doesn't re-track on every parent update.
+  const profileKey = JSON.stringify(self.profile ?? null);
   useEffect(() => {
     if (!channel || !subscribed) return;
-    void channel.track({ userId: self.userId, email: self.email });
-  }, [channel, subscribed, self.userId, self.email]);
+    const profile = JSON.parse(profileKey) as PresenceProfile | null;
+    void channel.track({
+      userId: self.userId,
+      email: self.email,
+      profile,
+    });
+  }, [channel, subscribed, self.userId, self.email, profileKey]);
 
   // Broadcast focus whenever it changes. Serialize for dep stability.
   const focusKey = JSON.stringify(self.focus);
@@ -373,6 +424,7 @@ export function usePresence(opts: UsePresenceOptions): {
       list.push({
         userId,
         email: identity.email,
+        profile: identity.profile ?? null,
         focus: focusMap[userId] ?? null,
         selection: selectionMap[userId] ?? null,
         lastActiveAt: lastActiveAtMap[userId] ?? 0,

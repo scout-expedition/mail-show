@@ -357,6 +357,19 @@ violation that the older direct-assignment pattern (`selfFocusRef.current
 = self.focus`) trips. Pre-existing direct assignments left untouched
 (not my code to fix).
 
+**Lesson #6 — Bundle stable identity (incl. profile) into `track()`,
+not a separate broadcast.** When forward-compatting the display
+name / avatar icon / avatar color from `user_metadata` post-merge,
+the cleanest place to put the `PresenceProfile` payload was right next
+to userId/email in `channel.track()`. Both are session-stable; both
+need to reach every late-joining peer without an explicit re-broadcast
+(presence sync handles that for free). A separate `presence-profile`
+event would have meant either (a) re-broadcasting on every sync, doubling
+the work the existing presence layer already does, or (b) introducing
+a window where a peer is visible but un-avatared. Phoenix Presence's
+"last metas entry per key" semantics make `track()` updates idempotent,
+so bundling is also safe across re-tracks.
+
 **Lesson #5 — Realtime needs auth attached BEFORE
 `channel.subscribe()`.** Postgres_changes are RLS-gated server-side, so
 the channel needs the user's JWT on the `phx_join`. Without it, the
@@ -375,33 +388,6 @@ logs at the channel + workspace layers to verify.)
 
 #### Open follow-ups
 
-- **Display name + avatar + color from `auth.users.user_metadata`.**
-  Main now stores per-user `display_name`, `avatar_icon_type`,
-  `avatar_icon_value`, `color_hex` on `auth.users.user_metadata` (see
-  `f9aff26 settings: add user display names + avatars` on main, no
-  migration needed). The presence layer is structurally ready to absorb
-  these — additive changes only, ~20 lines across 4 files:
-    1. `PresenceIdentity` gains optional `displayName`, `avatarIconType`,
-       `avatarIconValue`, `colorHex`. The `track()` payload carries them
-       through; `parsePresenceIdentities` already takes the last entry
-       per key so old peers without these fields keep working.
-    2. `PresencePeer` gains the same optional fields.
-       `colorFromUserId(userId)` stays as the fallback when `colorHex`
-       is unset.
-    3. `PresenceAvatar` swaps the first-letter rendering for
-       `<IconDisplay type={avatarIconType} value={avatarIconValue}/>`
-       when present; falls back to the email initial otherwise.
-       `backgroundColor` uses `peer.colorHex ?? peer.color`.
-    4. Hover popup label becomes `peer.displayName ?? peer.email`.
-    5. `WorkspacePresenceProvider` picks up new optional props and
-       forwards into `usePresence({ self: {...} })`. The two page-level
-       callsites read them off `meData.user?.user_metadata`.
-  Should be a small additive follow-up PR after this branch merges.
-- **App-shell-wide AvatarStack (Phase 2).** Still pending. The polish
-  features land first on the workspace; the global avatar in
-  `app-shell.tsx` can adopt the same `peerLocations` / `onAvatarClick`
-  shape when it ships — but the "jump to peer" handler will need a
-  router push since the peer may be on a different surface entirely.
 - **StorylineInspector + Phase 4 long-tail conversions.** The storyline
   inspector embedded in the LettersWorkspace's slot 1 still uses the
   pre-instant-save dirty-state machinery (it tracks its own dirty flag
@@ -409,3 +395,51 @@ logs at the channel + workspace layers to verify.)
   editor and the other Phase 4 surfaces (`actions`, `sorting`, `cities`,
   `citizens`, `nations`, `playthroughs`, `physical`, `days`, ending
   variables, endings documents). Each ships as its own PR.
+
+### ✅ Phase 2 — App-wide presence affordances (2026-05-13)
+
+The original plan had two bullets; the polish round before Phase 2 collapsed
+them to one. `<RecordPresence>` dots on list rows are obsolete (the dot
+component was deleted in the polish round — `<FieldHighlight>` + header
+avatars carry that signal now). What remained: the global avatar stack.
+
+- New `src/components/app-presence.tsx` — client component that subscribes
+  to a dedicated `app-presence` channel, separate from the per-surface
+  channels (`letters-workspace`, `graph`). Tracks
+  `{ userId, email, profile, surface: pathname }` and re-tracks on every
+  pathname change. No focus / selection / activity broadcasts — surface
+  presence alone is the signal "this peer is online", which keeps the
+  global channel light.
+- `src/components/app-shell.tsx` — header now renders whenever the local
+  user is authed (was: only when an active playthrough exists). Right
+  side gains the AppPresence avatar stack alongside the (still-conditional)
+  VariableHud. AppShell is async-server; it builds the `presenceUser`
+  payload from `auth.getUser()` + `profileFromMetadata` and passes it
+  to the client component.
+- Cross-surface jump: clicking a peer's avatar runs
+  `router.push(peer.surface)`. No-op when the peer is on the same surface.
+  Hover popup uses a small `surfaceLabel(pathname)` map — duplicated from
+  `NAV_ITEMS` rather than imported to avoid a client-bundle coupling on a
+  "use client" module-scoped const. Update both when adding new routes.
+- Self avatar always shown (matches the per-surface stack convention).
+  `lastActiveAt: 0` for `self` because `AvatarStack` doesn't apply the
+  inactive-mute path to the self slot — using `Date.now()` here would
+  trip the `react-hooks/purity` lint.
+- Coexists with the per-surface stacks on `/inspection/letters` and
+  `/graph`. The two convey different information: app-shell shows
+  "everyone online anywhere"; per-surface shows "who's editing what
+  HERE" with field-level focus rings. Some redundancy on those two
+  routes is acceptable; if it gets noisy we can hide the per-surface
+  stack when the app-shell stack is present.
+- `pnpm typecheck` clean. `pnpm lint` net-neutral (158 problems pre/post).
+  `pnpm test` clean (310 tests).
+
+#### Open follow-ups (Phase 2 → Phase 3 / cleanup)
+
+- **Phase 3 — Graph node-dot overlay.** Per-node presence dots on each
+  xyflow node whose `recordId` matches a peer's `focus.recordId`.
+  Untouched by Phase 2.
+- **`surfaceLabel` drift.** The route → label map in `app-presence.tsx`
+  duplicates `NAV_ITEMS`. Tolerable for now; revisit if routes start
+  changing more often (e.g. hoist `NAV_ITEMS` into a shared
+  non-client module).

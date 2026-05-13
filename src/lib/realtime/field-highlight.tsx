@@ -52,7 +52,10 @@ export function FieldHighlight({
           p.focus.recordId === focusKey.recordId &&
           p.focus.field === focusKey.field
       );
-      color = peer?.color;
+      // Honor the peer's customized avatar hex from /settings (same
+      // precedence the AvatarStack uses) — falls back to the deterministic
+      // `peer.color` from `colorFromUserId` when the peer hasn't picked one.
+      color = peer?.profile?.avatarColorHex ?? peer?.color;
     }
   }
 

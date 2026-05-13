@@ -15,6 +15,7 @@ import type {
   Storyline,
 } from "@/lib/db/types";
 import { parseGroupSlug } from "@/lib/letter-groups";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import { LettersWorkspace } from "./workspace";
 
 export default async function InspectionLettersPage({
@@ -37,6 +38,16 @@ export default async function InspectionLettersPage({
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
   const currentEmail = meData.user?.email;
+  // Profile (display name + avatar icon/color) lives in user_metadata; pass
+  // a presence-shaped object straight to the workspace so peers see the
+  // same identity in the AvatarStack that the user sees in the nav.
+  const meProfile = profileFromMetadata(meData.user?.user_metadata);
+  const presenceProfile = {
+    displayName: meProfile.display_name,
+    avatarIconType: meProfile.avatar_icon_type,
+    avatarIconValue: meProfile.avatar_icon_value,
+    avatarColorHex: meProfile.avatar_color_hex,
+  };
   const [
     { data: sData },
     { data: gData },
@@ -203,6 +214,7 @@ export default async function InspectionLettersPage({
       initialView={initialView}
       currentUserId={currentUserId}
       currentEmail={currentEmail}
+      currentProfile={presenceProfile}
     />
   );
 }

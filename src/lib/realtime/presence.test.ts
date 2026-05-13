@@ -42,6 +42,7 @@ describe("parsePresenceIdentities", () => {
     expect(out["user-alice"]).toEqual({
       userId: "user-alice",
       email: "alice@x.com",
+      profile: null,
     });
   });
 
@@ -96,12 +97,36 @@ describe("parsePresenceIdentities", () => {
     };
     const out = parsePresenceIdentities(state, "user-self");
     expect(Object.keys(out).length).toBe(2);
-    expect(out["user-alice"]).toEqual(alice);
-    expect(out["user-bob"]).toEqual(bob);
+    expect(out["user-alice"]).toEqual({ ...alice, profile: null });
+    expect(out["user-bob"]).toEqual({ ...bob, profile: null });
+  });
+
+  it("preserves the peer's profile (display_name/avatar/color) when present", () => {
+    const profile = {
+      displayName: "Alice Liddell",
+      avatarIconType: "tabler" as const,
+      avatarIconValue: "user",
+      avatarColorHex: "#abcdef",
+    };
+    const state: RawPresenceState = {
+      "user-alice": [
+        { userId: "user-alice", email: "alice@x.com", profile },
+      ],
+    };
+    const out = parsePresenceIdentities(state, "user-self");
+    expect(out["user-alice"].profile).toEqual(profile);
+  });
+
+  it("returns profile=null when peer hasn't published one (older client)", () => {
+    const state: RawPresenceState = {
+      "user-alice": [{ userId: "user-alice", email: "alice@x.com" }],
+    };
+    const out = parsePresenceIdentities(state, "user-self");
+    expect(out["user-alice"].profile).toBeNull();
   });
 });
 
-describe("sharesPanel — open-panel intersection", () => {
+describe("sharesPanel — visible-slot overlap", () => {
   const sel = (
     over: Partial<{
       storylineId: string | null;
@@ -109,6 +134,7 @@ describe("sharesPanel — open-panel intersection", () => {
       letterId: string | null;
       segmentId: string | null;
       view: string;
+      narrow: boolean;
     }> = {}
   ) => ({
     storylineId: null,
@@ -125,80 +151,108 @@ describe("sharesPanel — open-panel intersection", () => {
     expect(sharesPanel(null, null)).toBe(false);
   });
 
-  it("returns false when neither side has any id loaded", () => {
+  it("returns false when neither side has any id at their visible slot", () => {
+    // Both wide on view=list; visible slot 1 keys off storylineId which is
+    // null on both sides → no record to match against.
     expect(sharesPanel(sel(), sel())).toBe(false);
   });
 
-  it("returns true when one shared record id appears in both chains", () => {
+  it("matches when both wide-view the same letter", () => {
     expect(
       sharesPanel(
-        sel({ storylineId: "S1", groupId: "G1" }),
-        sel({ storylineId: "S1" })
+        sel({ groupId: "G1", letterId: "L1", view: "main", narrow: false }),
+        sel({ groupId: "G1", letterId: "L1", view: "main", narrow: false })
       )
     ).toBe(true);
   });
 
-  it("matches across heterogeneous slots — group id of one = letter id of other", () => {
-    // Cross-slot match: ids are globally unique so any positional match counts.
+  it("scenario 1: wide on view=group + narrow on view=list share storyline at slot 1", () => {
+    // A wide on view=group: visible slots [1, 2] — sees storyline + group.
+    // B narrow on view=list: visible slot [1].
+    // Slot 1 records: both storylineId = "S1" → co-located.
     expect(
-      sharesPanel(sel({ groupId: "X" }), sel({ letterId: "X" }))
+      sharesPanel(
+        sel({
+          storylineId: "S1",
+          groupId: "G1",
+          view: "group",
+          narrow: false,
+        }),
+        sel({ storylineId: "S1", view: "list", narrow: true })
+      )
     ).toBe(true);
   });
 
-  it("returns false when no id overlaps", () => {
+  it("scenario 2: wide on view=segment vs view=group → NOT same panel", () => {
+    // A wide on view=segment: visible slots [4, 5] — actions + segment.
+    // B wide on view=group: visible slots [1, 2]. No overlap. Shared
+    // groupId in A's chain is irrelevant — A isn't looking at the group
+    // panel.
     expect(
       sharesPanel(
-        sel({ storylineId: "S1", groupId: "G1", letterId: "L1" }),
-        sel({ storylineId: "S2", groupId: "G2" })
+        sel({
+          groupId: "G1",
+          letterId: "L1",
+          segmentId: "Seg1",
+          view: "segment",
+          narrow: false,
+        }),
+        sel({ groupId: "G1", view: "group", narrow: false })
       )
     ).toBe(false);
   });
 
-  it("ignores null entries", () => {
+  it("narrow on the same visible slot still requires the same record", () => {
     expect(
-      sharesPanel(sel({ groupId: null }), sel({ groupId: null }))
+      sharesPanel(
+        sel({ groupId: "G1", view: "group", narrow: true }),
+        sel({ groupId: "G2", view: "group", narrow: true })
+      )
     ).toBe(false);
   });
 
-  describe("narrow mode — only the visible slot counts", () => {
-    it("matches when both are looking at the same letter in main view", () => {
-      expect(
-        sharesPanel(
-          sel({ groupId: "G1", letterId: "L1", view: "main" }),
-          sel({ groupId: "G1", letterId: "L1", view: "main" }),
-          true
-        )
-      ).toBe(true);
-    });
+  it("narrow + narrow on different slots: never matches", () => {
+    expect(
+      sharesPanel(
+        sel({ storylineId: "S1", view: "list", narrow: true }),
+        sel({
+          storylineId: "S1",
+          groupId: "G1",
+          view: "group",
+          narrow: true,
+        })
+      )
+    ).toBe(false);
+  });
 
-    it("does NOT match if peer has same group loaded but is viewing the letter", () => {
-      // Wide mode would match (shared group), narrow mode must not — only the
-      // visible record counts. Self is looking at the group panel, peer at a
-      // letter inside that group.
-      expect(
-        sharesPanel(
-          sel({ groupId: "G1", view: "group" }),
-          sel({ groupId: "G1", letterId: "L1", view: "main" }),
-          true
-        )
-      ).toBe(false);
-    });
+  it("wide view=actions + wide view=main both see slot 3 (letter)", () => {
+    // Wide A on view=actions: visible [3, 4]. Wide B on view=main: visible
+    // [2, 3]. Slot 3 keys off letterId → same letter → match.
+    expect(
+      sharesPanel(
+        sel({
+          groupId: "G1",
+          letterId: "L1",
+          view: "main",
+          narrow: false,
+        }),
+        sel({
+          groupId: "G1",
+          letterId: "L1",
+          view: "actions",
+          narrow: false,
+        })
+      )
+    ).toBe(true);
+  });
 
-    it("falls back to false when visibleRecordId is null on either side", () => {
-      expect(
-        sharesPanel(sel({ view: "list" }), sel({ view: "list" }), true)
-      ).toBe(false);
-    });
-
-    it("matches actions view via letterId — same panel as 'main'", () => {
-      expect(
-        sharesPanel(
-          sel({ letterId: "L1", view: "main" }),
-          sel({ letterId: "L1", view: "actions" }),
-          true
-        )
-      ).toBe(true);
-    });
+  it("falls back to false when visible-slot record is null", () => {
+    expect(
+      sharesPanel(
+        sel({ view: "list", narrow: true }),
+        sel({ view: "list", narrow: true })
+      )
+    ).toBe(false);
   });
 });
 

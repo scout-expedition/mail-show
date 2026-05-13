@@ -14,6 +14,7 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import { GraphSurface } from "./graph-surface";
 
 export default async function GraphPage() {
@@ -21,6 +22,13 @@ export default async function GraphPage() {
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
   const currentEmail = meData.user?.email;
+  const meProfile = profileFromMetadata(meData.user?.user_metadata);
+  const presenceProfile = {
+    displayName: meProfile.display_name,
+    avatarIconType: meProfile.avatar_icon_type,
+    avatarIconValue: meProfile.avatar_icon_value,
+    avatarColorHex: meProfile.avatar_color_hex,
+  };
   const [
     { data: sData },
     { data: gData },
@@ -93,6 +101,7 @@ export default async function GraphPage() {
       endingValues={endingValues}
       currentUserId={currentUserId}
       currentEmail={currentEmail}
+      currentProfile={presenceProfile}
     />
   );
 }

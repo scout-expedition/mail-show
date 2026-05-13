@@ -15,6 +15,7 @@ import {
   usePresence,
   type PresenceFocus,
   type PresencePeer,
+  type PresenceProfile,
   type PresenceSelection,
 } from "./presence";
 
@@ -93,12 +94,17 @@ export function WorkspacePresenceProvider({
   channelName,
   userId,
   email,
+  profile,
   postgresTables,
   children,
 }: {
   channelName: string;
   userId?: string;
   email?: string;
+  /** Optional user-customized display name / avatar / color. When provided,
+   *  the local user broadcasts these to peers; consumers fall back to email
+   *  + `colorFromUserId` for any missing fields. */
+  profile?: PresenceProfile | null;
   postgresTables?: string[];
   children: ReactNode;
 }) {
@@ -108,6 +114,7 @@ export function WorkspacePresenceProvider({
         channelName={channelName}
         userId={userId}
         email={email}
+        profile={profile ?? null}
         postgresTables={postgresTables}
       >
         {children}
@@ -121,12 +128,14 @@ function ActivePresenceProvider({
   channelName,
   userId,
   email,
+  profile,
   postgresTables,
   children,
 }: {
   channelName: string;
   userId: string;
   email: string;
+  profile: PresenceProfile | null;
   postgresTables?: string[];
   children: ReactNode;
 }) {
@@ -161,23 +170,31 @@ function ActivePresenceProvider({
 
   const { peers, pingActivity } = usePresence({
     name: channelName,
-    self: { userId, email, focus, selection },
+    self: { userId, email, profile, focus, selection },
     postgres,
     onPostgres,
   });
 
-  const selfColor = useMemo(() => colorFromUserId(userId), [userId]);
+  // Self color prefers the user's customized `avatarColorHex` (set in
+  // /settings) and falls back to the deterministic hash. Peers see the
+  // same value via the tracked identity payload, so the avatar stack and
+  // FieldHighlight self-ring all read the same color.
+  const selfColor = useMemo(
+    () => profile?.avatarColorHex ?? colorFromUserId(userId),
+    [profile?.avatarColorHex, userId]
+  );
 
   const selfPeer = useMemo<PresencePeer>(
     () => ({
       userId,
       email,
+      profile,
       color: selfColor,
       focus,
       selection,
       lastActiveAt: Date.now(),
     }),
-    [userId, email, selfColor, focus, selection]
+    [userId, email, profile, selfColor, focus, selection]
   );
 
   const value = useMemo<PresenceContextValue>(
