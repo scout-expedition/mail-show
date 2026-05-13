@@ -66,6 +66,8 @@ export function GraphSurface({
   cities,
   endingVariables,
   endingValues,
+  currentUserId,
+  currentEmail,
 }: {
   storylines: Storyline[];
   letterGroups: LetterGroup[];
@@ -81,6 +83,8 @@ export function GraphSurface({
   cities: City[];
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
+  currentUserId?: string;
+  currentEmail?: string;
 }) {
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
@@ -332,6 +336,8 @@ export function GraphSurface({
                 initialGroupId={initial.groupId}
                 initialLetterId={initial.letterId}
                 initialSegmentId={initial.segmentId}
+                currentUserId={currentUserId}
+                currentEmail={currentEmail}
                 controlledSelection={selection as ControlledSelection}
                 onSelectionChange={(sel) => {
                   // Panel-driven selection changes (user clicking within

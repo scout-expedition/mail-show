@@ -269,9 +269,11 @@ After every surface is converted: delete `src/components/auto-save-form.tsx`, th
 - Deleted `/settings/realtime-smoke.tsx` + its mount in `settings/page.tsx` (Phase 0 throwaway).
 - `pnpm typecheck` clean. `pnpm test` clean (297 tests). `pnpm lint` net-improved (158 problems vs. 173 pre-B6).
 
+### ✅ Phase 1 Track D — Graph presence threading
+- `/graph`'s page server-fetches `auth.getUser()` and threads `currentUserId` + `currentEmail` through `GraphSurface` into the embedded `<LettersWorkspace>`. The workspace's `WorkspacePresenceProvider` activates instead of falling through to the no-op fallback, so realtime + presence work identically in the graph inspector.
+
 ### ⬜ Remaining tracks
 
-- **D — Graph presence threading:** thread `currentUserId` / `currentEmail` from `/graph`'s page into `<LettersWorkspace>` inside `graph-surface.tsx` so presence + instant-save work in the graph embed too. (The dirty-state-machinery half of D landed with B6.)
 - **C — E2E spec** (`tests/e2e/realtime-letters.spec.ts`): two-context Playwright covering type→appear, focus→indicator, remote-delete toast, two-users-different-fields-no-clobber. Scaffold in parallel with B; finalize once B5 lands.
 
 ### Open follow-ups noted along the way
