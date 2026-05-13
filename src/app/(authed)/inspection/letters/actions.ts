@@ -36,48 +36,99 @@ type EndingAssignmentPatch = {
 };
 
 /**
- * Replace an action's ending-variable assignments wholesale. The caller
- * passes the full desired set; we delete whatever's there and reinsert.
- * De-dupes by variable_id so we never violate the (action_id, variable_id)
- * unique constraint even if the client sends two rows for the same variable.
+ * Reconcile an action's ending-variable assignments to a target set via
+ * minimum-delta DML — read existing rows, compute insert/update/delete
+ * sets keyed by `variable_id`, and apply only those.
+ *
+ * The previous wipe-and-reinsert pattern caused a visible flicker for
+ * peers: each save fired N DELETEs + N INSERTs, and the workspace's
+ * postgres handler clears the mirror as DELETEs arrive — for the brief
+ * window before the matching INSERTs land, the reconciliation effect
+ * rebuilt letterState with empty `ending_assignments`. The user-visible
+ * symptom was "all ending variable rows disappear for a moment every
+ * time you pick a variable or change a value." Diff-based DML emits at
+ * most one event per actual change (e.g. picking a value on an existing
+ * variable → one UPDATE, no DELETE) so the mirror is never momentarily
+ * inconsistent.
  *
  * Rows with an empty `variable_id` are treated as in-progress local UI
- * state and skipped — they're picker-open rows the user hasn't bound to a
- * variable yet. Rows with `variable_id` set but `value_id` null/empty are
- * persisted: the schema went nullable on `value_id` in migration 0033 so a
- * peer can commit "I've picked the variable, working on the value" without
- * being forced to fill both at once.
+ * state and skipped — picker-open rows the user hasn't bound yet. Rows
+ * with `variable_id` set but `value_id` null/empty are persisted, since
+ * migration 0033 made `value_id` nullable.
  */
 async function replaceEndingAssignments(
   actionId: string,
   assignments: EndingAssignmentPatch[]
 ) {
   const supabase = await createSupabaseServerClient();
-  const { error: delErr } = await supabase
+
+  const { data: existing, error: readErr } = await supabase
     .from("inspection_action_ending_assignments")
-    .delete()
+    .select("id, variable_id, value_id")
     .eq("action_id", actionId);
-  if (delErr) throw new Error(delErr.message);
-  const seen = new Set<string>();
-  const rows: Array<{
+  if (readErr) throw new Error(readErr.message);
+
+  const existingByVar = new Map<
+    string,
+    { id: string; value_id: string | null }
+  >();
+  for (const r of existing ?? []) {
+    existingByVar.set(r.variable_id as string, {
+      id: r.id as string,
+      value_id: (r.value_id as string | null) ?? null,
+    });
+  }
+
+  // Dedupe + filter incoming. First non-empty variable_id wins.
+  const incoming = new Map<string, string | null>();
+  for (const a of assignments) {
+    if (!a.variable_id) continue;
+    if (incoming.has(a.variable_id)) continue;
+    incoming.set(a.variable_id, a.value_id || null);
+  }
+
+  const toInsert: Array<{
     action_id: string;
     variable_id: string;
     value_id: string | null;
   }> = [];
-  for (const a of assignments) {
-    if (!a.variable_id) continue;
-    if (seen.has(a.variable_id)) continue;
-    seen.add(a.variable_id);
-    rows.push({
-      action_id: actionId,
-      variable_id: a.variable_id,
-      value_id: a.value_id || null,
-    });
+  const toUpdate: Array<{ id: string; value_id: string | null }> = [];
+  const toDeleteIds: string[] = [];
+
+  for (const [variableId, valueId] of incoming) {
+    const ex = existingByVar.get(variableId);
+    if (!ex) {
+      toInsert.push({
+        action_id: actionId,
+        variable_id: variableId,
+        value_id: valueId,
+      });
+    } else if (ex.value_id !== valueId) {
+      toUpdate.push({ id: ex.id, value_id: valueId });
+    }
   }
-  if (rows.length > 0) {
+  for (const [variableId, ex] of existingByVar) {
+    if (!incoming.has(variableId)) toDeleteIds.push(ex.id);
+  }
+
+  if (toDeleteIds.length > 0) {
     const { error } = await supabase
       .from("inspection_action_ending_assignments")
-      .insert(rows);
+      .delete()
+      .in("id", toDeleteIds);
+    if (error) throw new Error(error.message);
+  }
+  for (const u of toUpdate) {
+    const { error } = await supabase
+      .from("inspection_action_ending_assignments")
+      .update({ value_id: u.value_id })
+      .eq("id", u.id);
+    if (error) throw new Error(error.message);
+  }
+  if (toInsert.length > 0) {
+    const { error } = await supabase
+      .from("inspection_action_ending_assignments")
+      .insert(toInsert);
     if (error) throw new Error(error.message);
   }
 }

@@ -4298,8 +4298,8 @@ function HighlightableImpactTile({
     const sinceLocal = Date.now() - lastLocalChangeAtRef.current;
     if (sinceLocal < 250) return;
     // Prefer the peer who currently has focus on this tile (almost always
-    // the same peer who just clicked +/-); fall back to a neutral yellow
-    // so the change is still visible if focus has already moved away.
+    // the same peer who just clicked +/-); fall back to white so the
+    // change is still visible if focus has already moved away.
     const focused = peers.find(
       (p) =>
         p.focus &&
@@ -4307,7 +4307,7 @@ function HighlightableImpactTile({
         p.focus.recordId === focusKey.recordId &&
         p.focus.field === focusKey.field
     );
-    setFlashColor(focused?.color ?? "#fde047");
+    setFlashColor(focused?.color ?? "#ffffff");
     const t = setTimeout(() => setFlashColor(null), 600);
     return () => clearTimeout(t);
     // peers / focusKey fields intentionally omitted from deps — we only

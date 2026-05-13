@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { PostgresChange, PostgresSubscription } from "./channel";
 import {
+  colorFromUserId,
   usePresence,
   type PresenceFocus,
   type PresencePeer,
@@ -31,6 +32,13 @@ type PresenceContextValue = {
   /** Other users on this channel (excludes self). */
   peers: PresencePeer[];
   /**
+   * Avatar color for the local user, derived deterministically from their
+   * `userId` via `colorFromUserId`. Same hash used for peer colors so the
+   * user's self-ring matches what peers see in the avatar stack. `null`
+   * when presence is inactive.
+   */
+  selfColor: string | null;
+  /**
    * Broadcast a lightweight activity heartbeat. Throttled callers (e.g.
    * useInstantField while typing) keep peers marked active without re-firing
    * focus/selection. No-op when presence is inactive.
@@ -50,6 +58,7 @@ const PresenceContext = createContext<PresenceContextValue>({
   selection: null,
   setSelection: () => {},
   peers: [],
+  selfColor: null,
   pingActivity: () => {},
   onPostgresChanges: () => () => {},
 });
@@ -149,6 +158,8 @@ function ActivePresenceProvider({
     onPostgres,
   });
 
+  const selfColor = useMemo(() => colorFromUserId(userId), [userId]);
+
   const value = useMemo<PresenceContextValue>(
     () => ({
       focus,
@@ -156,10 +167,11 @@ function ActivePresenceProvider({
       selection,
       setSelection,
       peers,
+      selfColor,
       pingActivity,
       onPostgresChanges,
     }),
-    [focus, selection, peers, pingActivity, onPostgresChanges]
+    [focus, selection, peers, selfColor, pingActivity, onPostgresChanges]
   );
 
   return (
@@ -184,6 +196,7 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
       selection,
       setSelection,
       peers: [],
+      selfColor: null,
       pingActivity,
       onPostgresChanges,
     }),
