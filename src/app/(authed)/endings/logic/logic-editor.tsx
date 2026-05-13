@@ -16,6 +16,7 @@
 import { useCallback, useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUnsavedDialog } from "@/components/panel";
+import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
   ENDING_DOCUMENT_KIND_LABELS,
   ENDING_LOGIC_TABS,
@@ -327,6 +328,8 @@ export function LogicEditor({
   }
 
   const activeTabConfig = ENDING_LOGIC_TABS.find((t) => t.id === activeTab)!;
+
+  useBreadcrumbExtension([activeTabConfig.label]);
 
   return (
     <div className="flex flex-col gap-3">

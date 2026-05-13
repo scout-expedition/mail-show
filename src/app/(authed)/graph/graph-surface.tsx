@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   IconArrowBackUp,
   IconCirclePlusMinus,
@@ -46,6 +47,7 @@ import {
   type ControlledSelection,
 } from "../inspection/letters/workspace";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
@@ -132,7 +134,11 @@ function GraphSurfaceInner({
   currentEmail,
   currentProfile,
 }: GraphSurfaceProps) {
+  const router = useRouter();
   const { peers, selfPeer } = usePresenceContext();
+  // Workspace-stack peers are owned by /graph; AppPresence (othersOnly in
+  // PageHeader) filters these userIds so they don't double-render.
+  useClaimWorkspacePeers(peers.map((p) => p.userId));
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -323,6 +329,7 @@ function GraphSurfaceInner({
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col">
       <PageHeader
         title="Narrative Graph"
+        presenceOthersOnly
         actions={
           <div className="flex items-center gap-2">
             <AvatarStack
@@ -331,6 +338,7 @@ function GraphSurfaceInner({
               selfSelection={selfSelection}
               peerLocations={peerLocations}
               onAvatarClick={jumpToPeer}
+              onSelfClick={() => router.push("/settings")}
               narrow
               className="mr-1"
             />
@@ -592,8 +600,9 @@ function resolvePeerPanel(
 }
 
 /** Project a `GraphSelection` into a presence-shaped selection so AvatarStack's
- *  `sharesPanel(narrow=true)` can compute the same visible-record predicate
- *  that the workspace uses. */
+ *  visible-slot logic can compute the right co-location predicate. Always
+ *  narrow on the graph surface — the inspector embeds the workspace in
+ *  `forceNarrow` mode (single-panel view). */
 function graphSelectionToPresence(
   sel: GraphSelection,
   letters: InspectionLetterView[]
@@ -605,6 +614,7 @@ function graphSelectionToPresence(
       letterId: null,
       segmentId: sel.segmentId,
       view: "segment",
+      narrow: true,
     };
   }
   if (sel.kind === "group") {
@@ -614,6 +624,7 @@ function graphSelectionToPresence(
       letterId: null,
       segmentId: null,
       view: "group",
+      narrow: true,
     };
   }
   // letter | actions — resolve the variant to a letter id so visibleRecordId
@@ -629,6 +640,7 @@ function graphSelectionToPresence(
     letterId: letter?.id ?? null,
     segmentId: null,
     view: sel.kind === "actions" ? "actions" : "main",
+    narrow: true,
   };
 }
 

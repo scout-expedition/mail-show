@@ -12,6 +12,10 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
+import { AppPresence } from "@/components/app-presence";
+import { usePresenceUser } from "@/components/presence-user-context";
+import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
+import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -394,6 +398,7 @@ function LettersWorkspaceInner({
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const presenceUser = usePresenceUser();
   const {
     peers,
     selfPeer,
@@ -403,6 +408,11 @@ function LettersWorkspaceInner({
     onPostgresChanges,
   } = usePresenceContext();
   const { toast, toaster } = useToast();
+
+  // Viewport-mode flag for the slide layout — hoisted before the selection
+  // broadcast effect so it can flow into PresenceSelection.narrow.
+  const viewportNarrow = useIsNarrow();
+  const narrow = forceNarrow ?? viewportNarrow;
 
   // Mirror server-provided arrays so postgres_changes events can fan out
   // to the UI without a page reload. Structural mutations still revalidate;
@@ -1085,6 +1095,7 @@ function LettersWorkspaceInner({
       letterId: selectedId,
       segmentId: selectedSegmentId,
       view,
+      narrow,
     });
   }, [
     setSelection,
@@ -1093,6 +1104,7 @@ function LettersWorkspaceInner({
     selectedId,
     selectedSegmentId,
     view,
+    narrow,
   ]);
 
   // Clear our selection on unmount so a parent surface (e.g. the graph,
@@ -1663,8 +1675,30 @@ function LettersWorkspaceInner({
     ? segments.find((s) => s.id === selectedSegmentId)
     : null;
 
-  const viewportNarrow = useIsNarrow();
-  const narrow = forceNarrow ?? viewportNarrow;
+  // Publish workspace peer userIds so the global AppPresence stack
+  // (othersOnly) can dedupe — peers on the letters-workspace channel get
+  // hidden from the elsewhere stack even when their app-presence track has
+  // drifted (multi-tab / mid-navigation race).
+  useClaimWorkspacePeers(peers.map((p) => p.userId));
+
+  // Publish a single deepest-id segment so the AppPresence popup reads
+  // "Inspection > <ID>". Priority: segment report_id → letter content_id →
+  // group code (storylineAbbrev + sequence) → storyline abbrev → fallback
+  // "Letters". The pathname-derived base is just ["Inspection"] for the
+  // letters surface so the final popup is exactly two lines.
+  useBreadcrumbExtension(
+    (() => {
+      const ab = currentStoryline?.abbreviation ?? "";
+      const id =
+        selectedSegment?.report_id ||
+        selectedLetter?.content_id ||
+        (group ? `G${ab}${group.sequence}` : null) ||
+        ab ||
+        "Letters";
+      return [id];
+    })()
+  );
+
   /**
    * Transform offset (as a percentage of the slide container) that moves
    * the desired panels into the viewport. At wide viewports the slide
@@ -1846,6 +1880,7 @@ function LettersWorkspaceInner({
               selfSelection={selfSelection}
               peerLocations={peerLocations}
               onAvatarClick={jumpToPeer}
+              onSelfClick={() => router.push("/settings")}
               narrow={narrow}
             />
           </div>
@@ -1922,13 +1957,32 @@ function LettersWorkspaceInner({
             </BreadcrumbPill>
           </>
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          {/* Global elsewhere-stack — renders LEFT of the self avatar so the
+              user is always rightmost. This page has no PageHeader, so
+              without this mount the global AppPresence never renders on
+              /inspection/letters. othersOnly filters out same-parent-page
+              peers so they don't duplicate the workspace stack. */}
+          {presenceUser ? (
+            <AppPresence
+              userId={presenceUser.userId}
+              email={presenceUser.email}
+              profile={presenceUser.profile}
+              othersOnly
+            />
+          ) : null}
+          {/* Workspace-scoped stack (focus rings + per-letter location +
+              self avatar). `narrow` flows in so sharesPanel uses the
+              "visible slot only" comparison when the local viewport is
+              showing one panel at a time. */}
           <AvatarStack
             peers={peers}
             self={selfPeer}
             selfSelection={selfSelection}
             peerLocations={peerLocations}
             onAvatarClick={jumpToPeer}
+            onSelfClick={() => router.push("/settings")}
+            narrow={narrow}
           />
         </div>
       </div>

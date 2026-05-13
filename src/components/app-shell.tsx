@@ -1,26 +1,39 @@
 import { Nav } from "@/components/nav";
+import {
+  PresenceUserProvider,
+  type PresenceUser,
+} from "@/components/presence-user-context";
 import { VariableHud } from "@/components/variable-hud";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PHASE_LABELS } from "@/lib/db/enums";
-import { profileFromMetadata } from "@/lib/auth/profile";
-import type { UserAvatarData } from "@/components/user-avatar";
 import type { Day, Playthrough, PlaythroughVariables } from "@/lib/db/types";
 
-/** Top-level app chrome: left nav + sticky top bar with playthrough HUD. */
+/** Top-level app chrome: left nav + sticky top bar with playthrough HUD.
+ *  Fetches the current user once and exposes it via `PresenceUserProvider`
+ *  so client components (AppPresence, workspace stacks) can read identity
+ *  without each one re-running `auth.getUser()` or importing `next/headers`
+ *  (which breaks Client Component bundling). */
 export async function AppShell({ children }: { children: React.ReactNode }) {
   let activePlaythrough: Playthrough | null = null;
   let currentDay: Day | null = null;
   let vars: Omit<PlaythroughVariables, "playthrough_id"> | undefined;
-  let currentUser: { email: string | null; profile: UserAvatarData } | null =
-    null;
+  let presenceUser: PresenceUser | null = null;
 
   try {
     const supabase = await createSupabaseServerClient();
     const { data: me } = await supabase.auth.getUser();
-    if (me.user) {
-      currentUser = {
-        email: me.user.email ?? null,
-        profile: profileFromMetadata(me.user.user_metadata),
+    if (me.user?.email) {
+      const profile = profileFromMetadata(me.user.user_metadata);
+      presenceUser = {
+        userId: me.user.id,
+        email: me.user.email,
+        profile: {
+          displayName: profile.display_name,
+          avatarIconType: profile.avatar_icon_type,
+          avatarIconValue: profile.avatar_icon_value,
+          avatarColorHex: profile.avatar_color_hex,
+        },
       };
     }
     const { data: active } = await supabase
@@ -53,44 +66,46 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       }
     }
   } catch {
-    // env not configured yet — HUD just shows zeros.
+    // env not configured yet — HUD just shows zeros and presence stays null.
   }
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
-      <Nav currentUser={currentUser} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Reserves room for the fixed nav Menu toggle so it doesn't
-            overlap page content at narrow viewports. At lg+ the nav is
-            inline and the toggle is hidden, so the spacer collapses. */}
-        <div className="h-12 shrink-0 lg:hidden" aria-hidden />
-        {activePlaythrough ? (
-          <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
-            <div className="flex items-center gap-3 text-sm">
-              {currentDay ? (
-                <>
-                  <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
-                    {currentDay.identifier}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {PHASE_LABELS[activePlaythrough.current_phase]}
-                  </span>
-                </>
-              ) : null}
-            </div>
-            <VariableHud
-              vars={vars}
-              playthroughName={activePlaythrough.name}
-            />
-          </header>
-        ) : null}
-        <main
-          className="flex-1 overflow-y-auto px-8 py-6"
-          style={{ scrollbarGutter: "stable" }}
-        >
-          {children}
-        </main>
+    <PresenceUserProvider value={presenceUser}>
+      <div className="flex h-screen w-screen overflow-hidden">
+        <Nav />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {/* Reserves room for the fixed nav Menu toggle so it doesn't
+              overlap page content at narrow viewports. At lg+ the nav is
+              inline and the toggle is hidden, so the spacer collapses. */}
+          <div className="h-12 shrink-0 lg:hidden" aria-hidden />
+          {activePlaythrough ? (
+            <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
+              <div className="flex items-center gap-3 text-sm">
+                {currentDay ? (
+                  <>
+                    <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
+                      {currentDay.identifier}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {PHASE_LABELS[activePlaythrough.current_phase]}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <VariableHud
+                vars={vars}
+                playthroughName={activePlaythrough.name}
+              />
+            </header>
+          ) : null}
+          <main
+            className="flex-1 overflow-y-auto px-8 py-6"
+            style={{ scrollbarGutter: "stable" }}
+          >
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </PresenceUserProvider>
   );
 }

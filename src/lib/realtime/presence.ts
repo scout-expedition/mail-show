@@ -37,6 +37,15 @@ export type PresenceFocus = {
  * "deepest" so consumers can render a location label without re-deriving it
  * from the id presence. All ids default to null when the peer hasn't drilled
  * that far yet.
+ *
+ * `narrow` reflects the peer's viewport mode at the moment they broadcast.
+ * In narrow mode the workspace shows ONE panel; in wide mode it shows two
+ * adjacent panels. `sharesPanel` uses this to compute visible-slot overlap
+ * accurately — a wide peer on view=group can see slot 1 (storyline) and a
+ * narrow peer on view=list shares slot 1, so they're co-located. A wide
+ * peer on view=segment sees slots 4–5, which doesn't overlap with another
+ * peer on view=group (slot 2). Defaults to false (assume wide) for older
+ * clients that don't publish it.
  */
 export type PresenceSelection = {
   storylineId: string | null;
@@ -44,6 +53,7 @@ export type PresenceSelection = {
   letterId: string | null;
   segmentId: string | null;
   view: string;
+  narrow?: boolean;
 };
 
 export type PresenceSelf = {

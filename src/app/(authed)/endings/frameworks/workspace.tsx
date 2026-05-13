@@ -3,6 +3,7 @@
 import { useMemo, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useUnsavedDialog } from "@/components/panel";
+import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
   EndingBlock,
   EndingConditionBlockVariable,
@@ -60,6 +61,10 @@ export function FrameworksWorkspace({
     frameworks[0]?.id ??
     null;
   const selected = frameworks.find((f) => f.id === effectiveId) ?? null;
+
+  // Publish the selected framework name as a breadcrumb extension so peers
+  // see "Endings > Frameworks > <Name>" in the AppPresence hover popup.
+  useBreadcrumbExtension(selected?.name ? [selected.name] : []);
 
   // Filter once per (selected, blocks/rows/chips) change. Without memoization
   // these `.filter()` calls produce new arrays every render, which makes the
