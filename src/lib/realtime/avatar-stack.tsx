@@ -1,8 +1,22 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import type { PresencePeer, PresenceSelection } from "./presence";
+
+/** WCAG-lite foreground luminance check — picks black-or-white text for any
+ *  background hex. Same logic as `UserAvatar`'s readableOn() so peer avatars
+ *  use the matching contrast color when a custom hex is set. */
+function readableOn(hex: string): string {
+  const full = hex.replace("#", "").trim();
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "#ffffff";
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.65 ? "#0b0d10" : "#ffffff";
+}
 
 /** Default mute threshold: peers go grayscale + dim after this much inactivity. */
 const INACTIVE_AFTER_MS = 120_000;
@@ -169,7 +183,7 @@ export function AvatarStack({
           className="z-10 inline-flex h-6 min-w-6 items-center justify-center rounded-full border border-background bg-muted px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground"
           title={peers
             .slice(max)
-            .map((p) => p.email)
+            .map((p) => p.profile?.displayName?.trim() || p.email)
             .join(", ")}
         >
           +{overflow}
@@ -204,8 +218,18 @@ export function PresenceAvatar({
   inactive?: boolean;
   offPanel?: boolean;
 }) {
-  const initial = peer.email.charAt(0).toUpperCase();
   const interactive = !!onClick;
+  // Honor the user's customized avatar from /settings when set; fall back
+  // to the deterministic peer.color + the first letter of display name OR
+  // email otherwise. Matches the UserAvatar component used in the nav.
+  const profile = peer.profile ?? null;
+  const bg = profile?.avatarColorHex ?? peer.color;
+  const hasIcon = !!(profile?.avatarIconType && profile?.avatarIconValue);
+  const fg = readableOn(bg);
+  const initialSource =
+    (profile?.displayName?.trim() || peer.email.trim() || "?")[0];
+  const initial = initialSource.toUpperCase();
+  const ariaLabel = profile?.displayName?.trim() || peer.email;
   // Use saturate/brightness filters (not `opacity-*`) so the avatar circle
   // stays opaque — overlapping siblings used to bleed through when the
   // muted avatar dropped to 50% alpha. inactive = grayscale + dim;
@@ -218,19 +242,28 @@ export function PresenceAvatar({
   const avatar = (
     <span
       className={cn(
-        "inline-flex items-center justify-center rounded-full border border-background font-semibold text-white shadow-sm transition",
+        "inline-flex items-center justify-center rounded-full border border-background font-semibold shadow-sm transition",
         muteClass,
         className
       )}
       style={{
         width: size,
         height: size,
-        backgroundColor: peer.color,
+        backgroundColor: bg,
+        color: fg,
         fontSize: Math.max(9, Math.floor(size * 0.45)),
       }}
-      aria-label={peer.email}
+      aria-label={ariaLabel}
     >
-      {initial}
+      {hasIcon ? (
+        <IconDisplay
+          type={profile.avatarIconType!}
+          value={profile.avatarIconValue!}
+          size={Math.max(10, Math.round(size * 0.55))}
+        />
+      ) : (
+        initial
+      )}
     </span>
   );
 
@@ -240,7 +273,7 @@ export function PresenceAvatar({
       type="button"
       onClick={onClick}
       className="relative inline-flex cursor-pointer items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      aria-label={`Jump to ${peer.email}`}
+      aria-label={`Jump to ${ariaLabel}`}
     >
       {avatar}
     </button>
@@ -257,7 +290,15 @@ export function PresenceAvatar({
         role="tooltip"
         className="pointer-events-none absolute left-1/2 top-full z-50 mt-1 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-[11px] font-medium text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
       >
-        <span className="block text-foreground">{peer.email}</span>
+        <span className="block text-foreground">
+          {profile?.displayName?.trim() || peer.email}
+        </span>
+        {profile?.displayName?.trim() &&
+        profile.displayName.trim() !== peer.email ? (
+          <span className="block text-[10px] text-muted-foreground/70">
+            {peer.email}
+          </span>
+        ) : null}
         {location ? (
           <span className="block whitespace-pre-line text-muted-foreground">
             {location}

@@ -52,6 +52,7 @@ import {
 } from "@/lib/realtime/presence-context";
 import type {
   PresencePeer,
+  PresenceProfile,
   PresenceSelection,
 } from "@/lib/realtime/presence";
 
@@ -89,6 +90,7 @@ type GraphSurfaceProps = {
   endingValues: EndingVariableValue[];
   currentUserId?: string;
   currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
 };
 
 /**
@@ -103,6 +105,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
       channelName="letters-workspace"
       userId={props.currentUserId}
       email={props.currentEmail}
+      profile={props.currentProfile}
       postgresTables={PRESENCE_POSTGRES_TABLES}
     >
       <GraphSurfaceInner {...props} />
@@ -127,6 +130,7 @@ function GraphSurfaceInner({
   endingValues,
   currentUserId,
   currentEmail,
+  currentProfile,
 }: GraphSurfaceProps) {
   const { peers, selfPeer } = usePresenceContext();
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
@@ -443,6 +447,7 @@ function GraphSurfaceInner({
                 initialSegmentId={initial.segmentId}
                 currentUserId={currentUserId}
                 currentEmail={currentEmail}
+                currentProfile={currentProfile}
                 presenceProvided
                 controlledSelection={selection as ControlledSelection}
                 onSelectionChange={(sel) => {

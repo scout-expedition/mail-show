@@ -42,6 +42,7 @@ describe("parsePresenceIdentities", () => {
     expect(out["user-alice"]).toEqual({
       userId: "user-alice",
       email: "alice@x.com",
+      profile: null,
     });
   });
 
@@ -96,8 +97,32 @@ describe("parsePresenceIdentities", () => {
     };
     const out = parsePresenceIdentities(state, "user-self");
     expect(Object.keys(out).length).toBe(2);
-    expect(out["user-alice"]).toEqual(alice);
-    expect(out["user-bob"]).toEqual(bob);
+    expect(out["user-alice"]).toEqual({ ...alice, profile: null });
+    expect(out["user-bob"]).toEqual({ ...bob, profile: null });
+  });
+
+  it("preserves the peer's profile (display_name/avatar/color) when present", () => {
+    const profile = {
+      displayName: "Alice Liddell",
+      avatarIconType: "tabler" as const,
+      avatarIconValue: "user",
+      avatarColorHex: "#abcdef",
+    };
+    const state: RawPresenceState = {
+      "user-alice": [
+        { userId: "user-alice", email: "alice@x.com", profile },
+      ],
+    };
+    const out = parsePresenceIdentities(state, "user-self");
+    expect(out["user-alice"].profile).toEqual(profile);
+  });
+
+  it("returns profile=null when peer hasn't published one (older client)", () => {
+    const state: RawPresenceState = {
+      "user-alice": [{ userId: "user-alice", email: "alice@x.com" }],
+    };
+    const out = parsePresenceIdentities(state, "user-self");
+    expect(out["user-alice"].profile).toBeNull();
   });
 });
 

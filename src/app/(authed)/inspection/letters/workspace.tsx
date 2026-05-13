@@ -79,6 +79,7 @@ import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import type {
   PresenceFocus,
   PresencePeer,
+  PresenceProfile,
   PresenceSelection,
 } from "@/lib/realtime/presence";
 import {
@@ -314,6 +315,9 @@ export type LettersWorkspaceProps = {
    */
   currentUserId?: string;
   currentEmail?: string;
+  /** Local user's display-name / avatar / color from `user_metadata`. Forwarded
+   *  to the presence provider so peers see the user's customized identity. */
+  currentProfile?: PresenceProfile | null;
   /**
    * When true, the workspace assumes its parent already wraps it in a
    * `WorkspacePresenceProvider`. Skips the internal provider wrap (which
@@ -355,6 +359,7 @@ export function LettersWorkspace(props: LettersWorkspaceProps) {
       channelName="letters-workspace"
       userId={props.currentUserId}
       email={props.currentEmail}
+      profile={props.currentProfile}
       postgresTables={POSTGRES_TABLES}
     >
       <LettersWorkspaceInner {...props} />
