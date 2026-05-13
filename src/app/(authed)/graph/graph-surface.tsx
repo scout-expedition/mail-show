@@ -128,7 +128,7 @@ function GraphSurfaceInner({
   currentUserId,
   currentEmail,
 }: GraphSurfaceProps) {
-  const { peers } = usePresenceContext();
+  const { peers, selfPeer } = usePresenceContext();
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -214,7 +214,8 @@ function GraphSurfaceInner({
   // id in `peer.selection`). When no panel info is known, just "Graph".
   const peerLocations = useMemo(() => {
     const m = new Map<string, string>();
-    for (const peer of peers) {
+    const all = selfPeer ? [selfPeer, ...peers] : peers;
+    for (const peer of all) {
       const panel = resolvePeerPanel(peer, {
         letters,
         letterGroups,
@@ -225,7 +226,15 @@ function GraphSurfaceInner({
       m.set(peer.userId, panel ? `Graph\n${panel}` : "Graph");
     }
     return m;
-  }, [peers, letters, letterGroups, segments, storylines, actions]);
+  }, [
+    peers,
+    selfPeer,
+    letters,
+    letterGroups,
+    segments,
+    storylines,
+    actions,
+  ]);
 
   // Derive the local user's PresenceSelection from the graph's GraphSelection
   // so AvatarStack can dim peers who aren't sharing the visible panel.
@@ -314,6 +323,7 @@ function GraphSurfaceInner({
           <div className="flex items-center gap-2">
             <AvatarStack
               peers={peers}
+              self={selfPeer}
               selfSelection={selfSelection}
               peerLocations={peerLocations}
               onAvatarClick={jumpToPeer}

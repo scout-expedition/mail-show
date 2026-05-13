@@ -82,6 +82,7 @@ export function visibleRecordId(sel: PresenceSelection): string | null {
  */
 export function AvatarStack({
   peers,
+  self,
   className,
   max = 5,
   selfSelection,
@@ -91,6 +92,11 @@ export function AvatarStack({
   narrow = false,
 }: {
   peers: PresencePeer[];
+  /** The local user shaped as a `PresencePeer`. When provided, prepended to
+   *  the avatar row so "you" appear alongside everyone else. Hover label
+   *  falls back to "You" if no entry is found in `peerLocations`; click is
+   *  always a no-op (no point jumping to yourself). */
+  self?: PresencePeer | null;
   className?: string;
   /** Cap visible avatars; overflow rolls up to "+N". Default 5. */
   max?: number;
@@ -122,7 +128,7 @@ export function AvatarStack({
     return () => clearInterval(id);
   }, [peers.length]);
 
-  if (peers.length === 0) return null;
+  if (peers.length === 0 && !self) return null;
   const visible = peers.slice(0, max);
   const overflow = peers.length - visible.length;
 
@@ -131,6 +137,14 @@ export function AvatarStack({
       className={cn("flex items-center -space-x-1.5", className)}
       aria-label={`${peers.length} other ${peers.length === 1 ? "user" : "users"} active`}
     >
+      {self ? (
+        <PresenceAvatar
+          key={self.userId}
+          peer={self}
+          size={24}
+          location={peerLocations?.get(self.userId) ?? "You"}
+        />
+      ) : null}
       {visible.map((peer) => {
         const inactive = peer.lastActiveAt > 0
           ? now - peer.lastActiveAt > inactiveAfterMs

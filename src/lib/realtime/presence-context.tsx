@@ -39,6 +39,13 @@ type PresenceContextValue = {
    */
   selfColor: string | null;
   /**
+   * The local user shaped as a `PresencePeer` so AvatarStack can render
+   * "you" alongside everyone else. `null` when presence is inactive (no
+   * userId/email). `lastActiveAt` is always now — by definition you're
+   * the one driving this render.
+   */
+  selfPeer: PresencePeer | null;
+  /**
    * Broadcast a lightweight activity heartbeat. Throttled callers (e.g.
    * useInstantField while typing) keep peers marked active without re-firing
    * focus/selection. No-op when presence is inactive.
@@ -59,6 +66,7 @@ const PresenceContext = createContext<PresenceContextValue>({
   setSelection: () => {},
   peers: [],
   selfColor: null,
+  selfPeer: null,
   pingActivity: () => {},
   onPostgresChanges: () => () => {},
 });
@@ -160,6 +168,18 @@ function ActivePresenceProvider({
 
   const selfColor = useMemo(() => colorFromUserId(userId), [userId]);
 
+  const selfPeer = useMemo<PresencePeer>(
+    () => ({
+      userId,
+      email,
+      color: selfColor,
+      focus,
+      selection,
+      lastActiveAt: Date.now(),
+    }),
+    [userId, email, selfColor, focus, selection]
+  );
+
   const value = useMemo<PresenceContextValue>(
     () => ({
       focus,
@@ -168,10 +188,19 @@ function ActivePresenceProvider({
       setSelection,
       peers,
       selfColor,
+      selfPeer,
       pingActivity,
       onPostgresChanges,
     }),
-    [focus, selection, peers, selfColor, pingActivity, onPostgresChanges]
+    [
+      focus,
+      selection,
+      peers,
+      selfColor,
+      selfPeer,
+      pingActivity,
+      onPostgresChanges,
+    ]
   );
 
   return (
@@ -197,6 +226,7 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
       setSelection,
       peers: [],
       selfColor: null,
+      selfPeer: null,
       pingActivity,
       onPostgresChanges,
     }),

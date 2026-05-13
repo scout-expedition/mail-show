@@ -382,8 +382,14 @@ function LettersWorkspaceInner({
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const { peers, setFocus, setSelection, pingActivity, onPostgresChanges } =
-    usePresenceContext();
+  const {
+    peers,
+    selfPeer,
+    setFocus,
+    setSelection,
+    pingActivity,
+    onPostgresChanges,
+  } = usePresenceContext();
   const { toast, toaster } = useToast();
 
   // Mirror server-provided arrays so postgres_changes events can fan out
@@ -1706,7 +1712,12 @@ function LettersWorkspaceInner({
   // to "Idle" inside AvatarStack.
   const peerLocations = useMemo(() => {
     const m = new Map<string, string>();
-    for (const peer of peers) {
+    // Build labels for peers AND the local user — selfPeer carries the same
+    // focus/selection fields, so a single pass produces the location string
+    // for both, and the hover popup shows e.g. "Letter L-A1/a" instead of
+    // a flat "You" when the local user is editing a specific row.
+    const all = selfPeer ? [selfPeer, ...peers] : peers;
+    for (const peer of all) {
       const label = (() => {
         if (peer.focus) {
           const id = peer.focus.recordId;
@@ -1773,6 +1784,7 @@ function LettersWorkspaceInner({
     return m;
   }, [
     peers,
+    selfPeer,
     allLetters,
     allGroups,
     allActions,
@@ -1811,10 +1823,11 @@ function LettersWorkspaceInner({
         // (graph header). The internal floating stack only renders when
         // no parent provider is wrapping us — i.e. a standalone embed
         // that hasn't adopted the `presenceProvided` contract.
-        !presenceProvided && peers.length > 0 ? (
+        !presenceProvided && (peers.length > 0 || !!selfPeer) ? (
           <div className="absolute right-2 top-2 z-10">
             <AvatarStack
               peers={peers}
+              self={selfPeer}
               selfSelection={selfSelection}
               peerLocations={peerLocations}
               onAvatarClick={jumpToPeer}
@@ -1897,6 +1910,7 @@ function LettersWorkspaceInner({
         <div className="ml-auto">
           <AvatarStack
             peers={peers}
+            self={selfPeer}
             selfSelection={selfSelection}
             peerLocations={peerLocations}
             onAvatarClick={jumpToPeer}
@@ -4855,6 +4869,8 @@ function ActionEditor({
       </div>
 
       <EndingAssignmentsSection
+        actionId={action.id}
+        peers={peers}
         assignments={action.ending_assignments}
         variables={endingVariables}
         values={endingValues}
@@ -4865,11 +4881,15 @@ function ActionEditor({
 }
 
 function EndingAssignmentsSection({
+  actionId,
+  peers,
   assignments,
   variables,
   values,
   onChange,
 }: {
+  actionId: string;
+  peers: PresencePeer[];
   assignments: EndingAssignmentState[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
@@ -4953,42 +4973,59 @@ function EndingAssignmentsSection({
           const availableVariables = variables.filter(
             (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
           );
+          const varFocus = {
+            table: "actions",
+            recordId: actionId,
+            field: `ending_var_${idx}`,
+          };
+          const valFocus = {
+            table: "actions",
+            recordId: actionId,
+            field: `ending_val_${idx}`,
+          };
           return (
             <div
               key={`saved-${idx}`}
               className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
             >
-              <Select
-                value={a.variable_id || ""}
-                onChange={(e) =>
-                  setAt(idx, { variable_id: e.target.value, value_id: null })
-                }
-                className="h-7 text-xs"
-              >
-                <option value="">— variable —</option>
-                {availableVariables.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
+              <FieldHighlight peers={peers} focusKey={varFocus}>
+                <Select
+                  value={a.variable_id || ""}
+                  onChange={(e) =>
+                    setAt(idx, {
+                      variable_id: e.target.value,
+                      value_id: null,
+                    })
+                  }
+                  className="h-7 w-full text-xs"
+                >
+                  <option value="">— variable —</option>
+                  {availableVariables.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </Select>
+              </FieldHighlight>
+              <FieldHighlight peers={peers} focusKey={valFocus}>
+                <Select
+                  value={a.value_id ?? ""}
+                  onChange={(e) =>
+                    setAt(idx, { value_id: e.target.value || null })
+                  }
+                  className="h-7 w-full text-xs"
+                  disabled={!a.variable_id}
+                >
+                  <option value="">
+                    {a.variable_id ? "— value —" : "(pick var)"}
                   </option>
-                ))}
-              </Select>
-              <Select
-                value={a.value_id ?? ""}
-                onChange={(e) =>
-                  setAt(idx, { value_id: e.target.value || null })
-                }
-                className="h-7 text-xs"
-                disabled={!a.variable_id}
-              >
-                <option value="">
-                  {a.variable_id ? "— value —" : "(pick var)"}
-                </option>
-                {valuesForVar.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.value}
-                  </option>
-                ))}
-              </Select>
+                  {valuesForVar.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.value}
+                    </option>
+                  ))}
+                </Select>
+              </FieldHighlight>
               <button
                 type="button"
                 aria-label="Remove ending assignment"
@@ -5015,26 +5052,33 @@ function EndingAssignmentsSection({
         })}
         {pending.map((p, idx) => {
           const availableVariables = availableForPending();
+          const pendingFocus = {
+            table: "actions",
+            recordId: actionId,
+            field: `ending_var_pending_${pendingKeys[idx]}`,
+          };
           return (
             <div
               key={`pending-${pendingKeys[idx]}`}
               className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
             >
-              <Select
-                value=""
-                onChange={(e) =>
-                  setPendingAt(idx, { variable_id: e.target.value })
-                }
-                className="h-7 text-xs"
-              >
-                <option value="">— variable —</option>
-                {availableVariables.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </Select>
-              <Select value="" disabled className="h-7 text-xs">
+              <FieldHighlight peers={peers} focusKey={pendingFocus}>
+                <Select
+                  value=""
+                  onChange={(e) =>
+                    setPendingAt(idx, { variable_id: e.target.value })
+                  }
+                  className="h-7 w-full text-xs"
+                >
+                  <option value="">— variable —</option>
+                  {availableVariables.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </Select>
+              </FieldHighlight>
+              <Select value="" disabled className="h-7 w-full text-xs">
                 <option value="">(pick var)</option>
               </Select>
               <button

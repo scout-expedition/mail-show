@@ -56,13 +56,26 @@ export function FieldHighlight({
     }
   }
 
+  // Set the `--ring` CSS variable so `focus-visible:ring-ring` on descendant
+  // Inputs/Selects/Textareas picks up the avatar color instead of the global
+  // blue — without that override the default focus ring sits on top of our
+  // box-shadow and visually wins. Cast through Record<string, string>
+  // because React's CSSProperties type doesn't permit custom property keys
+  // directly.
+  const style = color
+    ? ({
+        boxShadow: `0 0 0 2px ${color}`,
+        "--ring": color,
+      } as React.CSSProperties & Record<string, string>)
+    : undefined;
+
   return (
     <div
       data-focus-table={focusKey?.table}
       data-focus-record={focusKey?.recordId}
       data-focus-field={focusKey?.field}
       className={cn("rounded-md transition-shadow", className)}
-      style={color ? { boxShadow: `0 0 0 2px ${color}` } : undefined}
+      style={style}
     >
       {children}
     </div>
