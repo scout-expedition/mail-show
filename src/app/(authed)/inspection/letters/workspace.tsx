@@ -12,7 +12,6 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
-import { PageHeader } from "@/components/page-header";
 import { IconDisplay } from "@/components/icon-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,10 +65,6 @@ import {
   reorderInspectionLetters,
   reorderLetterGroups,
   reorderReportSegments,
-  saveGroup,
-  saveLetterActionsOnly,
-  saveLetterFields,
-  saveLetterWithActions,
   updateCitizen,
 } from "./actions";
 import {
@@ -88,11 +83,9 @@ import {
 } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { usePathname, useRouter } from "next/navigation";
-import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
+import { groupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
-import { useUnsavedDialog } from "@/components/unsaved-dialog";
-import type { UnsavedOutcome } from "@/components/unsaved-dialog";
 import {
   BookOpen,
   ChevronLeft,
@@ -299,19 +292,6 @@ export type LettersWorkspaceProps = {
    */
   forceNarrow?: boolean;
   /**
-   * Notifies the parent when the combined dirty state of any inner
-   * panel changes — so embedders (e.g. the narrative graph) can guard
-   * navigation and selection changes. Receives a user-facing label
-   * for what's dirty (e.g. "Inspection Letter") or null when clean.
-   */
-  onDirtyChange?: (kind: string | null) => void;
-  /**
-   * Optional ref the workspace populates with a `saveAll()` function so
-   * embedders can flush every dirty panel before applying a navigation
-   * change. Returns once all in-flight saves complete.
-   */
-  saveAllRef?: React.MutableRefObject<(() => Promise<void>) | null>;
-  /**
    * Current signed-in user — required to activate realtime presence +
    * instant-save. When either is missing (e.g. from a not-yet-updated
    * graph embed), the workspace renders without presence chrome and
@@ -377,8 +357,6 @@ function LettersWorkspaceInner({
   onSelectionChange,
   onClose,
   forceNarrow,
-  onDirtyChange,
-  saveAllRef,
 }: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -421,9 +399,6 @@ function LettersWorkspaceInner({
     setAllSegments(allSegmentsProp);
   }
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
-    scoped: true,
-  });
-  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog({
     scoped: true,
   });
   const storylineById = useMemo(
@@ -495,9 +470,6 @@ function LettersWorkspaceInner({
     delivery_day_id: group?.delivery_day_id ?? null,
     notes: group?.notes ?? null,
   }));
-  const [groupDirty, setGroupDirty] = useState(false);
-  const [groupPending, startGroupSave] = useTransition();
-
   useEffect(() => {
     if (!group) {
       setGroupState({
@@ -506,7 +478,6 @@ function LettersWorkspaceInner({
         delivery_day_id: null,
         notes: null,
       });
-      setGroupDirty(false);
       return;
     }
     setGroupState({
@@ -515,7 +486,6 @@ function LettersWorkspaceInner({
       delivery_day_id: group.delivery_day_id,
       notes: group.notes,
     });
-    setGroupDirty(false);
   }, [group]);
 
   function updateGroup<K extends keyof typeof groupState>(
@@ -620,12 +590,7 @@ function LettersWorkspaceInner({
     sourceGroupId: string;
     sourceLetterId: string;
   } | null>(null);
-  const [letterDirty, setLetterDirty] = useState(false);
-  const [letterPending, startLetterSave] = useTransition();
-  const [actionsDirty, setActionsDirty] = useState(false);
-  const [actionsPending, startActionsSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
-  const anyLetterDirty = letterDirty || actionsDirty;
   const [view, setView] = useState<
     "list" | "group" | "main" | "actions" | "segment"
   >(
@@ -853,15 +818,6 @@ function LettersWorkspaceInner({
     if (!onSelectionChange) return;
     const sel = controlledSelection ?? null;
     controlledApplyRef.current = true;
-    // External selection changes are gated by the embedder's
-    // unsaved-changes prompt, so by the time we get here the user has
-    // already chosen Save / Discard / Cancel. Clear local dirty flags so
-    // the new selection comes up clean (Save already flushed; Discard
-    // means we drop pending edits; Cancel never reaches this effect).
-    setGroupDirty(false);
-    setLetterDirty(false);
-    setActionsDirty(false);
-    setStorylineDirty(false);
     // Helper: hydrate letterState in the same render so the slot 3
     // render doesn't see a stale letterState.id pointing into the old
     // group's letter list.
@@ -969,148 +925,11 @@ function LettersWorkspaceInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId, selectedId, selectedSegmentId, view]);
 
-  async function revertGroup() {
-    if (!group || !groupDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard group changes?",
-      message: "Any unsaved edits to the group will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    setGroupState({
-      storyline_id: group.storyline_id,
-      name: group.name,
-      delivery_day_id: group.delivery_day_id,
-      notes: group.notes,
-    });
-    setGroupDirty(false);
-  }
-
-  async function revertLetter() {
-    if (!letterState || !letterDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard letter changes?",
-      message: "Any unsaved edits to this letter's fields will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const server = letters.find((l) => l.id === letterState.id);
-    if (server) {
-      // Only restore the letter fields; keep any in-flight action edits.
-      setLetterState((s) =>
-        s
-          ? {
-              ...s,
-              piece: server.piece,
-              delivery_day_override_id: server.delivery_day_override_id,
-              summary: server.summary,
-              content: server.content,
-              sender_citizen_id: server.sender_citizen_id,
-              receiver_citizen_id: server.receiver_citizen_id,
-              notes: server.notes,
-            }
-          : s
-      );
-    }
-    setLetterDirty(false);
-  }
-
-  async function revertActions() {
-    if (!letterState || !actionsDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard action changes?",
-      message: "Any unsaved edits to this letter's actions will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const server = letters.find((l) => l.id === letterState.id);
-    if (server) {
-      const fresh = toLetterState(server, actions, endingAssignments);
-      setLetterState((s) => (s ? { ...s, actions: fresh.actions } : s));
-    }
-    setActionsDirty(false);
-  }
-
   // Slot 1 can host either a group or a storyline inspector — mutually
   // exclusive. Selecting a storyline clears any active group and vice versa.
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(
     null
   );
-  const [storylineDirty, setStorylineDirty] = useState(false);
-  // Broadcast which panel (if any) is dirty so an embedder (e.g.
-  // /graph) can guard navigation and label its prompt.
-  const dirtyKind: string | null = actionsDirty
-    ? "Action"
-    : letterDirty
-      ? "Inspection Letter"
-      : groupDirty
-        ? "Letter Group"
-        : storylineDirty
-          ? "Storyline"
-          : null;
-  useEffect(() => {
-    onDirtyChange?.(dirtyKind);
-  }, [dirtyKind, onDirtyChange]);
-  const anyDirty = dirtyKind !== null;
-
-  // Block leaving the page while there are unsaved changes — both via
-  // browser-level navigation (refresh / close / type URL) AND via in-app
-  // <Link> clicks (e.g. switching pages from the nav). Skipped in
-  // controlled mode because the embedder owns the page-leave guard.
-  useEffect(() => {
-    if (isControlled) return;
-    if (!anyDirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    function onClickCapture(e: MouseEvent) {
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      if (e.button !== 0) return;
-      const target = e.target as HTMLElement | null;
-      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      if (!href || href.startsWith("#")) return;
-      if (
-        anchor.target &&
-        anchor.target !== "" &&
-        anchor.target !== "_self"
-      )
-        return;
-      const url = new URL(anchor.href, window.location.href);
-      const samePath =
-        url.pathname === window.location.pathname &&
-        url.search === window.location.search &&
-        url.hash === window.location.hash;
-      if (samePath) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void (async () => {
-        const ok = await confirmDiscardDirty();
-        if (!ok) return;
-        const sameOrigin = url.origin === window.location.origin;
-        if (sameOrigin) {
-          router.push(url.pathname + url.search + url.hash);
-        } else {
-          window.location.href = anchor.href;
-        }
-      })();
-    }
-    document.addEventListener("click", onClickCapture, true);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      document.removeEventListener("click", onClickCapture, true);
-    };
-    // confirmDiscardDirty closes over many fields but stays referenced
-    // via closure; we re-bind whenever dirty/router change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyDirty, isControlled, router]);
-
   // ----- Panel history: the mouse back/forward buttons navigate between
   // panels in this workspace instead of browser pages. We record a
   // snapshot whenever the focused entity or view changes; mouse-back
@@ -1125,10 +944,6 @@ function LettersWorkspaceInner({
   const panelHistory = useRef<PanelSnapshot[]>([]);
   const panelIndex = useRef(-1);
   const applyingPanelSnapshot = useRef(false);
-  // Guard fired by mouse-back / browser-back panel navigation. Re-bound
-  // each render so the ref carries the latest dirty flags + save logic.
-  // Returns true when the navigation should proceed; false to abort.
-  const panelNavGuardRef = useRef<() => Promise<boolean>>(async () => true);
 
   useEffect(() => {
     if (applyingPanelSnapshot.current) {
@@ -1174,25 +989,15 @@ function LettersWorkspaceInner({
       setSelectedId(s.letterId);
       setSelectedSegmentId(s.segmentId);
       setView(s.view);
-      // Discard any in-progress edits when jumping — matches browser
-      // back/forward semantics (you lose the form state you hadn't
-      // committed). The forward button can re-enter the panel.
-      setLetterDirty(false);
-      setGroupDirty(false);
-      setStorylineDirty(false);
     }
-    async function goPanelBack() {
+    function goPanelBack() {
       if (panelIndex.current > 0) {
-        const ok = await panelNavGuardRef.current();
-        if (!ok) return;
         panelIndex.current -= 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
     }
-    async function goPanelForward() {
+    function goPanelForward() {
       if (panelIndex.current < panelHistory.current.length - 1) {
-        const ok = await panelNavGuardRef.current();
-        if (!ok) return;
         panelIndex.current += 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
@@ -1290,42 +1095,8 @@ function LettersWorkspaceInner({
     };
   }, []);
 
-  async function confirmDiscardDirty(_message?: string): Promise<boolean> {
-    if (!(groupDirty || anyLetterDirty || storylineDirty)) return true;
-    return onConfirmDiscard(_message);
-  }
-  async function onConfirmDiscard(_message?: string): Promise<boolean> {
-    const outcome = await askUnsaved(`Unsaved ${dirtyKind ?? ""}`.trim());
-    if (outcome === "cancel") return false;
-    if (outcome === "save") {
-      try {
-        await saveAllNow();
-      } catch {
-        return false;
-      }
-      return true;
-    }
-    // discard: drop edits inline so callers can proceed with their
-    // navigation against a clean slate.
-    setGroupDirty(false);
-    setLetterDirty(false);
-    setActionsDirty(false);
-    setStorylineDirty(false);
-    return true;
-  }
-
-  // Re-bind each render so the popstate / mouse-back handlers always see
-  // the latest dirty state and save closures.
-  panelNavGuardRef.current = confirmDiscardDirty;
-
-  async function selectGroup(id: string | null) {
+  function selectGroup(id: string | null) {
     if (id === selectedGroupId || id === null) {
-      if (
-        !(await confirmDiscardDirty(
-          "Unsaved changes will be lost. Close anyway?"
-        ))
-      )
-        return;
       // Closing the group — fall back to the storyline inspector so the
       // slide lands on [list + inspector] instead of bouncing home.
       const currentGroup = selectedGroupId
@@ -1337,45 +1108,24 @@ function LettersWorkspaceInner({
       setSelectedStorylineId(parentStoryline);
       setSelectedId(null);
       setLetterState(null);
-      setLetterDirty(false);
-      setGroupDirty(false);
-      setStorylineDirty(false);
       setSelectedSegmentId(null);
       setView("list");
       return;
     }
-    if (
-      !(await confirmDiscardDirty(
-        "Unsaved changes will be lost. Switch groups anyway?"
-      ))
-    )
-      return;
     setSelectedGroupId(id);
     setSelectedStorylineId(null);
     setSelectedId(null);
     setLetterState(null);
-    setLetterDirty(false);
-    setGroupDirty(false);
-    setStorylineDirty(false);
     setSelectedSegmentId(null);
     // Slide to the group view (inspector + group detail side-by-side).
     setView("group");
   }
 
-  async function selectStoryline(id: string | null) {
-    if (
-      !(await confirmDiscardDirty(
-        "Unsaved changes will be lost. Switch storylines anyway?"
-      ))
-    )
-      return;
+  function selectStoryline(id: string | null) {
     setSelectedStorylineId(id);
     setSelectedGroupId(null);
     setSelectedId(null);
     setLetterState(null);
-    setLetterDirty(false);
-    setGroupDirty(false);
-    setStorylineDirty(false);
     setSelectedSegmentId(null);
     setView("list");
   }
@@ -1398,46 +1148,22 @@ function LettersWorkspaceInner({
       setLetterState(
         letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
       );
-      setLetterDirty(false);
       return;
     }
-    // Only overwrite if not dirty; otherwise preserve user edits.
-    if (!(letterDirty || actionsDirty)) {
-      setLetterState(toLetterState(found, actions, endingAssignments));
-    }
-  }, [letters, actions, endingAssignments, selectedId, letterDirty, actionsDirty]);
+    setLetterState(toLetterState(found, actions, endingAssignments));
+  }, [letters, actions, endingAssignments, selectedId]);
 
-  async function selectLetter(id: string) {
+  function selectLetter(id: string) {
     if (id === selectedId) {
-      // Toggle off — deselect the current letter, but keep the slide
-      // position so the group panel stays on the left where the user
-      // put it. Slot 2 will just render the "Select a letter…" empty
-      // state until they pick another.
-      if (anyLetterDirty) {
-        const ok = await onConfirmDiscard(
-          "This letter has unsaved changes. Discard them and close?"
-        );
-        if (!ok) return;
-      }
       setSelectedId(null);
       setLetterState(null);
-      setLetterDirty(false);
-      setActionsDirty(false);
       setSelectedSegmentId(null);
       return;
-    }
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "This letter has unsaved changes. Discard them and switch?"
-      );
-      if (!ok) return;
     }
     const l = letters.find((x) => x.id === id);
     if (!l) return;
     setSelectedId(id);
     setLetterState(toLetterState(l, actions, endingAssignments));
-    setLetterDirty(false);
-    setActionsDirty(false);
     setView("main");
     setSelectedSegmentId(null);
   }
@@ -1446,41 +1172,18 @@ function LettersWorkspaceInner({
    * Pick a letter from the list panel — may live in a different group.
    * Switches the active group when needed and lands on the letter view.
    */
-  async function selectLetterFromList(id: string) {
+  function selectLetterFromList(id: string) {
     const target = allLetters.find((l) => l.id === id);
     if (!target) return;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "This letter has unsaved changes. Discard them and switch?"
-      );
-      if (!ok) return;
-    }
     if (target.letter_group_id !== selectedGroupId) {
       setSelectedGroupId(target.letter_group_id);
     }
     setSelectedId(id);
-    setLetterDirty(false);
-    setActionsDirty(false);
     setSelectedSegmentId(null);
     setView("main");
   }
 
-  async function closeActionsPanel() {
-    if (actionsDirty) {
-      const outcome = await askUnsaved("Unsaved Actions");
-      if (outcome === "cancel") return;
-      if (outcome === "save" && letterState) {
-        const snap = letterState;
-        startActionsSave(async () => {
-          await saveLetterActionsOnly(letterActionsPatches(snap));
-          setActionsDirty(false);
-          setView("main");
-        });
-        return;
-      }
-      // discard: drop dirty flag and continue
-      setActionsDirty(false);
-    }
+  function closeActionsPanel() {
     setView("main");
   }
 
@@ -1534,19 +1237,7 @@ function LettersWorkspaceInner({
    * render the segment card in slot 2 (where the letter fields usually
    * live) instead of going all the way to view="segment".
    */
-  async function openSegmentFromGroup(segmentId: string) {
-    if (anyLetterDirty) {
-      const ok = await confirmDialog({
-        title: "Discard letter changes?",
-        message:
-          "The open letter has unsaved edits. Opening the report segment will discard them.",
-        confirmLabel: "Discard",
-        intent: "destructive",
-      });
-      if (!ok) return;
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
+  function openSegmentFromGroup(segmentId: string) {
     // Clear the letter detail slot as well — otherwise the letter form stays
     // rendered underneath and the segment detail pane never shows.
     segmentOpenedFromRef.current = "group";
@@ -1658,148 +1349,14 @@ function LettersWorkspaceInner({
     }
   }
 
-  function letterFieldsPatch(state: LetterState) {
-    return {
-      id: state.id,
-      piece: state.piece,
-      delivery_day_override_id: state.delivery_day_override_id,
-      summary: state.summary,
-      content: state.content,
-      sender_citizen_id: state.sender_citizen_id,
-      receiver_citizen_id: state.receiver_citizen_id,
-      notes: state.notes,
-    };
-  }
-  function letterActionsPatches(state: LetterState) {
-    return state.actions.map((a) => ({
-      id: a.id,
-      report_segment_id: a.report_segment_id,
-      next_letter_variant: a.next_letter_variant,
-      impact_world_status: a.impact_world_status,
-      impact_demerits: a.impact_demerits,
-      impact_proletariat: a.impact_proletariat,
-      impact_gentry: a.impact_gentry,
-      impact_epicenter: a.impact_epicenter,
-      impact_folos: a.impact_folos,
-      impact_emberlyn: a.impact_emberlyn,
-      impact_spokgrad: a.impact_spokgrad,
-      impact_pelico: a.impact_pelico,
-      ending_assignments: a.ending_assignments.filter(
-        (e) => e.variable_id && e.value_id
-      ),
-    }));
-  }
 
-  /** Save both the letter row and its actions in one shot. Used when an
-   *  outer flow (closing the letter, saving the group together, etc.)
-   *  needs to flush every dirty bit on the letter at once. */
-  async function saveLetterNow(state: LetterState) {
-    if (!group) return;
-    await saveLetterWithActions(
-      group.id,
-      letterFieldsPatch(state),
-      letterActionsPatches(state)
-    );
-  }
-
-  // Flush every dirty panel. Used internally by the workspace's own
-  // unsaved-changes prompt and re-exported via `saveAllRef` so embedders
-  // (e.g. the narrative graph inspector) can drive it on "Save".
-  const saveAllNow = useCallback(async () => {
-    // Group first (so a paired letter save can use the new group day).
-    if (groupDirty && group) {
-      await saveGroup({
-        id: group.id,
-        storyline_id: groupState.storyline_id,
-        name: groupState.name,
-        notes: groupState.notes,
-        delivery_day_id: groupState.delivery_day_id,
-      });
-      setGroupDirty(false);
-    }
-    if ((letterDirty || actionsDirty) && letterState) {
-      await saveLetterNow(letterState);
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
-  }, [
-    groupDirty,
-    group,
-    groupState,
-    letterDirty,
-    actionsDirty,
-    letterState,
-  ]);
-  useEffect(() => {
-    if (!saveAllRef) return;
-    saveAllRef.current = saveAllNow;
-    return () => {
-      if (saveAllRef.current) saveAllRef.current = null;
-    };
-  }, [saveAllRef, saveAllNow]);
-
-  function handleSaveLetterFields() {
-    if (!letterState) return;
-    const state = letterState;
-    startLetterSave(async () => {
-      await saveLetterFields(letterFieldsPatch(state));
-      setLetterDirty(false);
-    });
-  }
-
-  function handleSaveActions() {
-    if (!letterState) return;
-    const state = letterState;
-    startActionsSave(async () => {
-      await saveLetterActionsOnly(letterActionsPatches(state));
-      setActionsDirty(false);
-    });
-  }
-
-  async function handleSaveGroup() {
-    if (!group) return;
-    const groupId = group.id;
-    let alsoSaveLetter = false;
-    if (anyLetterDirty && letterState) {
-      alsoSaveLetter = await confirmDialog({
-        title: "Save the open letter too?",
-        message:
-          "The open letter has unsaved changes. Save the letter along with the group?",
-        confirmLabel: "Save both",
-      });
-    }
-    const snapshot = letterState;
-    startGroupSave(async () => {
-      await saveGroup({
-        id: groupId,
-        storyline_id: groupState.storyline_id,
-        name: groupState.name,
-        notes: groupState.notes,
-        delivery_day_id: groupState.delivery_day_id,
-      });
-      setGroupDirty(false);
-      if (alsoSaveLetter && snapshot) {
-        await saveLetterNow(snapshot);
-        setLetterDirty(false);
-        setActionsDirty(false);
-      }
-    });
-  }
 
   async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "The open letter has unsaved changes. Discard them and add?"
-      );
-      if (!ok) return;
-    }
     startRowAction(async () => {
       const ids = await createInspectionLettersInGroup(groupId, count);
       if (ids[0]) setSelectedId(ids[0]);
-      setLetterDirty(false);
-      setActionsDirty(false);
     });
   }
 
@@ -1816,17 +1373,9 @@ function LettersWorkspaceInner({
   async function handleAddPiece(letterId: string) {
     if (!group) return;
     const groupId = group.id;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "The open letter has unsaved changes. Discard them and add a piece?"
-      );
-      if (!ok) return;
-    }
     startRowAction(async () => {
       const { newLetterId } = await addPieceToLetter(groupId, letterId);
       setSelectedId(newLetterId);
-      setLetterDirty(false);
-      setActionsDirty(false);
     });
   }
 
@@ -1847,7 +1396,6 @@ function LettersWorkspaceInner({
       if (selectedId === id) {
         setSelectedId(null);
         setLetterState(null);
-        setLetterDirty(false);
       }
     });
   }
@@ -1862,36 +1410,17 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
-    startGroupSave(async () => {
+    startRowAction(async () => {
       await deleteGroup(groupId);
     });
   }
 
-  async function handleAddAction(templateId: string) {
+  function handleAddAction(templateId: string) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    if (anyLetterDirty) {
-      const outcome = await askUnsaved("Unsaved Letter");
-      if (outcome === "cancel") return;
-      if (outcome === "save" && letterState) {
-        const snap = letterState;
-        startRowAction(async () => {
-          await saveLetterNow(snap);
-          await addActionFromTemplate(groupId, selectedId, templateId);
-          setLetterDirty(false);
-          setActionsDirty(false);
-        });
-        return;
-      }
-      // discard: clear dirty flags then add the action
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
     startRowAction(async () => {
-      await addActionFromTemplate(groupId, selectedId!, templateId);
-      setLetterDirty(false);
-      setActionsDirty(false);
+      await addActionFromTemplate(groupId, selectedId, templateId);
     });
   }
 
@@ -2033,118 +1562,21 @@ function LettersWorkspaceInner({
    * Inner-most panels are asked first so users see them in reading
    * order from the panel they were just on.
    */
-  async function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
-    type DirtyPanel = {
-      key: string;
-      title: string;
-      message: string;
-      isDirty: () => boolean;
-      save: () => Promise<void>;
-      discard: () => void;
-    };
-    const closing: DirtyPanel[] = [];
-    // List the panels (innermost first) that this navigation would
-    // close. Add only if they're currently dirty.
-    if (level === "root" || level === "group" || level === "letter") {
-      if (actionsDirty) {
-        closing.push({
-          key: "actions",
-          title: "Unsaved Action",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => actionsDirty,
-          save: async () => {
-            if (!letterState) return;
-            await saveLetterActionsOnly(letterActionsPatches(letterState));
-            setActionsDirty(false);
-          },
-          discard: () => setActionsDirty(false),
-        });
-      }
-    }
-    if (level === "root" || level === "group") {
-      if (letterDirty) {
-        closing.push({
-          key: "letter",
-          title: "Unsaved Inspection Letter",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => letterDirty,
-          save: async () => {
-            if (!letterState) return;
-            await saveLetterFields(letterFieldsPatch(letterState));
-            setLetterDirty(false);
-          },
-          discard: () => setLetterDirty(false),
-        });
-      }
-    }
-    if (level === "root") {
-      if (groupDirty && group) {
-        const groupId = group.id;
-        const snap = { ...groupState };
-        closing.push({
-          key: "group",
-          title: "Unsaved Letter Group",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => groupDirty,
-          save: async () => {
-            await saveGroup({
-              id: groupId,
-              storyline_id: snap.storyline_id,
-              name: snap.name,
-              notes: snap.notes,
-              delivery_day_id: snap.delivery_day_id,
-            });
-            setGroupDirty(false);
-          },
-          discard: () => setGroupDirty(false),
-        });
-      }
-    }
-
-    // Storyline saves live inside StorylineInspector and aren't exposed
-    // here — fall back to a simple Discard/Cancel for now and ask the
-    // user to save from the inspector if they want to keep edits.
-    if (level === "root" && storylineDirty) {
-      const outcome = await askUnsaved("Unsaved Storyline");
-      if (outcome === "cancel") return;
-      // The storyline panel owns its own save flow; "save" here just
-      // proceeds without discarding (the user must save manually from
-      // the storyline panel before this navigation completes).
-      setStorylineDirty(false);
-    }
-
-    for (const panel of closing) {
-      if (!panel.isDirty()) continue;
-      const outcome = await askUnsaved(panel.title, panel.message);
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        await panel.save();
-      } else {
-        panel.discard();
-      }
-    }
-
+  function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
     if (level === "root") {
       setSelectedGroupId(null);
       setSelectedStorylineId(null);
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
-      setGroupDirty(false);
-      setLetterDirty(false);
-      setActionsDirty(false);
-      setStorylineDirty(false);
       setView("list");
     } else if (level === "group") {
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
-      setLetterDirty(false);
-      setActionsDirty(false);
       setView("group");
     } else if (level === "letter") {
       setSelectedSegmentId(null);
-      setActionsDirty(false);
       setView("main");
     } else if (level === "actions") {
       setSelectedSegmentId(null);
@@ -2278,9 +1710,7 @@ function LettersWorkspaceInner({
               )}
               allLetters={allLetters}
               days={days}
-              dirty={storylineDirty}
               selectedGroupId={selectedGroupId}
-              onDirtyChange={setStorylineDirty}
               onBack={() =>
                 group
                   ? selectStoryline(group.storyline_id)
@@ -2504,11 +1934,6 @@ function LettersWorkspaceInner({
                           </span>
                         )}
                       </span>
-                      {active && anyLetterDirty ? (
-                        <span className="shrink-0 text-[10px] text-warning">
-                          •
-                        </span>
-                      ) : null}
                     </button>
                     {listLocked && active ? (
                       <button
@@ -2675,13 +2100,9 @@ function LettersWorkspaceInner({
               heroes={heroes}
               cities={cities}
               nations={nations}
-              dirty={letterDirty}
-              pending={letterPending}
               onChange={updateLetter}
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
-              onSave={handleSaveLetterFields}
-              onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
@@ -2781,8 +2202,6 @@ function LettersWorkspaceInner({
               }
               endingVariables={endingVariables}
               endingValues={endingValues}
-              dirty={actionsDirty}
-              pending={actionsPending}
               rowPending={rowPending}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
@@ -2793,8 +2212,6 @@ function LettersWorkspaceInner({
               openLetterId={
                 selectedGroupId === nextGroup?.id ? selectedId : null
               }
-              onSave={handleSaveActions}
-              onRevert={revertActions}
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -2857,7 +2274,6 @@ function LettersWorkspaceInner({
         />
       ) : null}
       {confirmDialogEl}
-      {unsavedDialogEl}
       {toaster}
     </div>
   );
@@ -2872,13 +2288,9 @@ function LetterFieldsCard({
   heroes,
   cities,
   nations,
-  dirty,
-  pending,
   onChange,
   onQuickCreateHero,
   onEditCitizen,
-  onSave,
-  onRevert,
   onDelete,
   onBack,
   actionsCount,
@@ -2893,13 +2305,9 @@ function LetterFieldsCard({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
-  dirty: boolean;
-  pending: boolean;
   onChange: (patch: Partial<LetterState>) => void;
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
-  onSave: () => void;
-  onRevert: () => void;
   onDelete: () => void;
   /** Called by the back-arrow in the panel header — typically
    * deselects the current letter, dropping the panel view back to
@@ -2976,7 +2384,6 @@ function LetterFieldsCard({
       <PanelHeader
         title="Inspection Letter"
         icon={<MailOpen size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
         menu={
           <OverflowMenu
@@ -3192,8 +2599,6 @@ function LetterActionsCard({
   currentLetterDayId,
   endingVariables,
   endingValues,
-  dirty,
-  pending,
   rowPending,
   onActionChange,
   onAddAction,
@@ -3202,8 +2607,6 @@ function LetterActionsCard({
   openSegmentId,
   onOpenLetter,
   openLetterId,
-  onSave,
-  onRevert,
   onBack,
 }: {
   actions: ActionState[];
@@ -3219,8 +2622,6 @@ function LetterActionsCard({
   currentLetterDayId: string | null;
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
-  dirty: boolean;
-  pending: boolean;
   rowPending: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
   onAddAction: (templateId: string) => void;
@@ -3229,8 +2630,6 @@ function LetterActionsCard({
   openSegmentId: string | null;
   onOpenLetter: (actionIdx: number) => void;
   openLetterId: string | null;
-  onSave: () => void;
-  onRevert: () => void;
   onBack: () => void;
 }) {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -6021,17 +5420,15 @@ function CreatingPill() {
 
 /**
  * Inline storyline editor that occupies slot 1 in place of the group panel.
- * Owns its own dirty flag so the workspace can include it in breadcrumb /
- * switch-group guards via the `dirty` + `onDirtyChange` pair.
+ * Tracks its own dirty state — the parent workspace no longer mirrors it.
+ * (Phase 4 long-tail: convert to instant-save and drop the dirty flag.)
  */
 function StorylineInspector({
   storyline,
   groups,
   allLetters,
   days,
-  dirty,
   selectedGroupId,
-  onDirtyChange,
   onBack,
   onSelectGroup,
   onCreateGroup,
@@ -6042,9 +5439,7 @@ function StorylineInspector({
   groups: LetterGroup[];
   allLetters: InspectionLetterView[];
   days: Day[];
-  dirty: boolean;
   selectedGroupId: string | null;
-  onDirtyChange: (d: boolean) => void;
   onBack: () => void;
   onSelectGroup: (id: string) => void;
   /** Called after the inspector creates a new letter group. Receives the
@@ -6070,6 +5465,7 @@ function StorylineInspector({
     icon_value: storyline.icon_value,
     color_hex: storyline.color_hex,
   }));
+  const [dirty, setDirty] = useState(false);
   const [pending, startSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -6083,14 +5479,13 @@ function StorylineInspector({
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
     setPickerOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storyline.id]);
 
   function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
     setState((s) => ({ ...s, [k]: v }));
-    onDirtyChange(true);
+    setDirty(true);
   }
 
   async function saveNow() {
@@ -6103,7 +5498,7 @@ function StorylineInspector({
       icon_value: state.icon_value,
       color_hex: state.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
   }
 
   async function revert() {
@@ -6123,7 +5518,7 @@ function StorylineInspector({
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
   }
 
   function handleAddGroup() {
@@ -6354,7 +5749,7 @@ function StorylineInspector({
                 icon_type: next.type,
                 icon_value: next.value || null,
               }));
-              onDirtyChange(true);
+              setDirty(true);
             }}
             color={state.color_hex}
             onColorChange={(c) => update("color_hex", c)}

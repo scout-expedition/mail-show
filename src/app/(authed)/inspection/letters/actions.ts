@@ -30,34 +30,7 @@ async function reassignVariants(groupId: string) {
   }
 }
 
-type LetterPatch = {
-  id: string;
-  piece: number | null;
-  delivery_day_override_id: string | null;
-  summary: string | null;
-  content: string | null;
-  sender_citizen_id: string | null;
-  receiver_citizen_id: string | null;
-  notes: string | null;
-};
-
 type EndingAssignmentPatch = { variable_id: string; value_id: string };
-
-type ActionPatch = {
-  id: string;
-  report_segment_id: string | null;
-  next_letter_variant: string | null;
-  impact_world_status: number;
-  impact_demerits: number;
-  impact_proletariat: number;
-  impact_gentry: number;
-  impact_epicenter: number;
-  impact_folos: number;
-  impact_emberlyn: number;
-  impact_spokgrad: number;
-  impact_pelico: number;
-  ending_assignments: EndingAssignmentPatch[];
-};
 
 /**
  * Replace an action's ending-variable assignments wholesale. The caller
@@ -97,28 +70,6 @@ async function replaceEndingAssignments(
       .insert(rows);
     if (error) throw new Error(error.message);
   }
-}
-
-export async function saveGroup(data: {
-  id: string;
-  storyline_id: string;
-  name: string;
-  notes: string | null;
-  delivery_day_id: string | null;
-}) {
-  const supabase = await createSupabaseServerClient();
-  const { id, ...rest } = data;
-  const { error } = await supabase
-    .from("letter_groups")
-    .update(rest)
-    .eq("id", id);
-  if (error) throw new Error(error.message);
-  await supabase
-    .from("report_groups")
-    .update({ name: rest.name })
-    .eq("letter_group_id", id);
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
 }
 
 /**
@@ -848,66 +799,6 @@ export async function patchReportSegment(
   if (error) throw new Error(error.message);
 }
 
-export async function saveLetterWithActions(
-  groupId: string,
-  letter: LetterPatch,
-  actions: ActionPatch[]
-) {
-  const supabase = await createSupabaseServerClient();
-  const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
-  const { id: letterId, ...letterRest } = letter;
-  const { error: lErr } = await supabase
-    .from("inspection_letters")
-    .update({ ...letterRest, updated_by: updatedBy })
-    .eq("id", letterId);
-  if (lErr) throw new Error(lErr.message);
-  for (const a of actions) {
-    const { id: actionId, ending_assignments, ...rest } = a;
-    const { error } = await supabase
-      .from("actions")
-      .update(rest)
-      .eq("id", actionId);
-    if (error) throw new Error(error.message);
-    await replaceEndingAssignments(actionId, ending_assignments);
-  }
-  revalidatePath("/inspection/letters");
-  revalidatePath("/endings/frameworks");
-  revalidatePath("/graph");
-}
-
-/** Save just the inspection letter row — no actions touched. */
-export async function saveLetterFields(letter: LetterPatch) {
-  const supabase = await createSupabaseServerClient();
-  const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
-  const { id: letterId, ...rest } = letter;
-  const { error } = await supabase
-    .from("inspection_letters")
-    .update({ ...rest, updated_by: updatedBy })
-    .eq("id", letterId);
-  if (error) throw new Error(error.message);
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
-}
-
-/** Save only the action rows for a letter — letter row not touched. */
-export async function saveLetterActionsOnly(actions: ActionPatch[]) {
-  const supabase = await createSupabaseServerClient();
-  for (const a of actions) {
-    const { id: actionId, ending_assignments, ...rest } = a;
-    const { error } = await supabase
-      .from("actions")
-      .update(rest)
-      .eq("id", actionId);
-    if (error) throw new Error(error.message);
-    await replaceEndingAssignments(actionId, ending_assignments);
-  }
-  revalidatePath("/inspection/letters");
-  revalidatePath("/endings/frameworks");
-  revalidatePath("/graph");
-}
-
 export async function addActionFromTemplate(
   groupId: string,
   letterId: string,
@@ -1105,26 +996,6 @@ export async function deleteReportSegment(segmentId: string) {
     .eq("id", segmentId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
-}
-
-export async function saveReportSegment(data: {
-  id: string;
-  variant: string;
-  summary: string | null;
-  content: string | null;
-  delivery_day_override_id: string | null;
-}) {
-  const supabase = await createSupabaseServerClient();
-  const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
-  const { id, ...rest } = data;
-  const { error } = await supabase
-    .from("report_segments")
-    .update({ ...rest, updated_by: updatedBy })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
 }
 
 function toRoman(n: number): string {

@@ -257,12 +257,22 @@ After every surface is converted: delete `src/components/auto-save-form.tsx`, th
 - New in-tree `useToast()` hook + `Toaster` at `src/components/toast.tsx` — matches the `useConfirm` pattern (returns `{ toast, toaster }`), stacks ≤5 entries top-right, auto-dismiss after 4s, dark control-room aesthetic. No new dependency.
 - `pnpm typecheck` clean; `pnpm lint` net-improved (173 problems vs. 178 pre-B5; no new errors introduced).
 
+### ✅ Phase 1 Track B6 — Rip dirty-state machinery
+- Removed from `workspace.tsx`: `groupDirty` / `letterDirty` / `actionsDirty` / `storylineDirty` / `dirtyKind` / `anyLetterDirty`, plus their `useTransition` partners (`groupPending` / `letterPending` / `actionsPending`). Only `rowPending` survives.
+- Deleted handlers: `handleSaveGroup`, `handleSaveLetterFields`, `handleSaveActions`, `revertGroup`, `revertLetter`, `revertActions`, `saveLetterNow`, `saveAllNow`, `confirmDiscardDirty`, `onConfirmDiscard`, plus `letterFieldsPatch` / `letterActionsPatches` helpers.
+- Dropped props from `LettersWorkspaceProps`: `onDirtyChange`, `saveAllRef`. The graph embed no longer threads them.
+- Removed `useUnsavedDialog` + `unsavedDialogEl` + `askUnsaved` everywhere — instant-save means there's nothing to prompt about.
+- `LetterFieldsCard` + `LetterActionsCard` lost `dirty` / `pending` / `onSave` / `onRevert` props.
+- `StorylineInspector` now tracks its own dirty state locally — parent no longer mirrors it. (Phase 4 long-tail will convert it to instant-save and drop the flag entirely.)
+- `graph-surface.tsx` cleanup (the Track D workspace-coupled half): dropped `inspectorDirtyKind`, `saveAllRef`, `useUnsavedDialog`, `resolveUnsavedDirty`, the beforeunload guard, and the link-click navigation interceptor. All inspector edits auto-save, so navigation no longer needs a gate. (Track D's remaining piece — threading `currentUserId` / `currentEmail` into the embed — stays open.)
+- Dropped coarse server actions from `actions.ts`: `saveGroup`, `saveLetterFields`, `saveLetterActionsOnly`, `saveLetterWithActions`, `saveReportSegment`, plus their `LetterPatch` / `ActionPatch` types. The `saveGroup` test cases in `actions.test.ts` deleted too.
+- Deleted `/settings/realtime-smoke.tsx` + its mount in `settings/page.tsx` (Phase 0 throwaway).
+- `pnpm typecheck` clean. `pnpm test` clean (297 tests). `pnpm lint` net-improved (158 problems vs. 173 pre-B6).
+
 ### ⬜ Remaining tracks
 
-- **B6 — Rip dirty-state machinery:** delete `groupDirty`, `letterDirty`, `actionsDirty`, `storylineDirty`, `dirtyKind`, `saveAllRef`, `onDirtyChange`, `askUnsaved`/`useUnsavedDialog`, and now-dead handlers (`handleSaveGroup`, `handleSaveLetterFields`, `handleSaveActions`, `revertGroup`, `revertLetter`, `saveAllNow`). Drop the coarse `saveGroup`/`saveLetterFields`/`saveLetterActionsOnly`/`saveLetterWithActions` imports + server actions if no callers remain. **Note:** storyline inspector still uses its own internal dirty state; treat as a separate later conversion (Phase 4 long-tail) unless ripping it here is cheap.
-- **D — Graph-surface cleanup:** drop `saveAllRef`/`inspectorDirtyKind`/unsaved-prompt-on-drag from `src/app/(authed)/graph/graph-surface.tsx`. Thread `currentUserId` + `currentEmail` through `<LettersWorkspace>` so presence works inside the graph too.
+- **D — Graph presence threading:** thread `currentUserId` / `currentEmail` from `/graph`'s page into `<LettersWorkspace>` inside `graph-surface.tsx` so presence + instant-save work in the graph embed too. (The dirty-state-machinery half of D landed with B6.)
 - **C — E2E spec** (`tests/e2e/realtime-letters.spec.ts`): two-context Playwright covering type→appear, focus→indicator, remote-delete toast, two-users-different-fields-no-clobber. Scaffold in parallel with B; finalize once B5 lands.
-- **Cleanup — `/settings` smoke harness:** delete `realtime-smoke.tsx` + its mount in `settings/page.tsx`.
 
 ### Open follow-ups noted along the way
 
@@ -271,3 +281,13 @@ After every surface is converted: delete `src/components/auto-save-form.tsx`, th
 - **Realtime publication on `inspection_action_ending_assignments`.** Not in the publication; `patchActionEndingAssignments` writes succeed but won't fan out to other clients via postgres_changes. Lower priority (ending assignments change less often than impacts/content). Followup needs a migration to add the table to `supabase_realtime` + a workspace handler that re-derives the action's `endingAssignments` from the child rows. Deferred to its own small PR after B6.
 - ~~**Postgres INSERT events.**~~ Closed in B5 follow-up: INSERT triggers a debounced `router.refresh()` (100 ms coalesce window). Adds one RSC refetch per burst of inserts but keeps view-mapped columns correct without duplicating SQL view logic in JS.
 - **Storylines mirror is partial.** B5 mirrors the `storylines` array for UPDATE/DELETE on `letters-workspace`, but storyline edits actually happen on `/inspection/storylines`. Once that surface converts (Phase 4 long-tail #1), revisit whether the workspace mirror still adds value.
+
+### Presence-indicator polish (post-B6)
+
+Notes from the user, captured 2026-05-12 — to be picked up after B6/D land and before Phase 4 surfaces start:
+
+- **Hover popup with peer's location.** Hovering a peer's avatar should show where they're working — formatted as the deepest known entity, e.g. `Group A7` or `Letter L-A3/b`. If they have a field focused, use that field's panel; otherwise use the deepest panel they have open (e.g. peer has both Letter Group A1 and Letter L-A1/a open → location is `L-A1/a`).
+- **Click avatar → jump to their panel.** Clicking a peer's avatar should load the same panel context they're in. Needs a way to broadcast/derive the peer's full selection path (storyline → group → letter → segment) — today only their focused field is broadcast. Likely: extend the focus broadcast payload with the full selection, or send a separate `peer-selection` broadcast on selection change.
+- **Mute peers not on the same panel.** Avatar should render dimmed/grayscale when the peer isn't sharing at least one open panel with the current user. "Same panel" = the current user's open-panel-set and the peer's open-panel-set intersect.
+- **Mute peers inactive for a while.** Grayscale/dim the avatar after some inactivity threshold (TBD — start with 60s?). Resets on any focus/typing event.
+- **Field-edit highlight.** When a peer is editing a field, draw a highlight border around that input in the colocated user's view, in the peer's avatar color. Currently we only show `<FieldPresence>` (a small dot next to the label). The border is more visible mid-edit.

@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import {
   IconArrowBackUp,
   IconCirclePlusMinus,
@@ -20,7 +19,6 @@ import {
 } from "../inspection/letters/actions";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
-import { useUnsavedDialog } from "@/components/unsaved-dialog";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
   DEFAULT_IMPACT_FILTER,
@@ -157,69 +155,37 @@ export function GraphSurface({
   }, [dispatchUndo]);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorDirtyKind, setInspectorDirtyKind] = useState<string | null>(
-    null
-  );
-  const inspectorDirty = inspectorDirtyKind !== null;
-  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog();
-  const saveAllRef = useRef<(() => Promise<void>) | null>(null);
-  const router = useRouter();
 
   const initial = selectionToInitial(selection, letters, segments);
 
-  // Resolve the unsaved-changes dialog by invoking the workspace's
-  // saveAll, dropping the dirty flag, or aborting per the user's pick.
-  // Returns true when the caller may proceed with its navigation.
-  const resolveUnsavedDirty = useCallback(async () => {
-    if (!(inspectorOpen && inspectorDirty)) return true;
-    const outcome = await askUnsaved(`Unsaved ${inspectorDirtyKind}`);
-    if (outcome === "cancel") return false;
-    if (outcome === "save") {
-      try {
-        await saveAllRef.current?.();
-      } catch {
-        return false;
-      }
-    }
-    setInspectorDirtyKind(null);
-    return true;
-  }, [askUnsaved, inspectorDirty, inspectorDirtyKind, inspectorOpen]);
-
-  // Any node click (or panel-driven selection change) opens the
-  // inspector. When the panel has unsaved changes, gate cross-selection
-  // navigation behind the unsaved-changes dialog.
+  // Inspector edits auto-save via instant-save, so navigation no longer
+  // needs an unsaved-changes gate.
   const handleSelectionChange = useCallback(
-    async (sel: GraphSelection | null) => {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
+    (sel: GraphSelection | null) => {
       setSelection(sel);
       if (sel) {
         setOverlayOpen(false);
         setInspectorOpen(true);
       }
     },
-    [resolveUnsavedDirty]
+    []
   );
 
-  const handleInspectorToggle = useCallback(async () => {
+  const handleInspectorToggle = useCallback(() => {
     if (inspectorOpen) {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
       setInspectorOpen(false);
     } else {
       setOverlayOpen(false);
       setInspectorOpen(true);
     }
-  }, [inspectorOpen, resolveUnsavedDirty]);
+  }, [inspectorOpen]);
 
-  const handleOverlayToggle = useCallback(async () => {
+  const handleOverlayToggle = useCallback(() => {
     if (!overlayOpen) {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
       setInspectorOpen(false);
     }
     setOverlayOpen((v) => !v);
-  }, [overlayOpen, resolveUnsavedDirty]);
+  }, [overlayOpen]);
 
   // Cmd/Ctrl+Z anywhere on /graph triggers an undo. We skip when an
   // editable element is focused so typing in the inspector still gets
@@ -248,62 +214,6 @@ export function GraphSurface({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [undoStack.length, undo]);
-
-  // Block leaving the page (browser nav / refresh) while there are
-  // unsaved inspector changes.
-  useEffect(() => {
-    if (!inspectorDirty) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [inspectorDirty]);
-
-  // Intercept in-app link clicks (Next.js <Link> renders an <a>) so the
-  // unsaved-changes dialog also gates client-side navigation. We attach
-  // in the capture phase so we can preventDefault before Next.js's own
-  // click handler kicks off the route push. After the user resolves the
-  // prompt, we replay the navigation manually via router.push.
-  useEffect(() => {
-    if (!inspectorDirty) return;
-    function onClickCapture(e: MouseEvent) {
-      // Let modifier-clicks (open in new tab) through.
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      if (e.button !== 0) return;
-      const target = e.target as HTMLElement | null;
-      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      if (!href) return;
-      // Skip in-page anchors and explicit new-tab targets.
-      if (href.startsWith("#")) return;
-      if (anchor.target && anchor.target !== "" && anchor.target !== "_self")
-        return;
-      const url = new URL(anchor.href, window.location.href);
-      const samePath =
-        url.pathname === window.location.pathname &&
-        url.search === window.location.search &&
-        url.hash === window.location.hash;
-      if (samePath) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void (async () => {
-        const ok = await resolveUnsavedDirty();
-        if (!ok) return;
-        const sameOrigin = url.origin === window.location.origin;
-        if (sameOrigin) {
-          router.push(url.pathname + url.search + url.hash);
-        } else {
-          window.location.href = anchor.href;
-        }
-      })();
-    }
-    document.addEventListener("click", onClickCapture, true);
-    return () =>
-      document.removeEventListener("click", onClickCapture, true);
-  }, [inspectorDirty, resolveUnsavedDirty, router]);
 
   return (
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col">
@@ -431,17 +341,14 @@ export function GraphSurface({
                   setSelection(sel as GraphSelection | null);
                 }}
                 onClose={() => {
-                  void handleInspectorToggle();
+                  handleInspectorToggle();
                 }}
                 forceNarrow
-                onDirtyChange={setInspectorDirtyKind}
-                saveAllRef={saveAllRef}
               />
             </aside>
           ) : null}
         </div>
       )}
-      {unsavedDialogEl}
     </div>
   );
 }
