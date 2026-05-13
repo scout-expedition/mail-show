@@ -18,6 +18,9 @@ import { GraphSurface } from "./graph-surface";
 
 export default async function GraphPage() {
   const supabase = await createSupabaseServerClient();
+  const { data: meData } = await supabase.auth.getUser();
+  const currentUserId = meData.user?.id;
+  const currentEmail = meData.user?.email;
   const [
     { data: sData },
     { data: gData },
@@ -88,6 +91,8 @@ export default async function GraphPage() {
       cities={cities}
       endingVariables={endingVariables}
       endingValues={endingValues}
+      currentUserId={currentUserId}
+      currentEmail={currentEmail}
     />
   );
 }

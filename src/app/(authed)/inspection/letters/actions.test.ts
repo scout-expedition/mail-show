@@ -28,7 +28,6 @@ import {
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
-  saveGroup,
 } from "./actions";
 
 describe("moveLetterGroupToDay", () => {
@@ -216,68 +215,6 @@ describe("moveLetterToGroup", () => {
       .single();
 
     expect(action?.next_letter_variant).toBeNull();
-  });
-});
-
-describe("saveGroup", () => {
-  const sb = makeTestClient();
-
-  beforeAll(async () => {
-    await cleanupTestData(sb);
-  });
-
-  beforeEach(() => {
-    vi.mocked(revalidatePath).mockClear();
-  });
-
-  afterEach(async () => {
-    await cleanupTestData(sb);
-  });
-
-  it("should update the letter_group row and revalidate both paths", async () => {
-    const seed = await seedStoryline(sb, { suffix: "save", days: 1 });
-
-    await saveGroup({
-      id: seed.groupId,
-      storyline_id: seed.storylineId,
-      name: "renamed",
-      notes: "freshly noted",
-      delivery_day_id: seed.dayIds[0],
-    });
-
-    const { data } = await sb
-      .from("letter_groups")
-      .select("name, notes, delivery_day_id")
-      .eq("id", seed.groupId)
-      .single();
-
-    expect(data).toEqual({
-      name: "renamed",
-      notes: "freshly noted",
-      delivery_day_id: seed.dayIds[0],
-    });
-    expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
-    expect(revalidatePath).toHaveBeenCalledWith("/graph");
-  });
-
-  it("should keep report_groups.name in sync with letter_groups.name", async () => {
-    const seed = await seedStoryline(sb, { suffix: "sync-name", days: 1 });
-
-    await saveGroup({
-      id: seed.groupId,
-      storyline_id: seed.storylineId,
-      name: "synced",
-      notes: null,
-      delivery_day_id: null,
-    });
-
-    const { data } = await sb
-      .from("report_groups")
-      .select("name")
-      .eq("letter_group_id", seed.groupId)
-      .single();
-
-    expect(data?.name).toBe("synced");
   });
 });
 

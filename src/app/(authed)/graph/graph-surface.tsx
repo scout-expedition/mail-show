@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconArrowBackUp,
   IconCirclePlusMinus,
@@ -20,7 +19,6 @@ import {
 } from "../inspection/letters/actions";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/page-header";
-import { useUnsavedDialog } from "@/components/unsaved-dialog";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
   DEFAULT_IMPACT_FILTER,
@@ -47,28 +45,34 @@ import {
   LettersWorkspace,
   type ControlledSelection,
 } from "../inspection/letters/workspace";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import type {
+  PresencePeer,
+  PresenceSelection,
+} from "@/lib/realtime/presence";
+
+/** Tables the presence channel mirrors. Must match the workspace's list so
+ *  postgres_changes consumers (the embedded LettersWorkspace) get the same
+ *  events regardless of which surface hosts the provider. */
+const PRESENCE_POSTGRES_TABLES = [
+  "inspection_letters",
+  "letter_groups",
+  "actions",
+  "report_segments",
+  "storylines",
+  "inspection_action_ending_assignments",
+];
 
 /**
  * Client wrapper that holds the impact-overlay filter (persisted to
  * localStorage), the inspector selection (graph node click → panel state),
  * and renders the graph next to the inspector panel when a node is selected.
  */
-export function GraphSurface({
-  storylines,
-  letterGroups,
-  letters,
-  actions,
-  actionTemplates,
-  days,
-  segments,
-  nations,
-  endingAssignments,
-  heroes,
-  allCitizenIds,
-  cities,
-  endingVariables,
-  endingValues,
-}: {
+type GraphSurfaceProps = {
   storylines: Storyline[];
   letterGroups: LetterGroup[];
   letters: InspectionLetterView[];
@@ -83,7 +87,48 @@ export function GraphSurface({
   cities: City[];
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
-}) {
+  currentUserId?: string;
+  currentEmail?: string;
+};
+
+/**
+ * Wrapper: hosts the shared presence provider for the entire graph surface
+ * so peers stay visible (and postgres_changes keep flowing) even when the
+ * inspector is closed. The embedded `<LettersWorkspace>` adopts the same
+ * provider via `presenceProvided`.
+ */
+export function GraphSurface(props: GraphSurfaceProps) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="letters-workspace"
+      userId={props.currentUserId}
+      email={props.currentEmail}
+      postgresTables={PRESENCE_POSTGRES_TABLES}
+    >
+      <GraphSurfaceInner {...props} />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function GraphSurfaceInner({
+  storylines,
+  letterGroups,
+  letters,
+  actions,
+  actionTemplates,
+  days,
+  segments,
+  nations,
+  endingAssignments,
+  heroes,
+  allCitizenIds,
+  cities,
+  endingVariables,
+  endingValues,
+  currentUserId,
+  currentEmail,
+}: GraphSurfaceProps) {
+  const { peers, selfPeer } = usePresenceContext();
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -157,69 +202,90 @@ export function GraphSurface({
   }, [dispatchUndo]);
   const [selection, setSelection] = useState<GraphSelection | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [inspectorDirtyKind, setInspectorDirtyKind] = useState<string | null>(
-    null
-  );
-  const inspectorDirty = inspectorDirtyKind !== null;
-  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog();
-  const saveAllRef = useRef<(() => Promise<void>) | null>(null);
-  const router = useRouter();
 
   const initial = selectionToInitial(selection, letters, segments);
 
-  // Resolve the unsaved-changes dialog by invoking the workspace's
-  // saveAll, dropping the dirty flag, or aborting per the user's pick.
-  // Returns true when the caller may proceed with its navigation.
-  const resolveUnsavedDirty = useCallback(async () => {
-    if (!(inspectorOpen && inspectorDirty)) return true;
-    const outcome = await askUnsaved(`Unsaved ${inspectorDirtyKind}`);
-    if (outcome === "cancel") return false;
-    if (outcome === "save") {
-      try {
-        await saveAllRef.current?.();
-      } catch {
-        return false;
-      }
+  // ---------- Presence: location label + jump-to-peer ----------
+  //
+  // Header avatars are always "Graph"-prefixed regardless of which surface
+  // a peer is technically on; the page-scoped label is more useful here
+  // than chasing the peer's surface. Panel suffix is the deepest known
+  // entity (focused field → focused row's display id, else deepest non-null
+  // id in `peer.selection`). When no panel info is known, just "Graph".
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    const all = selfPeer ? [selfPeer, ...peers] : peers;
+    for (const peer of all) {
+      const panel = resolvePeerPanel(peer, {
+        letters,
+        letterGroups,
+        segments,
+        storylines,
+        actions,
+      });
+      m.set(peer.userId, panel ? `Graph\n${panel}` : "Graph");
     }
-    setInspectorDirtyKind(null);
-    return true;
-  }, [askUnsaved, inspectorDirty, inspectorDirtyKind, inspectorOpen]);
+    return m;
+  }, [
+    peers,
+    selfPeer,
+    letters,
+    letterGroups,
+    segments,
+    storylines,
+    actions,
+  ]);
 
-  // Any node click (or panel-driven selection change) opens the
-  // inspector. When the panel has unsaved changes, gate cross-selection
-  // navigation behind the unsaved-changes dialog.
+  // Derive the local user's PresenceSelection from the graph's GraphSelection
+  // so AvatarStack can dim peers who aren't sharing the visible panel.
+  // Null when the inspector is closed (no panel = nothing to be off from).
+  const selfSelection = useMemo<PresenceSelection | null>(() => {
+    if (!inspectorOpen || !selection) return null;
+    return graphSelectionToPresence(selection, letters);
+  }, [inspectorOpen, selection, letters]);
+
+  // Click a peer's avatar → open the inspector and load their panel.
+  const jumpToPeer = useCallback(
+    (peer: PresencePeer) => {
+      const sel = peer.selection;
+      if (!sel) return;
+      const next = presenceSelectionToGraph(sel, letters);
+      if (!next) return;
+      setSelection(next);
+      setOverlayOpen(false);
+      setInspectorOpen(true);
+    },
+    [letters]
+  );
+
+  // Inspector edits auto-save via instant-save, so navigation no longer
+  // needs an unsaved-changes gate.
   const handleSelectionChange = useCallback(
-    async (sel: GraphSelection | null) => {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
+    (sel: GraphSelection | null) => {
       setSelection(sel);
       if (sel) {
         setOverlayOpen(false);
         setInspectorOpen(true);
       }
     },
-    [resolveUnsavedDirty]
+    []
   );
 
-  const handleInspectorToggle = useCallback(async () => {
+  const handleInspectorToggle = useCallback(() => {
     if (inspectorOpen) {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
       setInspectorOpen(false);
     } else {
       setOverlayOpen(false);
       setInspectorOpen(true);
     }
-  }, [inspectorOpen, resolveUnsavedDirty]);
+  }, [inspectorOpen]);
 
-  const handleOverlayToggle = useCallback(async () => {
+  const handleOverlayToggle = useCallback(() => {
     if (!overlayOpen) {
-      const ok = await resolveUnsavedDirty();
-      if (!ok) return;
       setInspectorOpen(false);
     }
     setOverlayOpen((v) => !v);
-  }, [overlayOpen, resolveUnsavedDirty]);
+  }, [overlayOpen]);
 
   // Cmd/Ctrl+Z anywhere on /graph triggers an undo. We skip when an
   // editable element is focused so typing in the inspector still gets
@@ -249,68 +315,21 @@ export function GraphSurface({
     return () => window.removeEventListener("keydown", handler);
   }, [undoStack.length, undo]);
 
-  // Block leaving the page (browser nav / refresh) while there are
-  // unsaved inspector changes.
-  useEffect(() => {
-    if (!inspectorDirty) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, [inspectorDirty]);
-
-  // Intercept in-app link clicks (Next.js <Link> renders an <a>) so the
-  // unsaved-changes dialog also gates client-side navigation. We attach
-  // in the capture phase so we can preventDefault before Next.js's own
-  // click handler kicks off the route push. After the user resolves the
-  // prompt, we replay the navigation manually via router.push.
-  useEffect(() => {
-    if (!inspectorDirty) return;
-    function onClickCapture(e: MouseEvent) {
-      // Let modifier-clicks (open in new tab) through.
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      if (e.button !== 0) return;
-      const target = e.target as HTMLElement | null;
-      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      if (!href) return;
-      // Skip in-page anchors and explicit new-tab targets.
-      if (href.startsWith("#")) return;
-      if (anchor.target && anchor.target !== "" && anchor.target !== "_self")
-        return;
-      const url = new URL(anchor.href, window.location.href);
-      const samePath =
-        url.pathname === window.location.pathname &&
-        url.search === window.location.search &&
-        url.hash === window.location.hash;
-      if (samePath) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void (async () => {
-        const ok = await resolveUnsavedDirty();
-        if (!ok) return;
-        const sameOrigin = url.origin === window.location.origin;
-        if (sameOrigin) {
-          router.push(url.pathname + url.search + url.hash);
-        } else {
-          window.location.href = anchor.href;
-        }
-      })();
-    }
-    document.addEventListener("click", onClickCapture, true);
-    return () =>
-      document.removeEventListener("click", onClickCapture, true);
-  }, [inspectorDirty, resolveUnsavedDirty, router]);
-
   return (
     <div className="flex h-[calc(100dvh-3.5rem)] flex-col">
       <PageHeader
         title="Narrative Graph"
         actions={
           <div className="flex items-center gap-2">
+            <AvatarStack
+              peers={peers}
+              self={selfPeer}
+              selfSelection={selfSelection}
+              peerLocations={peerLocations}
+              onAvatarClick={jumpToPeer}
+              narrow
+              className="mr-1"
+            />
             <Button
               type="button"
               variant="outline"
@@ -422,6 +441,9 @@ export function GraphSurface({
                 initialGroupId={initial.groupId}
                 initialLetterId={initial.letterId}
                 initialSegmentId={initial.segmentId}
+                currentUserId={currentUserId}
+                currentEmail={currentEmail}
+                presenceProvided
                 controlledSelection={selection as ControlledSelection}
                 onSelectionChange={(sel) => {
                   // Panel-driven selection changes (user clicking within
@@ -431,17 +453,14 @@ export function GraphSurface({
                   setSelection(sel as GraphSelection | null);
                 }}
                 onClose={() => {
-                  void handleInspectorToggle();
+                  handleInspectorToggle();
                 }}
                 forceNarrow
-                onDirtyChange={setInspectorDirtyKind}
-                saveAllRef={saveAllRef}
               />
             </aside>
           ) : null}
         </div>
       )}
-      {unsavedDialogEl}
     </div>
   );
 }
@@ -484,4 +503,149 @@ function selectionToInitial(
     letterId: null,
     segmentId: sel.segmentId,
   };
+}
+
+/**
+ * Resolve a peer's deepest known entity to a display string ("Letter L-A3/b",
+ * "Group A7", "Report R-A3/i", or "Storyline …"). Prefers `peer.focus`
+ * (most precise — the actual focused row) and falls back to the deepest
+ * non-null id in `peer.selection`. Returns null when nothing's known so the
+ * caller can fall back to a surface-only label ("Graph").
+ */
+function resolvePeerPanel(
+  peer: PresencePeer,
+  mirrors: {
+    letters: InspectionLetterView[];
+    letterGroups: LetterGroup[];
+    segments: ReportSegmentView[];
+    storylines: Storyline[];
+    actions: ActionRow[];
+  }
+): string | null {
+  const { letters, letterGroups, segments, storylines, actions } = mirrors;
+  const storylineById = new Map(storylines.map((s) => [s.id, s]));
+
+  if (peer.focus) {
+    const id = peer.focus.recordId;
+    switch (peer.focus.table) {
+      case "inspection_letters": {
+        const l = letters.find((x) => x.id === id);
+        if (l?.content_id) return `Letter ${l.content_id}`;
+        break;
+      }
+      case "letter_groups": {
+        const g = letterGroups.find((x) => x.id === id);
+        if (g) {
+          const s = storylineById.get(g.storyline_id);
+          return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+        }
+        break;
+      }
+      case "actions": {
+        const a = actions.find((x) => x.id === id);
+        const l = a
+          ? letters.find((x) => x.id === a.inspection_letter_id)
+          : null;
+        if (l?.content_id) return `Actions ${l.content_id}`;
+        break;
+      }
+      case "report_segments": {
+        const seg = segments.find((x) => x.id === id);
+        if (seg?.report_id) return `Report ${seg.report_id}`;
+        break;
+      }
+      case "storylines": {
+        const s = storylines.find((x) => x.id === id);
+        if (s) return `Storyline ${s.name}`;
+        break;
+      }
+    }
+  }
+  const sel = peer.selection;
+  if (sel) {
+    if (sel.segmentId) {
+      const seg = segments.find((x) => x.id === sel.segmentId);
+      if (seg?.report_id) return `Report ${seg.report_id}`;
+    }
+    if (sel.letterId) {
+      const l = letters.find((x) => x.id === sel.letterId);
+      if (l?.content_id) return `Letter ${l.content_id}`;
+    }
+    if (sel.groupId) {
+      const g = letterGroups.find((x) => x.id === sel.groupId);
+      if (g) {
+        const s = storylineById.get(g.storyline_id);
+        return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+      }
+    }
+    if (sel.storylineId) {
+      const s = storylines.find((x) => x.id === sel.storylineId);
+      if (s) return `Storyline ${s.name}`;
+    }
+  }
+  return null;
+}
+
+/** Project a `GraphSelection` into a presence-shaped selection so AvatarStack's
+ *  `sharesPanel(narrow=true)` can compute the same visible-record predicate
+ *  that the workspace uses. */
+function graphSelectionToPresence(
+  sel: GraphSelection,
+  letters: InspectionLetterView[]
+): PresenceSelection {
+  if (sel.kind === "segment") {
+    return {
+      storylineId: null,
+      groupId: null,
+      letterId: null,
+      segmentId: sel.segmentId,
+      view: "segment",
+    };
+  }
+  if (sel.kind === "group") {
+    return {
+      storylineId: null,
+      groupId: sel.groupId,
+      letterId: null,
+      segmentId: null,
+      view: "group",
+    };
+  }
+  // letter | actions — resolve the variant to a letter id so visibleRecordId
+  // matches by letterId across both surfaces.
+  const letter = letters.find(
+    (l) =>
+      l.letter_group_id === sel.groupId &&
+      (l.variant ?? "") === sel.variantKey
+  );
+  return {
+    storylineId: null,
+    groupId: sel.groupId,
+    letterId: letter?.id ?? null,
+    segmentId: null,
+    view: sel.kind === "actions" ? "actions" : "main",
+  };
+}
+
+/** Inverse of `graphSelectionToPresence`: turn a peer's chain into a graph
+ *  selection so jump-to-peer can apply it. Returns null when the peer has
+ *  no actionable selection (e.g. they're at the storylines list). */
+function presenceSelectionToGraph(
+  sel: PresenceSelection,
+  letters: InspectionLetterView[]
+): GraphSelection | null {
+  if (sel.segmentId) {
+    return { kind: "segment", segmentId: sel.segmentId };
+  }
+  if (sel.letterId && sel.groupId) {
+    const letter = letters.find((l) => l.id === sel.letterId);
+    const variantKey = letter?.variant ?? "";
+    return sel.view === "actions"
+      ? { kind: "actions", groupId: sel.groupId, variantKey }
+      : { kind: "letter", groupId: sel.groupId, variantKey };
+  }
+  if (sel.groupId) {
+    return { kind: "group", groupId: sel.groupId };
+  }
+  return null;
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -11,7 +12,6 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
-import { PageHeader } from "@/components/page-header";
 import { IconDisplay } from "@/components/icon-display";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -56,15 +56,15 @@ import {
   deleteInspectionLetter,
   deleteReportSegment,
   ensureInspectionLetterVariant,
+  patchAction,
+  patchActionEndingAssignments,
+  patchInspectionLetter,
+  patchLetterGroup,
+  patchReportSegment,
   quickCreateCitizen,
   reorderInspectionLetters,
   reorderLetterGroups,
   reorderReportSegments,
-  saveGroup,
-  saveLetterActionsOnly,
-  saveLetterFields,
-  saveLetterWithActions,
-  saveReportSegment,
   updateCitizen,
 } from "./actions";
 import {
@@ -73,11 +73,23 @@ import {
 } from "../storylines/actions";
 import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import type { PostgresChange } from "@/lib/realtime/channel";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type {
+  PresenceFocus,
+  PresencePeer,
+  PresenceSelection,
+} from "@/lib/realtime/presence";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { usePathname, useRouter } from "next/navigation";
-import { groupSlug, parseGroupSlug } from "@/lib/letter-groups";
+import { groupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
-import { useUnsavedDialog } from "@/components/unsaved-dialog";
-import type { UnsavedOutcome } from "@/components/unsaved-dialog";
+import { useToast } from "@/components/toast";
 import {
   BookOpen,
   ChevronLeft,
@@ -162,7 +174,12 @@ type ActionImpacts = {
   impact_pelico: number;
 };
 
-type EndingAssignmentState = { variable_id: string; value_id: string };
+type EndingAssignmentState = {
+  variable_id: string;
+  /** Nullable: a peer can save an assignment with just the variable picked,
+   *  before they commit to a value (matches DB schema since migration 0033). */
+  value_id: string | null;
+};
 
 type ActionState = ActionImpacts & {
   id: string;
@@ -249,32 +266,7 @@ function useIsNarrow(): boolean {
   return narrow;
 }
 
-export function LettersWorkspace({
-  storylines,
-  groups: allGroups,
-  days,
-  letters: allLetters,
-  actions: allActions,
-  templates,
-  heroes: initialHeroes,
-  allCitizenIds,
-  cities,
-  nations,
-  segments: allSegments,
-  endingVariables,
-  endingValues,
-  endingAssignments,
-  initialGroupId,
-  initialLetterId,
-  initialSegmentId,
-  initialView,
-  controlledSelection,
-  onSelectionChange,
-  onClose,
-  forceNarrow,
-  onDirtyChange,
-  saveAllRef,
-}: {
+export type LettersWorkspaceProps = {
   storylines: Storyline[];
   groups: LetterGroup[];
   days: Day[];
@@ -315,25 +307,144 @@ export function LettersWorkspace({
    */
   forceNarrow?: boolean;
   /**
-   * Notifies the parent when the combined dirty state of any inner
-   * panel changes — so embedders (e.g. the narrative graph) can guard
-   * navigation and selection changes. Receives a user-facing label
-   * for what's dirty (e.g. "Inspection Letter") or null when clean.
+   * Current signed-in user — required to activate realtime presence +
+   * instant-save. When either is missing (e.g. from a not-yet-updated
+   * graph embed), the workspace renders without presence chrome and
+   * fields fall through to their existing save-button paths.
    */
-  onDirtyChange?: (kind: string | null) => void;
+  currentUserId?: string;
+  currentEmail?: string;
   /**
-   * Optional ref the workspace populates with a `saveAll()` function so
-   * embedders can flush every dirty panel before applying a navigation
-   * change. Returns once all in-flight saves complete.
+   * When true, the workspace assumes its parent already wraps it in a
+   * `WorkspacePresenceProvider`. Skips the internal provider wrap (which
+   * would otherwise create a second channel of the same name) AND the
+   * floating top-right AvatarStack that mounts in controlled mode — the
+   * parent is expected to render presence chrome wherever it wants.
    */
-  saveAllRef?: React.MutableRefObject<(() => Promise<void>) | null>;
-}) {
+  presenceProvided?: boolean;
+};
+
+/**
+ * Thin wrapper that provides shared presence + focus state to the
+ * workspace body. Read the live values via `usePresenceContext()` inside
+ * any child component.
+ */
+/**
+ * Tables the workspace subscribes to via postgres_changes. UPDATE events
+ * are column-merged into local mirrors (view-derived columns preserved);
+ * DELETE events drop the row and surface a toast if it's the currently-
+ * selected one; INSERT events trigger a debounced `router.refresh()` so
+ * the RSC layer re-derives view-mapped columns (`content_id`, `report_id`,
+ * `effective_day_id`) which aren't in the raw postgres payload.
+ */
+const POSTGRES_TABLES = [
+  "inspection_letters",
+  "letter_groups",
+  "actions",
+  "report_segments",
+  "storylines",
+  "inspection_action_ending_assignments",
+];
+
+export function LettersWorkspace(props: LettersWorkspaceProps) {
+  if (props.presenceProvided) {
+    return <LettersWorkspaceInner {...props} />;
+  }
+  return (
+    <WorkspacePresenceProvider
+      channelName="letters-workspace"
+      userId={props.currentUserId}
+      email={props.currentEmail}
+      postgresTables={POSTGRES_TABLES}
+    >
+      <LettersWorkspaceInner {...props} />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function LettersWorkspaceInner({
+  storylines: storylinesProp,
+  groups: allGroupsProp,
+  days,
+  letters: allLettersProp,
+  actions: allActionsProp,
+  templates,
+  heroes: initialHeroes,
+  allCitizenIds,
+  cities,
+  nations,
+  segments: allSegmentsProp,
+  endingVariables,
+  endingValues,
+  endingAssignments: endingAssignmentsProp,
+  initialGroupId,
+  initialLetterId,
+  initialSegmentId,
+  initialView,
+  controlledSelection,
+  onSelectionChange,
+  onClose,
+  forceNarrow,
+  presenceProvided,
+}: LettersWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const {
+    peers,
+    selfPeer,
+    setFocus,
+    setSelection,
+    pingActivity,
+    onPostgresChanges,
+  } = usePresenceContext();
+  const { toast, toaster } = useToast();
+
+  // Mirror server-provided arrays so postgres_changes events can fan out
+  // to the UI without a page reload. Structural mutations still revalidate;
+  // when the props change, the "adjust state during render" pattern below
+  // resyncs the mirrors back to canonical truth.
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [storylines, setStorylines] = useState(storylinesProp);
+  const [allGroups, setAllGroups] = useState(allGroupsProp);
+  const [allLetters, setAllLetters] = useState(allLettersProp);
+  const [allActions, setAllActions] = useState(allActionsProp);
+  const [allSegments, setAllSegments] = useState(allSegmentsProp);
+  const [endingAssignments, setEndingAssignments] = useState(
+    endingAssignmentsProp
+  );
+  const [prevStorylinesProp, setPrevStorylinesProp] = useState(storylinesProp);
+  const [prevGroupsProp, setPrevGroupsProp] = useState(allGroupsProp);
+  const [prevLettersProp, setPrevLettersProp] = useState(allLettersProp);
+  const [prevActionsProp, setPrevActionsProp] = useState(allActionsProp);
+  const [prevSegmentsProp, setPrevSegmentsProp] = useState(allSegmentsProp);
+  const [prevEndingAssignmentsProp, setPrevEndingAssignmentsProp] = useState(
+    endingAssignmentsProp
+  );
+  if (storylinesProp !== prevStorylinesProp) {
+    setPrevStorylinesProp(storylinesProp);
+    setStorylines(storylinesProp);
+  }
+  if (allGroupsProp !== prevGroupsProp) {
+    setPrevGroupsProp(allGroupsProp);
+    setAllGroups(allGroupsProp);
+  }
+  if (allLettersProp !== prevLettersProp) {
+    setPrevLettersProp(allLettersProp);
+    setAllLetters(allLettersProp);
+  }
+  if (allActionsProp !== prevActionsProp) {
+    setPrevActionsProp(allActionsProp);
+    setAllActions(allActionsProp);
+  }
+  if (allSegmentsProp !== prevSegmentsProp) {
+    setPrevSegmentsProp(allSegmentsProp);
+    setAllSegments(allSegmentsProp);
+  }
+  if (endingAssignmentsProp !== prevEndingAssignmentsProp) {
+    setPrevEndingAssignmentsProp(endingAssignmentsProp);
+    setEndingAssignments(endingAssignmentsProp);
+  }
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
-    scoped: true,
-  });
-  const { ask: askUnsaved, dialog: unsavedDialogEl } = useUnsavedDialog({
     scoped: true,
   });
   const storylineById = useMemo(
@@ -405,9 +516,6 @@ export function LettersWorkspace({
     delivery_day_id: group?.delivery_day_id ?? null,
     notes: group?.notes ?? null,
   }));
-  const [groupDirty, setGroupDirty] = useState(false);
-  const [groupPending, startGroupSave] = useTransition();
-
   useEffect(() => {
     if (!group) {
       setGroupState({
@@ -416,7 +524,6 @@ export function LettersWorkspace({
         delivery_day_id: null,
         notes: null,
       });
-      setGroupDirty(false);
       return;
     }
     setGroupState({
@@ -425,7 +532,6 @@ export function LettersWorkspace({
       delivery_day_id: group.delivery_day_id,
       notes: group.notes,
     });
-    setGroupDirty(false);
   }, [group]);
 
   function updateGroup<K extends keyof typeof groupState>(
@@ -433,8 +539,76 @@ export function LettersWorkspace({
     v: (typeof groupState)[K]
   ) {
     setGroupState((s) => ({ ...s, [k]: v }));
-    setGroupDirty(true);
   }
+
+  // ----- Group panel: instant-save fields -----
+  // Each field commits to the server via the narrow patchLetterGroup action
+  // after a 400ms debounce, and publishes the user's focus via presence.
+  const groupNameField = useInstantField<string>({
+    value: group?.name ?? "",
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { name: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? { table: "letter_groups", recordId: group.id, field: "name" }
+          : null
+      );
+    },
+    onActivity: pingActivity,
+  });
+  const groupDayField = useInstantField<string | null>({
+    value: group?.delivery_day_id ?? null,
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { delivery_day_id: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? {
+              table: "letter_groups",
+              recordId: group.id,
+              field: "delivery_day_id",
+            }
+          : null
+      );
+    },
+    onActivity: pingActivity,
+  });
+  const groupNotesField = useInstantField<string | null>({
+    value: group?.notes ?? null,
+    onCommit: async (next) => {
+      if (!group) return;
+      await patchLetterGroup(group.id, { notes: next });
+    },
+    onFocusChange: (focused) => {
+      if (!group) return setFocus(null);
+      setFocus(
+        focused
+          ? { table: "letter_groups", recordId: group.id, field: "notes" }
+          : null
+      );
+    },
+    onActivity: pingActivity,
+  });
+  const groupNameFocus: PresenceFocus | null = group
+    ? { table: "letter_groups", recordId: group.id, field: "name" }
+    : null;
+  const groupDayFocus: PresenceFocus | null = group
+    ? {
+        table: "letter_groups",
+        recordId: group.id,
+        field: "delivery_day_id",
+      }
+    : null;
+  const groupNotesFocus: PresenceFocus | null = group
+    ? { table: "letter_groups", recordId: group.id, field: "notes" }
+    : null;
 
   // ----- Letter state -----
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -465,12 +639,7 @@ export function LettersWorkspace({
     sourceGroupId: string;
     sourceLetterId: string;
   } | null>(null);
-  const [letterDirty, setLetterDirty] = useState(false);
-  const [letterPending, startLetterSave] = useTransition();
-  const [actionsDirty, setActionsDirty] = useState(false);
-  const [actionsPending, startActionsSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
-  const anyLetterDirty = letterDirty || actionsDirty;
   const [view, setView] = useState<
     "list" | "group" | "main" | "actions" | "segment"
   >(
@@ -487,6 +656,212 @@ export function LettersWorkspace({
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     initialSegmentId
   );
+
+  // Latest-selection refs — the postgres_changes handler reads these without
+  // re-registering itself on every selection change.
+  const selectedGroupIdRef = useRef(selectedGroupId);
+  selectedGroupIdRef.current = selectedGroupId;
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const selectedSegmentIdRef = useRef(selectedSegmentId);
+  selectedSegmentIdRef.current = selectedSegmentId;
+
+  // Coalesce bursts of INSERTs (e.g. a single create-action that inserts a
+  // group + letter + actions) into one RSC refetch. Refresh trip is cheap
+  // enough that we don't need to filter self-echoes — the creator's own
+  // revalidatePath already kicked the page; this debounced call lands as
+  // a near-no-op in that case.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+      }
+    },
+    []
+  );
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      // Wrap in startTransition so Next 16 schedules the RSC refetch
+      // alongside React's concurrent work — without this, refreshes
+      // dispatched from inside a non-React callback (postgres event)
+      // can be coalesced away before they invalidate the route. Confirmed
+      // empirically: B doesn't see peer INSERTs without this wrap.
+      startTransition(() => {
+        router.refresh();
+      });
+    }, 100);
+  }, [router]);
+
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      const { table, eventType } = change;
+      // Diagnostic toggle: set `localStorage.debug_presence = "1"` in the
+      // browser console to log every incoming postgres event from peers.
+      // Used to verify the realtime fan-out is reaching this client when
+      // remote edits appear to not propagate.
+      if (
+        typeof window !== "undefined" &&
+        window.localStorage?.getItem("debug_presence") === "1"
+      ) {
+        console.warn("[presence] postgres", eventType, table, change);
+      }
+
+      if (eventType === "UPDATE") {
+        const newRow = change.new as Record<string, unknown>;
+        const id = newRow.id as string | undefined;
+        if (!id) return;
+        switch (table) {
+          case "inspection_letters":
+            setAllLetters((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as InspectionLetterView)
+                  : r
+              )
+            );
+            return;
+          case "letter_groups":
+            setAllGroups((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as LetterGroup)
+                  : r
+              )
+            );
+            return;
+          case "actions":
+            setAllActions((prev) =>
+              prev.map((r) =>
+                r.id === id ? ({ ...r, ...newRow } as unknown as ActionRow) : r
+              )
+            );
+            return;
+          case "report_segments":
+            setAllSegments((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as ReportSegmentView)
+                  : r
+              )
+            );
+            return;
+          case "storylines":
+            setStorylines((prev) =>
+              prev.map((r) =>
+                r.id === id ? ({ ...r, ...newRow } as unknown as Storyline) : r
+              )
+            );
+            return;
+          case "inspection_action_ending_assignments":
+            setEndingAssignments((prev) =>
+              prev.map((r) =>
+                r.id === id
+                  ? ({ ...r, ...newRow } as unknown as InspectionActionEndingAssignment)
+                  : r
+              )
+            );
+            return;
+        }
+        return;
+      }
+
+      if (eventType === "DELETE") {
+        const oldRow = change.old as Record<string, unknown> | undefined;
+        const id = oldRow?.id as string | undefined;
+        if (!id) return;
+        const deleterEmail =
+          (oldRow?.updated_by as string | undefined) ?? null;
+        const by = deleterEmail ?? "Someone";
+
+        switch (table) {
+          case "inspection_letters":
+            setAllLetters((prev) => prev.filter((r) => r.id !== id));
+            if (selectedIdRef.current === id) {
+              setSelectedId(null);
+              setLetterState(null);
+              setView("group");
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this letter`,
+              });
+            }
+            return;
+          case "letter_groups":
+            setAllGroups((prev) => prev.filter((r) => r.id !== id));
+            if (selectedGroupIdRef.current === id) {
+              setSelectedGroupId(null);
+              setSelectedId(null);
+              setLetterState(null);
+              setSelectedSegmentId(null);
+              segmentOpenedFromRef.current = null;
+              setView("list");
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this letter group`,
+              });
+            }
+            return;
+          case "actions":
+            setAllActions((prev) => prev.filter((r) => r.id !== id));
+            return;
+          case "report_segments":
+            setAllSegments((prev) => prev.filter((r) => r.id !== id));
+            if (selectedSegmentIdRef.current === id) {
+              const target =
+                segmentOpenedFromRef.current === "actions"
+                  ? "actions"
+                  : "group";
+              segmentOpenedFromRef.current = null;
+              setSelectedSegmentId(null);
+              setView(target);
+              toast({
+                intent: "destructive",
+                message: `${by} deleted this report segment`,
+              });
+            }
+            return;
+          case "storylines":
+            setStorylines((prev) => prev.filter((r) => r.id !== id));
+            return;
+          case "inspection_action_ending_assignments":
+            setEndingAssignments((prev) => prev.filter((r) => r.id !== id));
+            return;
+        }
+        return;
+      }
+
+      if (eventType === "INSERT") {
+        // Creates from a peer need view-derived columns (content_id,
+        // report_id, etc.) which aren't in the postgres payload — and
+        // because adding a row can re-compute view fields for OTHER rows
+        // (e.g. a second letter in a group flips the existing letter's
+        // content_id to include a variant suffix), patching the mirror
+        // in-place would leave stale display ids. Fall back to a debounced
+        // RSC refetch which gets the views right and reseeds the mirrors.
+        //
+        // Exception: inspection_action_ending_assignments has no view
+        // derivation and no fan-out to other rows, so the raw payload is
+        // complete. Patching the mirror in-place avoids forcing an RSC
+        // refetch every time a peer adds an ending mapping.
+        if (table === "inspection_action_ending_assignments") {
+          const newRow = change.new as Record<string, unknown>;
+          const row = newRow as unknown as InspectionActionEndingAssignment;
+          if (!row.id) return;
+          setEndingAssignments((prev) =>
+            prev.some((r) => r.id === row.id) ? prev : [...prev, row]
+          );
+          return;
+        }
+        scheduleRefresh();
+        return;
+      }
+    });
+  }, [onPostgresChanges, toast, scheduleRefresh]);
 
   const isControlled = !!onSelectionChange;
 
@@ -531,15 +906,6 @@ export function LettersWorkspace({
     if (!onSelectionChange) return;
     const sel = controlledSelection ?? null;
     controlledApplyRef.current = true;
-    // External selection changes are gated by the embedder's
-    // unsaved-changes prompt, so by the time we get here the user has
-    // already chosen Save / Discard / Cancel. Clear local dirty flags so
-    // the new selection comes up clean (Save already flushed; Discard
-    // means we drop pending edits; Cancel never reaches this effect).
-    setGroupDirty(false);
-    setLetterDirty(false);
-    setActionsDirty(false);
-    setStorylineDirty(false);
     // Helper: hydrate letterState in the same render so the slot 3
     // render doesn't see a stale letterState.id pointing into the old
     // group's letter list.
@@ -647,148 +1013,11 @@ export function LettersWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroupId, selectedId, selectedSegmentId, view]);
 
-  async function revertGroup() {
-    if (!group || !groupDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard group changes?",
-      message: "Any unsaved edits to the group will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    setGroupState({
-      storyline_id: group.storyline_id,
-      name: group.name,
-      delivery_day_id: group.delivery_day_id,
-      notes: group.notes,
-    });
-    setGroupDirty(false);
-  }
-
-  async function revertLetter() {
-    if (!letterState || !letterDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard letter changes?",
-      message: "Any unsaved edits to this letter's fields will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const server = letters.find((l) => l.id === letterState.id);
-    if (server) {
-      // Only restore the letter fields; keep any in-flight action edits.
-      setLetterState((s) =>
-        s
-          ? {
-              ...s,
-              piece: server.piece,
-              delivery_day_override_id: server.delivery_day_override_id,
-              summary: server.summary,
-              content: server.content,
-              sender_citizen_id: server.sender_citizen_id,
-              receiver_citizen_id: server.receiver_citizen_id,
-              notes: server.notes,
-            }
-          : s
-      );
-    }
-    setLetterDirty(false);
-  }
-
-  async function revertActions() {
-    if (!letterState || !actionsDirty) return;
-    const ok = await confirmDialog({
-      title: "Discard action changes?",
-      message: "Any unsaved edits to this letter's actions will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const server = letters.find((l) => l.id === letterState.id);
-    if (server) {
-      const fresh = toLetterState(server, actions, endingAssignments);
-      setLetterState((s) => (s ? { ...s, actions: fresh.actions } : s));
-    }
-    setActionsDirty(false);
-  }
-
   // Slot 1 can host either a group or a storyline inspector — mutually
   // exclusive. Selecting a storyline clears any active group and vice versa.
   const [selectedStorylineId, setSelectedStorylineId] = useState<string | null>(
     null
   );
-  const [storylineDirty, setStorylineDirty] = useState(false);
-  // Broadcast which panel (if any) is dirty so an embedder (e.g.
-  // /graph) can guard navigation and label its prompt.
-  const dirtyKind: string | null = actionsDirty
-    ? "Action"
-    : letterDirty
-      ? "Inspection Letter"
-      : groupDirty
-        ? "Letter Group"
-        : storylineDirty
-          ? "Storyline"
-          : null;
-  useEffect(() => {
-    onDirtyChange?.(dirtyKind);
-  }, [dirtyKind, onDirtyChange]);
-  const anyDirty = dirtyKind !== null;
-
-  // Block leaving the page while there are unsaved changes — both via
-  // browser-level navigation (refresh / close / type URL) AND via in-app
-  // <Link> clicks (e.g. switching pages from the nav). Skipped in
-  // controlled mode because the embedder owns the page-leave guard.
-  useEffect(() => {
-    if (isControlled) return;
-    if (!anyDirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    function onClickCapture(e: MouseEvent) {
-      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      if (e.button !== 0) return;
-      const target = e.target as HTMLElement | null;
-      const anchor = target?.closest?.("a") as HTMLAnchorElement | null;
-      if (!anchor) return;
-      const href = anchor.getAttribute("href");
-      if (!href || href.startsWith("#")) return;
-      if (
-        anchor.target &&
-        anchor.target !== "" &&
-        anchor.target !== "_self"
-      )
-        return;
-      const url = new URL(anchor.href, window.location.href);
-      const samePath =
-        url.pathname === window.location.pathname &&
-        url.search === window.location.search &&
-        url.hash === window.location.hash;
-      if (samePath) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void (async () => {
-        const ok = await confirmDiscardDirty();
-        if (!ok) return;
-        const sameOrigin = url.origin === window.location.origin;
-        if (sameOrigin) {
-          router.push(url.pathname + url.search + url.hash);
-        } else {
-          window.location.href = anchor.href;
-        }
-      })();
-    }
-    document.addEventListener("click", onClickCapture, true);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      document.removeEventListener("click", onClickCapture, true);
-    };
-    // confirmDiscardDirty closes over many fields but stays referenced
-    // via closure; we re-bind whenever dirty/router change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyDirty, isControlled, router]);
-
   // ----- Panel history: the mouse back/forward buttons navigate between
   // panels in this workspace instead of browser pages. We record a
   // snapshot whenever the focused entity or view changes; mouse-back
@@ -803,10 +1032,6 @@ export function LettersWorkspace({
   const panelHistory = useRef<PanelSnapshot[]>([]);
   const panelIndex = useRef(-1);
   const applyingPanelSnapshot = useRef(false);
-  // Guard fired by mouse-back / browser-back panel navigation. Re-bound
-  // each render so the ref carries the latest dirty flags + save logic.
-  // Returns true when the navigation should proceed; false to abort.
-  const panelNavGuardRef = useRef<() => Promise<boolean>>(async () => true);
 
   useEffect(() => {
     if (applyingPanelSnapshot.current) {
@@ -844,6 +1069,38 @@ export function LettersWorkspace({
     view,
   ]);
 
+  // Broadcast the local user's open-panel chain so peers can render a
+  // location label, jump to the panel, and gauge whether we're sharing a
+  // panel. Fires on every change to any of the five selection vars; the
+  // presence layer takes care of debouncing duplicates via JSON.stringify.
+  useEffect(() => {
+    setSelection({
+      storylineId: selectedStorylineId,
+      groupId: selectedGroupId,
+      letterId: selectedId,
+      segmentId: selectedSegmentId,
+      view,
+    });
+  }, [
+    setSelection,
+    selectedStorylineId,
+    selectedGroupId,
+    selectedId,
+    selectedSegmentId,
+    view,
+  ]);
+
+  // Clear our selection on unmount so a parent surface (e.g. the graph,
+  // which keeps the presence provider alive even when the inspector
+  // closes) doesn't keep broadcasting a stale "I'm viewing Letter L-…"
+  // long after the user has left the panel.
+  useEffect(() => {
+    return () => {
+      setSelection(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     function applyPanelSnapshot(s: PanelSnapshot) {
       applyingPanelSnapshot.current = true;
@@ -852,25 +1109,15 @@ export function LettersWorkspace({
       setSelectedId(s.letterId);
       setSelectedSegmentId(s.segmentId);
       setView(s.view);
-      // Discard any in-progress edits when jumping — matches browser
-      // back/forward semantics (you lose the form state you hadn't
-      // committed). The forward button can re-enter the panel.
-      setLetterDirty(false);
-      setGroupDirty(false);
-      setStorylineDirty(false);
     }
-    async function goPanelBack() {
+    function goPanelBack() {
       if (panelIndex.current > 0) {
-        const ok = await panelNavGuardRef.current();
-        if (!ok) return;
         panelIndex.current -= 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
     }
-    async function goPanelForward() {
+    function goPanelForward() {
       if (panelIndex.current < panelHistory.current.length - 1) {
-        const ok = await panelNavGuardRef.current();
-        if (!ok) return;
         panelIndex.current += 1;
         applyPanelSnapshot(panelHistory.current[panelIndex.current]);
       }
@@ -968,42 +1215,8 @@ export function LettersWorkspace({
     };
   }, []);
 
-  async function confirmDiscardDirty(_message?: string): Promise<boolean> {
-    if (!(groupDirty || anyLetterDirty || storylineDirty)) return true;
-    return onConfirmDiscard(_message);
-  }
-  async function onConfirmDiscard(_message?: string): Promise<boolean> {
-    const outcome = await askUnsaved(`Unsaved ${dirtyKind ?? ""}`.trim());
-    if (outcome === "cancel") return false;
-    if (outcome === "save") {
-      try {
-        await saveAllNow();
-      } catch {
-        return false;
-      }
-      return true;
-    }
-    // discard: drop edits inline so callers can proceed with their
-    // navigation against a clean slate.
-    setGroupDirty(false);
-    setLetterDirty(false);
-    setActionsDirty(false);
-    setStorylineDirty(false);
-    return true;
-  }
-
-  // Re-bind each render so the popstate / mouse-back handlers always see
-  // the latest dirty state and save closures.
-  panelNavGuardRef.current = confirmDiscardDirty;
-
-  async function selectGroup(id: string | null) {
+  function selectGroup(id: string | null) {
     if (id === selectedGroupId || id === null) {
-      if (
-        !(await confirmDiscardDirty(
-          "Unsaved changes will be lost. Close anyway?"
-        ))
-      )
-        return;
       // Closing the group — fall back to the storyline inspector so the
       // slide lands on [list + inspector] instead of bouncing home.
       const currentGroup = selectedGroupId
@@ -1015,45 +1228,24 @@ export function LettersWorkspace({
       setSelectedStorylineId(parentStoryline);
       setSelectedId(null);
       setLetterState(null);
-      setLetterDirty(false);
-      setGroupDirty(false);
-      setStorylineDirty(false);
       setSelectedSegmentId(null);
       setView("list");
       return;
     }
-    if (
-      !(await confirmDiscardDirty(
-        "Unsaved changes will be lost. Switch groups anyway?"
-      ))
-    )
-      return;
     setSelectedGroupId(id);
     setSelectedStorylineId(null);
     setSelectedId(null);
     setLetterState(null);
-    setLetterDirty(false);
-    setGroupDirty(false);
-    setStorylineDirty(false);
     setSelectedSegmentId(null);
     // Slide to the group view (inspector + group detail side-by-side).
     setView("group");
   }
 
-  async function selectStoryline(id: string | null) {
-    if (
-      !(await confirmDiscardDirty(
-        "Unsaved changes will be lost. Switch storylines anyway?"
-      ))
-    )
-      return;
+  function selectStoryline(id: string | null) {
     setSelectedStorylineId(id);
     setSelectedGroupId(null);
     setSelectedId(null);
     setLetterState(null);
-    setLetterDirty(false);
-    setGroupDirty(false);
-    setStorylineDirty(false);
     setSelectedSegmentId(null);
     setView("list");
   }
@@ -1076,46 +1268,22 @@ export function LettersWorkspace({
       setLetterState(
         letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
       );
-      setLetterDirty(false);
       return;
     }
-    // Only overwrite if not dirty; otherwise preserve user edits.
-    if (!(letterDirty || actionsDirty)) {
-      setLetterState(toLetterState(found, actions, endingAssignments));
-    }
-  }, [letters, actions, endingAssignments, selectedId, letterDirty, actionsDirty]);
+    setLetterState(toLetterState(found, actions, endingAssignments));
+  }, [letters, actions, endingAssignments, selectedId]);
 
-  async function selectLetter(id: string) {
+  function selectLetter(id: string) {
     if (id === selectedId) {
-      // Toggle off — deselect the current letter, but keep the slide
-      // position so the group panel stays on the left where the user
-      // put it. Slot 2 will just render the "Select a letter…" empty
-      // state until they pick another.
-      if (anyLetterDirty) {
-        const ok = await onConfirmDiscard(
-          "This letter has unsaved changes. Discard them and close?"
-        );
-        if (!ok) return;
-      }
       setSelectedId(null);
       setLetterState(null);
-      setLetterDirty(false);
-      setActionsDirty(false);
       setSelectedSegmentId(null);
       return;
-    }
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "This letter has unsaved changes. Discard them and switch?"
-      );
-      if (!ok) return;
     }
     const l = letters.find((x) => x.id === id);
     if (!l) return;
     setSelectedId(id);
     setLetterState(toLetterState(l, actions, endingAssignments));
-    setLetterDirty(false);
-    setActionsDirty(false);
     setView("main");
     setSelectedSegmentId(null);
   }
@@ -1124,41 +1292,18 @@ export function LettersWorkspace({
    * Pick a letter from the list panel — may live in a different group.
    * Switches the active group when needed and lands on the letter view.
    */
-  async function selectLetterFromList(id: string) {
+  function selectLetterFromList(id: string) {
     const target = allLetters.find((l) => l.id === id);
     if (!target) return;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "This letter has unsaved changes. Discard them and switch?"
-      );
-      if (!ok) return;
-    }
     if (target.letter_group_id !== selectedGroupId) {
       setSelectedGroupId(target.letter_group_id);
     }
     setSelectedId(id);
-    setLetterDirty(false);
-    setActionsDirty(false);
     setSelectedSegmentId(null);
     setView("main");
   }
 
-  async function closeActionsPanel() {
-    if (actionsDirty) {
-      const outcome = await askUnsaved("Unsaved Actions");
-      if (outcome === "cancel") return;
-      if (outcome === "save" && letterState) {
-        const snap = letterState;
-        startActionsSave(async () => {
-          await saveLetterActionsOnly(letterActionsPatches(snap));
-          setActionsDirty(false);
-          setView("main");
-        });
-        return;
-      }
-      // discard: drop dirty flag and continue
-      setActionsDirty(false);
-    }
+  function closeActionsPanel() {
     setView("main");
   }
 
@@ -1212,19 +1357,7 @@ export function LettersWorkspace({
    * render the segment card in slot 2 (where the letter fields usually
    * live) instead of going all the way to view="segment".
    */
-  async function openSegmentFromGroup(segmentId: string) {
-    if (anyLetterDirty) {
-      const ok = await confirmDialog({
-        title: "Discard letter changes?",
-        message:
-          "The open letter has unsaved edits. Opening the report segment will discard them.",
-        confirmLabel: "Discard",
-        intent: "destructive",
-      });
-      if (!ok) return;
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
+  function openSegmentFromGroup(segmentId: string) {
     // Clear the letter detail slot as well — otherwise the letter form stays
     // rendered underneath and the segment detail pane never shows.
     segmentOpenedFromRef.current = "group";
@@ -1234,10 +1367,7 @@ export function LettersWorkspace({
     setView("main");
   }
 
-  async function closeSegmentPanel(
-    segmentDirty: boolean,
-    onSave: () => Promise<void>
-  ) {
+  function closeSegmentPanel() {
     // Always return to the surface that opened the segment. The ref is set
     // by openSegmentForAction / openSegmentFromGroup. When unknown (e.g.,
     // the graph picks a segment directly), fall back based on whether a
@@ -1251,20 +1381,6 @@ export function LettersWorkspace({
           : letterState
             ? "actions"
             : "group";
-    if (segmentDirty) {
-      const outcome = await askUnsaved("Unsaved Report Segment");
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        startRowAction(async () => {
-          await onSave();
-          setView(targetView);
-          setSelectedSegmentId(null);
-          segmentOpenedFromRef.current = null;
-        });
-        return;
-      }
-      // discard: drop the dirty edits and continue with navigation
-    }
     setView(targetView);
     setSelectedSegmentId(null);
     segmentOpenedFromRef.current = null;
@@ -1276,193 +1392,103 @@ export function LettersWorkspace({
    * selection if the trigger lives in a different letter group (e.g. a
    * sibling storyline's letter pointing at this segment).
    */
-  async function jumpToTrigger(
-    letterId: string,
-    segmentDirty: boolean,
-    onSave: () => Promise<void>
-  ) {
+  function jumpToTrigger(letterId: string) {
     const target = allLetters.find((l) => l.id === letterId);
     if (!target) return;
-    const doJump = () => {
-      if (target.letter_group_id !== selectedGroupId) {
-        setSelectedGroupId(target.letter_group_id);
-      }
-      setSelectedId(letterId);
-      setSelectedSegmentId(null);
-      setView("actions");
-    };
-    if (segmentDirty) {
-      const outcome = await askUnsaved("Unsaved Report Segment");
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        startRowAction(async () => {
-          await onSave();
-          doJump();
-        });
-        return;
-      }
-      // discard: drop pending edits and jump
+    if (target.letter_group_id !== selectedGroupId) {
+      setSelectedGroupId(target.letter_group_id);
     }
-    doJump();
+    setSelectedId(letterId);
+    setSelectedSegmentId(null);
+    setView("actions");
   }
 
   function updateLetter(patch: Partial<LetterState>) {
     setLetterState((s) => (s ? { ...s, ...patch } : s));
-    setLetterDirty(true);
+  }
+
+  // Per-action debounced patcher. Action fields (next_letter, segment, the
+  // 9 impacts) auto-save via the narrow patchAction. ending_assignments
+  // stay on the coarse saveLetterActionsOnly path because they're multi-row.
+  const actionPatchPendingRef = useRef<Map<string, Partial<ActionState>>>(
+    new Map()
+  );
+  const actionPatchTimersRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>>
+  >(new Map());
+  const scheduleActionPatch = useCallback(
+    (actionId: string, patch: Partial<ActionState>) => {
+      const pending =
+        actionPatchPendingRef.current.get(actionId) ?? {};
+      actionPatchPendingRef.current.set(actionId, { ...pending, ...patch });
+      const existing = actionPatchTimersRef.current.get(actionId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(async () => {
+        const finalPatch =
+          actionPatchPendingRef.current.get(actionId);
+        actionPatchPendingRef.current.delete(actionId);
+        actionPatchTimersRef.current.delete(actionId);
+        if (!finalPatch) return;
+        try {
+          const { ending_assignments, ...narrow } = finalPatch;
+          if (Object.keys(narrow).length > 0) {
+            // Cast: remaining keys match patchAction's narrow shape.
+            await patchAction(actionId, narrow as never);
+          }
+          if (ending_assignments !== undefined) {
+            await patchActionEndingAssignments(actionId, ending_assignments);
+          }
+        } catch (e) {
+          console.error("patchAction failed:", e);
+        }
+      }, 400);
+      actionPatchTimersRef.current.set(actionId, timer);
+    },
+    []
+  );
+  useEffect(() => {
+    return () => {
+      for (const t of actionPatchTimersRef.current.values()) clearTimeout(t);
+      actionPatchTimersRef.current.clear();
+      actionPatchPendingRef.current.clear();
+    };
+  }, []);
+
+  // Throttle the action-edit activity heartbeat to match useInstantField's
+  // 5s window. Sustained impact-tile clicks or next-letter cycles fire
+  // updateAction rapidly; we don't need to broadcast on every keystroke.
+  const lastActionActivityAtRef = useRef(0);
+  function pingActionActivity() {
+    const now = Date.now();
+    if (now - lastActionActivityAtRef.current < 5000) return;
+    lastActionActivityAtRef.current = now;
+    pingActivity();
   }
 
   function updateAction(idx: number, patch: Partial<ActionState>) {
+    const actionId = letterState?.actions[idx]?.id;
     setLetterState((s) => {
       if (!s) return s;
       const next = s.actions.slice();
       next[idx] = { ...next[idx], ...patch };
       return { ...s, actions: next };
     });
-    setActionsDirty(true);
-  }
-
-  function letterFieldsPatch(state: LetterState) {
-    return {
-      id: state.id,
-      piece: state.piece,
-      delivery_day_override_id: state.delivery_day_override_id,
-      summary: state.summary,
-      content: state.content,
-      sender_citizen_id: state.sender_citizen_id,
-      receiver_citizen_id: state.receiver_citizen_id,
-      notes: state.notes,
-    };
-  }
-  function letterActionsPatches(state: LetterState) {
-    return state.actions.map((a) => ({
-      id: a.id,
-      report_segment_id: a.report_segment_id,
-      next_letter_variant: a.next_letter_variant,
-      impact_world_status: a.impact_world_status,
-      impact_demerits: a.impact_demerits,
-      impact_proletariat: a.impact_proletariat,
-      impact_gentry: a.impact_gentry,
-      impact_epicenter: a.impact_epicenter,
-      impact_folos: a.impact_folos,
-      impact_emberlyn: a.impact_emberlyn,
-      impact_spokgrad: a.impact_spokgrad,
-      impact_pelico: a.impact_pelico,
-      ending_assignments: a.ending_assignments.filter(
-        (e) => e.variable_id && e.value_id
-      ),
-    }));
-  }
-
-  /** Save both the letter row and its actions in one shot. Used when an
-   *  outer flow (closing the letter, saving the group together, etc.)
-   *  needs to flush every dirty bit on the letter at once. */
-  async function saveLetterNow(state: LetterState) {
-    if (!group) return;
-    await saveLetterWithActions(
-      group.id,
-      letterFieldsPatch(state),
-      letterActionsPatches(state)
-    );
-  }
-
-  // Flush every dirty panel. Used internally by the workspace's own
-  // unsaved-changes prompt and re-exported via `saveAllRef` so embedders
-  // (e.g. the narrative graph inspector) can drive it on "Save".
-  const saveAllNow = useCallback(async () => {
-    // Group first (so a paired letter save can use the new group day).
-    if (groupDirty && group) {
-      await saveGroup({
-        id: group.id,
-        storyline_id: groupState.storyline_id,
-        name: groupState.name,
-        notes: groupState.notes,
-        delivery_day_id: groupState.delivery_day_id,
-      });
-      setGroupDirty(false);
+    // Auto-save every field — including ending_assignments which fans out
+    // to patchActionEndingAssignments inside scheduleActionPatch.
+    if (actionId && Object.keys(patch).length > 0) {
+      scheduleActionPatch(actionId, patch);
+      pingActionActivity();
     }
-    if ((letterDirty || actionsDirty) && letterState) {
-      await saveLetterNow(letterState);
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
-  }, [
-    groupDirty,
-    group,
-    groupState,
-    letterDirty,
-    actionsDirty,
-    letterState,
-  ]);
-  useEffect(() => {
-    if (!saveAllRef) return;
-    saveAllRef.current = saveAllNow;
-    return () => {
-      if (saveAllRef.current) saveAllRef.current = null;
-    };
-  }, [saveAllRef, saveAllNow]);
-
-  function handleSaveLetterFields() {
-    if (!letterState) return;
-    const state = letterState;
-    startLetterSave(async () => {
-      await saveLetterFields(letterFieldsPatch(state));
-      setLetterDirty(false);
-    });
   }
 
-  function handleSaveActions() {
-    if (!letterState) return;
-    const state = letterState;
-    startActionsSave(async () => {
-      await saveLetterActionsOnly(letterActionsPatches(state));
-      setActionsDirty(false);
-    });
-  }
 
-  async function handleSaveGroup() {
-    if (!group) return;
-    const groupId = group.id;
-    let alsoSaveLetter = false;
-    if (anyLetterDirty && letterState) {
-      alsoSaveLetter = await confirmDialog({
-        title: "Save the open letter too?",
-        message:
-          "The open letter has unsaved changes. Save the letter along with the group?",
-        confirmLabel: "Save both",
-      });
-    }
-    const snapshot = letterState;
-    startGroupSave(async () => {
-      await saveGroup({
-        id: groupId,
-        storyline_id: groupState.storyline_id,
-        name: groupState.name,
-        notes: groupState.notes,
-        delivery_day_id: groupState.delivery_day_id,
-      });
-      setGroupDirty(false);
-      if (alsoSaveLetter && snapshot) {
-        await saveLetterNow(snapshot);
-        setLetterDirty(false);
-        setActionsDirty(false);
-      }
-    });
-  }
 
   async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "The open letter has unsaved changes. Discard them and add?"
-      );
-      if (!ok) return;
-    }
     startRowAction(async () => {
       const ids = await createInspectionLettersInGroup(groupId, count);
       if (ids[0]) setSelectedId(ids[0]);
-      setLetterDirty(false);
-      setActionsDirty(false);
     });
   }
 
@@ -1479,17 +1505,9 @@ export function LettersWorkspace({
   async function handleAddPiece(letterId: string) {
     if (!group) return;
     const groupId = group.id;
-    if (anyLetterDirty) {
-      const ok = await onConfirmDiscard(
-        "The open letter has unsaved changes. Discard them and add a piece?"
-      );
-      if (!ok) return;
-    }
     startRowAction(async () => {
       const { newLetterId } = await addPieceToLetter(groupId, letterId);
       setSelectedId(newLetterId);
-      setLetterDirty(false);
-      setActionsDirty(false);
     });
   }
 
@@ -1510,7 +1528,6 @@ export function LettersWorkspace({
       if (selectedId === id) {
         setSelectedId(null);
         setLetterState(null);
-        setLetterDirty(false);
       }
     });
   }
@@ -1525,36 +1542,17 @@ export function LettersWorkspace({
       intent: "destructive",
     });
     if (!ok) return;
-    startGroupSave(async () => {
+    startRowAction(async () => {
       await deleteGroup(groupId);
     });
   }
 
-  async function handleAddAction(templateId: string) {
+  function handleAddAction(templateId: string) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    if (anyLetterDirty) {
-      const outcome = await askUnsaved("Unsaved Letter");
-      if (outcome === "cancel") return;
-      if (outcome === "save" && letterState) {
-        const snap = letterState;
-        startRowAction(async () => {
-          await saveLetterNow(snap);
-          await addActionFromTemplate(groupId, selectedId, templateId);
-          setLetterDirty(false);
-          setActionsDirty(false);
-        });
-        return;
-      }
-      // discard: clear dirty flags then add the action
-      setLetterDirty(false);
-      setActionsDirty(false);
-    }
     startRowAction(async () => {
-      await addActionFromTemplate(groupId, selectedId!, templateId);
-      setLetterDirty(false);
-      setActionsDirty(false);
+      await addActionFromTemplate(groupId, selectedId, templateId);
     });
   }
 
@@ -1696,118 +1694,21 @@ export function LettersWorkspace({
    * Inner-most panels are asked first so users see them in reading
    * order from the panel they were just on.
    */
-  async function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
-    type DirtyPanel = {
-      key: string;
-      title: string;
-      message: string;
-      isDirty: () => boolean;
-      save: () => Promise<void>;
-      discard: () => void;
-    };
-    const closing: DirtyPanel[] = [];
-    // List the panels (innermost first) that this navigation would
-    // close. Add only if they're currently dirty.
-    if (level === "root" || level === "group" || level === "letter") {
-      if (actionsDirty) {
-        closing.push({
-          key: "actions",
-          title: "Unsaved Action",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => actionsDirty,
-          save: async () => {
-            if (!letterState) return;
-            await saveLetterActionsOnly(letterActionsPatches(letterState));
-            setActionsDirty(false);
-          },
-          discard: () => setActionsDirty(false),
-        });
-      }
-    }
-    if (level === "root" || level === "group") {
-      if (letterDirty) {
-        closing.push({
-          key: "letter",
-          title: "Unsaved Inspection Letter",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => letterDirty,
-          save: async () => {
-            if (!letterState) return;
-            await saveLetterFields(letterFieldsPatch(letterState));
-            setLetterDirty(false);
-          },
-          discard: () => setLetterDirty(false),
-        });
-      }
-    }
-    if (level === "root") {
-      if (groupDirty && group) {
-        const groupId = group.id;
-        const snap = { ...groupState };
-        closing.push({
-          key: "group",
-          title: "Unsaved Letter Group",
-          message: "Changes will be lost. Would you like to save first?",
-          isDirty: () => groupDirty,
-          save: async () => {
-            await saveGroup({
-              id: groupId,
-              storyline_id: snap.storyline_id,
-              name: snap.name,
-              notes: snap.notes,
-              delivery_day_id: snap.delivery_day_id,
-            });
-            setGroupDirty(false);
-          },
-          discard: () => setGroupDirty(false),
-        });
-      }
-    }
-
-    // Storyline saves live inside StorylineInspector and aren't exposed
-    // here — fall back to a simple Discard/Cancel for now and ask the
-    // user to save from the inspector if they want to keep edits.
-    if (level === "root" && storylineDirty) {
-      const outcome = await askUnsaved("Unsaved Storyline");
-      if (outcome === "cancel") return;
-      // The storyline panel owns its own save flow; "save" here just
-      // proceeds without discarding (the user must save manually from
-      // the storyline panel before this navigation completes).
-      setStorylineDirty(false);
-    }
-
-    for (const panel of closing) {
-      if (!panel.isDirty()) continue;
-      const outcome = await askUnsaved(panel.title, panel.message);
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        await panel.save();
-      } else {
-        panel.discard();
-      }
-    }
-
+  function goToBreadcrumb(level: "root" | "group" | "letter" | "actions") {
     if (level === "root") {
       setSelectedGroupId(null);
       setSelectedStorylineId(null);
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
-      setGroupDirty(false);
-      setLetterDirty(false);
-      setActionsDirty(false);
-      setStorylineDirty(false);
       setView("list");
     } else if (level === "group") {
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(null);
-      setLetterDirty(false);
-      setActionsDirty(false);
       setView("group");
     } else if (level === "letter") {
       setSelectedSegmentId(null);
-      setActionsDirty(false);
       setView("main");
     } else if (level === "actions") {
       setSelectedSegmentId(null);
@@ -1815,9 +1716,136 @@ export function LettersWorkspace({
     }
   }
 
+  // Build a userId → location label map for the AvatarStack hover popup.
+  // Prefer the peer's focused entity (most precise); fall back to the
+  // deepest non-null id in their selection chain. Empty entries fall through
+  // to "Idle" inside AvatarStack.
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    // Build labels for peers AND the local user — selfPeer carries the same
+    // focus/selection fields, so a single pass produces the location string
+    // for both, and the hover popup shows e.g. "Letter L-A1/a" instead of
+    // a flat "You" when the local user is editing a specific row.
+    const all = selfPeer ? [selfPeer, ...peers] : peers;
+    for (const peer of all) {
+      const label = (() => {
+        if (peer.focus) {
+          const id = peer.focus.recordId;
+          switch (peer.focus.table) {
+            case "inspection_letters": {
+              const l = allLetters.find((x) => x.id === id);
+              if (l?.content_id) return `Letter ${l.content_id}`;
+              break;
+            }
+            case "letter_groups": {
+              const g = allGroups.find((x) => x.id === id);
+              if (g) {
+                const s = storylineById.get(g.storyline_id);
+                return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+              }
+              break;
+            }
+            case "actions": {
+              const a = allActions.find((x) => x.id === id);
+              const l = a
+                ? allLetters.find((x) => x.id === a.inspection_letter_id)
+                : null;
+              if (l?.content_id) return `Actions ${l.content_id}`;
+              break;
+            }
+            case "report_segments": {
+              const seg = allSegments.find((x) => x.id === id);
+              if (seg?.report_id) return `Report ${seg.report_id}`;
+              break;
+            }
+            case "storylines": {
+              const s = storylines.find((x) => x.id === id);
+              if (s) return `Storyline ${s.name}`;
+              break;
+            }
+          }
+        }
+        const sel = peer.selection;
+        if (sel) {
+          if (sel.segmentId) {
+            const seg = allSegments.find((x) => x.id === sel.segmentId);
+            if (seg?.report_id) return `Report ${seg.report_id}`;
+          }
+          if (sel.letterId) {
+            const l = allLetters.find((x) => x.id === sel.letterId);
+            if (l?.content_id) return `Letter ${l.content_id}`;
+          }
+          if (sel.groupId) {
+            const g = allGroups.find((x) => x.id === sel.groupId);
+            if (g) {
+              const s = storylineById.get(g.storyline_id);
+              return `Group ${s?.abbreviation ?? ""}${g.sequence}`;
+            }
+          }
+          if (sel.storylineId) {
+            const s = storylines.find((x) => x.id === sel.storylineId);
+            if (s) return `Storyline ${s.name}`;
+          }
+        }
+        return null;
+      })();
+      if (label) m.set(peer.userId, label);
+    }
+    return m;
+  }, [
+    peers,
+    selfPeer,
+    allLetters,
+    allGroups,
+    allActions,
+    allSegments,
+    storylines,
+    storylineById,
+  ]);
+
+  const selfSelection: PresenceSelection = {
+    storylineId: selectedStorylineId,
+    groupId: selectedGroupId,
+    letterId: selectedId,
+    segmentId: selectedSegmentId,
+    view,
+  };
+
+  // Jump to the peer's panel by applying their selection chain to local state.
+  // Mirrors the panel-history snapshot apply path (back/forward navigation).
+  function jumpToPeer(peer: PresencePeer) {
+    const sel = peer.selection;
+    if (!sel) return;
+    applyingPanelSnapshot.current = true;
+    setSelectedStorylineId(sel.storylineId);
+    setSelectedGroupId(sel.groupId);
+    setSelectedId(sel.letterId);
+    setSelectedSegmentId(sel.segmentId);
+    setView(
+      (sel.view as "list" | "group" | "main" | "actions" | "segment") ?? "list"
+    );
+  }
+
   return (
     <div className="relative flex flex-col gap-6">
-      {isControlled ? null : (
+      {isControlled ? (
+        // In controlled mode the parent surface owns the avatar chrome
+        // (graph header). The internal floating stack only renders when
+        // no parent provider is wrapping us — i.e. a standalone embed
+        // that hasn't adopted the `presenceProvided` contract.
+        !presenceProvided && (peers.length > 0 || !!selfPeer) ? (
+          <div className="absolute right-2 top-2 z-10">
+            <AvatarStack
+              peers={peers}
+              self={selfPeer}
+              selfSelection={selfSelection}
+              peerLocations={peerLocations}
+              onAvatarClick={jumpToPeer}
+              narrow={narrow}
+            />
+          </div>
+        ) : null
+      ) : (
       <div className="flex flex-wrap items-center gap-1 border-b border-border pb-3 font-mono text-sm text-muted-foreground">
         <BreadcrumbLink
           onClick={() => goToBreadcrumb("root")}
@@ -1889,6 +1917,15 @@ export function LettersWorkspace({
             </BreadcrumbPill>
           </>
         ) : null}
+        <div className="ml-auto">
+          <AvatarStack
+            peers={peers}
+            self={selfPeer}
+            selfSelection={selfSelection}
+            peerLocations={peerLocations}
+            onAvatarClick={jumpToPeer}
+          />
+        </div>
       </div>
       )}
 
@@ -1932,15 +1969,27 @@ export function LettersWorkspace({
               )}
               allLetters={allLetters}
               days={days}
-              dirty={storylineDirty}
               selectedGroupId={selectedGroupId}
-              onDirtyChange={setStorylineDirty}
               onBack={() =>
                 group
                   ? selectStoryline(group.storyline_id)
                   : selectStoryline(null)
               }
               onSelectGroup={(id) => selectGroup(id)}
+              onCreateGroup={(created) => {
+                // Optimistically seed the mirror with the new row so
+                // `group = allGroups.find(...)` resolves on the very
+                // next render and slot 2 doesn't go blank while the
+                // RSC refetch is in flight. The subsequent
+                // revalidatePath / router.refresh both reseed to the
+                // same canonical row — idempotent.
+                setAllGroups((prev) =>
+                  prev.some((g) => g.id === created.id)
+                    ? prev
+                    : [...prev, created]
+                );
+                selectGroup(created.id);
+              }}
               onDeselectGroup={() =>
                 selectStoryline(inspectorStoryline.id)
               }
@@ -1958,16 +2007,8 @@ export function LettersWorkspace({
             <PanelHeader
               title="Letter Group"
               icon={<Mails size={14} aria-hidden className="text-muted-foreground/70" />}
-              dirty={groupDirty || !!orderOverride}
+              dirty={!!orderOverride}
               showSaved={!!group}
-              saveRevert={
-                <SaveRevert
-                  dirty={groupDirty}
-                  pending={groupPending}
-                  onSave={handleSaveGroup}
-                  onRevert={revertGroup}
-                />
-              }
               menu={
                 <OverflowMenu
                   items={[
@@ -1988,34 +2029,62 @@ export function LettersWorkspace({
                   storyline={currentStoryline}
                   sequence={group.sequence}
                 />
-                <Input
-                  value={groupState.name}
-                  onChange={(e) => updateGroup("name", e.target.value)}
-                  placeholder="Group name"
-                  className={cn(
-                    "h-7 flex-1 px-1 text-base font-semibold text-foreground",
-                    GHOST_FIELD
-                  )}
-                />
+                <FieldHighlight
+                  peers={peers}
+                  focusKey={groupNameFocus}
+                  className="flex-1"
+                >
+                  <Input
+                    value={groupState.name}
+                    onChange={(e) => {
+                      updateGroup("name", e.target.value);
+                      groupNameField.set(e.target.value);
+                    }}
+                    onFocus={groupNameField.onFocus}
+                    onBlur={groupNameField.onBlur}
+                    placeholder="Group name"
+                    className={cn(
+                      "h-7 w-full px-1 text-base font-semibold text-foreground",
+                      GHOST_FIELD
+                    )}
+                  />
+                </FieldHighlight>
               </div>
               <div className="grid grid-cols-6 gap-3">
                 <div className="col-span-6 flex flex-col gap-1">
                   <Label>Delivery day</Label>
-                  <DaySelect
-                    value={groupState.delivery_day_id ?? ""}
-                    days={days}
-                    onChange={(v) => updateGroup("delivery_day_id", v || null)}
-                    className={cn("h-8", GHOST_FIELD)}
-                  />
+                  <FieldHighlight peers={peers} focusKey={groupDayFocus}>
+                    <div
+                      onFocus={groupDayField.onFocus}
+                      onBlur={groupDayField.onBlur}
+                    >
+                      <DaySelect
+                        value={groupState.delivery_day_id ?? ""}
+                        days={days}
+                        onChange={(v) => {
+                          updateGroup("delivery_day_id", v || null);
+                          groupDayField.set(v || null);
+                        }}
+                        className={cn("h-8", GHOST_FIELD)}
+                      />
+                    </div>
+                  </FieldHighlight>
                 </div>
                 <div className="col-span-6 flex flex-col gap-1">
                   <Label>Notes</Label>
-                  <AutoTextarea
-                    value={groupState.notes ?? ""}
-                    onChange={(e) => updateGroup("notes", e.target.value || null)}
-                    minRows={2}
-                    className={GHOST_FIELD}
-                  />
+                  <FieldHighlight peers={peers} focusKey={groupNotesFocus}>
+                    <AutoTextarea
+                      value={groupState.notes ?? ""}
+                      onChange={(e) => {
+                        updateGroup("notes", e.target.value || null);
+                        groupNotesField.set(e.target.value || null);
+                      }}
+                      onFocus={groupNotesField.onFocus}
+                      onBlur={groupNotesField.onBlur}
+                      minRows={2}
+                      className={GHOST_FIELD}
+                    />
+                  </FieldHighlight>
                 </div>
               </div>
 
@@ -2121,11 +2190,6 @@ export function LettersWorkspace({
                           </span>
                         )}
                       </span>
-                      {active && anyLetterDirty ? (
-                        <span className="shrink-0 text-[10px] text-warning">
-                          •
-                        </span>
-                      ) : null}
                     </button>
                     {listLocked && active ? (
                       <button
@@ -2283,6 +2347,7 @@ export function LettersWorkspace({
         <div className={cn("flex w-1/6 shrink-0 flex-col gap-4", narrow ? null : "px-3")}>
           {letterState && letters.find((l) => l.id === letterState.id) ? (
             <LetterFieldsCard
+              key={letterState.id}
               state={letterState}
               letterView={letters.find((l) => l.id === letterState.id)!}
               storyline={currentStoryline}
@@ -2291,13 +2356,9 @@ export function LettersWorkspace({
               heroes={heroes}
               cities={cities}
               nations={nations}
-              dirty={letterDirty}
-              pending={letterPending}
               onChange={updateLetter}
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
-              onSave={handleSaveLetterFields}
-              onRevert={revertLetter}
               onDelete={() => handleDeleteLetter(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
@@ -2349,7 +2410,7 @@ export function LettersWorkspace({
             />
           ) : selectedSegmentId ? (
             <LetterSegmentCard
-              key={`group-${selectedSegmentId}`}
+              key={selectedSegmentId}
               segment={
                 segments.find((s) => s.id === selectedSegmentId) ?? null
               }
@@ -2397,8 +2458,6 @@ export function LettersWorkspace({
               }
               endingVariables={endingVariables}
               endingValues={endingValues}
-              dirty={actionsDirty}
-              pending={actionsPending}
               rowPending={rowPending}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
@@ -2409,8 +2468,6 @@ export function LettersWorkspace({
               openLetterId={
                 selectedGroupId === nextGroup?.id ? selectedId : null
               }
-              onSave={handleSaveActions}
-              onRevert={revertActions}
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -2473,7 +2530,7 @@ export function LettersWorkspace({
         />
       ) : null}
       {confirmDialogEl}
-      {unsavedDialogEl}
+      {toaster}
     </div>
   );
 }
@@ -2487,13 +2544,9 @@ function LetterFieldsCard({
   heroes,
   cities,
   nations,
-  dirty,
-  pending,
   onChange,
   onQuickCreateHero,
   onEditCitizen,
-  onSave,
-  onRevert,
   onDelete,
   onBack,
   actionsCount,
@@ -2508,13 +2561,9 @@ function LetterFieldsCard({
   heroes: Citizen[];
   cities: City[];
   nations: Nation[];
-  dirty: boolean;
-  pending: boolean;
   onChange: (patch: Partial<LetterState>) => void;
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
-  onSave: () => void;
-  onRevert: () => void;
   onDelete: () => void;
   /** Called by the back-arrow in the panel header — typically
    * deselects the current letter, dropping the panel view back to
@@ -2526,22 +2575,78 @@ function LetterFieldsCard({
 }) {
   // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
   const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
+  const { peers, setFocus, pingActivity } = usePresenceContext();
+
+  function focusKey(field: string): PresenceFocus {
+    return { table: "inspection_letters", recordId: state.id, field };
+  }
+  function onFocusChangeFor(field: string) {
+    return (focused: boolean) =>
+      setFocus(focused ? focusKey(field) : null);
+  }
+
+  // IMPORTANT: useInstantField's `value` must be the SERVER row, not local
+  // edit state. The parent's `state.X` is updated synchronously by
+  // updateLetter when the user types, so passing it here would make
+  // commitNow's equality check think the save was already applied and
+  // short-circuit. letterView carries the canonical row from the DB.
+  const deliveryOverrideField = useInstantField<string | null>({
+    value: letterView.delivery_day_override_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, {
+        delivery_day_override_id: next,
+      });
+    },
+    onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+    onActivity: pingActivity,
+  });
+  const summaryField = useInstantField<string | null>({
+    value: letterView.summary,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { summary: next });
+    },
+    onFocusChange: onFocusChangeFor("summary"),
+    onActivity: pingActivity,
+  });
+  const senderField = useInstantField<string | null>({
+    value: letterView.sender_citizen_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { sender_citizen_id: next });
+    },
+    onFocusChange: onFocusChangeFor("sender_citizen_id"),
+    onActivity: pingActivity,
+  });
+  const receiverField = useInstantField<string | null>({
+    value: letterView.receiver_citizen_id,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { receiver_citizen_id: next });
+    },
+    onFocusChange: onFocusChangeFor("receiver_citizen_id"),
+    onActivity: pingActivity,
+  });
+  const contentField = useInstantField<string | null>({
+    value: letterView.content,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { content: next });
+    },
+    onFocusChange: onFocusChangeFor("content"),
+    onActivity: pingActivity,
+  });
+  const notesField = useInstantField<string | null>({
+    value: letterView.notes,
+    onCommit: async (next) => {
+      await patchInspectionLetter(state.id, { notes: next });
+    },
+    onFocusChange: onFocusChangeFor("notes"),
+    onActivity: pingActivity,
+  });
 
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Inspection Letter"
         icon={<MailOpen size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={onSave}
-            onRevert={onRevert}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -2576,26 +2681,36 @@ function LetterFieldsCard({
         </div>
         <div className="col-span-2 flex flex-col gap-1">
           <Label>Delivery override</Label>
-          <DaySelect
-            value={currentDayId ?? ""}
-            days={days}
-            groupDefaultId={groupDeliveryDayId}
-            dashWhenGroupDefault
-            hideClear
-            onChange={(v) =>
-              onChange({
-                delivery_day_override_id:
-                  !v ? null : v === groupDeliveryDayId ? null : v,
-              })
-            }
-            className={cn(
-              "h-8",
-              GHOST_FIELD,
-              state.delivery_day_override_id
-                ? undefined
-                : "text-muted-foreground/60"
-            )}
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("delivery_day_override_id")}
+          >
+            <div
+              onFocus={deliveryOverrideField.onFocus}
+              onBlur={deliveryOverrideField.onBlur}
+            >
+              <DaySelect
+                value={currentDayId ?? ""}
+                days={days}
+                groupDefaultId={groupDeliveryDayId}
+                dashWhenGroupDefault
+                hideClear
+                onChange={(v) => {
+                  const next =
+                    !v ? null : v === groupDeliveryDayId ? null : v;
+                  onChange({ delivery_day_override_id: next });
+                  deliveryOverrideField.set(next);
+                }}
+                className={cn(
+                  "h-8",
+                  GHOST_FIELD,
+                  state.delivery_day_override_id
+                    ? undefined
+                    : "text-muted-foreground/60"
+                )}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-2 flex flex-col items-end gap-1">
           <Label>Actions</Label>
@@ -2631,59 +2746,105 @@ function LetterFieldsCard({
 
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Summary</Label>
-          <Input
-            value={state.summary ?? ""}
-            onChange={(e) => onChange({ summary: e.target.value || null })}
-            className={cn("h-8", GHOST_FIELD)}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("summary")}>
+            <Input
+              value={state.summary ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                onChange({ summary: next });
+                summaryField.set(next);
+              }}
+              onFocus={summaryField.onFocus}
+              onBlur={summaryField.onBlur}
+              className={cn("h-8 w-full", GHOST_FIELD)}
+            />
+          </FieldHighlight>
         </div>
 
         <div className="col-span-3 flex flex-col gap-1">
           <Label>Sender</Label>
-          <HeroSearch
-            value={state.sender_citizen_id}
-            heroes={heroes}
-            cities={cities}
-            nations={nations}
-            onChange={(v) => onChange({ sender_citizen_id: v })}
-            onCreate={() => onQuickCreateHero("sender")}
-            onEdit={onEditCitizen}
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("sender_citizen_id")}
+          >
+            <div onFocus={senderField.onFocus} onBlur={senderField.onBlur}>
+              <HeroSearch
+                value={state.sender_citizen_id}
+                heroes={heroes}
+                cities={cities}
+                nations={nations}
+                onChange={(v) => {
+                  onChange({ sender_citizen_id: v });
+                  senderField.set(v);
+                }}
+                onCreate={() => onQuickCreateHero("sender")}
+                onEdit={onEditCitizen}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-3 flex flex-col gap-1">
           <Label>Receiver</Label>
-          <HeroSearch
-            value={state.receiver_citizen_id}
-            heroes={heroes}
-            cities={cities}
-            nations={nations}
-            onChange={(v) => onChange({ receiver_citizen_id: v })}
-            onCreate={() => onQuickCreateHero("receiver")}
-            onEdit={onEditCitizen}
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("receiver_citizen_id")}
+          >
+            <div onFocus={receiverField.onFocus} onBlur={receiverField.onBlur}>
+              <HeroSearch
+                value={state.receiver_citizen_id}
+                heroes={heroes}
+                cities={cities}
+                nations={nations}
+                onChange={(v) => {
+                  onChange({ receiver_citizen_id: v });
+                  receiverField.set(v);
+                }}
+                onCreate={() => onQuickCreateHero("receiver")}
+                onEdit={onEditCitizen}
+              />
+            </div>
+          </FieldHighlight>
         </div>
 
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Content</Label>
-          <MarkdownTextarea
-            value={state.content ?? ""}
-            onChange={(e) => onChange({ content: e.target.value || null })}
-            minRows={6}
-            className={cn("font-mono text-xs", GHOST_FIELD)}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("content")}>
+            <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+              <MarkdownTextarea
+                value={state.content ?? ""}
+                onChange={(e) => {
+                  const next = e.target.value || null;
+                  onChange({ content: next });
+                  contentField.set(next);
+                }}
+                minRows={6}
+                className={cn("font-mono text-xs", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Notes</Label>
-          <AutoTextarea
-            value={state.notes ?? ""}
-            onChange={(e) => onChange({ notes: e.target.value || null })}
-            minRows={2}
-            className={GHOST_FIELD}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("notes")}>
+            <AutoTextarea
+              value={state.notes ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                onChange({ notes: next });
+                notesField.set(next);
+              }}
+              onFocus={notesField.onFocus}
+              onBlur={notesField.onBlur}
+              minRows={2}
+              className={GHOST_FIELD}
+            />
+          </FieldHighlight>
         </div>
       </div>
 
-      <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
+      {peers.some((p) => p.focus?.recordId === state.id) ? null : (
+        <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
+      )}
       </div>
     </div>
   );
@@ -2703,8 +2864,6 @@ function LetterActionsCard({
   currentLetterDayId,
   endingVariables,
   endingValues,
-  dirty,
-  pending,
   rowPending,
   onActionChange,
   onAddAction,
@@ -2713,8 +2872,6 @@ function LetterActionsCard({
   openSegmentId,
   onOpenLetter,
   openLetterId,
-  onSave,
-  onRevert,
   onBack,
 }: {
   actions: ActionState[];
@@ -2730,8 +2887,6 @@ function LetterActionsCard({
   currentLetterDayId: string | null;
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
-  dirty: boolean;
-  pending: boolean;
   rowPending: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
   onAddAction: (templateId: string) => void;
@@ -2740,8 +2895,6 @@ function LetterActionsCard({
   openSegmentId: string | null;
   onOpenLetter: (actionIdx: number) => void;
   openLetterId: string | null;
-  onSave: () => void;
-  onRevert: () => void;
   onBack: () => void;
 }) {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -2751,16 +2904,7 @@ function LetterActionsCard({
       <PanelHeader
         title="Letter Actions"
         icon={<Milestone size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={onSave}
-            onRevert={onRevert}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -2898,16 +3042,9 @@ function LetterSegmentCard({
   allLetters: InspectionLetterView[];
   storylines: Storyline[];
   templates: ActionTemplate[];
-  onBack: (
-    dirty: boolean,
-    onSave: () => Promise<void>
-  ) => void;
+  onBack: () => void;
   onDelete: (segmentId: string) => void;
-  onJumpToTrigger: (
-    letterId: string,
-    dirty: boolean,
-    onSave: () => Promise<void>
-  ) => void;
+  onJumpToTrigger: (letterId: string) => void;
   onConfirmDialog: (options: {
     title: string;
     message?: string;
@@ -2915,51 +3052,60 @@ function LetterSegmentCard({
     intent?: "destructive" | "default";
   }) => Promise<boolean>;
 }) {
-  const [state, setState] = useState(() =>
-    segment
-      ? {
-          variant: segment.variant,
-          summary: segment.summary,
-          content: segment.content,
-          delivery_day_override_id: segment.delivery_day_override_id,
-        }
-      : {
-          variant: "",
-          summary: null as string | null,
-          content: null as string | null,
-          delivery_day_override_id: null as string | null,
-        }
-  );
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
+  const { peers, setFocus, pingActivity } = usePresenceContext();
+  const segmentId = segment?.id ?? "";
 
-  useEffect(() => {
-    if (!segment) return;
-    setState({
-      variant: segment.variant,
-      summary: segment.summary,
-      content: segment.content,
-      delivery_day_override_id: segment.delivery_day_override_id,
-    });
-    setDirty(false);
-  }, [segment]);
-
-  async function saveNow() {
-    if (!segment) return;
-    await saveReportSegment({
-      id: segment.id,
-      variant: state.variant.trim() || segment.variant,
-      summary: state.summary,
-      content: state.content,
-      delivery_day_override_id: state.delivery_day_override_id,
-    });
-    setDirty(false);
+  function focusKey(field: string): PresenceFocus {
+    return { table: "report_segments", recordId: segmentId, field };
+  }
+  function onFocusChangeFor(field: string) {
+    return (focused: boolean) =>
+      setFocus(focused ? focusKey(field) : null);
   }
 
-  function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
-    setState((s) => ({ ...s, [k]: v }));
-    setDirty(true);
-  }
+  // IMPORTANT: useInstantField's `value` MUST be the canonical server row
+  // (segment.X), not local edit state — otherwise commitNow's equality
+  // check short-circuits the save. See Track B3 lesson in
+  // docs/multi-user-collab-plan.md.
+  const variantField = useInstantField<string>({
+    value: segment?.variant ?? "",
+    onCommit: async (next) => {
+      if (!segment) return;
+      const value = next.trim() || segment.variant;
+      await patchReportSegment(segment.id, { variant: value });
+    },
+    onFocusChange: onFocusChangeFor("variant"),
+    onActivity: pingActivity,
+  });
+  const dayField = useInstantField<string | null>({
+    value: segment?.delivery_day_override_id ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, {
+        delivery_day_override_id: next,
+      });
+    },
+    onFocusChange: onFocusChangeFor("delivery_day_override_id"),
+    onActivity: pingActivity,
+  });
+  const summaryField = useInstantField<string | null>({
+    value: segment?.summary ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, { summary: next });
+    },
+    onFocusChange: onFocusChangeFor("summary"),
+    onActivity: pingActivity,
+  });
+  const contentField = useInstantField<string | null>({
+    value: segment?.content ?? null,
+    onCommit: async (next) => {
+      if (!segment) return;
+      await patchReportSegment(segment.id, { content: next });
+    },
+    onFocusChange: onFocusChangeFor("content"),
+    onActivity: pingActivity,
+  });
 
   type Trigger = {
     actionId: string;
@@ -3003,38 +3149,13 @@ function LetterSegmentCard({
     );
   }
 
-  const currentDayId = state.delivery_day_override_id;
+  const currentDayId = dayField.value;
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Report Segment"
         icon={<Megaphone size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={() => startSave(saveNow)}
-            onRevert={async () => {
-              if (!dirty || !segment) return;
-              const ok = await onConfirmDialog({
-                title: "Discard segment changes?",
-                message: "Any unsaved edits will be lost.",
-                confirmLabel: "Revert",
-                intent: "destructive",
-              });
-              if (!ok) return;
-              setState({
-                variant: segment.variant,
-                summary: segment.summary,
-                content: segment.content,
-                delivery_day_override_id: segment.delivery_day_override_id,
-              });
-              setDirty(false);
-            }}
-          />
-        }
         menu={
           <OverflowMenu
             items={[
@@ -3059,10 +3180,7 @@ function LetterSegmentCard({
       />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
-        <BackLink
-          onNavigate={() => onBack(dirty, saveNow)}
-          label="Back to actions"
-        />
+        <BackLink onNavigate={onBack} label="Back to actions" />
         <ReportSegmentPill
           storyline={storylines.find((s) => s.id === segment.storyline_id)}
           reportId={segment.report_id}
@@ -3071,55 +3189,71 @@ function LetterSegmentCard({
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
           <Label>Variant</Label>
-          <Input
-            value={state.variant}
-            onChange={(e) =>
-              update("variant", formatRomanInput(e.target.value))
-            }
-            placeholder="i"
-            className={cn(
-              "h-8 lowercase",
-              GHOST_FIELD,
-              state.variant && !isValidRoman(state.variant)
-                ? "ring-2 ring-destructive"
-                : undefined
-            )}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("variant")}>
+            <Input
+              value={variantField.value}
+              onChange={(e) =>
+                variantField.set(formatRomanInput(e.target.value))
+              }
+              onFocus={variantField.onFocus}
+              onBlur={variantField.onBlur}
+              placeholder="i"
+              className={cn(
+                "h-8 w-full lowercase",
+                GHOST_FIELD,
+                variantField.value && !isValidRoman(variantField.value)
+                  ? "ring-2 ring-destructive"
+                  : undefined
+              )}
+            />
+          </FieldHighlight>
         </div>
         <div className="col-span-4 flex flex-col gap-1">
           <Label>Delivery day</Label>
-          <DaySelect
-            value={
-              (state.delivery_day_override_id ?? groupDeliveryDayId) ?? ""
-            }
-            days={days}
-            groupDefaultId={groupDeliveryDayId}
-            defaultSuffix="(Following Day)"
-            onChange={(v) =>
-              update(
-                "delivery_day_override_id",
-                !v ? null : v === groupDeliveryDayId ? null : v
-              )
-            }
-            className={cn("h-8", GHOST_FIELD)}
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey("delivery_day_override_id")}
+          >
+            <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
+              <DaySelect
+                value={(currentDayId ?? groupDeliveryDayId) ?? ""}
+                days={days}
+                groupDefaultId={groupDeliveryDayId}
+                defaultSuffix="(Following Day)"
+                onChange={(v) =>
+                  dayField.set(
+                    !v ? null : v === groupDeliveryDayId ? null : v
+                  )
+                }
+                className={cn("h-8", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Summary</Label>
-          <Input
-            value={state.summary ?? ""}
-            onChange={(e) => update("summary", e.target.value || null)}
-            className={cn("h-8", GHOST_FIELD)}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("summary")}>
+            <Input
+              value={summaryField.value ?? ""}
+              onChange={(e) => summaryField.set(e.target.value || null)}
+              onFocus={summaryField.onFocus}
+              onBlur={summaryField.onBlur}
+              className={cn("h-8 w-full", GHOST_FIELD)}
+            />
+          </FieldHighlight>
         </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Content</Label>
-          <MarkdownTextarea
-            value={state.content ?? ""}
-            onChange={(e) => update("content", e.target.value || null)}
-            minRows={8}
-            className={cn("font-mono text-xs", GHOST_FIELD)}
-          />
+          <FieldHighlight peers={peers} focusKey={focusKey("content")}>
+            <div onFocus={contentField.onFocus} onBlur={contentField.onBlur}>
+              <MarkdownTextarea
+                value={contentField.value ?? ""}
+                onChange={(e) => contentField.set(e.target.value || null)}
+                minRows={8}
+                className={cn("font-mono text-xs", GHOST_FIELD)}
+              />
+            </div>
+          </FieldHighlight>
         </div>
       </div>
       {triggers.length > 0 ? (
@@ -3134,9 +3268,7 @@ function LetterSegmentCard({
                 <button
                   key={t.actionId}
                   type="button"
-                  onClick={() =>
-                    onJumpToTrigger(t.letterId, dirty, saveNow)
-                  }
+                  onClick={() => onJumpToTrigger(t.letterId)}
                   title={`Jump to ${t.contentId} · ${t.actionName}`}
                   className="inline-flex items-center rounded-md transition-opacity hover:opacity-80"
                 >
@@ -3159,7 +3291,9 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
+      {peers.some((p) => p.focus?.recordId === segment.id) ? null : (
+        <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
+      )}
       </div>
     </div>
   );
@@ -4144,6 +4278,97 @@ function readableOnHex(hex: string): string {
   return luminance > 0.65 ? "#0b0d10" : "#ffffff";
 }
 
+/**
+ * Impact-tile wrapper that adds two layers of collab chrome around the
+ * stock ImpactTile / NationImpactTile:
+ *
+ * - **Focus ring** via `<FieldHighlight>` so a peer focusing this tile shows
+ *   their color around it. The `data-focus-field` attribute stamped by
+ *   FieldHighlight is what `ActionEditor.handleEnterFocus` reads to derive
+ *   the column key from the bubbled focus event — no need to wire explicit
+ *   onFocus handlers into the underlying button/input.
+ * - **Remote-change flash** — when the `value` prop changes more than
+ *   ~250ms after the user's last click on this tile's own +/- (or any
+ *   typing), the wrapper assumes the change came from a peer and pulses a
+ *   yellow inset ring for ~600ms. Local clicks set `lastLocalChangeAtRef`
+ *   right before calling `onChange`, so they're correctly suppressed.
+ */
+function HighlightableImpactTile({
+  peers,
+  focusKey,
+  value,
+  onChange,
+  children,
+}: {
+  peers: PresencePeer[];
+  focusKey: PresenceFocus;
+  value: number;
+  onChange: (v: number) => void;
+  children: (value: number, onChange: (v: number) => void) => React.ReactNode;
+}) {
+  const [flashColor, setFlashColor] = useState<string | null>(null);
+  const lastLocalChangeAtRef = useRef(0);
+  const prevValueRef = useRef(value);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      prevValueRef.current = value;
+      return;
+    }
+    if (prevValueRef.current === value) return;
+    prevValueRef.current = value;
+    const sinceLocal = Date.now() - lastLocalChangeAtRef.current;
+    if (sinceLocal < 250) return;
+    // Prefer the peer who currently has focus on this tile (almost always
+    // the same peer who just clicked +/-); fall back to white so the
+    // change is still visible if focus has already moved away.
+    const focused = peers.find(
+      (p) =>
+        p.focus &&
+        p.focus.table === focusKey.table &&
+        p.focus.recordId === focusKey.recordId &&
+        p.focus.field === focusKey.field
+    );
+    setFlashColor(focused?.color ?? "#ffffff");
+    const t = setTimeout(() => setFlashColor(null), 600);
+    return () => clearTimeout(t);
+    // peers / focusKey fields intentionally omitted from deps — we only
+    // want this effect to re-run on value change. The latest peers from
+    // the value-change render is captured in the closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+
+  function handleChange(v: number) {
+    lastLocalChangeAtRef.current = Date.now();
+    onChange(v);
+  }
+
+  // While flashing, suppress FieldHighlight's own ring (passing focusKey=null)
+  // so the flash is the single visible indicator. Otherwise the outer
+  // FieldHighlight ring + the inner flash ring rendered concentrically as a
+  // distinctive "double ring" — same color but at two radii.
+  return (
+    <FieldHighlight
+      peers={peers}
+      focusKey={flashColor ? null : focusKey}
+      className="rounded-md p-0.5 transition-shadow"
+    >
+      <div
+        className="rounded-md transition-shadow"
+        style={
+          flashColor
+            ? { boxShadow: `0 0 0 2px ${flashColor}` }
+            : undefined
+        }
+      >
+        {children(value, handleChange)}
+      </div>
+    </FieldHighlight>
+  );
+}
+
 function ActionEditor({
   action,
   templates,
@@ -4185,6 +4410,37 @@ function ActionEditor({
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
+  const { peers, setFocus } = usePresenceContext();
+  const nextLetterFocus: PresenceFocus = {
+    table: "actions",
+    recordId: action.id,
+    field: "next_letter_variant",
+  };
+  const segmentFocus: PresenceFocus = {
+    table: "actions",
+    recordId: action.id,
+    field: "report_segment_id",
+  };
+
+  // Resolve "which sub-field just got focus" by walking up from `e.target`
+  // to the nearest `[data-focus-field]` marker (stamped by FieldHighlight).
+  // Falls back to a generic "editing" field so peers still see the action is
+  // active even for sub-fields we haven't instrumented (impact tiles, ending
+  // selects). On focus leaving the entire action (`relatedTarget` outside
+  // the wrapper), clear focus.
+  function handleEnterFocus(e: React.FocusEvent<HTMLDivElement>) {
+    const target = e.target as HTMLElement;
+    const fieldEl = target.closest("[data-focus-field]");
+    const field =
+      fieldEl?.getAttribute("data-focus-field") || "editing";
+    setFocus({ table: "actions", recordId: action.id, field });
+  }
+  function handleLeaveFocus(e: React.FocusEvent<HTMLDivElement>) {
+    const wrapper = e.currentTarget;
+    const stayingWithin = wrapper.contains(e.relatedTarget as Node | null);
+    if (!stayingWithin) setFocus(null);
+  }
+
   const currentDay = currentLetterDayId
     ? days.find((d) => d.id === currentLetterDayId) ?? null
     : null;
@@ -4205,7 +4461,11 @@ function ActionEditor({
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
   return (
-    <div className="rounded-md border border-border bg-black/20 p-3">
+    <div
+      className="rounded-md border border-border bg-black/20 p-3"
+      onFocus={handleEnterFocus}
+      onBlur={handleLeaveFocus}
+    >
       {/* Header row: icon + name + overflow menu. */}
       <div className="mb-2 flex items-center gap-2">
         <span
@@ -4241,6 +4501,7 @@ function ActionEditor({
             {creatingLetter ? (
               <CreatingPill />
             ) : (
+              <FieldHighlight peers={peers} focusKey={nextLetterFocus}>
               <PillSelect
                 pill={
                   action.next_letter_variant && storyline ? (
@@ -4356,6 +4617,7 @@ function ActionEditor({
                       },
                 ]}
               />
+              </FieldHighlight>
             )}
             {action.next_letter_variant ? (
               <button
@@ -4401,6 +4663,7 @@ function ActionEditor({
             {creatingSegment ? (
               <CreatingPill />
             ) : (
+              <FieldHighlight peers={peers} focusKey={segmentFocus}>
               <PillSelect
                 pill={(() => {
                   const seg = action.report_segment_id
@@ -4456,6 +4719,7 @@ function ActionEditor({
                   },
                 ]}
               />
+              </FieldHighlight>
             )}
             {action.report_segment_id ? (
               <button
@@ -4508,65 +4772,119 @@ function ActionEditor({
       <div className="mt-1 flex flex-wrap items-start gap-1.5">
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           {CLASS_AFFINITY.map((c) => (
-            <ImpactTile
+            <HighlightableImpactTile
               key={c.key}
-              label={c.label}
-              icon={c.icon}
+              peers={peers}
+              focusKey={{
+                table: "actions",
+                recordId: action.id,
+                field: c.key,
+              }}
               value={action[c.key]}
               onChange={(v) =>
                 onChange({ [c.key]: v } as Partial<ActionState>)
               }
-            />
+            >
+              {(value, handleChange) => (
+                <ImpactTile
+                  label={c.label}
+                  icon={c.icon}
+                  value={value}
+                  onChange={handleChange}
+                />
+              )}
+            </HighlightableImpactTile>
           ))}
         </div>
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           {orderedNations.map((n) => {
             const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
             return (
-              <NationImpactTile
+              <HighlightableImpactTile
                 key={n.id}
-                nation={n}
+                peers={peers}
+                focusKey={{
+                  table: "actions",
+                  recordId: action.id,
+                  field: key,
+                }}
                 value={action[key]}
                 onChange={(v) =>
                   onChange({ [key]: v } as Partial<ActionState>)
                 }
-              />
+              >
+                {(value, handleChange) => (
+                  <NationImpactTile
+                    nation={n}
+                    value={value}
+                    onChange={handleChange}
+                  />
+                )}
+              </HighlightableImpactTile>
             );
           })}
         </div>
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-          <ImpactTile
-            label="Demerits"
-            icon={
-              <IconCircleMinus
-                size={14}
-                aria-hidden
-                className="text-red-500"
-              />
-            }
+          <HighlightableImpactTile
+            peers={peers}
+            focusKey={{
+              table: "actions",
+              recordId: action.id,
+              field: "impact_demerits",
+            }}
             value={action.impact_demerits}
             onChange={(v) =>
               onChange({ impact_demerits: v } as Partial<ActionState>)
             }
-          />
-          <ImpactTile
-            label="World Status"
-            icon={
-              <IconWorldBolt
-                size={14}
-                aria-hidden
-                className="text-cyan-400"
+          >
+            {(value, handleChange) => (
+              <ImpactTile
+                label="Demerits"
+                icon={
+                  <IconCircleMinus
+                    size={14}
+                    aria-hidden
+                    className="text-red-500"
+                  />
+                }
+                value={value}
+                onChange={handleChange}
               />
-            }
+            )}
+          </HighlightableImpactTile>
+          <HighlightableImpactTile
+            peers={peers}
+            focusKey={{
+              table: "actions",
+              recordId: action.id,
+              field: "impact_world_status",
+            }}
             value={action.impact_world_status}
             onChange={(v) =>
               onChange({ impact_world_status: v } as Partial<ActionState>)
             }
-          />
+          >
+            {(value, handleChange) => (
+              <ImpactTile
+                label="World Status"
+                icon={
+                  <IconWorldBolt
+                    size={14}
+                    aria-hidden
+                    className="text-cyan-400"
+                  />
+                }
+                value={value}
+                onChange={handleChange}
+              />
+            )}
+          </HighlightableImpactTile>
         </div>
       </div>
 
       <EndingAssignmentsSection
+        actionId={action.id}
+        peers={peers}
         assignments={action.ending_assignments}
         variables={endingVariables}
         values={endingValues}
@@ -4577,19 +4895,28 @@ function ActionEditor({
 }
 
 function EndingAssignmentsSection({
+  actionId,
+  peers,
   assignments,
   variables,
   values,
   onChange,
 }: {
+  actionId: string;
+  peers: PresencePeer[];
   assignments: EndingAssignmentState[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
   onChange: (next: EndingAssignmentState[]) => void;
 }) {
-  function setAt(idx: number, patch: Partial<EndingAssignmentState>) {
+  // Variable is locked-in at insert time — to switch which variable an
+  // action drives, delete the row and add a new one. Removes the entire
+  // class of "picker-open with no variable yet" intermediate state, which
+  // used to require a separate pending list and led to the dropdown
+  // disappearing on reconciliation.
+  function setValue(idx: number, valueId: string | null) {
     const next = assignments.slice();
-    next[idx] = { ...next[idx], ...patch };
+    next[idx] = { ...next[idx], value_id: valueId };
     onChange(next);
   }
   function removeAt(idx: number) {
@@ -4597,108 +4924,193 @@ function EndingAssignmentsSection({
     next.splice(idx, 1);
     onChange(next);
   }
-  function add() {
-    onChange([...assignments, { variable_id: "", value_id: "" }]);
+  function addWithVariable(variableId: string) {
+    onChange([
+      ...assignments,
+      { variable_id: variableId, value_id: null },
+    ]);
   }
 
   const chosenVariableIds = new Set(
     assignments.map((a) => a.variable_id).filter(Boolean)
   );
 
+  const availableVariables = variables.filter(
+    (v) => !chosenVariableIds.has(v.id)
+  );
+
+  const variableById = new Map(variables.map((v) => [v.id, v]));
+  const hasAnyRow = assignments.length > 0;
+
   return (
     <>
       <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-        Endings
+        Set Ending Variables
       </div>
       <div className="mt-1 flex flex-col gap-1">
-        {assignments.length === 0 ? (
+        {!hasAnyRow ? (
           <p className="text-xs text-muted-foreground">
             None — this action doesn&apos;t set any ending variable.
           </p>
-        ) : (
-          assignments.map((a, idx) => {
-            const valuesForVar = values.filter(
-              (v) => v.variable_id === a.variable_id
-            );
-            const availableVariables = variables.filter(
-              (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
-            );
-            return (
-              <div
-                key={idx}
-                className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+        ) : null}
+        {assignments.map((a, idx) => {
+          const variable = variableById.get(a.variable_id);
+          const valuesForVar = values.filter(
+            (v) => v.variable_id === a.variable_id
+          );
+          const valFocus = {
+            table: "actions",
+            recordId: actionId,
+            field: `ending_val_${idx}`,
+          };
+          return (
+            <div
+              key={`saved-${idx}`}
+              className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+            >
+              {/* Variable is locked once a row exists — change requires
+                  delete + re-add. Rendered as a read-only chip with the
+                  variable's color accent so it reads as "set" rather than
+                  "editable." */}
+              <span
+                className="inline-flex h-7 items-center gap-1 truncate rounded-md border border-border/40 px-2 font-mono text-xs"
+                style={
+                  variable?.color_hex
+                    ? {
+                        borderColor: variable.color_hex,
+                        color: variable.color_hex,
+                      }
+                    : undefined
+                }
+                title={variable?.name ?? "Unknown variable"}
               >
+                {variable?.name ?? "Unknown"}
+              </span>
+              <FieldHighlight peers={peers} focusKey={valFocus}>
                 <Select
-                  value={a.variable_id || ""}
-                  onChange={(e) =>
-                    setAt(idx, { variable_id: e.target.value, value_id: "" })
-                  }
-                  className="h-7 text-xs"
+                  value={a.value_id ?? ""}
+                  onChange={(e) => {
+                    setValue(idx, e.target.value || null);
+                    e.target.blur();
+                  }}
+                  className="h-7 w-full text-xs"
                 >
-                  <option value="">— variable —</option>
-                  {availableVariables.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </Select>
-                <Select
-                  value={a.value_id || ""}
-                  onChange={(e) => setAt(idx, { value_id: e.target.value })}
-                  className="h-7 text-xs"
-                  disabled={!a.variable_id}
-                >
-                  <option value="">
-                    {a.variable_id ? "— value —" : "(pick var)"}
-                  </option>
+                  <option value="">— value —</option>
                   {valuesForVar.map((v) => (
                     <option key={v.id} value={v.id}>
                       {v.value}
                     </option>
                   ))}
                 </Select>
-                <button
-                  type="button"
-                  aria-label="Remove ending assignment"
-                  title="Remove"
-                  onClick={() => removeAt(idx)}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+              </FieldHighlight>
+              <button
+                type="button"
+                aria-label="Remove ending assignment"
+                title="Remove"
+                onClick={() => removeAt(idx)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+              >
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
                 >
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden
-                  >
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </button>
-              </div>
-            );
-          })
-        )}
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+          );
+        })}
         <div className="flex justify-start">
-          <button
-            type="button"
-            onClick={add}
-            disabled={variables.length === 0}
-            title={
+          <AddEndingVariableMenu
+            variables={availableVariables}
+            onPick={addWithVariable}
+            disabled={variables.length === 0 || availableVariables.length === 0}
+            disabledReason={
               variables.length === 0
                 ? "Create an ending variable first"
-                : undefined
+                : availableVariables.length === 0
+                  ? "All variables are already assigned"
+                  : undefined
             }
-            className={MUTED_ADD_BTN}
-          >
-            + Ending
-          </button>
+          />
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * "+ Ending" button that opens a list of unassigned variables. Picking one
+ * inserts a new ending assignment row already bound to that variable —
+ * there's no intermediate "row exists but no variable picked yet" state,
+ * which the previous flow allowed and which let the realtime patch path
+ * silently drop unbound rows.
+ */
+function AddEndingVariableMenu({
+  variables,
+  onPick,
+  disabled,
+  disabledReason,
+}: {
+  variables: EndingVariable[];
+  onPick: (variableId: string) => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
+        title={disabledReason}
+        className={MUTED_ADD_BTN}
+      >
+        + Ending
+      </button>
+      {open && variables.length > 0 ? (
+        <div
+          role="listbox"
+          className="absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md"
+        >
+          {variables.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="option"
+              aria-selected={false}
+              onClick={() => {
+                onPick(v.id);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs hover:bg-accent/40"
+              style={v.color_hex ? { color: v.color_hex } : undefined}
+            >
+              {v.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -5531,19 +5943,18 @@ function CreatingPill() {
 
 /**
  * Inline storyline editor that occupies slot 1 in place of the group panel.
- * Owns its own dirty flag so the workspace can include it in breadcrumb /
- * switch-group guards via the `dirty` + `onDirtyChange` pair.
+ * Tracks its own dirty state — the parent workspace no longer mirrors it.
+ * (Phase 4 long-tail: convert to instant-save and drop the dirty flag.)
  */
 function StorylineInspector({
   storyline,
   groups,
   allLetters,
   days,
-  dirty,
   selectedGroupId,
-  onDirtyChange,
   onBack,
   onSelectGroup,
+  onCreateGroup,
   onDeselectGroup,
   onConfirmDialog,
 }: {
@@ -5551,11 +5962,13 @@ function StorylineInspector({
   groups: LetterGroup[];
   allLetters: InspectionLetterView[];
   days: Day[];
-  dirty: boolean;
   selectedGroupId: string | null;
-  onDirtyChange: (d: boolean) => void;
   onBack: () => void;
   onSelectGroup: (id: string) => void;
+  /** Called after the inspector creates a new letter group. Receives the
+   * full row so the parent can seed its local mirror before navigating —
+   * prevents slot 2 from going blank while the RSC refetch is in flight. */
+  onCreateGroup: (group: LetterGroup) => void;
   /** Called when the user clicks the currently-selected group row to toggle
    * it off. Should return the UI to storyline-only mode (inspector visible,
    * no group selected). */
@@ -5575,6 +5988,7 @@ function StorylineInspector({
     icon_value: storyline.icon_value,
     color_hex: storyline.color_hex,
   }));
+  const [dirty, setDirty] = useState(false);
   const [pending, startSave] = useTransition();
   const [rowPending, startRowAction] = useTransition();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -5588,14 +6002,13 @@ function StorylineInspector({
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
     setPickerOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storyline.id]);
 
   function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
     setState((s) => ({ ...s, [k]: v }));
-    onDirtyChange(true);
+    setDirty(true);
   }
 
   async function saveNow() {
@@ -5608,7 +6021,7 @@ function StorylineInspector({
       icon_value: state.icon_value,
       color_hex: state.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
   }
 
   async function revert() {
@@ -5628,13 +6041,13 @@ function StorylineInspector({
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
     });
-    onDirtyChange(false);
+    setDirty(false);
   }
 
   function handleAddGroup() {
     startRowAction(async () => {
-      const { groupId } = await createLetterGroupInStoryline(storyline.id);
-      onSelectGroup(groupId);
+      const { group } = await createLetterGroupInStoryline(storyline.id);
+      onCreateGroup(group);
     });
   }
 
@@ -5859,7 +6272,7 @@ function StorylineInspector({
                 icon_type: next.type,
                 icon_value: next.value || null,
               }));
-              onDirtyChange(true);
+              setDirty(true);
             }}
             color={state.color_hex}
             onColorChange={(c) => update("color_hex", c)}
