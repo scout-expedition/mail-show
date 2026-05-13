@@ -377,5 +377,7 @@ export interface InspectionActionEndingAssignment {
   id: string;
   action_id: string;
   variable_id: string;
-  value_id: string;
+  /** Nullable since migration 0033: an action can be assigned a variable
+   *  without yet picking a value (the value picker stays open in the UI). */
+  value_id: string | null;
 }

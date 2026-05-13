@@ -174,7 +174,12 @@ type ActionImpacts = {
   impact_pelico: number;
 };
 
-type EndingAssignmentState = { variable_id: string; value_id: string };
+type EndingAssignmentState = {
+  variable_id: string;
+  /** Nullable: a peer can save an assignment with just the variable picked,
+   *  before they commit to a value (matches DB schema since migration 0033). */
+  value_id: string | null;
+};
 
 type ActionState = ActionImpacts & {
   id: string;
@@ -4277,7 +4282,7 @@ function HighlightableImpactTile({
   onChange: (v: number) => void;
   children: (value: number, onChange: (v: number) => void) => React.ReactNode;
 }) {
-  const [flashing, setFlashing] = useState(false);
+  const [flashColor, setFlashColor] = useState<string | null>(null);
   const lastLocalChangeAtRef = useRef(0);
   const prevValueRef = useRef(value);
   const mountedRef = useRef(false);
@@ -4292,17 +4297,26 @@ function HighlightableImpactTile({
     prevValueRef.current = value;
     const sinceLocal = Date.now() - lastLocalChangeAtRef.current;
     if (sinceLocal < 250) return;
-    setFlashing(true);
-    const t = setTimeout(() => setFlashing(false), 600);
+    // Prefer the peer who currently has focus on this tile (almost always
+    // the same peer who just clicked +/-); fall back to a neutral yellow
+    // so the change is still visible if focus has already moved away.
+    const focused = peers.find(
+      (p) =>
+        p.focus &&
+        p.focus.table === focusKey.table &&
+        p.focus.recordId === focusKey.recordId &&
+        p.focus.field === focusKey.field
+    );
+    setFlashColor(focused?.color ?? "#fde047");
+    const t = setTimeout(() => setFlashColor(null), 600);
     return () => clearTimeout(t);
+    // peers / focusKey fields intentionally omitted from deps — we only
+    // want this effect to re-run on value change. The latest peers from
+    // the value-change render is captured in the closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   function handleChange(v: number) {
-    // `handleChange` is wired into the ImpactTile's onChange via the render
-    // prop below, so it only executes at click/keystroke time — safe to
-    // read Date.now(). The lint heuristic can't statically tell that, hence
-    // the disable.
-    // eslint-disable-next-line react-hooks/purity
     lastLocalChangeAtRef.current = Date.now();
     onChange(v);
   }
@@ -4311,12 +4325,18 @@ function HighlightableImpactTile({
     <FieldHighlight
       peers={peers}
       focusKey={focusKey}
-      className={cn(
-        "rounded-md p-0.5 transition-shadow",
-        flashing && "ring-2 ring-yellow-300/80"
-      )}
+      className="rounded-md p-0.5 transition-shadow"
     >
-      {children(value, handleChange)}
+      <div
+        className="rounded-md transition-shadow"
+        style={
+          flashColor
+            ? { boxShadow: `0 0 0 2px ${flashColor}` }
+            : undefined
+        }
+      >
+        {children(value, handleChange)}
+      </div>
     </FieldHighlight>
   );
 }
@@ -4855,6 +4875,16 @@ function EndingAssignmentsSection({
   values: EndingVariableValue[];
   onChange: (next: EndingAssignmentState[]) => void;
 }) {
+  // Picker-open rows (variable_id still empty) live in component-local state
+  // until the user binds them to a variable. The realtime/postgres path
+  // wipes-and-reinserts on every save, so a row with no variable_id would
+  // be silently dropped by the next reconciliation — the user's symptom was
+  // "dropdown briefly appears then disappears." Promoting on first variable
+  // pick keeps the picker stable AND lets multiple new rows coexist.
+  const [pending, setPending] = useState<EndingAssignmentState[]>([]);
+  const pendingKeyRef = useRef(0);
+  const [pendingKeys, setPendingKeys] = useState<number[]>([]);
+
   function setAt(idx: number, patch: Partial<EndingAssignmentState>) {
     const next = assignments.slice();
     next[idx] = { ...next[idx], ...patch };
@@ -4866,12 +4896,44 @@ function EndingAssignmentsSection({
     onChange(next);
   }
   function add() {
-    onChange([...assignments, { variable_id: "", value_id: "" }]);
+    const k = ++pendingKeyRef.current;
+    setPending((prev) => [...prev, { variable_id: "", value_id: "" }]);
+    setPendingKeys((prev) => [...prev, k]);
+  }
+  function setPendingAt(
+    idx: number,
+    patch: Partial<EndingAssignmentState>
+  ) {
+    const updated = pending.map((r, i) => (i === idx ? { ...r, ...patch } : r));
+    const row = updated[idx];
+    if (row.variable_id) {
+      // Promote to server-confirmed. The patch path persists it; once the
+      // postgres INSERT echoes back into `assignments`, the pending slot is
+      // already gone so we won't render a duplicate.
+      setPending((prev) => prev.filter((_, i) => i !== idx));
+      setPendingKeys((prev) => prev.filter((_, i) => i !== idx));
+      onChange([...assignments, row]);
+    } else {
+      setPending(updated);
+    }
+  }
+  function removePendingAt(idx: number) {
+    setPending((prev) => prev.filter((_, i) => i !== idx));
+    setPendingKeys((prev) => prev.filter((_, i) => i !== idx));
   }
 
   const chosenVariableIds = new Set(
     assignments.map((a) => a.variable_id).filter(Boolean)
   );
+
+  // Variables already claimed (server-confirmed) shouldn't appear in the
+  // pending picker, otherwise two rows could try to pick the same variable
+  // and the wholesale replace would dedupe one away.
+  function availableForPending(): EndingVariable[] {
+    return variables.filter((v) => !chosenVariableIds.has(v.id));
+  }
+
+  const hasAnyRow = assignments.length > 0 || pending.length > 0;
 
   return (
     <>
@@ -4879,86 +4941,140 @@ function EndingAssignmentsSection({
         Endings
       </div>
       <div className="mt-1 flex flex-col gap-1">
-        {assignments.length === 0 ? (
+        {!hasAnyRow ? (
           <p className="text-xs text-muted-foreground">
             None — this action doesn&apos;t set any ending variable.
           </p>
-        ) : (
-          assignments.map((a, idx) => {
-            const valuesForVar = values.filter(
-              (v) => v.variable_id === a.variable_id
-            );
-            const availableVariables = variables.filter(
-              (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
-            );
-            return (
-              <div
-                key={idx}
-                className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+        ) : null}
+        {assignments.map((a, idx) => {
+          const valuesForVar = values.filter(
+            (v) => v.variable_id === a.variable_id
+          );
+          const availableVariables = variables.filter(
+            (v) => v.id === a.variable_id || !chosenVariableIds.has(v.id)
+          );
+          return (
+            <div
+              key={`saved-${idx}`}
+              className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+            >
+              <Select
+                value={a.variable_id || ""}
+                onChange={(e) =>
+                  setAt(idx, { variable_id: e.target.value, value_id: null })
+                }
+                className="h-7 text-xs"
               >
-                <Select
-                  value={a.variable_id || ""}
-                  onChange={(e) =>
-                    setAt(idx, { variable_id: e.target.value, value_id: "" })
-                  }
-                  className="h-7 text-xs"
-                >
-                  <option value="">— variable —</option>
-                  {availableVariables.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.name}
-                    </option>
-                  ))}
-                </Select>
-                <Select
-                  value={a.value_id || ""}
-                  onChange={(e) => setAt(idx, { value_id: e.target.value })}
-                  className="h-7 text-xs"
-                  disabled={!a.variable_id}
-                >
-                  <option value="">
-                    {a.variable_id ? "— value —" : "(pick var)"}
+                <option value="">— variable —</option>
+                {availableVariables.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
                   </option>
-                  {valuesForVar.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.value}
-                    </option>
-                  ))}
-                </Select>
-                <button
-                  type="button"
-                  aria-label="Remove ending assignment"
-                  title="Remove"
-                  onClick={() => removeAt(idx)}
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+                ))}
+              </Select>
+              <Select
+                value={a.value_id ?? ""}
+                onChange={(e) =>
+                  setAt(idx, { value_id: e.target.value || null })
+                }
+                className="h-7 text-xs"
+                disabled={!a.variable_id}
+              >
+                <option value="">
+                  {a.variable_id ? "— value —" : "(pick var)"}
+                </option>
+                {valuesForVar.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.value}
+                  </option>
+                ))}
+              </Select>
+              <button
+                type="button"
+                aria-label="Remove ending assignment"
+                title="Remove"
+                onClick={() => removeAt(idx)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+              >
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
                 >
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden
-                  >
-                    <path d="M6 6l12 12M18 6L6 18" />
-                  </svg>
-                </button>
-              </div>
-            );
-          })
-        )}
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+          );
+        })}
+        {pending.map((p, idx) => {
+          const availableVariables = availableForPending();
+          return (
+            <div
+              key={`pending-${pendingKeys[idx]}`}
+              className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
+            >
+              <Select
+                value=""
+                onChange={(e) =>
+                  setPendingAt(idx, { variable_id: e.target.value })
+                }
+                className="h-7 text-xs"
+              >
+                <option value="">— variable —</option>
+                {availableVariables.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </Select>
+              <Select value="" disabled className="h-7 text-xs">
+                <option value="">(pick var)</option>
+              </Select>
+              <button
+                type="button"
+                aria-label="Remove ending assignment"
+                title="Remove"
+                onClick={() => removePendingAt(idx)}
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+              >
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
+          );
+        })}
         <div className="flex justify-start">
           <button
             type="button"
             onClick={add}
-            disabled={variables.length === 0}
+            disabled={
+              variables.length === 0 ||
+              availableForPending().length === 0
+            }
             title={
               variables.length === 0
                 ? "Create an ending variable first"
-                : undefined
+                : availableForPending().length === 0
+                  ? "All variables are already assigned"
+                  : undefined
             }
             className={MUTED_ADD_BTN}
           >

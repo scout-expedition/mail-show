@@ -30,13 +30,23 @@ async function reassignVariants(groupId: string) {
   }
 }
 
-type EndingAssignmentPatch = { variable_id: string; value_id: string };
+type EndingAssignmentPatch = {
+  variable_id: string;
+  value_id: string | null;
+};
 
 /**
  * Replace an action's ending-variable assignments wholesale. The caller
  * passes the full desired set; we delete whatever's there and reinsert.
  * De-dupes by variable_id so we never violate the (action_id, variable_id)
  * unique constraint even if the client sends two rows for the same variable.
+ *
+ * Rows with an empty `variable_id` are treated as in-progress local UI
+ * state and skipped — they're picker-open rows the user hasn't bound to a
+ * variable yet. Rows with `variable_id` set but `value_id` null/empty are
+ * persisted: the schema went nullable on `value_id` in migration 0033 so a
+ * peer can commit "I've picked the variable, working on the value" without
+ * being forced to fill both at once.
  */
 async function replaceEndingAssignments(
   actionId: string,
@@ -52,16 +62,16 @@ async function replaceEndingAssignments(
   const rows: Array<{
     action_id: string;
     variable_id: string;
-    value_id: string;
+    value_id: string | null;
   }> = [];
   for (const a of assignments) {
-    if (!a.variable_id || !a.value_id) continue;
+    if (!a.variable_id) continue;
     if (seen.has(a.variable_id)) continue;
     seen.add(a.variable_id);
     rows.push({
       action_id: actionId,
       variable_id: a.variable_id,
-      value_id: a.value_id,
+      value_id: a.value_id || null,
     });
   }
   if (rows.length > 0) {
