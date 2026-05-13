@@ -2,6 +2,8 @@ import { Nav } from "@/components/nav";
 import { VariableHud } from "@/components/variable-hud";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PHASE_LABELS } from "@/lib/db/enums";
+import { profileFromMetadata } from "@/lib/auth/profile";
+import type { UserAvatarData } from "@/components/user-avatar";
 import type { Day, Playthrough, PlaythroughVariables } from "@/lib/db/types";
 
 /** Top-level app chrome: left nav + sticky top bar with playthrough HUD. */
@@ -9,9 +11,18 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
   let activePlaythrough: Playthrough | null = null;
   let currentDay: Day | null = null;
   let vars: Omit<PlaythroughVariables, "playthrough_id"> | undefined;
+  let currentUser: { email: string | null; profile: UserAvatarData } | null =
+    null;
 
   try {
     const supabase = await createSupabaseServerClient();
+    const { data: me } = await supabase.auth.getUser();
+    if (me.user) {
+      currentUser = {
+        email: me.user.email ?? null,
+        profile: profileFromMetadata(me.user.user_metadata),
+      };
+    }
     const { data: active } = await supabase
       .from("playthroughs")
       .select("*")
@@ -47,7 +58,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
-      <Nav />
+      <Nav currentUser={currentUser} />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Reserves room for the fixed nav Menu toggle so it doesn't
             overlap page content at narrow viewports. At lg+ the nav is

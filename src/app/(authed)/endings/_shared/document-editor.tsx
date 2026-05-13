@@ -347,14 +347,15 @@ export function DocumentEditor({
   const variableState: VariableState[] = useMemo(
     () =>
       variables.map((v) => {
-        let color_hex: string | null = null;
+        let color_hex: string | null = v.color_hex ?? null;
         if (v.kind === "number_ref" && v.number_ref) {
           color_hex =
+            v.color_hex ??
             IMPACT_CHIP_COLORS[v.number_ref] ??
             nationColorByName.get(v.name.toLowerCase()) ??
             null;
         } else if (v.kind === "aggregate_ref" && v.aggregate_ref) {
-          color_hex = AGGREGATE_CHIP_COLORS[v.aggregate_ref] ?? null;
+          color_hex = v.color_hex ?? AGGREGATE_CHIP_COLORS[v.aggregate_ref] ?? null;
         }
         return {
           id: v.id,

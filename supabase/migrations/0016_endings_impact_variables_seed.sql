@@ -39,7 +39,7 @@ begin
       rows.color_idx,
       rows.sort_idx
     )
-    on conflict (name) do nothing;
+    on conflict (id) do nothing;
   end loop;
 end $$;
 

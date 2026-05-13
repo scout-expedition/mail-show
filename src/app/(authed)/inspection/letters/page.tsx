@@ -23,12 +23,14 @@ export default async function InspectionLettersPage({
   searchParams: Promise<{
     group?: string;
     letter?: string;
+    actions?: string;
     report?: string;
   }>;
 }) {
   const {
     group: groupParam,
     letter: letterParam,
+    actions: actionsParam,
     report: reportParam,
   } = await searchParams;
   const supabase = await createSupabaseServerClient();
@@ -91,11 +93,13 @@ export default async function InspectionLettersPage({
   const endingAssignments = (endingAssignmentData ??
     []) as InspectionActionEndingAssignment[];
 
-  // Resolve ?group=<slug>, ?letter=<slug>/<variant>, ?report=<slug>/<variant>
-  // into initial ids. `?letter` and `?report` imply their containing group.
+  // Resolve ?group=<slug>, ?letter=<slug>-<variant>, ?actions=<slug>-<variant>,
+  // ?report=<slug>-<variant> into initial ids. `?letter` / `?actions` / `?report`
+  // imply their containing group.
   let initialGroupId: string | null = null;
   let initialLetterId: string | null = null;
   let initialSegmentId: string | null = null;
+  let initialView: "actions" | null = null;
 
   function resolveSlugToGroup(slug: string): LetterGroup | null {
     const parsed = parseGroupSlug(slug);
@@ -109,14 +113,17 @@ export default async function InspectionLettersPage({
     );
   }
 
-  function splitSlash(v: string): { slug: string; variant: string } | null {
-    const idx = v.indexOf("/");
-    if (idx < 0) return null;
-    return { slug: v.slice(0, idx), variant: v.slice(idx + 1) };
+  // Split `<slug><sep><variant>` where slug is `[A-Z]\d+`. Hyphen is the
+  // canonical separator; `/` is accepted as a legacy fallback for bookmarks
+  // produced before the hyphen swap.
+  function splitSlug(v: string): { slug: string; variant: string } | null {
+    const m = /^([A-Z]\d+)[-/](.+)$/.exec(v);
+    if (!m) return null;
+    return { slug: m[1], variant: m[2] };
   }
 
   if (reportParam) {
-    const parts = splitSlash(reportParam);
+    const parts = splitSlug(reportParam);
     if (parts) {
       const g = resolveSlugToGroup(parts.slug);
       if (g) {
@@ -142,8 +149,23 @@ export default async function InspectionLettersPage({
         }
       }
     }
+  } else if (actionsParam && actionsParam !== "none") {
+    const parts = splitSlug(actionsParam);
+    if (parts) {
+      const g = resolveSlugToGroup(parts.slug);
+      if (g) {
+        initialGroupId = g.id;
+        const letter = letters.find(
+          (l) => l.letter_group_id === g.id && l.variant === parts.variant
+        );
+        if (letter) {
+          initialLetterId = letter.id;
+          initialView = "actions";
+        }
+      }
+    }
   } else if (letterParam && letterParam !== "none") {
-    const parts = splitSlash(letterParam);
+    const parts = splitSlug(letterParam);
     if (parts) {
       const g = resolveSlugToGroup(parts.slug);
       if (g) {
@@ -178,6 +200,7 @@ export default async function InspectionLettersPage({
       initialGroupId={initialGroupId}
       initialLetterId={initialLetterId}
       initialSegmentId={initialSegmentId}
+      initialView={initialView}
       currentUserId={currentUserId}
       currentEmail={currentEmail}
     />

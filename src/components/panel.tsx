@@ -159,12 +159,15 @@ export function SaveRevert({
   );
 }
 
-export type OverflowMenuItem = {
-  label: string;
-  onClick: () => void;
-  intent?: "default" | "destructive";
-  icon?: React.ReactNode;
-};
+export type OverflowMenuItem =
+  | {
+      label: string;
+      onClick: () => void;
+      intent?: "default" | "destructive";
+      icon?: React.ReactNode;
+      disabled?: boolean;
+    }
+  | { divider: true };
 
 export function OverflowMenu({
   items,
@@ -205,26 +208,38 @@ export function OverflowMenu({
           role="menu"
           className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
         >
-          {items.map((item, i) => (
-            <button
-              key={i}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                item.onClick();
-                setOpen(false);
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[11px] tracking-tight transition-colors",
-                item.intent === "destructive"
-                  ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                  : "text-foreground hover:bg-accent/40"
-              )}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
+          {items.map((item, i) => {
+            if ("divider" in item) {
+              return (
+                <div
+                  key={i}
+                  role="separator"
+                  className="my-1 border-t border-border"
+                />
+              );
+            }
+            return (
+              <button
+                key={i}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                onClick={() => {
+                  item.onClick();
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[11px] tracking-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                  item.intent === "destructive"
+                    ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                    : "text-foreground hover:bg-accent/40"
+                )}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>
