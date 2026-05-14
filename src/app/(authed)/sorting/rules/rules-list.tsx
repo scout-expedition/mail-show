@@ -144,14 +144,13 @@ function RulesListInner({
           const oldRow = change.old as Record<string, unknown> | undefined;
           const id = oldRow?.id as string | undefined;
           if (!id) return;
-          const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
           setRules((prev) => prev.filter((r) => r.id !== id));
           setConditionsByRule((prev) => {
             const next = { ...prev };
             delete next[id];
             return next;
           });
-          toast({ intent: "destructive", message: `${by} deleted a sorting rule` });
+          toast({ intent: "destructive", message: "Someone deleted a sorting rule" });
           return;
         }
         if (eventType === "INSERT") {
@@ -300,6 +299,17 @@ function RuleRow({
     setBuilderConds(toBuilderConditions(conditions));
     setMatchMode(rule.match_mode);
     setLastCondKey(condServerKey);
+  }
+
+  // Resync matchMode independently when a peer changes only match_mode (without
+  // touching conditions, which would change condServerKey). Safe when the user
+  // hasn't dirtied the condition block — condsDirty=false implies the local
+  // matchMode was never locally edited, so it equals the last-seen server value
+  // and resyncing cannot clobber an in-progress edit.
+  const [lastSeenMatchMode, setLastSeenMatchMode] = useState(rule.match_mode);
+  if (!condsDirty && lastSeenMatchMode !== rule.match_mode) {
+    setMatchMode(rule.match_mode);
+    setLastSeenMatchMode(rule.match_mode);
   }
 
   function makeFocusKey(field: string): PresenceFocus {

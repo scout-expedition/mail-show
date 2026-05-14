@@ -578,3 +578,29 @@ presence following the Phase 1 pattern exactly.
   React's rules-of-hooks. Extract a `<RowComponent key={row.id} row={row} />`
   and put the hooks there — the `key` prop ensures unmount-cleanup (flush) on
   row removal.
+
+**Codex review fixes:**
+
+- **`matchMode` stale-clobber on peer-only `match_mode` change.** `RuleRow`
+  was syncing `matchMode` only when `condServerKey` (a hash of condition
+  identity/order) changed. If a peer updated `match_mode` without touching
+  conditions, the hash was unchanged, so the local state stayed at the old
+  value and the next "Save conditions" from this user would write the stale
+  mode back. Fixed with an additional "adjust state during render" pair
+  `[lastSeenMatchMode, setLastSeenMatchMode]` that compares to `rule.match_mode`
+  each render. Resync fires when the server value changes AND `condsDirty` is
+  false — the `!condsDirty` guard ensures we don't clobber a user's
+  in-progress edit: when `condsDirty=true` the user has already touched the
+  condition block (which sets `matchMode` locally) and the resync is
+  correctly suppressed. This is the right semantic because `matchMode` is part
+  of the conditions block and its dirtiness is tracked by `condsDirty`.
+
+- **Delete-toast attribution always "Someone".** The DELETE toast in both
+  `sorting-letters-editor.tsx` and `rules-list.tsx` tried to read
+  `oldRow.updated_by`, but `sorting_letters` and `sorting_rules` have no
+  `updated_by` column (unlike `inspection_letters`). The lookup always fell
+  back to `"Someone"`. Fixed by removing the dead lookup and hardcoding
+  `"Someone deleted a sorting letter"` / `"Someone deleted a sorting rule"`.
+  Adding an `updated_by` column would require a migration + trigger and is
+  out of scope; the bare attribution is consistent with what the toast was
+  always showing in practice.
