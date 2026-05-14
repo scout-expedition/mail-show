@@ -1,15 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import {
+  startTransition,
+  useEffect,
+  useState,
+  useTransition,
+} from "react";
+import { useRouter } from "next/navigation";
 import { IconDisplay } from "@/components/icon-display";
 import { IconPicker } from "@/components/icon-picker";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/components/toast";
 import type { IconType } from "@/lib/db/enums";
 import type { Nation } from "@/lib/db/types";
-import { deleteNation, updateAllNations } from "./actions";
+import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type { PresenceProfile, PresencePeer } from "@/lib/realtime/presence";
+import type { PostgresChange } from "@/lib/realtime/channel";
+import { deleteNation, patchNation, updateAllNations } from "./actions";
+import { normalizeHex } from "@/lib/color";
+import { useConfirm } from "@/components/confirm-dialog";
 
 function readableOn(hex: string): string {
   const h = hex.replace(/^#/, "");
@@ -22,69 +35,82 @@ function readableOn(hex: string): string {
   return luminance > 0.65 ? "#0b0d10" : "#ffffff";
 }
 
-type RowState = {
-  id: string;
-  name: string;
-  abbreviation: string | null;
-  color_hex: string;
-  icon_type: IconType;
-  icon_value: string | null;
-};
-
-export function NationsEditor({ nations }: { nations: Nation[] }) {
-  const formRef = useRef<HTMLFormElement>(null);
-  const [rows, setRows] = useState<RowState[]>(() =>
-    nations.map((n) => ({
-      id: n.id,
-      name: n.name,
-      abbreviation: n.abbreviation,
-      color_hex: n.color_hex,
-      icon_type: n.icon_type,
-      icon_value: n.icon_value,
-    }))
+export function NationsEditor({
+  nations,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  nations: Nation[];
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="nations-editor"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={["nations"]}
+    >
+      <NationsEditorInner nations={nations} />
+    </WorkspacePresenceProvider>
   );
-  const [dirty, setDirty] = useState(false);
-  const [pending, startTransition] = useTransition();
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
+}
 
+function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) {
+  const router = useRouter();
+  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { toast, toaster } = useToast();
+  const [, startReorderTransition] = useTransition();
+
+  // Local mirror of nations, seeded from server props. useEffect reconciles
+  // when the server prop changes (e.g. after a structural revalidate adds a nation).
+  const [rows, setRows] = useState<Nation[]>(initialNations);
   useEffect(() => {
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
-      const serverIds = new Set(nations.map((n) => n.id));
+      const serverIds = new Set(initialNations.map((n) => n.id));
       const kept = prev.filter((r) => serverIds.has(r.id));
-      const additions: RowState[] = [];
-      for (const n of nations) {
-        if (!prevById.has(n.id)) {
-          additions.push({
-            id: n.id,
-            name: n.name,
-            abbreviation: n.abbreviation,
-            color_hex: n.color_hex,
-            icon_type: n.icon_type,
-            icon_value: n.icon_value,
-          });
-        }
+      const additions: Nation[] = [];
+      for (const n of initialNations) {
+        if (!prevById.has(n.id)) additions.push(n);
       }
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [nations]);
+  }, [initialNations]);
 
-  function save() {
-    const form = formRef.current;
-    if (!form) return;
-    const fd = new FormData(form);
-    startTransition(async () => {
-      await updateAllNations(fd);
-      setDirty(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
+  // postgres_changes handler
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      if (change.table !== "nations") return;
+      if (change.eventType === "UPDATE" && change.new) {
+        const updated = change.new as unknown as Nation;
+        setRows((prev) =>
+          prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
+        );
+      } else if (change.eventType === "DELETE" && change.old) {
+        const deleted = change.old as unknown as { id: string };
+        setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        toast({
+          message: "A nation was deleted by another user.",
+          intent: "destructive",
+        });
+      } else if (change.eventType === "INSERT" && change.new) {
+        const inserted = change.new as unknown as Nation;
+        setRows((prev) => {
+          if (prev.some((r) => r.id === inserted.id)) return prev;
+          return [...prev, inserted];
+        });
+        startTransition(() => router.refresh());
+      }
     });
-  }
-
-  function updateRow(id: string, patch: Partial<RowState>) {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-    setDirty(true);
-  }
+  }, [onPostgresChanges, router, toast]);
 
   function handleDragOver(e: React.DragEvent, overIdx: number) {
     e.preventDefault();
@@ -96,34 +122,32 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
       return next;
     });
     setDragIndex(overIdx);
-    setDirty(true);
+  }
+
+  function handleDragEnd() {
+    setDragIndex(null);
+    // Persist the new sort_order via the coarse updateAllNations action.
+    // This is a structural mutation → keeps revalidatePath.
+    const fd = new FormData();
+    rows.forEach((r, i) => {
+      fd.append("ids", r.id);
+      fd.append("names", r.name);
+      fd.append("abbreviations", r.abbreviation ?? "");
+      fd.append("colors", r.color_hex);
+      fd.append("icon_types", r.icon_type);
+      fd.append("icon_values", r.icon_value ?? "");
+      fd.append("sort_orders", String(i));
+    });
+    startReorderTransition(async () => {
+      await updateAllNations(fd);
+    });
   }
 
   return (
     <>
-      <div className="mb-4 flex justify-end">
-        <Button
-          type="button"
-          onClick={save}
-          variant={dirty ? "default" : "secondary"}
-          size="sm"
-          disabled={pending || !dirty}
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              Saving…
-            </>
-          ) : (
-            "Save"
-          )}
-        </Button>
-      </div>
+      {toaster}
 
-      <form
-        ref={formRef}
-        className="overflow-hidden rounded-md border border-border bg-card"
-      >
+      <div className="overflow-hidden rounded-md border border-border bg-card">
         <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
           <span />
           <span />
@@ -132,91 +156,32 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
           <span />
         </div>
         {rows.map((row, i) => {
-          const fg = readableOn(row.color_hex);
-          const expanded = expandedId === row.id;
+          // Force the icon-picker drawer open when a peer is focused on this
+          // row's icon field, so the FieldHighlight ring has an element to
+          // render against. Local user can also click to expand.
+          const peerEditingIcon = peers.some(
+            (p) => p.focus?.recordId === row.id && p.focus?.field === "icon_value"
+          );
+          const expanded = expandedId === row.id || peerEditingIcon;
           return (
             <div
               key={row.id}
               draggable
               onDragStart={() => setDragIndex(i)}
               onDragOver={(e) => handleDragOver(e, i)}
-              onDragEnd={() => setDragIndex(null)}
+              onDragEnd={handleDragEnd}
               className={cn(
                 "border-t border-border first:border-t-0",
                 dragIndex === i && "opacity-60"
               )}
             >
-              <input type="hidden" name="ids" value={row.id} />
-              <input type="hidden" name="icon_types" value={row.icon_type} />
-              <input
-                type="hidden"
-                name="icon_values"
-                value={row.icon_value ?? ""}
+              <NationRow
+                row={row}
+                peers={peers}
+                expanded={expanded}
+                onToggleExpand={() => setExpandedId(expanded ? null : row.id)}
+                onActivity={pingActivity}
               />
-              <input type="hidden" name="colors" value={row.color_hex} />
-              <input type="hidden" name="sort_orders" value={i} />
-
-              <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 px-3 py-1">
-                <DragHandle />
-                <button
-                  type="button"
-                  onClick={() => setExpandedId(expanded ? null : row.id)}
-                  className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
-                  style={{ background: row.color_hex, color: fg }}
-                  title="Icon and color"
-                  aria-label="Edit icon and color"
-                >
-                  {row.icon_value ? (
-                    <IconDisplay
-                      type={row.icon_type}
-                      value={row.icon_value}
-                      size={14}
-                    />
-                  ) : (
-                    <span className="font-mono text-[9px] opacity-70">ic</span>
-                  )}
-                </button>
-                <Input
-                  name="names"
-                  value={row.name}
-                  onChange={(e) => updateRow(row.id, { name: e.target.value })}
-                  className={cn(
-                    "h-8",
-                    !row.name.trim() && "ring-2 ring-destructive"
-                  )}
-                  required
-                />
-                <Input
-                  name="abbreviations"
-                  value={row.abbreviation ?? ""}
-                  onChange={(e) =>
-                    updateRow(row.id, { abbreviation: e.target.value })
-                  }
-                  maxLength={1}
-                  className="h-8 text-center"
-                />
-                <DeleteX id={row.id} name={row.name} />
-              </div>
-
-              {expanded ? (
-                <div className="border-t border-border bg-accent/10 px-3 py-3">
-                  <IconPicker
-                    initialType={row.icon_type}
-                    initialValue={row.icon_value}
-                    emitHiddenFields={false}
-                    onChange={(next) =>
-                      updateRow(row.id, {
-                        icon_type: next.type,
-                        icon_value: next.value,
-                      })
-                    }
-                    color={row.color_hex}
-                    onColorChange={(c) =>
-                      updateRow(row.id, { color_hex: c })
-                    }
-                  />
-                </div>
-              ) : null}
             </div>
           );
         })}
@@ -225,7 +190,149 @@ export function NationsEditor({ nations }: { nations: Nation[] }) {
             No nations yet.
           </p>
         ) : null}
-      </form>
+      </div>
+    </>
+  );
+}
+
+function NationRow({
+  row,
+  peers,
+  expanded,
+  onToggleExpand,
+  onActivity,
+}: {
+  row: Nation;
+  peers: PresencePeer[];
+  expanded: boolean;
+  onToggleExpand: () => void;
+  onActivity: () => void;
+}) {
+  const { setFocus } = usePresenceContext();
+  const fg = readableOn(row.color_hex);
+  const focusBase = { table: "nations", recordId: row.id };
+
+  const nameField = useInstantField({
+    value: row.name,
+    onCommit: (v) => patchNation(row.id, { name: v }),
+    onFocusChange: (focused) => {
+      setFocus(focused ? { ...focusBase, field: "name" } : null);
+    },
+    onActivity,
+  });
+
+  const abbreviationField = useInstantField({
+    value: row.abbreviation ?? "",
+    onCommit: (v) => patchNation(row.id, { abbreviation: v || null }),
+    onFocusChange: (focused) => {
+      setFocus(focused ? { ...focusBase, field: "abbreviation" } : null);
+    },
+    onActivity,
+  });
+
+  const colorField = useInstantField({
+    value: row.color_hex,
+    onCommit: (v) => patchNation(row.id, { color_hex: normalizeHex(v) }),
+    onFocusChange: (focused) => {
+      setFocus(focused ? { ...focusBase, field: "color_hex" } : null);
+    },
+    onActivity,
+  });
+
+  const iconTypeField = useInstantField({
+    value: row.icon_type,
+    onCommit: (v) => patchNation(row.id, { icon_type: v as IconType }),
+    onFocusChange: (focused) => {
+      setFocus(focused ? { ...focusBase, field: "icon_type" } : null);
+    },
+    onActivity,
+  });
+
+  const iconValueField = useInstantField({
+    value: row.icon_value ?? "",
+    onCommit: (v) => patchNation(row.id, { icon_value: v || null }),
+    onFocusChange: (focused) => {
+      setFocus(focused ? { ...focusBase, field: "icon_value" } : null);
+    },
+    onActivity,
+  });
+
+  return (
+    <>
+      <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 px-3 py-1">
+        <DragHandle />
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
+          style={{ background: colorField.value, color: fg }}
+          title="Icon and color"
+          aria-label="Edit icon and color"
+        >
+          {iconValueField.value ? (
+            <IconDisplay
+              type={iconTypeField.value as IconType}
+              value={iconValueField.value}
+              size={14}
+            />
+          ) : (
+            <span className="font-mono text-[9px] opacity-70">ic</span>
+          )}
+        </button>
+        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
+          <Input
+            value={nameField.value}
+            onChange={(e) => nameField.set(e.target.value)}
+            onFocus={nameField.onFocus}
+            onBlur={nameField.onBlur}
+            className={cn("h-8", !nameField.value.trim() && "ring-2 ring-destructive")}
+            required
+          />
+        </FieldHighlight>
+        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "abbreviation" }}>
+          <Input
+            value={abbreviationField.value}
+            onChange={(e) => abbreviationField.set(e.target.value)}
+            onFocus={abbreviationField.onFocus}
+            onBlur={abbreviationField.onBlur}
+            maxLength={1}
+            className="h-8 text-center"
+          />
+        </FieldHighlight>
+        <DeleteX id={row.id} name={row.name} />
+      </div>
+
+      {expanded ? (
+        <div className="border-t border-border bg-accent/10 px-3 py-3">
+          <FieldHighlight
+            peers={peers}
+            focusKey={{ ...focusBase, field: "icon_value" }}
+          >
+            <div
+              onFocus={() => {
+                iconValueField.onFocus();
+                colorField.onFocus();
+              }}
+              onBlur={() => {
+                iconValueField.onBlur();
+                colorField.onBlur();
+              }}
+            >
+              <IconPicker
+                initialType={iconTypeField.value as IconType}
+                initialValue={iconValueField.value || null}
+                emitHiddenFields={false}
+                onChange={(next) => {
+                  iconTypeField.set(next.type);
+                  iconValueField.set(next.value ?? "");
+                }}
+                color={colorField.value}
+                onColorChange={(c) => colorField.set(c)}
+              />
+            </div>
+          </FieldHighlight>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -250,18 +357,24 @@ function DragHandle() {
 }
 
 function DeleteX({ id, name }: { id: string; name: string }) {
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   return (
-    <form action={deleteNation}>
-      <input type="hidden" name="id" value={id} />
+    <>
       <button
-        type="submit"
+        type="button"
         aria-label="Delete nation"
         title="Delete"
-        onClick={(e) => {
-          if (
-            !confirm(`Delete nation "${name}"? This cannot be undone.`)
-          )
-            e.preventDefault();
+        onClick={async () => {
+          const ok = await confirmDialog({
+            title: "Delete nation?",
+            message: `"${name}" will be permanently removed. This cannot be undone.`,
+            confirmLabel: "Delete",
+            intent: "destructive",
+          });
+          if (!ok) return;
+          const fd = new FormData();
+          fd.append("id", id);
+          await deleteNation(fd);
         }}
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
       >
@@ -279,15 +392,7 @@ function DeleteX({ id, name }: { id: string; name: string }) {
           <path d="M6 6l12 12M18 6L6 18" />
         </svg>
       </button>
-    </form>
-  );
-}
-
-function Spinner() {
-  return (
-    <span
-      aria-hidden
-      className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
-    />
+      {confirmDialogEl}
+    </>
   );
 }

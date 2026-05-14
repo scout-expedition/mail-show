@@ -3,6 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+/**
+ * Narrow per-field patch — called by useInstantField in CitiesEditor.
+ * Does NOT call revalidatePath; realtime fans out the change to other clients.
+ */
+export async function patchCity(
+  id: string,
+  patch: Partial<{ name: string; code: string; nation_id: string }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.from("cities").update(patch).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 export async function createCity() {
   const supabase = await createSupabaseServerClient();
   const { data: nations } = await supabase
