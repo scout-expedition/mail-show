@@ -22,6 +22,7 @@ type BlockKind = "text" | "result" | "condition";
 export type TextBlockComponent = ComponentType<{
   block: BlockState;
   onChange: (text: string) => void;
+  onChangeSummary: (summary: string) => void;
   onDelete: () => void;
 }>;
 
@@ -243,6 +244,7 @@ export function BlockList({
               <TextLeaf
                 block={b}
                 onChange={(text) => onUpdateBlock(b.id, { text })}
+                onChangeSummary={(summary) => onUpdateBlock(b.id, { summary })}
                 onDelete={() => handleDeleteBlock(b.id)}
               />
             ) : (
@@ -279,6 +281,7 @@ export function BlockList({
               values={values}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
+              onChangeSummary={(summary) => onUpdateBlock(b.id, { summary })}
               getRowBlockCount={(rowId) =>
                 (byParent.get(parentKey(b.id, rowId)) ?? []).length
               }
