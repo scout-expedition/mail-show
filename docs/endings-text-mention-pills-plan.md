@@ -4,7 +4,9 @@
 
 Phase 1 (PR #37) shipped `@[Variable Name]` substitution at preview time. Phase 2 (PR #38) added an autocomplete popup that inserts the literal `@[Name]` string into a plain textarea. Phase 3 is the final UX pass: render committed `@[Name]` tokens as colored **pills** (matching `VariableChip` in condition-block headers) inside the authoring editor, instead of leaving them as raw text.
 
-Today's authoring surface uses `MentionTextarea` — a plain `<textarea>` with an autocomplete popup. Plain text only; tokens look like `@[Variable Name]`. Phase 3 replaces the textarea with a contenteditable editor that renders tokens as inline pills while still serializing to the same `@[Name]` strings stored in `ending_blocks.text`. No DB / evaluator changes; Phase 1 substitution keeps working unchanged.
+Today's authoring surface uses `MentionTextarea` — a plain `<textarea>` with an autocomplete popup. Plain text only; tokens look like `@[Variable Name]`. Phase 3 replaces the textarea with a contenteditable editor that renders tokens as inline pills while still serializing to the same `@[Name]` strings stored in `ending_blocks.text`. No DB changes.
+
+**Mid-implementation scope drift**: the original plan said "no evaluator change," but the preview-coloring feature added mid-PR (color resolved values blue, unresolved literals amber) required the evaluator to emit `paragraphSegments: SubstitutionSegment[][]` alongside `paragraphs: string[]` on `DocumentEvaluation`. Existing string consumers are unchanged; this is an additive field. The Phase 1 substitution behavior is byte-identical.
 
 Intended outcome:
 - A text block's body renders as a mix of plain text and inline pills.

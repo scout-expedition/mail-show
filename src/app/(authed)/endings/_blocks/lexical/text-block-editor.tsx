@@ -14,6 +14,7 @@ import { useCallback, useMemo, type CSSProperties } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
 import { cn } from "@/lib/utils";
 import { MentionArrowPlugin } from "./mention-arrow-plugin";
+import { MentionPastePlugin } from "./mention-paste-plugin";
 import { MentionTriggerPlugin } from "./mention-trigger-plugin";
 import {
   MentionNode,
@@ -115,6 +116,7 @@ export function LexicalTextBlockEditor({
             ignoreHistoryMergeTagChange
           />
           <MentionArrowPlugin />
+          <MentionPastePlugin />
           <MentionTriggerPlugin variables={variables} />
         </LexicalComposer>
       </div>

@@ -148,6 +148,10 @@ function MentionPillView({ nodeKey, variableName }: MentionPillViewProps) {
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Bring focus back to the contenteditable before mutating selection
+    // so the caret actually renders. Without this, click on the pill
+    // can update Lexical's selection state without restoring DOM focus.
+    editor.focus();
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!node) return;

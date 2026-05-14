@@ -8,7 +8,7 @@
 // mount-time onChange, and undo behavior.
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { LexicalTextBlockEditor } from "./text-block-editor";
 import type { VariableState } from "@/lib/endings/block-state";
 
@@ -17,6 +17,25 @@ beforeAll(() => {
   // jsdom doesn't ship it; stub a no-op so the editor mounts.
   if (!document.execCommand) {
     document.execCommand = (() => false) as typeof document.execCommand;
+  }
+  // Lexical's async scrollIntoViewIfNeeded path calls
+  // `Range.getBoundingClientRect()` after selection updates. jsdom 29
+  // doesn't implement it; supply a zeroed-out fallback so the async
+  // commit doesn't throw an unhandled rejection after each test (the
+  // tests themselves pass before this fires).
+  const noopRect = (): DOMRect => ({
+    x: 0,
+    y: 0,
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    width: 0,
+    height: 0,
+    toJSON: () => ({}),
+  });
+  if (typeof Range !== "undefined" && !Range.prototype.getBoundingClientRect) {
+    Range.prototype.getBoundingClientRect = noopRect;
   }
 });
 
@@ -149,5 +168,106 @@ describe("MentionNode — getTextContent serializes to @[Name]", () => {
     const pill = container.querySelector("[data-mention]");
     expect(pill).not.toBeNull();
     expect(pill?.getAttribute("data-mention")).toBe("Bob");
+  });
+});
+
+// jsdom 29 doesn't ship a working DataTransfer constructor; build a
+// minimal stub that satisfies ClipboardEvent.clipboardData's
+// getData/setData/types contract for paste-handler tests.
+function makeClipboardData(initial: Record<string, string>) {
+  const store = new Map(Object.entries(initial));
+  return {
+    getData: (type: string) => store.get(type) ?? "",
+    setData: (type: string, value: string) => {
+      store.set(type, value);
+    },
+    types: [...store.keys()],
+  } as unknown as DataTransfer;
+}
+
+function firePaste(editable: HTMLElement, payload: Record<string, string>) {
+  const pasteEvent = new Event("paste", {
+    bubbles: true,
+    cancelable: true,
+  }) as ClipboardEvent;
+  Object.defineProperty(pasteEvent, "clipboardData", {
+    value: makeClipboardData(payload),
+    writable: false,
+  });
+  editable.dispatchEvent(pasteEvent);
+}
+
+describe("MentionPastePlugin — converts pasted @[Name] tokens to pills", () => {
+  it("renders pills for @[Name] tokens in pasted plain text", async () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <LexicalTextBlockEditor
+        value=""
+        onChange={onChange}
+        variables={[v("Bob")]}
+      />
+    );
+    const editable = container.querySelector(
+      "[contenteditable=true]"
+    ) as HTMLElement | null;
+    expect(editable).not.toBeNull();
+    editable!.focus();
+    firePaste(editable!, { "text/plain": "Hello @[Bob], welcome." });
+    // Lexical's update batch flushes on a microtask; let the next
+    // paint tick happen before reading the DOM.
+    await waitFor(() => {
+      const pill = container.querySelector("[data-mention]");
+      expect(pill).not.toBeNull();
+    });
+    const pill = container.querySelector("[data-mention]");
+    expect(pill?.getAttribute("data-mention")).toBe("Bob");
+  });
+
+  it("leaves plain text without tokens to Lexical's default paste behavior", async () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <LexicalTextBlockEditor
+        value=""
+        onChange={onChange}
+        variables={[v("Bob")]}
+      />
+    );
+    const editable = container.querySelector(
+      "[contenteditable=true]"
+    ) as HTMLElement | null;
+    editable!.focus();
+    firePaste(editable!, { "text/plain": "Just regular text." });
+    expect(container.querySelectorAll("[data-mention]")).toHaveLength(0);
+  });
+
+  it("defers to Lexical's in-editor format when application/x-lexical-editor is present", async () => {
+    // When pasting from within another Lexical editor, the
+    // application/x-lexical-editor payload carries the rich state; our
+    // plugin bails so Lexical's own clipboard logic reconstructs the
+    // nodes (which already round-trips MentionNodes via clone +
+    // importJSON).
+    const onChange = vi.fn();
+    const { container } = render(
+      <LexicalTextBlockEditor
+        value=""
+        onChange={onChange}
+        variables={[v("Bob")]}
+      />
+    );
+    const editable = container.querySelector(
+      "[contenteditable=true]"
+    ) as HTMLElement | null;
+    editable!.focus();
+    firePaste(editable!, {
+      "text/plain": "Hello @[Bob].",
+      // Presence (any non-empty value) is the signal — we don't parse
+      // it here, just check our plugin bails.
+      "application/x-lexical-editor": "{}",
+    });
+    // Plugin returned false; Lexical's default paste handler ran. In
+    // jsdom that often leaves the editor empty (no clipboard parser);
+    // the assertion is that our plugin did NOT race ahead and insert a
+    // pill from text/plain.
+    expect(container.querySelectorAll("[data-mention]")).toHaveLength(0);
   });
 });
