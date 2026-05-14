@@ -82,7 +82,12 @@ export type GraphSelection =
 export type UndoEntry =
   | { kind: "moveLetterGroup"; groupId: string; previousDayId: string | null }
   | { kind: "moveLetter"; letterId: string; previousGroupId: string }
-  | { kind: "moveReport"; segmentId: string; previousDayId: string | null }
+  | {
+      kind: "moveReport";
+      segmentId: string;
+      previousOverrideId: string | null;
+      previousOffset: number | null;
+    }
   | {
       kind: "setNextLetter";
       actionId: string;
@@ -141,8 +146,8 @@ const STORYLINE_COL_PAD_X = 16;
 // Report and letter pills share a fixed width so cells line up cleanly.
 const PILL_W = 110;
 
-const GROUP_PAD_LEADING = 44; // horizontal padding inside the group outline
-const GROUP_PAD_TRAILING = 44;
+const GROUP_PAD_LEADING = 56; // horizontal padding inside the group outline
+const GROUP_PAD_TRAILING = 56;
 const GROUP_PAD_TOP = 14; // vertical padding inside the group outline
 const GROUP_PAD_BOTTOM = 14;
 const VARIANT_GAP = 60; // horizontal gap between sibling variants in a group — wide enough that impact-overlay badges between adjacent variants don't collide
@@ -245,6 +250,37 @@ const edgeTypes = {
 };
 
 // Variant key for a letter row. Null variants collapse to "".
+/**
+ * Convert a lowercase roman numeral ("i", "ii", "iii", "iv", "ix", …) to its
+ * integer value. Returns `Number.MAX_SAFE_INTEGER` for unrecognized input so
+ * sorts push it to the end rather than collapsing it to 0.
+ */
+function romanToInt(v: string | null | undefined): number {
+  if (!v) return Number.MAX_SAFE_INTEGER;
+  const map: Record<string, number> = {
+    i: 1,
+    v: 5,
+    x: 10,
+    l: 50,
+    c: 100,
+    d: 500,
+    m: 1000,
+  };
+  const s = v.toLowerCase();
+  let total = 0;
+  for (let i = 0; i < s.length; i++) {
+    const cur = map[s[i]];
+    const next = map[s[i + 1]];
+    if (cur == null) return Number.MAX_SAFE_INTEGER;
+    if (next != null && cur < next) {
+      total -= cur;
+    } else {
+      total += cur;
+    }
+  }
+  return total;
+}
+
 function variantKey(v: string | null): string {
   return v ?? "";
 }
@@ -257,6 +293,58 @@ function letterDisplayId(
 ): string {
   if (!variant || onlyVariantInGroup) return `L-${abbr}${sequence}`;
   return `L-${abbr}${sequence}/${variant}`;
+}
+
+/**
+ * Group / letter node IDs encode a (groupId, optional dayKey) tuple so the
+ * same logical group can render multiple instances on the canvas (one per
+ * day where its letters effectively land). The primary instance keeps the
+ * historical bare-groupId format so drag/undo/selection handlers that only
+ * need the groupId continue to work unchanged.
+ *
+ *   Primary instance — letters on the group's own delivery day:
+ *     group:GID                  letter:GID:VARIANT
+ *   Secondary instance — letters with overrides that put them on a different
+ *   day from the group:
+ *     group:GID@DAY              letter:GID:VARIANT@DAY
+ */
+function makeGroupNodeId(groupId: string, dayKey: string | null): string {
+  return dayKey ? `group:${groupId}@${dayKey}` : `group:${groupId}`;
+}
+function makeLetterNodeId(
+  groupId: string,
+  variantKey: string,
+  dayKey: string | null
+): string {
+  return dayKey
+    ? `letter:${groupId}:${variantKey}@${dayKey}`
+    : `letter:${groupId}:${variantKey}`;
+}
+function parseGroupNodeId(
+  id: string
+): { groupId: string; dayKey: string | null } | null {
+  if (!id.startsWith("group:")) return null;
+  const rest = id.slice("group:".length);
+  const at = rest.indexOf("@");
+  if (at === -1) return { groupId: rest, dayKey: null };
+  return { groupId: rest.slice(0, at), dayKey: rest.slice(at + 1) };
+}
+function parseLetterNodeId(
+  id: string
+): { groupId: string; variantKey: string; dayKey: string | null } | null {
+  if (!id.startsWith("letter:")) return null;
+  const rest = id.slice("letter:".length);
+  const colon = rest.indexOf(":");
+  if (colon === -1) return null;
+  const groupId = rest.slice(0, colon);
+  const tail = rest.slice(colon + 1);
+  const at = tail.indexOf("@");
+  if (at === -1) return { groupId, variantKey: tail, dayKey: null };
+  return {
+    groupId,
+    variantKey: tail.slice(0, at),
+    dayKey: tail.slice(at + 1),
+  };
 }
 
 export function GraphView({
@@ -318,14 +406,25 @@ export function GraphView({
     // -------------------------------------------------------------
     // Group → variants (variants stack horizontally inside the group)
     // -------------------------------------------------------------
-    type GroupInfo = {
+    // A "group instance" is a (group, day) pair: the same group renders an
+    // additional pill on every day where one of its letters effectively
+    // lands (via delivery_day_offset / delivery_day_override_id). The
+    // primary instance sits on the group's own delivery_day_id; secondary
+    // instances are keyed by the override day. Edge endpoints, drag
+    // targets, and selection all reference instance node ids so each pill
+    // is independently click-/drop-able.
+    type GroupInstance = {
+      nodeId: string;
+      instanceKey: string; // for cells: same as nodeId minus "group:" prefix
+      groupId: string;
       group: LetterGroup;
       storyline: Storyline;
       rowId: string;
-      variants: string[]; // variant keys (may include "")
-      variantHeights: number[]; // per-variant card height (summary-dependent)
-      width: number; // group outline width (horizontal variant stack)
-      height: number; // group outline height
+      dayKey: string | null; // null = primary
+      variants: string[]; // variant keys this instance contains
+      variantHeights: number[];
+      width: number;
+      height: number;
     };
 
     // For each (group, variant), the primary letter is the lowest-piece one.
@@ -339,14 +438,26 @@ export function GraphView({
       }
     }
 
-    const groupsById = new Map<string, GroupInfo>();
+    // Each letter's effective day → which group instance houses it.
+    const letterEffectiveDayKey = (l: InspectionLetterView): string =>
+      l.effective_day_id ?? "unscheduled";
+
+    // groupInstancesById indexed by instance node id ("group:GID" or
+    // "group:GID@DAY"). instancesByGroup gives all instances for a group.
+    const groupInstancesById = new Map<string, GroupInstance>();
+    const instancesByGroup = new Map<string, GroupInstance[]>();
     for (const g of letterGroups) {
       const storyline = storylineById.get(g.storyline_id);
       if (!storyline) continue;
       const groupLetters = letters.filter((l) => l.letter_group_id === g.id);
-      // Distinct variant keys, preserving order (a before b before …, null first).
+      const gDayKey = g.delivery_day_id ?? "unscheduled";
+
+      // Partition variants by their effective day. A variant can have
+      // multiple letters (different pieces); they should always share an
+      // effective_day_id since override is set per letter row, but if for
+      // some reason they diverge we follow the primary letter's day.
+      const variantByLetter: Array<{ variant: string; dayKey: string }> = [];
       const seen = new Set<string>();
-      const variants: string[] = [];
       for (const l of groupLetters
         .slice()
         .sort((a, b) => {
@@ -355,36 +466,60 @@ export function GraphView({
           if (va !== vb) return va.localeCompare(vb);
           return (a.piece ?? 0) - (b.piece ?? 0);
         })) {
-        const k = variantKey(l.variant);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        variants.push(k);
+        const vk = variantKey(l.variant);
+        if (seen.has(vk)) continue;
+        seen.add(vk);
+        const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
+        variantByLetter.push({
+          variant: vk,
+          dayKey: letterEffectiveDayKey(primary ?? l),
+        });
       }
-      // Empty groups (no letters yet) keep their slot in the layout but
-      // don't render a phantom letter card — earlier code pushed an "" key
-      // to size the group, which leaked through letterDisplayId as
-      // "L-{abbr}{sequence}". Size as if one variant exists; render zero
-      // letter nodes.
-      const variantHeights =
-        variants.length === 0
-          ? [HEADING_ONLY_H]
-          : variants.map((vk) => {
-              const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
-              return cardHeight(primary?.summary);
-            });
-      const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
-      const width = groupWidth(Math.max(1, variants.length));
-      const height = groupHeight(maxCardH);
-      const rowId = g.delivery_day_id ?? "unscheduled";
-      groupsById.set(g.id, {
-        group: g,
-        storyline,
-        rowId,
-        variants,
-        variantHeights,
-        width,
-        height,
-      });
+
+      // Per-day bucket of variants. Always include the primary day bucket
+      // (gDayKey) even if empty so the group's "home" pill still renders.
+      const variantsByDay = new Map<string, string[]>();
+      variantsByDay.set(gDayKey, []);
+      for (const { variant, dayKey } of variantByLetter) {
+        const list = variantsByDay.get(dayKey) ?? [];
+        list.push(variant);
+        variantsByDay.set(dayKey, list);
+      }
+
+      const instances: GroupInstance[] = [];
+      for (const [dayKey, vs] of variantsByDay) {
+        const isPrimary = dayKey === gDayKey;
+        const instanceDayKey = isPrimary ? null : dayKey;
+        const variantHeights =
+          vs.length === 0
+            ? [HEADING_ONLY_H]
+            : vs.map((vk) => {
+                const primary = primaryLetterByGroupVariant.get(
+                  `${g.id}:${vk}`
+                );
+                return cardHeight(primary?.summary);
+              });
+        const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
+        const width = groupWidth(Math.max(1, vs.length));
+        const height = groupHeight(maxCardH);
+        const nodeId = makeGroupNodeId(g.id, instanceDayKey);
+        const inst: GroupInstance = {
+          nodeId,
+          instanceKey: nodeId.slice("group:".length),
+          groupId: g.id,
+          group: g,
+          storyline,
+          rowId: dayKey,
+          dayKey: instanceDayKey,
+          variants: vs,
+          variantHeights,
+          width,
+          height,
+        };
+        groupInstancesById.set(nodeId, inst);
+        instances.push(inst);
+      }
+      instancesByGroup.set(g.id, instances);
     }
 
     // -------------------------------------------------------------
@@ -428,20 +563,33 @@ export function GraphView({
       return cell;
     }
 
-    // Stable group order inside cell: by sequence.
+    // Stable group order inside cell: by sequence, then primary instance
+    // first followed by override-day instances. `cell.groupIds` actually
+    // holds GROUP INSTANCE node ids ("group:GID" or "group:GID@DAY"), not
+    // raw group ids — same key the placement and edge logic looks up.
     const orderedGroups = letterGroups
       .slice()
       .sort((a, b) => a.sequence - b.sequence);
     for (const g of orderedGroups) {
-      const info = groupsById.get(g.id);
-      if (!info) continue;
-      const cell = getCell(info.rowId, g.storyline_id);
-      cell.groupIds.push(g.id);
+      const instances = instancesByGroup.get(g.id) ?? [];
+      for (const inst of instances) {
+        const cell = getCell(inst.rowId, g.storyline_id);
+        cell.groupIds.push(inst.nodeId);
+      }
     }
 
-    // Segments into cells.
+    // Segments into cells, sorted L→R by report variant (i, ii, iii, …)
+    // so same-letter-group reports always render in canonical order within
+    // a cell.
     const segmentById = new Map(segments.map((s) => [s.id, s]));
-    for (const s of segments) {
+    const orderedSegments = segments
+      .slice()
+      .sort(
+        (a, b) =>
+          romanToInt(a.variant) - romanToInt(b.variant) ||
+          a.variant.localeCompare(b.variant)
+      );
+    for (const s of orderedSegments) {
       const rowId = s.effective_day_id ?? "unscheduled";
       const cell = getCell(rowId, s.storyline_id);
       cell.segmentIds.push(s.id);
@@ -453,8 +601,8 @@ export function GraphView({
     for (const cell of cells.values()) {
       let bottomW = 0;
       let bottomH = 0;
-      for (const gid of cell.groupIds) {
-        const gi = groupsById.get(gid);
+      for (const instId of cell.groupIds) {
+        const gi = groupInstancesById.get(instId);
         if (!gi) continue;
         if (bottomW > 0) bottomW += CELL_GAP;
         bottomW += gi.width;
@@ -632,7 +780,11 @@ export function GraphView({
               selected: segSelected,
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
-            draggable: true,
+            // Per-node `draggable` overrides ReactFlow's global
+            // `nodesDraggable` flag, so we must gate it on editingEnabled
+            // here too — otherwise the lock toggle doesn't actually
+            // disable day-moving drags.
+            draggable: editingEnabled,
             selectable: false,
             focusable: false,
           });
@@ -641,11 +793,12 @@ export function GraphView({
 
         // Groups row in bottom half — stacked horizontally, centered in column.
         let groupsX = colCenterX - cell.bottomHalfW / 2;
-        for (const gid of cell.groupIds) {
-          const gi = groupsById.get(gid);
+        for (const instId of cell.groupIds) {
+          const gi = groupInstancesById.get(instId);
           if (!gi) continue;
+          const gid = gi.groupId;
           const abbr = gi.storyline.abbreviation;
-          const groupNodeId = `group:${gid}`;
+          const groupNodeId = gi.nodeId;
           const groupSelected =
             selection?.kind === "group" && selection.groupId === gid;
           n.push({
@@ -657,11 +810,12 @@ export function GraphView({
               height: gi.height,
               abbr,
               sequence: gi.group.sequence,
+              name: gi.group.name,
               color: gi.storyline.color_hex,
               selected: groupSelected,
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
-            draggable: true,
+            draggable: editingEnabled,
             selectable: false,
             focusable: false,
             style: { width: gi.width, height: gi.height },
@@ -670,7 +824,7 @@ export function GraphView({
           const onlyVariant = gi.variants.length === 1;
           let relX = GROUP_PAD_LEADING;
           gi.variants.forEach((vk, i) => {
-            const letterNodeId = `letter:${gid}:${vk}`;
+            const letterNodeId = makeLetterNodeId(gid, vk, gi.dayKey);
             const contentId = letterDisplayId(
               abbr,
               gi.group.sequence,
@@ -709,7 +863,7 @@ export function GraphView({
                 onSelect: () =>
                   select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
-              draggable: true,
+              draggable: editingEnabled,
               selectable: false,
               focusable: false,
             });
@@ -726,7 +880,8 @@ export function GraphView({
     // -------------------------------------------------------------
     const e: Edge[] = [];
 
-    // Index: letter id → (groupId, variantKey, storyline_id, group_sequence)
+    // Index: letter id → instance info needed to build edge node ids.
+    // dayKey is null when the letter is in its group's primary (home) day.
     const letterIndex = new Map<
       string,
       {
@@ -734,15 +889,25 @@ export function GraphView({
         variantKey: string;
         storylineId: string;
         groupSequence: number;
+        dayKey: string | null;
       }
     >();
-    for (const l of letters) {
-      letterIndex.set(l.id, {
-        groupId: l.letter_group_id,
-        variantKey: variantKey(l.variant),
-        storylineId: l.storyline_id,
-        groupSequence: l.group_sequence,
-      });
+    {
+      const groupHomeDayKey = new Map<string, string>(
+        letterGroups.map((g) => [g.id, g.delivery_day_id ?? "unscheduled"])
+      );
+      for (const l of letters) {
+        const home = groupHomeDayKey.get(l.letter_group_id) ?? "unscheduled";
+        const effective = l.effective_day_id ?? "unscheduled";
+        const dayKey = effective === home ? null : effective;
+        letterIndex.set(l.id, {
+          groupId: l.letter_group_id,
+          variantKey: variantKey(l.variant),
+          storylineId: l.storyline_id,
+          groupSequence: l.group_sequence,
+          dayKey,
+        });
+      }
     }
 
     // Index: (storyline_id, sequence) → group id
@@ -751,11 +916,20 @@ export function GraphView({
       groupByStorySeq.set(`${g.storyline_id}:${g.sequence}`, g.id);
     }
 
-    // Set of variant keys that actually exist in each group, for next-letter
-    // validation.
+    // Variant keys that exist in each group (across every instance) for
+    // next-letter validation, plus a (groupId, variantKey) → letter map so
+    // edges can route to the right instance node when the target letter
+    // has been moved to a different day.
     const variantsInGroup = new Map<string, Set<string>>();
-    for (const [gid, gi] of groupsById)
-      variantsInGroup.set(gid, new Set(gi.variants));
+    const letterByGroupVariant = new Map<string, InspectionLetterView>();
+    for (const l of letters) {
+      const vk = variantKey(l.variant);
+      const set =
+        variantsInGroup.get(l.letter_group_id) ?? new Set<string>();
+      set.add(vk);
+      variantsInGroup.set(l.letter_group_id, set);
+      letterByGroupVariant.set(`${l.letter_group_id}:${vk}`, l);
+    }
 
     // Build the effective (post-template-override) display fields for
     // actions so template edits (color, icon) flow through live.
@@ -789,6 +963,13 @@ export function GraphView({
       kind: "ls" | "sn" | "ln" | "stub";
       /** Synthetic id used to mint the stub-target node for dangling edges. */
       stubNodeId?: string;
+      /**
+       * True when the trigger letter's effective day is the same as or
+       * after the report's effective day — the report can't actually
+       * include that letter's outcome (letters sort end-of-day, reports
+       * run start-of-day). Renders the edge as a destructive dashed line.
+       */
+      invalid?: boolean;
     };
     const candidates: Candidate[] = [];
 
@@ -800,7 +981,7 @@ export function GraphView({
     for (const a of actions) {
       const src = letterIndex.get(a.inspection_letter_id);
       if (!src) continue;
-      const sourceId = `letter:${src.groupId}:${src.variantKey}`;
+      const sourceId = makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
 
       const segmentNodeId = a.report_segment_id
         ? `report:${a.report_segment_id}`
@@ -823,10 +1004,44 @@ export function GraphView({
         if (nextGroupId) {
           const vset = variantsInGroup.get(nextGroupId);
           if (vset?.has(effectiveNextVariant)) {
-            nextLetterId = `letter:${nextGroupId}:${effectiveNextVariant}`;
+            // Target letter may sit in a non-primary instance if it carries
+            // its own override; look it up so the edge terminates at the
+            // right card on the canvas.
+            const targetLetter = letterByGroupVariant.get(
+              `${nextGroupId}:${effectiveNextVariant}`
+            );
+            const targetGroupHome =
+              letterGroups.find((g) => g.id === nextGroupId)?.delivery_day_id ??
+              "unscheduled";
+            const targetEffective =
+              targetLetter?.effective_day_id ?? "unscheduled";
+            const targetDayKey =
+              targetEffective === targetGroupHome ? null : targetEffective;
+            nextLetterId = makeLetterNodeId(
+              nextGroupId,
+              effectiveNextVariant,
+              targetDayKey
+            );
           }
         }
       }
+
+      // Timing check for trigger → report edges: the trigger letter must
+      // deliver BEFORE the report runs. Compare day numbers via the days[]
+      // index (we already have a Map<dayId, Day>).
+      const triggerInvalid = (() => {
+        if (!segmentExists || !segmentNodeId) return false;
+        const segId = segmentNodeId.slice("report:".length);
+        const seg = segmentById.get(segId);
+        if (!seg?.effective_day_id) return false;
+        const letterId = a.inspection_letter_id;
+        const letter = letters.find((l) => l.id === letterId);
+        if (!letter?.effective_day_id) return false;
+        const letterDay = dayById.get(letter.effective_day_id);
+        const segDay = dayById.get(seg.effective_day_id);
+        if (!letterDay || !segDay) return false;
+        return letterDay.number >= segDay.number;
+      })();
 
       if (segmentExists && nextLetterId) {
         candidates.push({
@@ -836,6 +1051,7 @@ export function GraphView({
           action: a,
           terminator: "arrow",
           kind: "ls",
+          invalid: triggerInvalid,
         });
         candidates.push({
           id: `a:${a.id}:sn`,
@@ -853,6 +1069,7 @@ export function GraphView({
           action: a,
           terminator: "arrow",
           kind: "ls",
+          invalid: triggerInvalid,
         });
       } else if (nextLetterId) {
         candidates.push({
@@ -898,10 +1115,15 @@ export function GraphView({
     // resolve to their group's delivery day; report sources resolve to
     // the segment's effective day.
     function nodeRowId(nodeId: string): string | null {
-      if (nodeId.startsWith("letter:")) {
-        const m = nodeId.match(/^letter:([^:]+):/);
-        if (!m) return null;
-        return groupsById.get(m[1])?.rowId ?? null;
+      const parsedLetter = parseLetterNodeId(nodeId);
+      if (parsedLetter) {
+        // Each letter instance lives on its own row; dayKey === null means
+        // it sits on the group's home day.
+        if (parsedLetter.dayKey) return parsedLetter.dayKey;
+        const inst = groupInstancesById.get(
+          makeGroupNodeId(parsedLetter.groupId, null)
+        );
+        return inst?.rowId ?? null;
       }
       if (nodeId.startsWith("report:")) {
         const segId = nodeId.slice("report:".length);
@@ -1223,10 +1445,14 @@ export function GraphView({
               isLetterSource &&
               (!c.action.report_segment_id || !c.action.next_letter_variant)
             ),
+          invalid: !!c.invalid,
         },
         markerEnd:
           c.terminator === "arrow"
-            ? { type: MarkerType.ArrowClosed, color: arrowColor }
+            ? {
+                type: MarkerType.ArrowClosed,
+                color: c.invalid ? "#ef4444" : arrowColor,
+              }
             : undefined,
       });
     }
@@ -1257,24 +1483,38 @@ export function GraphView({
     } | null {
       if (!sel) return null;
       if (sel.kind === "group") {
-        const gi = groupsById.get(sel.groupId);
+        // Center on the group's primary instance (its home day), even if a
+        // shadow instance exists on an override day.
+        const gi = groupInstancesById.get(makeGroupNodeId(sel.groupId, null));
         if (!gi) return null;
-        // Group's top-left is the position pushed onto n; recompute by
-        // looking up the first variant's letter position and walking back.
         const firstVariant = gi.variants[0] ?? "";
-        const lp = letterAbsPos.get(`letter:${sel.groupId}:${firstVariant}`);
+        const lp = letterAbsPos.get(
+          makeLetterNodeId(sel.groupId, firstVariant, null)
+        );
         if (!lp) return null;
-        // Group spans from groupsX to groupsX + gi.width and from bottomY
-        // to bottomY + gi.height. The variant letter sits inside at
-        // (groupsX + GROUP_PAD_LEADING, centered Y).
         const groupX = lp.x - GROUP_PAD_LEADING;
         const groupY = lp.y - (gi.height - lp.h) / 2;
         return { x: groupX + gi.width / 2, y: groupY + gi.height / 2 };
       }
       if (sel.kind === "letter" || sel.kind === "actions") {
-        const p = letterAbsPos.get(
-          `letter:${sel.groupId}:${sel.variantKey}`
+        // The selected variant may live in either the primary instance or an
+        // override-day instance; check both.
+        const primaryPos = letterAbsPos.get(
+          makeLetterNodeId(sel.groupId, sel.variantKey, null)
         );
+        let p = primaryPos;
+        if (!p) {
+          for (const inst of instancesByGroup.get(sel.groupId) ?? []) {
+            if (inst.dayKey == null) continue;
+            const lp = letterAbsPos.get(
+              makeLetterNodeId(sel.groupId, sel.variantKey, inst.dayKey)
+            );
+            if (lp) {
+              p = lp;
+              break;
+            }
+          }
+        }
         if (!p) return null;
         return { x: p.x + CARD_W / 2, y: p.y + p.h / 2 };
       }
@@ -1293,10 +1533,12 @@ export function GraphView({
       baseY: rowBaseY.get(rowId) ?? 0,
       height: rowHeights.get(rowId) ?? 0,
     }));
-    const groupMeta = Array.from(groupsById.entries()).map(([gid, gi]) => ({
-      gid,
-      rowId: gi.rowId,
-      storylineId: gi.storyline.id,
+    // groupMeta lists one entry per group (using the group's home rowId),
+    // not per instance — drag handlers only care about the underlying group.
+    const groupMeta = letterGroups.map((g) => ({
+      gid: g.id,
+      rowId: g.delivery_day_id ?? "unscheduled",
+      storylineId: g.storyline_id,
     }));
 
     return {
@@ -1366,19 +1608,22 @@ export function GraphView({
       });
       setHoveredRowId(rowAtFlowY(flowPt.y));
       if (node.id.startsWith("letter:")) {
-        const m = node.id.match(/^letter:([^:]+):/);
-        if (m) {
-          const sourceGid = m[1];
+        const parsed = parseLetterNodeId(node.id);
+        if (parsed) {
+          const sourceGid = parsed.groupId;
           const sourceStoryline = groupMeta.find(
             (g) => g.gid === sourceGid
           )?.storylineId;
           const intersecting = rf
             .getIntersectingNodes(node)
-            .filter(
-              (nn) => nn.type === "letterGroup" && nn.id !== `group:${sourceGid}`
-            );
+            .filter((nn) => {
+              if (nn.type !== "letterGroup") return false;
+              const pg = parseGroupNodeId(nn.id);
+              return pg?.groupId !== sourceGid;
+            });
           if (intersecting.length > 0) {
-            const targetGid = intersecting[0].id.slice("group:".length);
+            const targetGid =
+              parseGroupNodeId(intersecting[0].id)?.groupId ?? "";
             const targetStoryline = groupMeta.find(
               (g) => g.gid === targetGid
             )?.storylineId;
@@ -1436,11 +1681,11 @@ export function GraphView({
         };
         for (const dn of draggedNodes) {
           if (dn.id.startsWith("group:")) {
-            recordGroupMove(dn.id.slice("group:".length));
+            const pg = parseGroupNodeId(dn.id);
+            if (pg) recordGroupMove(pg.groupId);
           } else if (dn.id.startsWith("report:")) {
             const sid = dn.id.slice("report:".length);
             const seg = segments.find((s) => s.id === sid);
-            const previousDayId = seg?.delivery_day_override_id ?? null;
             moves.push({
               kind: "report",
               id: sid,
@@ -1449,13 +1694,14 @@ export function GraphView({
             undoEntries.push({
               kind: "moveReport",
               segmentId: sid,
-              previousDayId,
+              previousOverrideId: seg?.delivery_day_override_id ?? null,
+              previousOffset: seg?.delivery_day_offset ?? null,
             });
           } else if (dn.id.startsWith("letter:")) {
             // Letters follow their group; collapse to the group move.
-            const m = dn.id.match(/^letter:([^:]+):/);
-            if (!m) continue;
-            recordGroupMove(m[1]);
+            const parsed = parseLetterNodeId(dn.id);
+            if (!parsed) continue;
+            recordGroupMove(parsed.groupId);
           }
         }
         if (moves.length > 0) {
@@ -1469,7 +1715,8 @@ export function GraphView({
 
       // Single-node drag.
       if (node.id.startsWith("group:")) {
-        const gid = node.id.slice("group:".length);
+        const pg = parseGroupNodeId(node.id);
+        const gid = pg?.groupId ?? "";
         const entry = groupMeta.find((g) => g.gid === gid);
         if (!entry) return;
         // Find the target row by asking where the pointer released.
@@ -1499,11 +1746,11 @@ export function GraphView({
         const targetRowId = rowAtFlowY(flowPt.y);
         if (!targetRowId) return;
         const seg = segments.find((s) => s.id === sid);
-        const previousDayId = seg?.delivery_day_override_id ?? null;
         recordUndo?.({
           kind: "moveReport",
           segmentId: sid,
-          previousDayId,
+          previousOverrideId: seg?.delivery_day_override_id ?? null,
+          previousOffset: seg?.delivery_day_offset ?? null,
         });
         void moveReportSegmentToDay(
           sid,
@@ -1511,20 +1758,22 @@ export function GraphView({
         );
       } else if (node.id.startsWith("letter:")) {
         // Drop target: the letter-group node the pointer is over.
-        const m = node.id.match(/^letter:([^:]+):(.*)$/);
-        if (!m) return;
-        const sourceGid = m[1];
+        const parsed = parseLetterNodeId(node.id);
+        if (!parsed) return;
+        const sourceGid = parsed.groupId;
         const sourceStoryline = groupMeta.find(
           (g) => g.gid === sourceGid
         )?.storylineId;
         const intersecting = rf
           .getIntersectingNodes(node)
-          .filter(
-            (nn) => nn.type === "letterGroup" && nn.id !== `group:${sourceGid}`
-          );
+          .filter((nn) => {
+            if (nn.type !== "letterGroup") return false;
+            const pg = parseGroupNodeId(nn.id);
+            return pg?.groupId !== sourceGid;
+          });
         if (intersecting.length === 0) return;
         const targetGroupNode = intersecting[0];
-        const targetGid = targetGroupNode.id.slice("group:".length);
+        const targetGid = parseGroupNodeId(targetGroupNode.id)?.groupId ?? "";
         const targetStoryline = groupMeta.find(
           (g) => g.gid === targetGid
         )?.storylineId;
@@ -1539,11 +1788,11 @@ export function GraphView({
           ?.letterId;
         // We don't have the letter row id in the node data yet; we get
         // it from the letters prop by matching group + variant.
-        const variantKey = m[2];
+        const droppedVariantKey = parsed.variantKey;
         const letter = letters.find(
           (l) =>
             l.letter_group_id === sourceGid &&
-            (l.variant ?? "") === variantKey
+            (l.variant ?? "") === droppedVariantKey
         );
         const resolvedLetterId = letterId ?? letter?.id;
         if (!resolvedLetterId) return;
@@ -1607,10 +1856,10 @@ export function GraphView({
       const [, actionId] = m;
       const target = newConnection.target;
       if (!target?.startsWith("letter:")) return;
-      const tm = target.match(/^letter:([^:]+):(.*)$/);
+      const tm = parseLetterNodeId(target);
       if (!tm) return;
-      const targetGid = tm[1];
-      const targetVariantKey = tm[2];
+      const targetGid = tm.groupId;
+      const targetVariantKey = tm.variantKey;
       // Resolve the dropped variant slot back to a concrete letter id so
       // the server action can ensure-variant (single-letter groups have
       // null variants and need promoting before they can be linked).
@@ -1743,10 +1992,10 @@ export function GraphView({
       }
       // kind === "next"
       if (!tgt.startsWith("letter:")) return;
-      const tm = tgt.match(/^letter:([^:]+):(.*)$/);
+      const tm = parseLetterNodeId(tgt);
       if (!tm) return;
-      const targetGid = tm[1];
-      const targetVariantKey = tm[2];
+      const targetGid = tm.groupId;
+      const targetVariantKey = tm.variantKey;
       const tgtLetter = letters.find(
         (l) =>
           l.letter_group_id === targetGid &&

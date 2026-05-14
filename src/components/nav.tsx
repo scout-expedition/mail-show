@@ -53,8 +53,21 @@ const NAV_ITEMS: Array<{
   { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
 ];
 
+/**
+ * Routes that force the nav into hamburger/overlay mode at every viewport
+ * width — the page wants every pixel for its canvas. Keep this list in sync
+ * with `useForceNarrowNav()` in NavSpacer below.
+ */
+const FORCE_NARROW_PREFIXES = ["/graph"] as const;
+
+function isForceNarrowPath(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  return FORCE_NARROW_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
 export function Nav() {
   const pathname = usePathname();
+  const forceNarrow = isForceNarrowPath(pathname);
   const sections = [
     "Game",
     "Sorting",
@@ -74,7 +87,8 @@ export function Nav() {
   return (
     <>
       {/* Toggle button — always on-screen; the nav itself is an
-          overlay on narrow viewports and inline at lg+ widths. */}
+          overlay on narrow viewports and inline at lg+ widths
+          (except on force-narrow routes, where it stays overlay). */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -82,9 +96,7 @@ export function Nav() {
         aria-expanded={open}
         className={cn(
           "fixed left-3 top-3 z-40 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-accent hover:text-foreground",
-          // Hide on wide screens when nav is already inline; show when
-          // the user has explicitly collapsed it.
-          "lg:hidden"
+          forceNarrow ? null : "lg:hidden"
         )}
       >
         <Menu size={16} aria-hidden />
@@ -95,17 +107,25 @@ export function Nav() {
         <div
           onClick={() => setOpen(false)}
           aria-hidden
-          className="fixed inset-0 z-20 bg-black/40 lg:hidden"
+          className={cn(
+            "fixed inset-0 z-20 bg-black/40",
+            forceNarrow ? null : "lg:hidden"
+          )}
         />
       ) : null}
 
       <nav
         className={cn(
           "flex h-full w-56 shrink-0 flex-col gap-4 border-r border-border bg-card px-3 py-4",
-          // On narrow screens the nav is a fixed overlay that slides in
-          // from the left; at lg+ it sits inline in the flex row.
-          "fixed inset-y-0 left-0 z-30 shadow-xl transition-transform duration-200 lg:static lg:translate-x-0 lg:shadow-none",
-          open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+          // Always a fixed overlay; at lg+ on non-force-narrow routes the
+          // overlay becomes inline.
+          "fixed inset-y-0 left-0 z-30 shadow-xl transition-transform duration-200",
+          forceNarrow ? null : "lg:static lg:translate-x-0 lg:shadow-none",
+          open
+            ? "translate-x-0"
+            : forceNarrow
+              ? "-translate-x-full"
+              : "-translate-x-full lg:translate-x-0"
         )}
         aria-hidden={!open ? undefined : false}
       >

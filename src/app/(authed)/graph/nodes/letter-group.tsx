@@ -9,6 +9,7 @@ export type LetterGroupData = {
   height: number;
   sequence: number; // group sequence (e.g., 2)
   abbr: string; // storyline abbreviation
+  name: string; // group name shown under the pill
   color: string; // storyline color hex
   selected?: boolean;
   /** Phase 6: ring this group while a letter is being dragged over it. */
@@ -29,7 +30,7 @@ function LetterGroupNode({ data }: NodeProps) {
       }
     >
       <div
-        className="absolute top-1/2 left-0 cursor-pointer"
+        className="absolute top-1/2 left-0 flex cursor-pointer flex-col items-center gap-0.5"
         style={{ transform: "translate(-50%, -50%)" }}
       >
         <LetterGroupPill
@@ -37,6 +38,14 @@ function LetterGroupNode({ data }: NodeProps) {
           sequence={d.sequence}
           selected={d.selected}
         />
+        {d.name ? (
+          <div
+            className="max-w-[88px] break-words text-center font-mono text-[9px] leading-tight text-muted-foreground"
+            title={d.name}
+          >
+            {d.name}
+          </div>
+        ) : null}
       </div>
     </div>
   );

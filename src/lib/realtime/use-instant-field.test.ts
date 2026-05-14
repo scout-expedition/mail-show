@@ -7,18 +7,22 @@ import {
 const idle = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "idle",
+  committedAwaitingRemote: null,
 });
 const dirty = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "dirty",
+  committedAwaitingRemote: null,
 });
 const saving = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "saving",
+  committedAwaitingRemote: null,
 });
 const errored = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "error",
+  committedAwaitingRemote: null,
 });
 
 describe("instantFieldReducer — set", () => {
@@ -73,7 +77,7 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
   it("applies remote update when in error state (field already reverted)", () => {
     expect(
       instantFieldReducer(errored("a"), { type: "remote", value: "b" })
-    ).toEqual({ localValue: "b", status: "error" });
+    ).toEqual(errored("b"));
   });
 
   it("is a no-op when remote value equals local value (preserves identity)", () => {
@@ -97,7 +101,11 @@ describe("instantFieldReducer — save lifecycle", () => {
         type: "saveSuccess",
         pendingValue: "b",
       })
-    ).toEqual(idle("b"));
+    ).toEqual({
+      localValue: "b",
+      status: "idle",
+      committedAwaitingRemote: "b",
+    });
   });
 
   it("saveSuccess leaves state alone if user kept typing during the save", () => {
@@ -133,6 +141,46 @@ describe("instantFieldReducer — save lifecycle", () => {
         serverValue: "server-truth",
       })
     ).toEqual(errored("server-truth"));
+  });
+});
+
+describe("instantFieldReducer — committedAwaitingRemote (post-save flicker guard)", () => {
+  const justCommitted = <T,>(value: T): InstantFieldState<T> => ({
+    localValue: value,
+    status: "idle",
+    committedAwaitingRemote: value,
+  });
+
+  it("ignores a stale remote value after saveSuccess until realtime catches up", () => {
+    // Field just saved "b". A remote update with the pre-save "a" arrives
+    // (realtime is still in flight). It must be dropped, not snap us back.
+    const s = justCommitted("b");
+    expect(instantFieldReducer(s, { type: "remote", value: "a" })).toBe(s);
+  });
+
+  it("clears the committed flag when remote finally matches", () => {
+    const s = justCommitted("b");
+    expect(
+      instantFieldReducer(s, { type: "remote", value: "b" })
+    ).toEqual(idle("b"));
+  });
+
+  it("set() clears the committed flag (user moved on)", () => {
+    const s = justCommitted("b");
+    expect(
+      instantFieldReducer(s, { type: "set", value: "c" })
+    ).toEqual(dirty("c"));
+  });
+
+  it("saveError clears the committed flag", () => {
+    const s: InstantFieldState<string> = {
+      localValue: "typed",
+      status: "saving",
+      committedAwaitingRemote: "b",
+    };
+    expect(
+      instantFieldReducer(s, { type: "saveError", serverValue: "server" })
+    ).toEqual(errored("server"));
   });
 });
 

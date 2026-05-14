@@ -99,6 +99,7 @@ export interface InspectionLetter {
   piece: number | null;
   sort_order: number;
   delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
   summary: string | null;
   content: string | null;
   sender_citizen_id: string | null;
@@ -155,6 +156,7 @@ export interface ReportSegment {
   summary: string | null;
   content: string | null;
   delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
   sort_order: number;
   updated_at: string;
   updated_by: string | null;

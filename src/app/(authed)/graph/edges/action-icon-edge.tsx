@@ -40,6 +40,13 @@ export type ActionIconEdgeData = {
   onSelect?: () => void;
   /** Hide the chip icon+badges (e.g., report → next-letter continuations); just draw the colored line. */
   hideChip?: boolean;
+  /**
+   * Edge represents a broken timing chain — the triggering letter's
+   * effective day is the same as or after the report's effective day, so
+   * the report can't actually include the letter's outcome. Renders the
+   * path as a destructive-color dashed line.
+   */
+  invalid?: boolean;
 };
 
 const CHIP_PX = 20;
@@ -55,11 +62,15 @@ function ActionIconEdgeComponent({
   data,
 }: EdgeProps) {
   const d = data as unknown as ActionIconEdgeData;
-  const color = d.color || "#ffffff";
+  const invalid = !!d.invalid;
+  const color = invalid ? "#ef4444" : d.color || "#ffffff";
   const terminator = d.terminator ?? "arrow";
   const chipX = d.chipX;
   const chipY = d.chipY;
   const hideChip = !!d.hideChip;
+  const strokeStyle = invalid
+    ? { stroke: color, strokeWidth: 1.75, strokeDasharray: "6 4" }
+    : { stroke: color, strokeWidth: 1.75 };
 
   // Cubic bezier segments so the line leaves the source and arrives at the
   // target perpendicular to the pill edges (vertical exit / entry via
@@ -129,21 +140,21 @@ function ActionIconEdgeComponent({
         <BaseEdge
           id={`${id}-s`}
           path={single}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
           markerEnd={markerEnd}
         />
       ) : path1 ? (
         <BaseEdge
           id={`${id}-a`}
           path={path1}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
         />
       ) : null}
       {path2 ? (
         <BaseEdge
           id={`${id}-b`}
           path={path2}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
           markerEnd={markerEnd}
         />
       ) : null}

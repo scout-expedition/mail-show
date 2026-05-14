@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   IconArrowBackUp,
@@ -15,6 +22,7 @@ import {
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
+  restoreReportSegmentDelivery,
   setActionNextLetterByLetterId,
   setActionReportSegment,
 } from "../inspection/letters/actions";
@@ -135,10 +143,39 @@ function GraphSurfaceInner({
   currentProfile,
 }: GraphSurfaceProps) {
   const router = useRouter();
-  const { peers, selfPeer } = usePresenceContext();
+  const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
   // Workspace-stack peers are owned by /graph; AppPresence (othersOnly in
   // PageHeader) filters these userIds so they don't double-render.
   useClaimWorkspacePeers(peers.map((p) => p.userId));
+
+  // Live-refresh the graph when any table that affects its layout or edges
+  // changes. View columns (effective_day_id, content_id, …) aren't on the
+  // postgres_changes payload, so a router.refresh re-runs the RSC and reseeds
+  // GraphView with fresh data. Debounce coalesces bursts; in-flight inspector
+  // edits are protected by useInstantField's committedAwaitingRemote guard so
+  // the refresh doesn't snap typed-but-unsaved values back.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const watched = new Set([
+      "inspection_letters",
+      "letter_groups",
+      "actions",
+      "report_segments",
+      "storylines",
+    ]);
+    return onPostgresChanges((change) => {
+      if (!watched.has(change.table)) return;
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        startTransition(() => {
+          router.refresh();
+        });
+      }, 250);
+    });
+  }, [onPostgresChanges, router]);
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -166,7 +203,11 @@ function GraphSurfaceInner({
         await moveLetterToGroup(entry.letterId, entry.previousGroupId);
         return;
       case "moveReport":
-        await moveReportSegmentToDay(entry.segmentId, entry.previousDayId);
+        await restoreReportSegmentDelivery(
+          entry.segmentId,
+          entry.previousOverrideId,
+          entry.previousOffset
+        );
         return;
       case "setNextLetter":
         await setActionNextLetterByLetterId(

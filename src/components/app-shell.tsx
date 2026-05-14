@@ -1,4 +1,5 @@
 import { Nav } from "@/components/nav";
+import { NavSpacer } from "@/components/nav-spacer";
 import {
   PresenceUserProvider,
   type PresenceUser,
@@ -76,8 +77,10 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Reserves room for the fixed nav Menu toggle so it doesn't
               overlap page content at narrow viewports. At lg+ the nav is
-              inline and the toggle is hidden, so the spacer collapses. */}
-          <div className="h-12 shrink-0 lg:hidden" aria-hidden />
+              inline and the toggle is hidden, so the spacer collapses —
+              except on routes that force the nav into hamburger mode at
+              every viewport (e.g. `/graph`). */}
+          <NavSpacer />
           {activePlaythrough ? (
             <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
               <div className="flex items-center gap-3 text-sm">

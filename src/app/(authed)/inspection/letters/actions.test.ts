@@ -233,29 +233,74 @@ describe("moveReportSegmentToDay", () => {
     await cleanupTestData(sb);
   });
 
-  it("should set delivery_day_override_id to the target day and revalidate", async () => {
-    const seed = await seedStoryline(sb, { suffix: "rs-move", days: 2 });
+  it("stores a positive offset when target is past the default report day", async () => {
+    // With no letters, default report day = group_day + 1. Group is on
+    // dayIds[0], default = dayIds[1], so dayIds[2] is +1 past default.
+    const seed = await seedStoryline(sb, { suffix: "rs-move", days: 3 });
     const segId = await addReportSegment(sb, {
       reportGroupId: seed.reportGroupId,
       variant: "i",
     });
-    const targetDay = seed.dayIds[1];
+    const targetDay = seed.dayIds[2];
 
     await moveReportSegmentToDay(segId, targetDay);
 
     const { data } = await sb
       .from("report_segments")
-      .select("delivery_day_override_id")
+      .select("delivery_day_override_id, delivery_day_offset")
       .eq("id", segId)
       .single();
 
-    expect(data?.delivery_day_override_id).toBe(targetDay);
+    expect(data?.delivery_day_offset).toBe(1);
+    expect(data?.delivery_day_override_id).toBeNull();
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
     expect(revalidatePath).toHaveBeenCalledWith("/graph");
   });
 
-  it("should clear delivery_day_override_id when called with null", async () => {
-    const seed = await seedStoryline(sb, { suffix: "rs-clear", days: 1 });
+  it("clears both columns when target equals the default report day", async () => {
+    const seed = await seedStoryline(sb, { suffix: "rs-default", days: 2 });
+    const segId = await addReportSegment(sb, {
+      reportGroupId: seed.reportGroupId,
+      variant: "i",
+      deliveryDayOverrideId: seed.dayIds[1],
+    });
+    // dayIds[1] IS the default (group + 1) — moving to it removes the override.
+    await moveReportSegmentToDay(segId, seed.dayIds[1]);
+
+    const { data } = await sb
+      .from("report_segments")
+      .select("delivery_day_override_id, delivery_day_offset")
+      .eq("id", segId)
+      .single();
+
+    expect(data?.delivery_day_override_id).toBeNull();
+    expect(data?.delivery_day_offset).toBeNull();
+  });
+
+  it("falls back to absolute pin when target is earlier than the default", async () => {
+    // dayIds[0] is the group day; default = dayIds[1] (group + 1). Moving to
+    // dayIds[0] is sub-default, so the action stores an absolute pin instead
+    // of an offset (offset would be -1, which is forbidden for reports).
+    const seed = await seedStoryline(sb, { suffix: "rs-subdefault", days: 2 });
+    const segId = await addReportSegment(sb, {
+      reportGroupId: seed.reportGroupId,
+      variant: "i",
+    });
+
+    await moveReportSegmentToDay(segId, seed.dayIds[0]);
+
+    const { data } = await sb
+      .from("report_segments")
+      .select("delivery_day_override_id, delivery_day_offset")
+      .eq("id", segId)
+      .single();
+
+    expect(data?.delivery_day_override_id).toBe(seed.dayIds[0]);
+    expect(data?.delivery_day_offset).toBeNull();
+  });
+
+  it("clears both columns when called with null", async () => {
+    const seed = await seedStoryline(sb, { suffix: "rs-clear", days: 2 });
     const segId = await addReportSegment(sb, {
       reportGroupId: seed.reportGroupId,
       variant: "i",
@@ -266,11 +311,12 @@ describe("moveReportSegmentToDay", () => {
 
     const { data } = await sb
       .from("report_segments")
-      .select("delivery_day_override_id")
+      .select("delivery_day_override_id, delivery_day_offset")
       .eq("id", segId)
       .single();
 
     expect(data?.delivery_day_override_id).toBeNull();
+    expect(data?.delivery_day_offset).toBeNull();
   });
 
   it("should leave updated_by null when no auth user is present", async () => {

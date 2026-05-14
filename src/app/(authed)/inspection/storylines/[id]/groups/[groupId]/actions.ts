@@ -60,6 +60,12 @@ export async function createInspectionLetter(formData: FormData) {
 }
 
 export async function updateInspectionLetter(formData: FormData) {
+  // Legacy form path. Does not expose `delivery_day_offset` — the modern
+  // workspace handles relative delivery. Submitting a non-null
+  // `delivery_day_override_id` here while an offset is set on the row would
+  // hit the inspection_letters_delivery_exclusive CHECK constraint, so the
+  // override field is always cleared to null below to keep the legacy form
+  // safe; users must switch to the workspace to set any override.
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   const storyline_id = String(formData.get("storyline_id") ?? "");
@@ -68,7 +74,6 @@ export async function updateInspectionLetter(formData: FormData) {
   const payload = {
     variant: nilStr(formData.get("variant")),
     piece: nilNum(formData.get("piece")),
-    delivery_day_override_id: nilStr(formData.get("delivery_day_override_id")),
     summary: nilStr(formData.get("summary")),
     content: nilStr(formData.get("content")),
     sender_citizen_id: nilStr(formData.get("sender_citizen_id")),
@@ -161,13 +166,14 @@ export async function createReportSegment(formData: FormData) {
 }
 
 export async function updateReportSegment(formData: FormData) {
+  // Legacy form path. See note on updateInspectionLetter above — the modern
+  // workspace handles offsets; this form only edits variant/content/sort_order.
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const payload = {
     variant: String(formData.get("variant") ?? "").trim(),
     content: nilStr(formData.get("content")),
-    delivery_day_override_id: nilStr(formData.get("delivery_day_override_id")),
     sort_order: Number(formData.get("sort_order") ?? 0),
   };
   const { error } = await supabase

@@ -75,6 +75,10 @@ import {
   deleteStoryline,
   updateStorylineFields,
 } from "../storylines/actions";
+import {
+  DeliveryDayPicker,
+  type DeliveryOverride,
+} from "./delivery-day-picker";
 import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
@@ -202,6 +206,7 @@ type LetterState = {
   id: string;
   piece: number | null;
   delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
   summary: string | null;
   content: string | null;
   sender_citizen_id: string | null;
@@ -219,6 +224,7 @@ function toLetterState(
     id: l.id,
     piece: l.piece,
     delivery_day_override_id: l.delivery_day_override_id,
+    delivery_day_offset: l.delivery_day_offset,
     summary: l.summary,
     content: l.content,
     sender_citizen_id: l.sender_citizen_id,
@@ -2512,7 +2518,7 @@ function LettersWorkspaceInner({
               groupId={group?.id ?? ""}
               days={days}
               currentLetterDayId={
-                letterState.delivery_day_override_id ??
+                selectedLetter?.effective_day_id ??
                 groupState.delivery_day_id
               }
               endingVariables={endingVariables}
@@ -2632,8 +2638,6 @@ function LetterFieldsCard({
   actionsActive: boolean;
   onShowActions: () => void;
 }) {
-  // The "Delivery Day" dropdown: value is the override; falls back to group day implicitly.
-  const currentDayId = state.delivery_day_override_id ?? groupDeliveryDayId;
   const { peers, setFocus, pingActivity } = usePresenceContext();
 
   function focusKey(field: string): PresenceFocus {
@@ -2644,21 +2648,49 @@ function LetterFieldsCard({
       setFocus(focused ? focusKey(field) : null);
   }
 
-  // IMPORTANT: useInstantField's `value` must be the SERVER row, not local
-  // edit state. The parent's `state.X` is updated synchronously by
-  // updateLetter when the user types, so passing it here would make
-  // commitNow's equality check think the save was already applied and
-  // short-circuit. letterView carries the canonical row from the DB.
-  const deliveryOverrideField = useInstantField<string | null>({
-    value: letterView.delivery_day_override_id,
+  // The delivery picker emits a discriminated union; we mirror it into a single
+  // instant field so debounce + LWW conflict handling apply atomically to the
+  // two underlying columns. The server action normalizes the patch so writing
+  // an offset clears any leftover absolute pin and vice versa.
+  const serverOverride: DeliveryOverride =
+    letterView.delivery_day_override_id != null
+      ? { kind: "absolute", dayId: letterView.delivery_day_override_id }
+      : letterView.delivery_day_offset != null
+        ? { kind: "offset", offset: letterView.delivery_day_offset }
+        : { kind: "none" };
+  const deliveryField = useInstantField<DeliveryOverride>({
+    value: serverOverride,
+    equals: (a, b) =>
+      a.kind === b.kind &&
+      ((a.kind === "none" && b.kind === "none") ||
+        (a.kind === "offset" &&
+          b.kind === "offset" &&
+          a.offset === b.offset) ||
+        (a.kind === "absolute" &&
+          b.kind === "absolute" &&
+          a.dayId === b.dayId)),
     onCommit: async (next) => {
-      await patchInspectionLetter(state.id, {
-        delivery_day_override_id: next,
-      });
+      const patch =
+        next.kind === "none"
+          ? { delivery_day_override_id: null, delivery_day_offset: null }
+          : next.kind === "offset"
+            ? {
+                delivery_day_offset: next.offset,
+                delivery_day_override_id: null,
+              }
+            : {
+                delivery_day_override_id: next.dayId,
+                delivery_day_offset: null,
+              };
+      await patchInspectionLetter(state.id, patch);
     },
     onFocusChange: onFocusChangeFor("delivery_day_override_id"),
     onActivity: pingActivity,
   });
+  const overrideSet = deliveryField.value.kind !== "none";
+  const effectiveDayId = letterView.effective_day_id;
+  const offsetUnresolved =
+    deliveryField.value.kind === "offset" && effectiveDayId == null;
   const summaryField = useInstantField<string | null>({
     value: letterView.summary,
     onCommit: async (next) => {
@@ -2729,10 +2761,11 @@ function LetterFieldsCard({
       </div>
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-2 flex flex-col gap-1">
-          <Label>Group delivery</Label>
+          <Label>Delivery</Label>
           <div
             className={cn(
-              "flex h-8 items-center rounded-md border border-transparent px-3 font-mono text-sm text-muted-foreground"
+              "flex h-8 items-center rounded-md border border-transparent px-3 font-mono text-sm text-muted-foreground",
+              overrideSet && "line-through"
             )}
           >
             {days.find((d) => d.id === groupDeliveryDayId)?.identifier ?? "—"}
@@ -2745,31 +2778,32 @@ function LetterFieldsCard({
             focusKey={focusKey("delivery_day_override_id")}
           >
             <div
-              onFocus={deliveryOverrideField.onFocus}
-              onBlur={deliveryOverrideField.onBlur}
+              onFocus={deliveryField.onFocus}
+              onBlur={deliveryField.onBlur}
             >
-              <DaySelect
-                value={currentDayId ?? ""}
+              <DeliveryDayPicker
+                base={{ dayId: groupDeliveryDayId, offsetFromBase: 0 }}
+                override={deliveryField.value}
                 days={days}
-                groupDefaultId={groupDeliveryDayId}
-                dashWhenGroupDefault
-                hideClear
-                onChange={(v) => {
-                  const next =
-                    !v ? null : v === groupDeliveryDayId ? null : v;
-                  onChange({ delivery_day_override_id: next });
-                  deliveryOverrideField.set(next);
+                allowNegative
+                onChange={(next) => {
+                  onChange({
+                    delivery_day_override_id:
+                      next.kind === "absolute" ? next.dayId : null,
+                    delivery_day_offset:
+                      next.kind === "offset" ? next.offset : null,
+                  });
+                  deliveryField.set(next);
                 }}
-                className={cn(
-                  "h-8",
-                  GHOST_FIELD,
-                  state.delivery_day_override_id
-                    ? undefined
-                    : "text-muted-foreground/60"
-                )}
               />
             </div>
           </FieldHighlight>
+          {offsetUnresolved ? (
+            <div className="font-mono text-[11px] text-destructive">
+              Override resolves to a day that doesn’t exist. Pick a valid day
+              or clear the override.
+            </div>
+          ) : null}
         </div>
         <div className="col-span-2 flex flex-col items-end gap-1">
           <Label>Actions</Label>
@@ -3136,13 +3170,38 @@ function LetterSegmentCard({
     onFocusChange: onFocusChangeFor("variant"),
     onActivity: pingActivity,
   });
-  const dayField = useInstantField<string | null>({
-    value: segment?.delivery_day_override_id ?? null,
+  const serverOverride: DeliveryOverride =
+    segment?.delivery_day_override_id != null
+      ? { kind: "absolute", dayId: segment.delivery_day_override_id }
+      : segment?.delivery_day_offset != null
+        ? { kind: "offset", offset: segment.delivery_day_offset }
+        : { kind: "none" };
+  const dayField = useInstantField<DeliveryOverride>({
+    value: serverOverride,
+    equals: (a, b) =>
+      a.kind === b.kind &&
+      ((a.kind === "none" && b.kind === "none") ||
+        (a.kind === "offset" &&
+          b.kind === "offset" &&
+          a.offset === b.offset) ||
+        (a.kind === "absolute" &&
+          b.kind === "absolute" &&
+          a.dayId === b.dayId)),
     onCommit: async (next) => {
       if (!segment) return;
-      await patchReportSegment(segment.id, {
-        delivery_day_override_id: next,
-      });
+      const patch =
+        next.kind === "none"
+          ? { delivery_day_override_id: null, delivery_day_offset: null }
+          : next.kind === "offset"
+            ? {
+                delivery_day_offset: next.offset,
+                delivery_day_override_id: null,
+              }
+            : {
+                delivery_day_override_id: next.dayId,
+                delivery_day_offset: null,
+              };
+      await patchReportSegment(segment.id, patch);
     },
     onFocusChange: onFocusChangeFor("delivery_day_override_id"),
     onActivity: pingActivity,
@@ -3175,14 +3234,29 @@ function LetterSegmentCard({
     letterId: string;
     contentId: string;
     storylineId: string;
+    /** True when the trigger letter's effective day is the same as or
+     *  after the report's effective day — the report can't actually
+     *  include that letter's outcome. */
+    invalid: boolean;
   };
   const triggers = useMemo(() => {
     if (!segment) return [] as Trigger[];
+    const segDay = segment.effective_day_id
+      ? days.find((d) => d.id === segment.effective_day_id)
+      : undefined;
     return allActions
       .filter((a) => a.report_segment_id === segment.id)
       .map((a): Trigger | null => {
         const letter = allLetters.find((l) => l.id === a.inspection_letter_id);
         if (!letter) return null;
+        const letterDay = letter.effective_day_id
+          ? days.find((d) => d.id === letter.effective_day_id)
+          : undefined;
+        const invalid = !!(
+          letterDay &&
+          segDay &&
+          letterDay.number >= segDay.number
+        );
         const tpl = a.action_template_id
           ? templates.find((t) => t.id === a.action_template_id)
           : undefined;
@@ -3195,10 +3269,50 @@ function LetterSegmentCard({
           letterId: letter.id,
           contentId: letter.content_id,
           storylineId: letter.storyline_id,
+          invalid,
         };
       })
       .filter((v): v is Trigger => v !== null);
-  }, [segment, allActions, allLetters, templates]);
+  }, [segment, allActions, allLetters, templates, days]);
+
+  // The report's "base" day for relative offsets: the earliest effective day
+  // among triggering letters (the same MIN logic report_segments_view uses),
+  // falling back to the letter group's day when there are no triggers.
+  const triggerLetters = useMemo(() => {
+    if (!segment) return [] as InspectionLetterView[];
+    const ids = new Set(triggers.map((t) => t.letterId));
+    return allLetters.filter((l) => ids.has(l.id));
+  }, [segment, triggers, allLetters]);
+  const letterMinEffectiveDayId = useMemo(() => {
+    const candidateIds = triggerLetters
+      .map((l) => l.effective_day_id)
+      .filter((id): id is string => !!id);
+    if (candidateIds.length === 0) return groupDeliveryDayId;
+    const numberById = new Map(days.map((d) => [d.id, d.number]));
+    let bestId = candidateIds[0];
+    let bestNum = numberById.get(bestId) ?? Number.POSITIVE_INFINITY;
+    for (const id of candidateIds) {
+      const n = numberById.get(id);
+      if (n != null && n < bestNum) {
+        bestId = id;
+        bestNum = n;
+      }
+    }
+    return bestId;
+  }, [triggerLetters, days, groupDeliveryDayId]);
+
+  const defaultReportDayNumber = useMemo(() => {
+    const baseDay = days.find((d) => d.id === letterMinEffectiveDayId);
+    return baseDay ? baseDay.number + 1 : null;
+  }, [days, letterMinEffectiveDayId]);
+  const defaultReportDay =
+    defaultReportDayNumber != null
+      ? days.find((d) => d.number === defaultReportDayNumber)
+      : undefined;
+  const overrideSet = dayField.value.kind !== "none";
+  const offsetUnresolved =
+    dayField.value.kind === "offset" &&
+    segment?.effective_day_id == null;
 
   if (!segment) {
     return (
@@ -3208,7 +3322,6 @@ function LetterSegmentCard({
     );
   }
 
-  const currentDayId = dayField.value;
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
@@ -3267,27 +3380,59 @@ function LetterSegmentCard({
             />
           </FieldHighlight>
         </div>
-        <div className="col-span-4 flex flex-col gap-1">
-          <Label>Delivery day</Label>
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Delivery</Label>
+          <div
+            className={cn(
+              "flex h-8 items-center rounded-md border border-transparent px-3 font-mono text-sm text-muted-foreground",
+              overrideSet && "line-through"
+            )}
+            title={
+              triggers.length > 0
+                ? triggers
+                    .map((t) => {
+                      const l = allLetters.find((x) => x.id === t.letterId);
+                      const d = l
+                        ? days.find((x) => x.id === l.effective_day_id)
+                        : undefined;
+                      return `${t.contentId} · ${d?.identifier ?? "?"}`;
+                    })
+                    .join("\n")
+                : undefined
+            }
+          >
+            {defaultReportDay?.identifier ??
+              (defaultReportDayNumber != null
+                ? `D${defaultReportDayNumber}`
+                : "—")}
+          </div>
+        </div>
+        <div className="col-span-2 flex flex-col gap-1">
+          <Label>Delivery override</Label>
           <FieldHighlight
             peers={peers}
             focusKey={focusKey("delivery_day_override_id")}
           >
             <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
-              <DaySelect
-                value={(currentDayId ?? groupDeliveryDayId) ?? ""}
+              <DeliveryDayPicker
+                base={{
+                  dayId: letterMinEffectiveDayId,
+                  offsetFromBase: 1,
+                }}
+                override={dayField.value}
                 days={days}
-                groupDefaultId={groupDeliveryDayId}
-                defaultSuffix="(Following Day)"
-                onChange={(v) =>
-                  dayField.set(
-                    !v ? null : v === groupDeliveryDayId ? null : v
-                  )
-                }
-                className={cn("h-8", GHOST_FIELD)}
+                allowNegative={false}
+                minOffset={1}
+                onChange={(next) => dayField.set(next)}
               />
             </div>
           </FieldHighlight>
+          {offsetUnresolved ? (
+            <div className="font-mono text-[11px] text-destructive">
+              Override resolves to a day that doesn’t exist. Pick a valid day
+              or clear the override.
+            </div>
+          ) : null}
         </div>
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Summary</Label>
@@ -3323,13 +3468,26 @@ function LetterSegmentCard({
           <div className="flex flex-wrap gap-1.5">
             {triggers.map((t) => {
               const s = storylines.find((x) => x.id === t.storylineId);
+              const letter = allLetters.find((l) => l.id === t.letterId);
+              const letterDay = letter
+                ? days.find((d) => d.id === letter.effective_day_id)
+                : undefined;
+              const dayLabel = letterDay?.identifier ?? "?";
               return (
                 <button
                   key={t.actionId}
                   type="button"
                   onClick={() => onJumpToTrigger(t.letterId)}
-                  title={`Jump to ${t.contentId} · ${t.actionName}`}
-                  className="inline-flex items-center rounded-md transition-opacity hover:opacity-80"
+                  title={
+                    t.invalid
+                      ? `${t.contentId} · ${dayLabel} delivers on/after this report — outcome won't be included`
+                      : `Jump to ${t.contentId} · ${dayLabel} · ${t.actionName}`
+                  }
+                  className={cn(
+                    "inline-flex items-center rounded-md transition-opacity hover:opacity-80",
+                    t.invalid &&
+                      "rounded-md ring-2 ring-destructive ring-offset-1 ring-offset-background"
+                  )}
                 >
                   <InspectionLetterPill
                     storyline={s}
@@ -6665,8 +6823,11 @@ function StorylinesListPanel({
           <div className="flex flex-col border-t border-border bg-black/20">
             {groupLetters.map((l) => {
               const letterActive = l.id === selectedLetterId;
-              const overrideDay = l.delivery_day_override_id
-                ? dayById.get(l.delivery_day_override_id)
+              const hasOverride =
+                l.delivery_day_override_id != null ||
+                l.delivery_day_offset != null;
+              const overrideDay = hasOverride
+                ? dayById.get(l.effective_day_id ?? "")
                 : null;
               return (
                 <button

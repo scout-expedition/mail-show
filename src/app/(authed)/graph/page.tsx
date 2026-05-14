@@ -16,9 +16,11 @@ import type {
 } from "@/lib/db/types";
 import { profileFromMetadata } from "@/lib/auth/profile";
 import { GraphSurface } from "./graph-surface";
+import { sweepOrphanActionRefs } from "../inspection/letters/actions";
 
 export default async function GraphPage() {
   const supabase = await createSupabaseServerClient();
+  await sweepOrphanActionRefs();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
   const currentEmail = meData.user?.email;

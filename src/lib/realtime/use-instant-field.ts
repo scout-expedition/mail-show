@@ -7,6 +7,14 @@ export type InstantFieldStatus = "idle" | "dirty" | "saving" | "error";
 export type InstantFieldState<T> = {
   localValue: T;
   status: InstantFieldStatus;
+  /**
+   * After a successful commit, the value we just sent to the server. Remote
+   * updates that don't match this are ignored until realtime catches up to it,
+   * so a saveSuccess→idle transition can't briefly snap the field back to the
+   * stale upstream value while the realtime broadcast is in flight.
+   * Cleared on `set` (user typed again) and on `remote` once it matches.
+   */
+  committedAwaitingRemote?: T | null;
 };
 
 export type InstantFieldAction<T> =
@@ -41,11 +49,30 @@ export function instantFieldReducer<T>(
   switch (action.type) {
     case "set":
       if (equals(action.value, state.localValue)) return state;
-      return { localValue: action.value, status: "dirty" };
+      return {
+        localValue: action.value,
+        status: "dirty",
+        committedAwaitingRemote: null,
+      };
     case "remote":
       if (state.status === "dirty" || state.status === "saving") return state;
-      if (equals(action.value, state.localValue)) return state;
-      return { localValue: action.value, status: state.status };
+      if (
+        state.committedAwaitingRemote != null &&
+        !equals(action.value, state.committedAwaitingRemote)
+      ) {
+        return state;
+      }
+      if (equals(action.value, state.localValue)) {
+        if (state.committedAwaitingRemote != null) {
+          return { ...state, committedAwaitingRemote: null };
+        }
+        return state;
+      }
+      return {
+        localValue: action.value,
+        status: state.status,
+        committedAwaitingRemote: null,
+      };
     case "saveStart":
       return { ...state, status: "saving" };
     case "saveSuccess":
@@ -53,11 +80,19 @@ export function instantFieldReducer<T>(
         state.status === "saving" &&
         equals(state.localValue, action.pendingValue)
       ) {
-        return { ...state, status: "idle" };
+        return {
+          ...state,
+          status: "idle",
+          committedAwaitingRemote: action.pendingValue,
+        };
       }
       return state;
     case "saveError":
-      return { localValue: action.serverValue, status: "error" };
+      return {
+        localValue: action.serverValue,
+        status: "error",
+        committedAwaitingRemote: null,
+      };
     default:
       return state;
   }
@@ -121,6 +156,7 @@ export function useInstantField<T>(
   const [state, setState] = useState<InstantFieldState<T>>({
     localValue: value,
     status: "idle",
+    committedAwaitingRemote: null,
   });
 
   // Refs so the debounce callback always reads the latest closures.

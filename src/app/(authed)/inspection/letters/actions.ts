@@ -153,6 +153,265 @@ export async function moveLetterGroupToDay(
   revalidatePath("/graph");
 }
 
+/**
+ * Defensive sweep that clears action references whose targets no longer
+ * exist. The graph view already refuses to draw edges to missing targets,
+ * but the underlying `actions.next_letter_variant` value would otherwise
+ * persist and re-surface in the action editor as a stale "next letter"
+ * choice. Called from the workspace + graph page server components on load
+ * so the editor never shows a dangling reference.
+ *
+ * - `report_segment_id` is protected by `ON DELETE SET NULL`, so orphans
+ *   normally don't happen here — but we belt-and-suspender it.
+ * - `next_letter_variant` is a plain char(1) (no FK), so it can dangle when
+ *   the next group is deleted, the matching letter is removed, or the
+ *   variant is reassigned. The cleanup mirrors migration 0013's logic.
+ */
+export async function sweepOrphanActionRefs(): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+
+  // 1) Clear report_segment_id refs that no longer resolve.
+  const { data: actionsWithSegment } = await supabase
+    .from("actions")
+    .select("id, report_segment_id")
+    .not("report_segment_id", "is", null);
+  if (actionsWithSegment && actionsWithSegment.length > 0) {
+    const segIds = Array.from(
+      new Set(
+        actionsWithSegment
+          .map((a) => a.report_segment_id as string | null)
+          .filter((id): id is string => !!id)
+      )
+    );
+    const { data: liveSegs } = await supabase
+      .from("report_segments")
+      .select("id")
+      .in("id", segIds);
+    const liveSet = new Set((liveSegs ?? []).map((s) => s.id as string));
+    const orphanActionIds = actionsWithSegment
+      .filter((a) => a.report_segment_id && !liveSet.has(a.report_segment_id))
+      .map((a) => a.id as string);
+    if (orphanActionIds.length > 0) {
+      await supabase
+        .from("actions")
+        .update({ report_segment_id: null })
+        .in("id", orphanActionIds);
+    }
+  }
+
+  // 2) Clear next_letter_variant refs that don't resolve to a real letter in
+  //    the *next* group (storyline, sequence + smallest positive delta).
+  const { data: actionsWithNext } = await supabase
+    .from("actions")
+    .select(
+      "id, next_letter_variant, inspection_letter_id, inspection_letters!inner(letter_group_id, letter_groups!inner(storyline_id, sequence))"
+    )
+    .not("next_letter_variant", "is", null);
+  if (!actionsWithNext || actionsWithNext.length === 0) return;
+
+  type Row = {
+    id: string;
+    next_letter_variant: string;
+    inspection_letters: {
+      letter_group_id: string;
+      letter_groups: { storyline_id: string; sequence: number };
+    };
+  };
+  const rows = actionsWithNext as unknown as Row[];
+  const storylineIds = Array.from(
+    new Set(rows.map((r) => r.inspection_letters.letter_groups.storyline_id))
+  );
+
+  // Pull every letter group's sequence for the relevant storylines so we
+  // can resolve each action's "next group" without N round trips.
+  const { data: groupRows } = await supabase
+    .from("letter_groups")
+    .select("id, storyline_id, sequence")
+    .in("storyline_id", storylineIds);
+  const groupsByStoryline = new Map<
+    string,
+    Array<{ id: string; sequence: number }>
+  >();
+  for (const g of groupRows ?? []) {
+    const list = groupsByStoryline.get(g.storyline_id as string) ?? [];
+    list.push({ id: g.id as string, sequence: g.sequence as number });
+    groupsByStoryline.set(g.storyline_id as string, list);
+  }
+  for (const list of groupsByStoryline.values()) {
+    list.sort((a, b) => a.sequence - b.sequence);
+  }
+
+  // Letters in every potential next group, indexed for fast lookup.
+  const nextGroupIds = new Set<string>();
+  const nextGroupByAction = new Map<string, string | null>();
+  for (const r of rows) {
+    const lg = r.inspection_letters.letter_groups;
+    const list = groupsByStoryline.get(lg.storyline_id) ?? [];
+    const next = list.find((g) => g.sequence > lg.sequence) ?? null;
+    nextGroupByAction.set(r.id, next?.id ?? null);
+    if (next) nextGroupIds.add(next.id);
+  }
+  const variantsByGroup = new Map<string, Set<string>>();
+  if (nextGroupIds.size > 0) {
+    const { data: variantRows } = await supabase
+      .from("inspection_letters")
+      .select("letter_group_id, variant")
+      .in("letter_group_id", Array.from(nextGroupIds))
+      .not("variant", "is", null);
+    for (const v of variantRows ?? []) {
+      const set =
+        variantsByGroup.get(v.letter_group_id as string) ?? new Set<string>();
+      set.add(v.variant as string);
+      variantsByGroup.set(v.letter_group_id as string, set);
+    }
+  }
+
+  const orphanActionIds: string[] = [];
+  for (const r of rows) {
+    const nextGroupId = nextGroupByAction.get(r.id);
+    if (!nextGroupId) {
+      orphanActionIds.push(r.id);
+      continue;
+    }
+    const variants = variantsByGroup.get(nextGroupId);
+    if (!variants?.has(r.next_letter_variant)) {
+      orphanActionIds.push(r.id);
+    }
+  }
+  if (orphanActionIds.length > 0) {
+    await supabase
+      .from("actions")
+      .update({ next_letter_variant: null })
+      .in("id", orphanActionIds);
+  }
+}
+
+/**
+ * Compute the report's default delivery day number: `min(triggering letter
+ * effective day) + 1`, falling back to `letter_group.delivery_day + 1` if no
+ * triggering letter has an effective day. Returns null if neither anchor
+ * exists. This mirrors the SQL in report_segments_view so the action and the
+ * view stay consistent.
+ */
+async function computeReportDefaultDayNumber(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  segmentId: string
+): Promise<number | null> {
+  const { data: seg } = await supabase
+    .from("report_segments")
+    .select("report_group_id")
+    .eq("id", segmentId)
+    .maybeSingle();
+  if (!seg) return null;
+  const { data: rg } = await supabase
+    .from("report_groups")
+    .select("letter_group_id")
+    .eq("id", seg.report_group_id as string)
+    .maybeSingle();
+  if (!rg) return null;
+  const { data: lg } = await supabase
+    .from("letter_groups")
+    .select("delivery_day_id")
+    .eq("id", rg.letter_group_id as string)
+    .maybeSingle();
+
+  const { data: letters } = await supabase
+    .from("inspection_letters_view")
+    .select("effective_day_id")
+    .eq("letter_group_id", rg.letter_group_id as string);
+  const letterDayIds = (letters ?? [])
+    .map((l) => l.effective_day_id as string | null)
+    .filter((id): id is string => !!id);
+
+  let baseNumber: number | null = null;
+  if (letterDayIds.length > 0) {
+    const { data: dayRows } = await supabase
+      .from("days")
+      .select("number")
+      .in("id", letterDayIds);
+    if (dayRows && dayRows.length > 0) {
+      baseNumber = Math.min(...dayRows.map((d) => d.number as number));
+    }
+  }
+  if (baseNumber == null && lg?.delivery_day_id) {
+    const { data: gd } = await supabase
+      .from("days")
+      .select("number")
+      .eq("id", lg.delivery_day_id as string)
+      .maybeSingle();
+    baseNumber = gd ? (gd.number as number) : null;
+  }
+  return baseNumber == null ? null : baseNumber + 1;
+}
+
+/**
+ * Resolve a target day for a report segment into the storage shape the
+ * relative-delivery model expects. Returns the patch payload (offset OR
+ * absolute pin OR both-null). Offsets >= 1 become relative; sub-default
+ * targets fall back to an absolute pin since the relative menu forbids them.
+ */
+async function reportSegmentMovePatch(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  segmentId: string,
+  dayId: string | null
+): Promise<{
+  delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
+}> {
+  if (dayId == null) {
+    return { delivery_day_override_id: null, delivery_day_offset: null };
+  }
+  const { data: target } = await supabase
+    .from("days")
+    .select("number")
+    .eq("id", dayId)
+    .maybeSingle();
+  const defaultNumber = await computeReportDefaultDayNumber(
+    supabase,
+    segmentId
+  );
+  if (!target || defaultNumber == null) {
+    return { delivery_day_override_id: dayId, delivery_day_offset: null };
+  }
+  const offset = (target.number as number) - defaultNumber;
+  if (offset === 0) {
+    return { delivery_day_override_id: null, delivery_day_offset: null };
+  }
+  if (offset >= 1) {
+    return { delivery_day_override_id: null, delivery_day_offset: offset };
+  }
+  // Sub-default → only expressible as absolute pin (escape hatch for graph
+  // drags; the relative menu forbids offsets < 1).
+  return { delivery_day_override_id: dayId, delivery_day_offset: null };
+}
+
+/**
+ * Restore a report segment's prior delivery override shape verbatim. Used by
+ * the graph undo so that undoing a drag on an offset-based segment doesn't
+ * collapse to a single "where was it absolutely pinned" view (and lose the
+ * offset).
+ */
+export async function restoreReportSegmentDelivery(
+  segmentId: string,
+  previousOverrideId: string | null,
+  previousOffset: number | null
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("report_segments")
+    .update({
+      delivery_day_override_id: previousOverrideId,
+      delivery_day_offset: previousOffset,
+      updated_by: updatedBy,
+    })
+    .eq("id", segmentId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
 /** Move a report segment's delivery-day override. */
 export async function moveReportSegmentToDay(
   segmentId: string,
@@ -161,9 +420,10 @@ export async function moveReportSegmentToDay(
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
+  const patch = await reportSegmentMovePatch(supabase, segmentId, dayId);
   const { error } = await supabase
     .from("report_segments")
-    .update({ delivery_day_override_id: dayId, updated_by: updatedBy })
+    .update({ ...patch, updated_by: updatedBy })
     .eq("id", segmentId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
@@ -407,12 +667,14 @@ export async function batchMoveToDay(
         .eq("id", m.id);
       if (error) throw new Error(error.message);
     } else {
+      const patch = await reportSegmentMovePatch(
+        supabase,
+        m.id,
+        m.targetDayId
+      );
       const { error } = await supabase
         .from("report_segments")
-        .update({
-          delivery_day_override_id: m.targetDayId,
-          updated_by: updatedBy,
-        })
+        .update({ ...patch, updated_by: updatedBy })
         .eq("id", m.id);
       if (error) throw new Error(error.message);
     }
@@ -756,6 +1018,7 @@ export async function reorderLetterGroups(
 type InspectionLetterPatchFields = {
   piece: number | null;
   delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
   summary: string | null;
   content: string | null;
   sender_citizen_id: string | null;
@@ -770,9 +1033,23 @@ export async function patchInspectionLetter(
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
+  const normalized: Partial<InspectionLetterPatchFields> = { ...patch };
+  if (
+    "delivery_day_offset" in normalized &&
+    normalized.delivery_day_offset !== null &&
+    normalized.delivery_day_offset !== undefined
+  ) {
+    normalized.delivery_day_override_id = null;
+  } else if (
+    "delivery_day_override_id" in normalized &&
+    normalized.delivery_day_override_id !== null &&
+    normalized.delivery_day_override_id !== undefined
+  ) {
+    normalized.delivery_day_offset = null;
+  }
   const { error } = await supabase
     .from("inspection_letters")
-    .update({ ...patch, updated_by: updatedBy })
+    .update({ ...normalized, updated_by: updatedBy })
     .eq("id", id);
   if (error) throw new Error(error.message);
 }
@@ -844,6 +1121,7 @@ type ReportSegmentPatchFields = {
   summary: string | null;
   content: string | null;
   delivery_day_override_id: string | null;
+  delivery_day_offset: number | null;
 };
 
 export async function patchReportSegment(
@@ -853,9 +1131,23 @@ export async function patchReportSegment(
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
+  const normalized: Partial<ReportSegmentPatchFields> = { ...patch };
+  if (
+    "delivery_day_offset" in normalized &&
+    normalized.delivery_day_offset !== null &&
+    normalized.delivery_day_offset !== undefined
+  ) {
+    normalized.delivery_day_override_id = null;
+  } else if (
+    "delivery_day_override_id" in normalized &&
+    normalized.delivery_day_override_id !== null &&
+    normalized.delivery_day_override_id !== undefined
+  ) {
+    normalized.delivery_day_offset = null;
+  }
   const { error } = await supabase
     .from("report_segments")
-    .update({ ...patch, updated_by: updatedBy })
+    .update({ ...normalized, updated_by: updatedBy })
     .eq("id", id);
   if (error) throw new Error(error.message);
 }
