@@ -27,6 +27,7 @@ import {
   setActionReportSegment,
 } from "../inspection/letters/actions";
 import { Button } from "@/components/ui/button";
+import { NavMenuButton } from "@/components/nav";
 import { PageHeader } from "@/components/page-header";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
@@ -371,6 +372,7 @@ function GraphSurfaceInner({
       <PageHeader
         title="Narrative Graph"
         presenceOthersOnly
+        leading={<NavMenuButton />}
         actions={
           <div className="flex items-center gap-2">
             <AvatarStack

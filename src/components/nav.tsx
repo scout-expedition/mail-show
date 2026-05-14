@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { ComponentType, SVGProps } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useNavState } from "@/components/nav-context";
 import {
   CalendarDays,
   BookOpen,
@@ -56,18 +57,54 @@ const NAV_ITEMS: Array<{
 /**
  * Routes that force the nav into hamburger/overlay mode at every viewport
  * width — the page wants every pixel for its canvas. Keep this list in sync
- * with `useForceNarrowNav()` in NavSpacer below.
+ * with `NavSpacer` and the inline-menu check below.
  */
 const FORCE_NARROW_PREFIXES = ["/graph"] as const;
+
+/**
+ * Routes that render their own inline menu button inside the page chrome
+ * (so the floating left-edge button would just be redundant). The drawer
+ * still works; only the floating trigger is suppressed.
+ */
+const INLINE_MENU_PREFIXES = ["/graph"] as const;
 
 function isForceNarrowPath(pathname: string | null | undefined): boolean {
   if (!pathname) return false;
   return FORCE_NARROW_PREFIXES.some((p) => pathname.startsWith(p));
 }
+function isInlineMenuPath(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  return INLINE_MENU_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+/**
+ * Inline hamburger trigger for pages that want to host the toggle in their
+ * own header (e.g. /graph puts it on the same line as the page title to
+ * save vertical space). Reads the same shared open state as the floating
+ * button, so either one opens the same drawer.
+ */
+export function NavMenuButton({ className }: { className?: string }) {
+  const { open, toggle } = useNavState();
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label="Toggle navigation"
+      aria-expanded={open}
+      className={cn(
+        "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+        className
+      )}
+    >
+      <Menu size={16} aria-hidden />
+    </button>
+  );
+}
 
 export function Nav() {
   const pathname = usePathname();
   const forceNarrow = isForceNarrowPath(pathname);
+  const inlineMenu = isInlineMenuPath(pathname);
   const sections = [
     "Game",
     "Sorting",
@@ -76,31 +113,33 @@ export function Nav() {
     "Data",
     "Run",
   ] as const;
-  const [open, setOpen] = useState(false);
+  const { open, setOpen } = useNavState();
 
   // Close the drawer whenever navigation finishes so a clicked link
   // doesn't leave the overlay hanging on narrow screens.
   useEffect(() => {
     setOpen(false);
-  }, [pathname]);
+  }, [pathname, setOpen]);
 
   return (
     <>
-      {/* Toggle button — always on-screen; the nav itself is an
-          overlay on narrow viewports and inline at lg+ widths
-          (except on force-narrow routes, where it stays overlay). */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-label="Toggle navigation"
-        aria-expanded={open}
-        className={cn(
-          "fixed left-3 top-3 z-40 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-accent hover:text-foreground",
-          forceNarrow ? null : "lg:hidden"
-        )}
-      >
-        <Menu size={16} aria-hidden />
-      </button>
+      {/* Floating left-edge toggle button. Hidden when the route hosts its
+          own inline menu button (the drawer state is shared via context, so
+          either trigger opens the same drawer). */}
+      {inlineMenu ? null : (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-label="Toggle navigation"
+          aria-expanded={open}
+          className={cn(
+            "fixed left-3 top-3 z-40 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-accent hover:text-foreground",
+            forceNarrow ? null : "lg:hidden"
+          )}
+        >
+          <Menu size={16} aria-hidden />
+        </button>
+      )}
 
       {/* Backdrop while drawer is open on narrow screens. */}
       {open ? (

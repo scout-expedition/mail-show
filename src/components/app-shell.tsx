@@ -1,5 +1,6 @@
 import { Nav } from "@/components/nav";
 import { NavSpacer } from "@/components/nav-spacer";
+import { NavStateProvider } from "@/components/nav-context";
 import {
   PresenceUserProvider,
   type PresenceUser,
@@ -72,6 +73,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <PresenceUserProvider value={presenceUser}>
+      <NavStateProvider>
       <div className="flex h-screen w-screen overflow-hidden">
         <Nav />
         <div className="flex flex-1 flex-col overflow-hidden">
@@ -109,6 +111,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           </main>
         </div>
       </div>
+      </NavStateProvider>
     </PresenceUserProvider>
   );
 }
