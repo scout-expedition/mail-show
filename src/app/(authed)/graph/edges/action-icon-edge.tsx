@@ -16,6 +16,19 @@ import type { ActiveImpact } from "@/lib/graph-overlay";
 
 export type ActionIconEdgeData = {
   color: string;
+  /**
+   * Override for the SECOND bezier segment (chip → target). Used to
+   * paint letter→chip in the action's own color while chip→next-letter
+   * stays muted grey on `ln` edges. Falls back to `color` when unset.
+   */
+  path2Color?: string;
+  /**
+   * Optional override for the action-chip background, used when the line
+   * itself is muted (e.g. `ln` edges paint a grey line into a next letter
+   * but the chip should keep the action's own color). Falls back to
+   * `color` when unset.
+   */
+  chipColor?: string;
   iconType: IconType;
   iconValue: string | null;
   actionName: string;
@@ -32,12 +45,19 @@ export type ActionIconEdgeData = {
   /** Horizontal nudge applied to the path's target endpoint so converging
    * arrowheads on the same letter/report don't stack at one point. */
   targetXOffset?: number;
+  /** Horizontal nudge applied to the path's SOURCE endpoint. Used to
+   * spread sn-edge departures across a report's bottom edge so each
+   * outgoing line aligns with the matching action's arrival on top. */
+  sourceXOffset?: number;
   /** True when this action sets an ending variable and the ending overlay is on. */
   hasEnding?: boolean;
   /** True when this chip is the active inspector selection. */
   selected?: boolean;
   /** Click handler that opens the inspector panel for this action. */
   onSelect?: () => void;
+  /** Right-click handler attached to the chip — used to surface a small
+   *  Delete Action context menu on the graph. */
+  onContextMenu?: (event: React.MouseEvent) => void;
   /** Hide the chip icon+badges (e.g., report → next-letter continuations); just draw the colored line. */
   hideChip?: boolean;
   /**
@@ -47,6 +67,15 @@ export type ActionIconEdgeData = {
    * path as a destructive-color dashed line.
    */
   invalid?: boolean;
+  /**
+   * When true, the edge's arrow terminator is replaced with a small
+   * circle "connector". Reconnectable arrows become drag-to-retarget
+   * handles; non-reconnectable arrows just render as static circles.
+   */
+  editingEnabled?: boolean;
+  /** When the connector represents a reconnectable target end, render it
+   *  in the line's color (matches the chip drag affordance). */
+  reconnectable?: boolean;
 };
 
 const CHIP_PX = 20;
@@ -64,6 +93,7 @@ function ActionIconEdgeComponent({
   const d = data as unknown as ActionIconEdgeData;
   const invalid = !!d.invalid;
   const color = invalid ? "#ef4444" : d.color || "#ffffff";
+  const path2Color = invalid ? color : d.path2Color ?? color;
   const terminator = d.terminator ?? "arrow";
   const chipX = d.chipX;
   const chipY = d.chipY;
@@ -71,6 +101,9 @@ function ActionIconEdgeComponent({
   const strokeStyle = invalid
     ? { stroke: color, strokeWidth: 1.75, strokeDasharray: "6 4" }
     : { stroke: color, strokeWidth: 1.75 };
+  const path2StrokeStyle = invalid
+    ? { stroke: path2Color, strokeWidth: 1.75, strokeDasharray: "6 4" }
+    : { stroke: path2Color, strokeWidth: 1.75 };
 
   // Cubic bezier segments so the line leaves the source and arrives at the
   // target perpendicular to the pill edges (vertical exit / entry via
@@ -91,10 +124,12 @@ function ActionIconEdgeComponent({
   const arrowTargetY = targetY - ARROW_PULLBACK;
   // Spread converging arrowheads across the target's top edge.
   const arrowTargetX = targetX + (d.targetXOffset ?? 0);
+  // Mirror spread on the source side (used for `sn` exits from a report).
+  const adjustedSourceX = sourceX + (d.sourceXOffset ?? 0);
   const single =
     hideChip && terminator === "arrow"
       ? getBezierPath({
-          sourceX,
+          sourceX: adjustedSourceX,
           sourceY,
           targetX: arrowTargetX,
           targetY: arrowTargetY,
@@ -106,7 +141,7 @@ function ActionIconEdgeComponent({
   const [path1] = single
     ? [null]
     : getBezierPath({
-        sourceX,
+        sourceX: adjustedSourceX,
         sourceY,
         targetX: chipX,
         targetY: chipY,
@@ -154,11 +189,39 @@ function ActionIconEdgeComponent({
         <BaseEdge
           id={`${id}-b`}
           path={path2}
-          style={strokeStyle}
+          style={path2StrokeStyle}
           markerEnd={markerEnd}
         />
       ) : null}
 
+      {d.editingEnabled && terminator === "arrow" ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${arrowTargetX}px, ${arrowTargetY}px)`,
+              pointerEvents: "none",
+              zIndex: 9,
+            }}
+            aria-hidden
+          >
+            <div
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                // Terminator sits at the END of the second bezier
+                // segment, so use that segment's color (matches the
+                // muted grey on letter→next-letter direct edges).
+                background: path2Color,
+                border: "1.5px solid var(--background)",
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
+              }}
+            />
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
       {hideChip ? null : (
       <EdgeLabelRenderer>
         <div
@@ -174,6 +237,7 @@ function ActionIconEdgeComponent({
           <button
             type="button"
             onClick={d.onSelect}
+            onContextMenu={d.onContextMenu}
             onPointerDown={(e) => e.stopPropagation()}
             className={
               "relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0" +
@@ -182,8 +246,12 @@ function ActionIconEdgeComponent({
                 : "")
             }
             style={{
-              background: color,
-              color: readableOnHex(color),
+              background: invalid
+                ? color
+                : d.chipColor ?? color,
+              color: readableOnHex(
+                invalid ? color : d.chipColor ?? color
+              ),
               pointerEvents: "auto",
               cursor: d.onSelect ? "pointer" : "default",
             }}

@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { CitizenType, IconType } from "@/lib/db/enums";
 import type { LetterGroup } from "@/lib/db/types";
@@ -728,7 +727,9 @@ export async function deleteGroup(groupId: string) {
   }
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
-  redirect("/inspection/letters");
+  // Intentionally no redirect — the caller may be embedded in /graph and
+  // we want to stay there. /inspection/letters relies on revalidate to
+  // refresh the panel; the deleted group simply disappears from the list.
 }
 
 export async function createInspectionLetterInGroup(groupId: string) {
@@ -766,6 +767,110 @@ export async function createInspectionLettersInGroup(
   await reassignVariants(groupId);
   revalidatePath("/inspection/letters");
   return (data ?? []).map((r) => r.id as string);
+}
+
+/**
+ * Create a sibling letter in the same group as `letterId` whose summary /
+ * content / sender / receiver / notes / piece / delivery override copies
+ * over. The new letter gets a fresh variant via reassignVariants. Returns
+ * the new letter id so callers can navigate to it.
+ */
+export async function duplicateInspectionLetter(
+  letterId: string
+): Promise<{ newLetterId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: src, error: srcErr } = await supabase
+    .from("inspection_letters")
+    .select(
+      "letter_group_id, piece, delivery_day_override_id, delivery_day_offset, summary, content, sender_citizen_id, receiver_citizen_id, notes"
+    )
+    .eq("id", letterId)
+    .single();
+  if (srcErr || !src) throw new Error(srcErr?.message ?? "letter not found");
+  const groupId = src.letter_group_id as string;
+  const { data: existing } = await supabase
+    .from("inspection_letters")
+    .select("sort_order")
+    .eq("letter_group_id", groupId)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSortOrder = (existing?.[0]?.sort_order ?? 0) + 1;
+  const { data: inserted, error: insErr } = await supabase
+    .from("inspection_letters")
+    .insert({
+      letter_group_id: groupId,
+      sort_order: nextSortOrder,
+      piece: src.piece,
+      delivery_day_override_id: src.delivery_day_override_id,
+      delivery_day_offset: src.delivery_day_offset,
+      summary: src.summary,
+      content: src.content,
+      sender_citizen_id: src.sender_citizen_id,
+      receiver_citizen_id: src.receiver_citizen_id,
+      notes: src.notes,
+    })
+    .select("id")
+    .single();
+  if (insErr || !inserted)
+    throw new Error(insErr?.message ?? "failed to duplicate letter");
+  await reassignVariants(groupId);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  return { newLetterId: inserted.id as string };
+}
+
+/**
+ * Create a sibling report segment in the same report_group as
+ * `segmentId`, copying its summary / content / delivery override. The new
+ * segment gets the next free roman-numeral variant.
+ */
+export async function duplicateReportSegment(
+  segmentId: string
+): Promise<{ newSegmentId: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: src, error: srcErr } = await supabase
+    .from("report_segments")
+    .select(
+      "report_group_id, summary, content, delivery_day_override_id, delivery_day_offset"
+    )
+    .eq("id", segmentId)
+    .single();
+  if (srcErr || !src) throw new Error(srcErr?.message ?? "segment not found");
+  const reportGroupId = src.report_group_id as string;
+  const { data: existing } = await supabase
+    .from("report_segments")
+    .select("variant, sort_order")
+    .eq("report_group_id", reportGroupId);
+  const taken = new Set((existing ?? []).map((r) => r.variant as string));
+  let index = 1;
+  let variant = toRoman(index);
+  while (taken.has(variant)) {
+    index += 1;
+    variant = toRoman(index);
+  }
+  const nextSortOrder =
+    Math.max(0, ...((existing ?? []).map((r) => r.sort_order as number))) + 1;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { data: inserted, error: insErr } = await supabase
+    .from("report_segments")
+    .insert({
+      report_group_id: reportGroupId,
+      variant,
+      sort_order: nextSortOrder,
+      summary: src.summary,
+      content: src.content,
+      delivery_day_override_id: src.delivery_day_override_id,
+      delivery_day_offset: src.delivery_day_offset,
+      updated_by: updatedBy,
+    })
+    .select("id")
+    .single();
+  if (insErr || !inserted)
+    throw new Error(insErr?.message ?? "failed to duplicate segment");
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  return { newSegmentId: inserted.id as string };
 }
 
 export async function deleteInspectionLetter(groupId: string, letterId: string) {
@@ -1428,6 +1533,28 @@ export async function createReportSegmentForGroup(
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
   return { segmentId: inserted!.id as string };
+}
+
+/**
+ * Create N report segments under a letter group, each pinned to an
+ * absolute day via delivery_day_override_id. Used by the graph's pane
+ * right-click menu where the user picks a day visually.
+ */
+export async function createReportSegmentsForGroupAtDay(
+  groupId: string,
+  count: number,
+  deliveryDayId: string | null
+): Promise<{ segmentIds: string[] }> {
+  const n = Math.max(1, Math.min(3, count));
+  const ids: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const { segmentId } = await createReportSegmentForGroup(
+      groupId,
+      deliveryDayId
+    );
+    ids.push(segmentId);
+  }
+  return { segmentIds: ids };
 }
 
 /**

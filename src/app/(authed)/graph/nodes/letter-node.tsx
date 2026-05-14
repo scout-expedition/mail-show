@@ -14,29 +14,65 @@ export type LetterNodeData = {
   onSelect?: () => void;
 };
 
+// Inline-style overrides that strip ReactFlow's default Handle CSS so the
+// Handle becomes a transparent in-flow wrapper that sizes to its child
+// (the card). element-from-point checks anywhere on the card walk up to
+// this Handle, so connection drops land anywhere on the card.
+const FULL_CARD_HANDLE_STYLE: React.CSSProperties = {
+  position: "static",
+  transform: "none",
+  width: "auto",
+  height: "auto",
+  minWidth: 0,
+  minHeight: 0,
+  borderRadius: 0,
+  background: "transparent",
+  border: "none",
+  cursor: "inherit",
+};
+
 function LetterNode({ data }: NodeProps) {
   const d = data as unknown as LetterNodeData;
   return (
     <div className="relative">
+      {/*
+        Small top-center Handle stays as the canonical endpoint anchor for
+        edges that target this letter directly (locked-mode arrows). In
+        edit mode, per-edge endpoint nodes own the visual terminator and
+        reconnect grab, so this Handle's only role there is to be the
+        no-id default when ReactFlow needs a connection-endpoint position.
+      */}
       <Handle
         type="target"
         position={Position.Top}
-        // Drop-only: accepts edge-reconnect drops (Phase 4) but never
-        // initiates a fresh connection drag, since that would let users
-        // create unrelated edges with no semantics in our graph.
-        isConnectable={true}
+        isConnectable
         isConnectableStart={false}
         className="!h-2 !w-2 !border-none !bg-transparent"
       />
-      <div className="cursor-grab active:cursor-grabbing">
-        <InspectionLetterCard
-          storyline={d.storyline}
-          contentId={d.contentId}
-          summary={d.summary}
-          widthPx={d.widthPx}
-          selected={d.selected}
-        />
-      </div>
+      {/*
+        Full-card drop zone: wraps the card so dropping a connection
+        anywhere within the card lands on this Handle. Identified by
+        `id="full"` so it doesn't displace the small Handle as the
+        no-id default.
+      */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="full"
+        isConnectable
+        isConnectableStart={false}
+        style={FULL_CARD_HANDLE_STYLE}
+      >
+        <div className="cursor-grab active:cursor-grabbing">
+          <InspectionLetterCard
+            storyline={d.storyline}
+            contentId={d.contentId}
+            summary={d.summary}
+            widthPx={d.widthPx}
+            selected={d.selected}
+          />
+        </div>
+      </Handle>
       <Handle
         type="source"
         position={Position.Bottom}

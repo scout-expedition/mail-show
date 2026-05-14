@@ -23,14 +23,17 @@ function LetterGroupNode({ data }: NodeProps) {
     <div
       style={{ width: d.width, height: d.height }}
       className={
-        "relative cursor-grab rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow] duration-100 active:cursor-grabbing" +
+        "relative rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow] duration-100" +
         (d.hovered
           ? " bg-[color-mix(in_srgb,var(--ring)_15%,transparent)] ring-2 ring-ring ring-offset-1 ring-offset-background"
           : "")
       }
     >
+      {/* `.group-drag-handle` is the only area ReactFlow accepts as a
+          drag origin (see `dragHandle` on the node in graph-view). Click
+          the background → nothing; click the pill → drag the group. */}
       <div
-        className="absolute top-1/2 left-0 flex cursor-pointer flex-col items-center gap-0.5"
+        className="group-drag-handle absolute top-1/2 left-0 flex cursor-grab flex-col items-center gap-0.5 active:cursor-grabbing"
         style={{ transform: "translate(-50%, -50%)" }}
       >
         <LetterGroupPill

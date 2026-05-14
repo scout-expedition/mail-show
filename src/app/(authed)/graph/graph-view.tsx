@@ -20,7 +20,9 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
+import { Copy, MailOpen, Megaphone, Trash2 } from "lucide-react";
 import { StorylinePill } from "@/components/pills";
+import { useConfirm } from "@/components/confirm-dialog";
 import type {
   ActionRow,
   ActionTemplate,
@@ -39,6 +41,14 @@ import {
 } from "@/lib/graph-overlay";
 import {
   batchMoveToDay,
+  createInspectionLettersInGroup,
+  createReportSegmentsForGroupAtDay,
+  deleteActionRow,
+  deleteGroup,
+  deleteInspectionLetter,
+  deleteReportSegment,
+  duplicateInspectionLetter,
+  duplicateReportSegment,
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
@@ -48,10 +58,15 @@ import {
 import { ActionIconEdge } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
 import ConnectionSourceNode from "./nodes/connection-source";
+import {
+  GraphContextMenu,
+  type GraphContextMenuItem,
+} from "./graph-context-menu";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
 import ReportNode from "./nodes/report-node";
 import StubTargetNode from "./nodes/stub-target";
+import EndpointTargetNode from "./nodes/endpoint-target";
 
 /**
  * Selection on the graph. Mirrors the inspector panel's drill-down levels so
@@ -242,6 +257,7 @@ const nodeTypes = {
   letter: LetterNode,
   report: ReportNode,
   stubTarget: StubTargetNode,
+  endpointTarget: EndpointTargetNode,
   connectionSource: ConnectionSourceNode,
 };
 
@@ -816,6 +832,10 @@ export function GraphView({
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: editingEnabled,
+            // Limit the drag origin to the pill — the group's background
+            // is otherwise unclickable empty space, so dragging from it
+            // is more accidental than intentional.
+            dragHandle: ".group-drag-handle",
             selectable: false,
             focusable: false,
             style: { width: gi.width, height: gi.height },
@@ -1290,26 +1310,195 @@ export function GraphView({
       });
     }
 
-    // Mint connection-source nodes (Phase 4 followup): tiny draggable
-    // circles next to a chip when the action is missing a report and/or a
-    // next-letter, so the user can drag-to-create those links the same
-    // way they drag-to-retarget existing edges. Only emitted when editing
-    // is unlocked, and only on chips whose source is a letter (one chip
-    // per action — sn continuation chips are not augmented).
+    // Arrowhead spread is needed BEFORE the connection-source loop so the
+    // "continue this chain" handle can sit on the chip's actual landing X
+    // when multiple arrows share a target.
+    const arrowsByTarget = new Map<string, ChipPlacement[]>();
+    for (const p of placements) {
+      if (p.candidate.terminator !== "arrow") continue;
+      const list = arrowsByTarget.get(p.candidate.target) ?? [];
+      list.push(p);
+      arrowsByTarget.set(p.candidate.target, list);
+    }
+    for (const list of arrowsByTarget.values()) {
+      list.sort((a, b) => a.chipX - b.chipX);
+    }
+    const ARROW_TARGET_PITCH = 20;
+    const targetOffsetByEdgeId = new Map<string, number>();
+    for (const list of arrowsByTarget.values()) {
+      const N = list.length;
+      list.forEach((p, i) => {
+        const offset = N > 1 ? (i - (N - 1) / 2) * ARROW_TARGET_PITCH : 0;
+        targetOffsetByEdgeId.set(p.candidate.id, offset);
+      });
+    }
+
+    // In edit mode, mint a per-edge endpoint node at each arrow target
+    // position. The edge then targets that endpoint instead of the
+    // letter/report directly — which lets two arrows converging on the
+    // same target sit at distinct X positions AND each remain
+    // independently grabbable for drag-to-reconnect. (The letter/report
+    // node's own target Handle is 8px wide, so only one of the converging
+    // hit zones is reachable when the spread is purely visual.) The
+    // letter/report's own Handle remains a drop target so reconnect drops
+    // still land where the user expects.
+    const endpointNodeIdByEdgeId = new Map<string, string>();
     if (editingEnabled) {
-      const CONNECT_OFFSET_Y = 16; // chip half-height (10) + gap (6)
-      const CONNECT_OFFSET_X = 8;
+      for (const p of placements) {
+        if (p.candidate.terminator !== "arrow") continue;
+        const targetId = p.candidate.target;
+        const tgtPos =
+          letterAbsPos.get(targetId) ?? segmentAbsPos.get(targetId);
+        if (!tgtPos) continue;
+        const offset = targetOffsetByEdgeId.get(p.candidate.id) ?? 0;
+        const baseX = tgtPos.x + CARD_W / 2 + offset;
+        const baseY = tgtPos.y;
+        const endpointId = `endpoint:${p.candidate.id}`;
+        endpointNodeIdByEdgeId.set(p.candidate.id, endpointId);
+        n.push({
+          id: endpointId,
+          type: "endpointTarget",
+          position: { x: baseX, y: baseY },
+          data: {},
+          draggable: false,
+          selectable: false,
+          focusable: false,
+          // Above letter/report nodes so the hit zone wins pointer events
+          // when it overlaps the card's top edge.
+          zIndex: 12,
+        });
+      }
+    }
+
+    // For every letter with multiple outgoing edges (one per action that
+    // starts there), spread the source X to match each action's chip X.
+    // Without this, both lines emerge from the letter's bottom-center
+    // and diverge into a "V" — the user wants each line to drop
+    // straight from under its chip.
+    const letterSourceBySource = new Map<string, ChipPlacement[]>();
+    for (const p of placements) {
+      if (!p.candidate.source.startsWith("letter:")) continue;
+      const list = letterSourceBySource.get(p.candidate.source) ?? [];
+      list.push(p);
+      letterSourceBySource.set(p.candidate.source, list);
+    }
+    const sourceXOffsetByEdgeId = new Map<string, number>();
+    for (const [sourceId, list] of letterSourceBySource) {
+      if (list.length < 2) continue;
+      const letterPos = letterAbsPos.get(sourceId);
+      if (!letterPos) continue;
+      const letterCenterX = letterPos.x + CARD_W / 2;
+      for (const p of list) {
+        // Source offset = chip X relative to the letter's center, so
+        // the bezier exits the letter directly under the chip.
+        sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - letterCenterX);
+      }
+    }
+
+    // Mirror the arrowhead spread on the EXIT side: for every report
+    // segment with multiple outgoing `sn` lines (one per triggering
+    // action), each line should depart from a distinct X on the report's
+    // bottom edge. Ordering follows the line's NEXT-LETTER X so
+    // outgoing lines don't cross when sources and targets disagree on
+    // order — trace from the bottom of the report to the next letter
+    // is always non-crossing.
+    const snBySource = new Map<string, ChipPlacement[]>();
+    for (const p of placements) {
+      if (p.candidate.kind !== "sn") continue;
+      const list = snBySource.get(p.candidate.source) ?? [];
+      list.push(p);
+      snBySource.set(p.candidate.source, list);
+    }
+    for (const list of snBySource.values()) {
+      if (list.length === 1) {
+        // Single departure: align under the matching ls arrival on the
+        // top edge of the report so the chain reads as a continuous
+        // letter→report→next-letter. (Reports can have multiple ls
+        // arrows in from different actions even when only one of those
+        // actions has a next letter; centering the lone sn at the
+        // report's mid-x would visually disconnect it from its source
+        // chip.)
+        const p = list[0];
+        const lsCandidate = placements.find(
+          (q) =>
+            q.candidate.kind === "ls" &&
+            q.candidate.action.id === p.candidate.action.id
+        );
+        const lsOffset = lsCandidate
+          ? targetOffsetByEdgeId.get(lsCandidate.candidate.id) ?? 0
+          : 0;
+        sourceXOffsetByEdgeId.set(p.candidate.id, lsOffset);
+        continue;
+      }
+      // Multiple departures: sort by target X (where the line lands at
+      // the next letter) so departures on the report's bottom mirror
+      // that left-to-right order and the bezier paths don't cross.
+      list.sort((a, b) => {
+        const ta = letterAbsPos.get(a.candidate.target);
+        const tb = letterAbsPos.get(b.candidate.target);
+        const ax = ta ? ta.x : 0;
+        const bx = tb ? tb.x : 0;
+        return ax - bx;
+      });
+      const N = list.length;
+      list.forEach((p, i) => {
+        const offset = (i - (N - 1) / 2) * ARROW_TARGET_PITCH;
+        sourceXOffsetByEdgeId.set(p.candidate.id, offset);
+      });
+    }
+
+    // Mint connection-source nodes (Phase 4 followup): tiny draggable
+    // circles that the user can drag to create or retarget links. Only
+    // emitted when editing is unlocked, and only on chips whose source is
+    // a letter (one chip per action — sn continuation chips skip this).
+    //
+    // Placement rules:
+    //   - Action has NEITHER report NOR next-letter → one circle below
+    //     the chip in the action's color. Dropping on a letter sets the
+    //     next-letter; dropping on a report sets the report. (The chip
+    //     itself recolors as appropriate when the connection lands.)
+    //   - Action has a report but no next-letter → the "next" circle
+    //     sits BELOW the report segment, where the next-letter line
+    //     would land if it existed. Rendered grey since next-letter
+    //     edges are grey.
+    //   - Action has a next-letter but no report → the "report" circle
+    //     sits below the chip in the action's color.
+    if (editingEnabled) {
+      const CONNECT_BELOW_GAP = 14; // chip half-height (10) + gap below
       for (const p of placements) {
         if (!p.candidate.source.startsWith("letter:")) continue;
         const a = p.candidate.action;
         const resolved = resolveAction(a);
-        if (!a.report_segment_id) {
+        const hasReport = !!a.report_segment_id;
+        const hasNext = !!a.next_letter_variant;
+        if (!hasReport && !hasNext) {
+          // Single combined connector: drag-anywhere. The kind is "any"
+          // and the drop handler resolves to report or next based on the
+          // target node type.
+          n.push({
+            id: `connect:${a.id}:any`,
+            type: "connectionSource",
+            position: {
+              x: p.chipX - 6,
+              y: p.chipY + CONNECT_BELOW_GAP - 6,
+            },
+            data: { kind: "any", color: resolved.color || "#ffffff" },
+            draggable: false,
+            selectable: false,
+            focusable: false,
+            zIndex: 11,
+          });
+          continue;
+        }
+        if (!hasReport) {
+          // Action has a next-letter but no report — drag from below the
+          // chip to attach a report segment.
           n.push({
             id: `connect:${a.id}:report`,
             type: "connectionSource",
             position: {
-              x: p.chipX - CONNECT_OFFSET_X - 6, // -6: center the 12px circle
-              y: p.chipY - CONNECT_OFFSET_Y - 6,
+              x: p.chipX - 6,
+              y: p.chipY + CONNECT_BELOW_GAP - 6,
             },
             data: { kind: "report", color: resolved.color || "#ffffff" },
             draggable: false,
@@ -1318,15 +1507,31 @@ export function GraphView({
             zIndex: 11,
           });
         }
-        if (!a.next_letter_variant) {
+        if (!hasNext) {
+          // Action has a report but no next-letter — surface the "next"
+          // pickup point directly below the report segment, where the
+          // next-letter line would meet the next group. Rendered grey
+          // (next-letter edges are grey). Aligned horizontally with the
+          // SAME action's arrival point on top so you can trace the
+          // chain through the report card.
+          let nextX = p.chipX - 6;
+          let nextY = p.chipY + CONNECT_BELOW_GAP - 6;
+          if (hasReport && p.candidate.kind === "ls") {
+            const reportPos = segmentAbsPos.get(
+              `report:${a.report_segment_id}`
+            );
+            if (reportPos) {
+              const lsOffset =
+                targetOffsetByEdgeId.get(`a:${a.id}:ls`) ?? 0;
+              nextX = reportPos.x + CARD_W / 2 + lsOffset - 6;
+              nextY = reportPos.y + reportPos.h + 6 - 6;
+            }
+          }
           n.push({
             id: `connect:${a.id}:next`,
             type: "connectionSource",
-            position: {
-              x: p.chipX + CONNECT_OFFSET_X - 6,
-              y: p.chipY - CONNECT_OFFSET_Y - 6,
-            },
-            data: { kind: "next", color: resolved.color || "#ffffff" },
+            position: { x: nextX, y: nextY },
+            data: { kind: "next", color: "#9ca3af" },
             draggable: false,
             selectable: false,
             focusable: false,
@@ -1340,41 +1545,23 @@ export function GraphView({
     //   - multiple arrows converging on one target → white, so the stacked
     //     arrowheads read as a single unified arrow
     //   - single arrow → the action's own color
-    // Arrowhead spacing: when multiple edges land on the same target, give
-    // each its own arrowhead spread horizontally across the target's top
-    // edge instead of stacking them at the same point.
-    const arrowsByTarget = new Map<string, ChipPlacement[]>();
-    for (const p of placements) {
-      if (p.candidate.terminator !== "arrow") continue;
-      const list = arrowsByTarget.get(p.candidate.target) ?? [];
-      list.push(p);
-      arrowsByTarget.set(p.candidate.target, list);
-    }
-    for (const list of arrowsByTarget.values()) {
-      // Stable left-to-right order keyed by the chip's X position so the
-      // visual ordering matches the source layout.
-      list.sort((a, b) => a.chipX - b.chipX);
-    }
-    const ARROW_TARGET_PITCH = 20; // px between arrowheads at the same target
-    const targetOffsetByEdgeId = new Map<string, number>();
-    for (const list of arrowsByTarget.values()) {
-      const N = list.length;
-      list.forEach((p, i) => {
-        const offset = N > 1 ? (i - (N - 1) / 2) * ARROW_TARGET_PITCH : 0;
-        targetOffsetByEdgeId.set(p.candidate.id, offset);
-      });
-    }
+    // (Arrowhead spacing / targetOffsetByEdgeId computed earlier so the
+    // connection-source minting loop can use it.)
 
     for (const p of placements) {
       const c = p.candidate;
       const resolved = resolveAction(c.action);
-      // Segment → next-letter continuations render in a muted grey so the
-      // primary visual energy stays on the action chip → report leg.
+      // Edges that lead INTO a letter (segment→next-letter or
+      // letter→next-letter direct) render in muted grey on the
+      // chip→letter segment. The letter→chip leg of an `ln` edge stays
+      // in the action's color (only the post-chip segment is muted).
       const isReportSource = c.source.startsWith("report:");
       const isLetterTargetForChip = c.target.startsWith("letter:");
       const isSegmentToNextLetter = isReportSource && isLetterTargetForChip;
+      const isLetterToNextLetter = c.kind === "ln";
       const baseColor = resolved.color || "#ffffff";
       const color = isSegmentToNextLetter ? "#5e5e5e" : baseColor;
+      const path2Color = isLetterToNextLetter ? "#5e5e5e" : undefined;
       // Arrowhead always matches the line that draws into it — no
       // override for converging targets or muted segment-source lines.
       const arrowColor = color;
@@ -1404,21 +1591,73 @@ export function GraphView({
               actionId: c.action.id,
             })
         : undefined;
-      // ls (letter → segment) is the action's intrinsic report and is not
-      // reconnectable. The arrowhead end of every other edge subtype can be
-      // dragged to retarget the action's `next_letter_variant`, or dropped on
-      // empty space to clear it. When the graph is locked (read-only), no
-      // edge accepts reconnect drags, regardless of subtype.
-      const reconnectable: boolean | "target" =
-        editingEnabled && c.kind !== "ls" ? "target" : false;
+      const onChipContextMenu = (event: React.MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!srcLetter) return;
+        const aId = c.action.id;
+        const groupId = srcLetter.groupId;
+        setContextMenu({
+          anchor: { x: event.clientX, y: event.clientY },
+          items: [
+            {
+              label: "Delete Action",
+              icon: <Trash2 size={12} aria-hidden />,
+              intent: "destructive",
+              onClick: () =>
+                void (async () => {
+                  const ok = await confirm({
+                    title: "Delete action?",
+                    message:
+                      "The action will be removed from this letter. This cannot be undone.",
+                    confirmLabel: "Delete",
+                    intent: "destructive",
+                  });
+                  if (!ok) return;
+                  await deleteActionRow(groupId, aId);
+                  if (
+                    selection?.kind === "actions" &&
+                    selection.actionId === aId
+                  ) {
+                    select(null);
+                  }
+                })(),
+            },
+          ],
+        });
+      };
+      // Every reconnectable edge in edit mode lets the user drag the
+      // target endpoint to retarget the underlying link, or drop on
+      // empty space to clear it. When the graph is locked (read-only),
+      // no edge accepts reconnect drags.
+      //   - "ls" (letter → report)    → retargets `report_segment_id`
+      //   - "sn" (report → next letter) → retargets `next_letter_variant`
+      //   - "ln" (letter → next letter direct) → retargets `next_letter_variant`
+      //   - "stub" (dangling)         → attaches the first missing link
+      const reconnectable: boolean | "target" = editingEnabled
+        ? "target"
+        : false;
+      // In edit mode, route the edge through a dedicated per-edge
+      // endpoint node so each converging terminator has its own grab
+      // handle. The endpoint sits at the spread X already, so the edge
+      // data's targetXOffset is zeroed in that mode.
+      const endpointId = endpointNodeIdByEdgeId.get(c.id);
+      const edgeTarget = endpointId ?? c.target;
+      const targetXOffset =
+        endpointId !== undefined ? 0 : targetOffsetByEdgeId.get(c.id) ?? 0;
       e.push({
         id: c.id,
         source: c.source,
-        target: c.target,
+        target: edgeTarget,
         type: "actionIcon",
         reconnectable,
         data: {
           color,
+          path2Color,
+          // When the line is muted grey (segment→next-letter) we still
+          // want the action chip itself to read in the action's own
+          // color. ln edges already paint chip with `color` (= baseColor).
+          chipColor: isSegmentToNextLetter ? baseColor : undefined,
           iconType: resolved.iconType,
           iconValue: resolved.iconValue,
           actionName: resolved.name,
@@ -1427,10 +1666,12 @@ export function GraphView({
           terminator: c.terminator,
           impacts: p.impacts,
           badgeSide: p.badgeSide,
-          targetXOffset: targetOffsetByEdgeId.get(c.id) ?? 0,
+          targetXOffset,
+          sourceXOffset: sourceXOffsetByEdgeId.get(c.id) ?? 0,
           hasEnding,
           selected: chipSelected,
           onSelect: onChipSelect,
+          onContextMenu: onChipContextMenu,
           // The chip only appears on letter → report segment connections
           // (and on the letter → stub dangling terminator). Report →
           // next-letter continuations AND letter → next-letter direct
@@ -1446,9 +1687,11 @@ export function GraphView({
               (!c.action.report_segment_id || !c.action.next_letter_variant)
             ),
           invalid: !!c.invalid,
+          editingEnabled,
+          reconnectable: !!reconnectable,
         },
         markerEnd:
-          c.terminator === "arrow"
+          c.terminator === "arrow" && !editingEnabled
             ? {
                 type: MarkerType.ArrowClosed,
                 color: c.invalid ? "#ef4444" : arrowColor,
@@ -1577,6 +1820,44 @@ export function GraphView({
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  // Escape pressed mid-drag flips this; onNodeDragStop reads it and skips
+  // the server-side move so the layout snaps back to the original
+  // positions on the next render. Cleared on drag start.
+  const dragCanceledRef = useRef(false);
+  useEffect(() => {
+    if (!isDragging) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        dragCanceledRef.current = true;
+        // Force ReactFlow's pointer-drag to release so onNodeDragStop
+        // fires and our cancel branch runs.
+        document.dispatchEvent(
+          new MouseEvent("mouseup", { bubbles: true, cancelable: true })
+        );
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isDragging]);
+  const [contextMenu, setContextMenu] = useState<{
+    anchor: { x: number; y: number };
+    items: GraphContextMenuItem[];
+  } | null>(null);
+  /**
+   * After a server-side create completes, we want to select the newly
+   * created entity and re-center the canvas on it — but the node won't be
+   * in the layout until the data refresh propagates. This ref stashes the
+   * "to-be-focused" id; a useEffect below watches the data and, when the
+   * id materializes, calls onSelectionChange (which triggers the existing
+   * auto-pan).
+   */
+  const pendingFocusRef = useRef<GraphSelection | null>(null);
+  const queueFocus = useCallback((sel: GraphSelection) => {
+    pendingFocusRef.current = sel;
+  }, []);
+
+  // Custom overlay confirm() used by every destructive context-menu item.
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   // Helpers used by drag-drop handlers. They close over the current
   // memoized layout — recomputed on every render, which is fine because
@@ -1587,11 +1868,150 @@ export function GraphView({
     }
     return null;
   }
+  function storylineAtFlowX(x: number): string | null {
+    let best: { id: string; baseX: number; width: number } | null = null;
+    for (const c of labelCols) {
+      if (x >= c.baseX && x < c.baseX + c.width) return c.id;
+      // Track nearest column as a fallback in case the click is in a gap.
+      if (
+        !best ||
+        Math.abs(x - (c.baseX + c.width / 2)) <
+          Math.abs(x - (best.baseX + best.width / 2))
+      ) {
+        best = { id: c.id, baseX: c.baseX, width: c.width };
+      }
+    }
+    return best?.id ?? null;
+  }
+
+  function openPaneMenu(e: MouseEvent) {
+    const rf = rfRef.current;
+    if (!rf) return;
+    const flowPt = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    const rowId = rowAtFlowY(flowPt.y);
+    const storylineId = storylineAtFlowX(flowPt.x);
+    if (!rowId || !storylineId) return;
+    const targetDayId = rowId === "unscheduled" ? null : rowId;
+    const anchor = { x: e.clientX, y: e.clientY };
+    // Resolve the candidate letter group(s) to anchor new segments to:
+    //   1. If something is currently selected and it belongs to a group in
+    //      this storyline, prefer that group.
+    //   2. Otherwise walk back to the closest preceding day in the
+    //      storyline; every group on that day is a candidate.
+    const clickedDayNumber =
+      rowId === "unscheduled"
+        ? null
+        : days.find((d) => d.id === rowId)?.number ?? null;
+    const storylineGroups = letterGroups
+      .filter((g) => g.storyline_id === storylineId)
+      .sort((a, b) => a.sequence - b.sequence);
+    const dayNumberById = new Map(days.map((d) => [d.id, d.number]));
+
+    let selectionGroupId: string | null = null;
+    if (selection?.kind === "group") selectionGroupId = selection.groupId;
+    else if (selection?.kind === "letter" || selection?.kind === "actions")
+      selectionGroupId = selection.groupId;
+    else if (selection?.kind === "segment") {
+      const seg = segments.find((s) => s.id === selection.segmentId);
+      selectionGroupId = seg?.letter_group_id ?? null;
+    }
+    const selectedInStoryline = selectionGroupId
+      ? storylineGroups.find((g) => g.id === selectionGroupId) ?? null
+      : null;
+
+    let candidates: LetterGroup[];
+    if (selectedInStoryline) {
+      candidates = [selectedInStoryline];
+    } else if (clickedDayNumber == null) {
+      candidates = storylineGroups;
+    } else {
+      // Closest preceding day that has any group.
+      const withDay = storylineGroups
+        .map((g) => ({
+          g,
+          n: g.delivery_day_id
+            ? dayNumberById.get(g.delivery_day_id) ?? null
+            : null,
+        }))
+        .filter((x) => x.n != null && (x.n as number) < clickedDayNumber);
+      if (withDay.length === 0) {
+        candidates = storylineGroups; // fallback when no group precedes
+      } else {
+        const maxN = Math.max(...withDay.map((x) => x.n as number));
+        candidates = withDay
+          .filter((x) => x.n === maxN)
+          .sort((a, b) => a.g.sequence - b.g.sequence)
+          .map((x) => x.g);
+      }
+    }
+
+    const addIcon = (
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden>+</span>
+        <Megaphone size={11} aria-hidden />
+      </span>
+    );
+    const showCreateMenu = (anchorGroup: LetterGroup | null) => {
+      const makeCreator = (n: number) => () => {
+        if (!anchorGroup) return;
+        void (async () => {
+          const { segmentIds } = await createReportSegmentsForGroupAtDay(
+            anchorGroup.id,
+            n,
+            targetDayId
+          );
+          if (segmentIds[0]) {
+            queueFocus({ kind: "segment", segmentId: segmentIds[0] });
+          }
+        })();
+      };
+      setContextMenu({
+        anchor,
+        items: [
+          {
+            label: "Report Segment",
+            icon: addIcon,
+            disabled: !anchorGroup,
+            onClick: makeCreator(1),
+          },
+          {
+            label: "2 Report Segments",
+            icon: addIcon,
+            disabled: !anchorGroup,
+            onClick: makeCreator(2),
+          },
+          {
+            label: "3 Report Segments",
+            icon: addIcon,
+            disabled: !anchorGroup,
+            onClick: makeCreator(3),
+          },
+        ],
+      });
+    };
+
+    if (candidates.length <= 1) {
+      showCreateMenu(candidates[0] ?? null);
+      return;
+    }
+    // Ambiguous: ask which group should anchor before showing the create
+    // menu. Click → re-opens the menu with the picked group baked in.
+    setContextMenu({
+      anchor,
+      items: [
+        ...candidates.map((g) => ({
+          label: `Group ${g.sequence}${g.name ? ` — ${g.name}` : ""}`,
+          onClick: () => showCreateMenu(g),
+        })),
+      ],
+    });
+  }
 
   const onNodeDragStart = useCallback(() => {
     setIsDragging(true);
     setHoveredRowId(null);
     setHoveredGroupId(null);
+    dragCanceledRef.current = false;
   }, []);
 
   // Update hovered row + (for letter drags) hovered target group on every
@@ -1650,6 +2070,13 @@ export function GraphView({
       setHoveredGroupId(null);
       const rf = rfRef.current;
       if (!rf) return;
+      // Escape-cancel: skip the server-side move and snap nodes back to
+      // their pre-drag positions via the memoized layout.
+      if (dragCanceledRef.current) {
+        dragCanceledRef.current = false;
+        rf.setNodes(nodes);
+        return;
+      }
       // Batch move: when the user drags more than one selected node,
       // dispatch a single batchMoveToDay covering each entity's new day.
       if (draggedNodes.length > 1) {
@@ -1804,7 +2231,7 @@ export function GraphView({
         void moveLetterToGroup(resolvedLetterId, targetGid);
       }
     },
-    [rowMeta, groupMeta, letters, segments, recordUndo]
+    [rowMeta, groupMeta, letters, segments, recordUndo, nodes]
   );
 
   // -----------------------------------------------------------------
@@ -1853,16 +2280,68 @@ export function GraphView({
     (oldEdge: Edge, newConnection: Connection) => {
       const m = oldEdge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
       if (!m) return;
-      const [, actionId] = m;
+      const [, actionId, edgeKind] = m;
       const target = newConnection.target;
-      if (!target?.startsWith("letter:")) return;
+      if (!target) return;
+      const action = actions.find((a) => a.id === actionId);
+      const hadReport = !!action?.report_segment_id;
+      const hadNext = !!action?.next_letter_variant;
+
+      // Helper: optimistically clear next_letter for an action AND fire
+      // the server-side clear. Wrapped so we can call from multiple
+      // branches without duplicating the optimistic-tracking dance.
+      const clearNextLetter = () => {
+        setOptimisticNextByAction((prev) => ({ ...prev, [actionId]: null }));
+        void (async () => {
+          try {
+            await setActionNextLetterByLetterId(actionId, null);
+          } finally {
+            setOptimisticNextByAction((prev) => {
+              if (!(actionId in prev)) return prev;
+              const next = { ...prev };
+              delete next[actionId];
+              return next;
+            });
+          }
+        })();
+      };
+
+      // -----------------------------------------------------------------
+      // Drop on a REPORT card.
+      // -----------------------------------------------------------------
+      if (target.startsWith("report:")) {
+        // sn (report → next-letter) — action already has a report and a
+        // next letter. Dragging the next-letter terminator onto a report
+        // is meaningless (no second report slot), so revert.
+        if (edgeKind === "sn") {
+          edgeReconnectSuccessful.current = true;
+          return;
+        }
+        const segmentId = target.slice("report:".length);
+        edgeReconnectSuccessful.current = true;
+        recordUndo?.({
+          kind: "setReport",
+          actionId,
+          previousReportSegmentId: action?.report_segment_id ?? null,
+        });
+        void setActionReportSegment(actionId, segmentId);
+        // Dropping any non-sn edge on a report retargets the report. If
+        // the action ALSO had a next letter (either via ln retarget or
+        // ls retarget on a complete chain), clear it: the chain is now
+        // visually broken and the user picked the new report as the
+        // chain's terminus.
+        if (hadNext) clearNextLetter();
+        return;
+      }
+
+      // -----------------------------------------------------------------
+      // Drop on a LETTER card.
+      // -----------------------------------------------------------------
+      if (!target.startsWith("letter:")) return;
       const tm = parseLetterNodeId(target);
       if (!tm) return;
       const targetGid = tm.groupId;
       const targetVariantKey = tm.variantKey;
-      // Resolve the dropped variant slot back to a concrete letter id so
-      // the server action can ensure-variant (single-letter groups have
-      // null variants and need promoting before they can be linked).
       const tgtLetter = letters.find(
         (l) =>
           l.letter_group_id === targetGid &&
@@ -1871,10 +2350,8 @@ export function GraphView({
       if (!tgtLetter) return;
       // Mirror the server-side same-storyline + adjacent-group check so
       // we don't paint an optimistic edge for drops the server will
-      // silently reject. tgtGroup is the dropped target's group; srcLetter
-      // is the action's source letter (one storyline + group sequence).
+      // silently reject.
       const tgtGroup = letterGroups.find((g) => g.id === targetGid);
-      const action = actions.find((a) => a.id === actionId);
       const srcLetter = action
         ? letters.find((l) => l.id === action.inspection_letter_id)
         : null;
@@ -1907,6 +2384,21 @@ export function GraphView({
           });
         }
       })();
+
+      // ls (letter → report) dragged to a letter: the user dropped the
+      // report-end onto a letter, converting the action from
+      // letter→report into a direct letter→next-letter. Clear the
+      // existing report so the action becomes a clean ln. (For sn/ln/
+      // stub edges the action either had no report or kept its report;
+      // no clear needed.)
+      if (edgeKind === "ls" && hadReport) {
+        recordUndo?.({
+          kind: "setReport",
+          actionId,
+          previousReportSegmentId: action?.report_segment_id ?? null,
+        });
+        void setActionReportSegment(actionId, null);
+      }
     },
     [letters, letterGroups, actions, recordUndo, resolveCurrentNextLetterId]
   );
@@ -1922,30 +2414,47 @@ export function GraphView({
         const m = edge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
         if (m) {
           const actionId = m[1];
-          const previousLetterId = resolveCurrentNextLetterId(actionId);
-          recordUndo?.({
-            kind: "setNextLetter",
-            actionId,
-            previousLetterId,
-          });
-          setOptimisticNextByAction((prev) => ({ ...prev, [actionId]: null }));
-          void (async () => {
-            try {
-              await setActionNextLetterByLetterId(actionId, null);
-            } finally {
-              setOptimisticNextByAction((prev) => {
-                if (!(actionId in prev)) return prev;
-                const next = { ...prev };
-                delete next[actionId];
-                return next;
-              });
-            }
-          })();
+          const edgeKind = m[2];
+          // Drop on empty space: clear the underlying link.
+          //   - ls → clear `report_segment_id`
+          //   - sn/ln/stub → clear `next_letter_variant`
+          if (edgeKind === "ls") {
+            const action = actions.find((a) => a.id === actionId);
+            recordUndo?.({
+              kind: "setReport",
+              actionId,
+              previousReportSegmentId: action?.report_segment_id ?? null,
+            });
+            void setActionReportSegment(actionId, null);
+          } else {
+            const previousLetterId = resolveCurrentNextLetterId(actionId);
+            recordUndo?.({
+              kind: "setNextLetter",
+              actionId,
+              previousLetterId,
+            });
+            setOptimisticNextByAction((prev) => ({
+              ...prev,
+              [actionId]: null,
+            }));
+            void (async () => {
+              try {
+                await setActionNextLetterByLetterId(actionId, null);
+              } finally {
+                setOptimisticNextByAction((prev) => {
+                  if (!(actionId in prev)) return prev;
+                  const next = { ...prev };
+                  delete next[actionId];
+                  return next;
+                });
+              }
+            })();
+          }
         }
       }
       edgeReconnectSuccessful.current = true;
     },
-    [recordUndo, resolveCurrentNextLetterId]
+    [actions, recordUndo, resolveCurrentNextLetterId]
   );
 
   // Live drop-target validation. Three reconnect/connect flows share
@@ -1960,12 +2469,24 @@ export function GraphView({
     const tgt = conn.target;
     if (!src || !tgt) return false;
     if (src.startsWith("connect:")) {
-      const m = src.match(/^connect:[^:]+:(report|next)$/);
+      const m = src.match(/^connect:[^:]+:(report|next|any)$/);
       if (m?.[1] === "report") return tgt.startsWith("report:");
       if (m?.[1] === "next") return tgt.startsWith("letter:");
+      if (m?.[1] === "any")
+        return tgt.startsWith("letter:") || tgt.startsWith("report:");
       return false;
     }
-    return tgt.startsWith("letter:");
+    // Edge reconnects:
+    //   - letter source → either retargeting next-letter (letter target)
+    //     or retargeting report (report target)
+    //   - report source → segment→next-letter retargets to letters; we
+    //     also accept report drops so the sn→report case lands in
+    //     onReconnect (which no-ops it) instead of being treated as a
+    //     drop-on-empty-space and clearing the link.
+    if (src.startsWith("letter:")) {
+      return tgt.startsWith("letter:") || tgt.startsWith("report:");
+    }
+    return tgt.startsWith("letter:") || tgt.startsWith("report:");
   }, []);
 
   // New connection (from a connect-source handle): create a brand-new
@@ -1975,9 +2496,19 @@ export function GraphView({
       const src = conn.source;
       const tgt = conn.target;
       if (!src || !tgt) return;
-      const m = src.match(/^connect:([^:]+):(report|next)$/);
+      const m = src.match(/^connect:([^:]+):(report|next|any)$/);
       if (!m) return;
-      const [, actionId, kind] = m;
+      const [, actionId, srcKind] = m;
+      // "any" handle: figure out the kind from the drop target type.
+      // Letter target → next-letter; report target → report.
+      let kind: "report" | "next" | null = null;
+      if (srcKind === "any") {
+        if (tgt.startsWith("report:")) kind = "report";
+        else if (tgt.startsWith("letter:")) kind = "next";
+      } else {
+        kind = srcKind as "report" | "next";
+      }
+      if (!kind) return;
       if (kind === "report") {
         if (!tgt.startsWith("report:")) return;
         const segmentId = tgt.slice("report:".length);
@@ -2062,22 +2593,64 @@ export function GraphView({
   // two RAFs so the graph container has reflowed (the inspector aside
   // makes it narrower) before we recenter — otherwise setCenter centers
   // in the old viewport and the target lands off-screen.
+  //
+  // Only re-fires when the SELECTION IDENTITY changes (not on every
+  // layout recompute / postgres_changes refresh). Otherwise a single
+  // remote edit by a peer would re-center the canvas for everyone with
+  // a selection, which is jarring.
+  const selectionCenterRef = useRef(selectionCenter);
+  selectionCenterRef.current = selectionCenter;
+  const selectionKey = selection
+    ? selection.kind === "letter" || selection.kind === "actions"
+      ? `${selection.kind}:${selection.groupId}:${selection.variantKey}${
+          selection.kind === "actions" ? `:${selection.actionId}` : ""
+        }`
+      : selection.kind === "group"
+        ? `group:${selection.groupId}`
+        : selection.kind === "segment"
+          ? `segment:${selection.segmentId}`
+          : "other"
+    : null;
   useEffect(() => {
     const rf = rfRef.current;
     if (!rf) return;
-    const c = selectionCenter(selection);
+    if (!selectionKey) return;
+    const c = selectionCenterRef.current(selection);
     if (!c) return;
     let raf2 = 0;
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
-        rf.setCenter(c.x, c.y, { zoom: 1.2, duration: 350 });
+        rf.setCenter(c.x, c.y, { zoom: 1, duration: 350 });
       });
     });
     return () => {
       cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
     };
-  }, [selection, selectionCenter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey]);
+
+  // Flush queueFocus once the freshly created entity appears in our data.
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    let exists = false;
+    if (pending.kind === "letter" || pending.kind === "actions") {
+      exists = letters.some(
+        (l) =>
+          l.letter_group_id === pending.groupId &&
+          variantKey(l.variant) === pending.variantKey
+      );
+    } else if (pending.kind === "segment") {
+      exists = segments.some((s) => s.id === pending.segmentId);
+    } else if (pending.kind === "group") {
+      exists = letterGroups.some((g) => g.id === pending.groupId);
+    }
+    if (exists) {
+      pendingFocusRef.current = null;
+      select(pending);
+    }
+  }, [letters, segments, letterGroups, select]);
 
   return (
     <div
@@ -2113,9 +2686,10 @@ export function GraphView({
         // can't initiate fresh drags.
         nodesConnectable={editingEnabled}
         elementsSelectable={true}
-        // Editing on → rubber-band multi-select; editing off → drag the
-        // canvas to pan, since there's nothing to multi-select against.
-        selectionOnDrag={editingEnabled}
+        // Click-and-drag on empty pane always pans the canvas, including
+        // when editing is unlocked. (Rubber-band multi-select is dropped
+        // — node-drag still works for moving nodes when unlocked.)
+        selectionOnDrag={false}
         edgesFocusable={false}
         isValidConnection={isValidConnection}
         onConnect={editingEnabled ? onConnect : undefined}
@@ -2126,10 +2700,222 @@ export function GraphView({
         panOnScrollMode={PanOnScrollMode.Free}
         zoomOnScroll
         zoomActivationKeyCode="Meta"
-        panOnDrag={!editingEnabled}
+        panOnDrag={true}
         onNodeClick={(_, node) => {
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
+        }}
+        onNodeContextMenu={(event, node) => {
+          event.preventDefault();
+          const e = event as unknown as MouseEvent;
+          const anchor = { x: e.clientX, y: e.clientY };
+          const trashIcon = <Trash2 size={12} aria-hidden />;
+          const copyIcon = <Copy size={12} aria-hidden />;
+          // Letter → duplicate + delete.
+          if (node.id.startsWith("letter:")) {
+            const parsed = parseLetterNodeId(node.id);
+            if (!parsed) return;
+            const letter = letters.find(
+              (l) =>
+                l.letter_group_id === parsed.groupId &&
+                (l.variant ?? "") === parsed.variantKey
+            );
+            if (!letter) return;
+            setContextMenu({
+              anchor,
+              items: [
+                {
+                  label: "Duplicate Letter",
+                  icon: copyIcon,
+                  onClick: () =>
+                    void (async () => {
+                      const { newLetterId } = await duplicateInspectionLetter(
+                        letter.id
+                      );
+                      // Variant is reassigned server-side; we don't know
+                      // the variant until the data refreshes. Queue by id
+                      // via a one-shot lookup in the focus-flush effect:
+                      // store the letter's group + a sentinel variant of
+                      // "" and let the effect resolve via id matching.
+                      const _ = newLetterId; // for now, no focus until we resolve via id
+                    })(),
+                },
+                { divider: true },
+                {
+                  label: "Delete Letter",
+                  icon: trashIcon,
+                  intent: "destructive",
+                  onClick: () =>
+                    void (async () => {
+                      const ok = await confirm({
+                        title: "Delete letter?",
+                        message: `${letter.content_id} and its actions will be removed. This cannot be undone.`,
+                        confirmLabel: "Delete",
+                        intent: "destructive",
+                      });
+                      if (!ok) return;
+                      await deleteInspectionLetter(parsed.groupId, letter.id);
+                      if (
+                        selection?.kind === "letter" &&
+                        selection.groupId === parsed.groupId &&
+                        selection.variantKey === parsed.variantKey
+                      ) {
+                        select(null);
+                      }
+                    })(),
+                },
+              ],
+            });
+            return;
+          }
+          if (node.id.startsWith("report:")) {
+            const segId = node.id.slice("report:".length);
+            setContextMenu({
+              anchor,
+              items: [
+                {
+                  label: "Duplicate Report",
+                  icon: copyIcon,
+                  onClick: () =>
+                    void (async () => {
+                      const { newSegmentId } = await duplicateReportSegment(
+                        segId
+                      );
+                      queueFocus({ kind: "segment", segmentId: newSegmentId });
+                    })(),
+                },
+                { divider: true },
+                {
+                  label: "Delete Report",
+                  icon: trashIcon,
+                  intent: "destructive",
+                  onClick: () =>
+                    void (async () => {
+                      const seg = segments.find((s) => s.id === segId);
+                      const ok = await confirm({
+                        title: "Delete report segment?",
+                        message: `${seg?.report_id ?? "Segment"} will be removed. This cannot be undone.`,
+                        confirmLabel: "Delete",
+                        intent: "destructive",
+                      });
+                      if (!ok) return;
+                      await deleteReportSegment(segId);
+                      if (
+                        selection?.kind === "segment" &&
+                        selection.segmentId === segId
+                      ) {
+                        select(null);
+                      }
+                    })(),
+                },
+              ],
+            });
+            return;
+          }
+          // Letter group box → add letters to this group, or delete it.
+          if (node.id.startsWith("group:")) {
+            const pg = parseGroupNodeId(node.id);
+            if (!pg) return;
+            const gid = pg.groupId;
+            const group = letterGroups.find((g) => g.id === gid);
+            const addLetterIcon = (
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden>+</span>
+                <MailOpen size={11} aria-hidden />
+              </span>
+            );
+            const makeAddLetters = (n: number) => () => {
+              void (async () => {
+                const ids = await createInspectionLettersInGroup(gid, n);
+                // Server reassigns variants after insert; find the new
+                // letters by id once they appear in `letters` to derive
+                // a variantKey for selection.
+                if (ids[0]) {
+                  // Use a one-time watcher: enqueue a focus that resolves
+                  // when the letter shows up.
+                  const newId = ids[0];
+                  // Quick check against current state first.
+                  const existing = letters.find((l) => l.id === newId);
+                  if (existing) {
+                    queueFocus({
+                      kind: "letter",
+                      groupId: gid,
+                      variantKey: variantKey(existing.variant),
+                    });
+                  } else {
+                    // Best-effort: enqueue a checker that watches for the
+                    // id. We can piggyback by stashing into a small state
+                    // re-evaluated next render via pendingFocusRef sweep.
+                    setTimeout(() => {
+                      const found = letters.find((l) => l.id === newId);
+                      if (found) {
+                        queueFocus({
+                          kind: "letter",
+                          groupId: gid,
+                          variantKey: variantKey(found.variant),
+                        });
+                      }
+                    }, 600);
+                  }
+                }
+              })();
+            };
+            setContextMenu({
+              anchor,
+              items: [
+                {
+                  label: "Letter",
+                  icon: addLetterIcon,
+                  onClick: makeAddLetters(1),
+                },
+                {
+                  label: "2 Letters",
+                  icon: addLetterIcon,
+                  onClick: makeAddLetters(2),
+                },
+                {
+                  label: "3 Letters",
+                  icon: addLetterIcon,
+                  onClick: makeAddLetters(3),
+                },
+                { divider: true },
+                {
+                  label: "Delete Letter Group",
+                  icon: trashIcon,
+                  intent: "destructive",
+                  onClick: () =>
+                    void (async () => {
+                      const ok = await confirm({
+                        title: "Delete letter group?",
+                        message: `"${group?.name ?? "This group"}" and everything inside it — all letters, report segments, and actions — will be permanently removed. This cannot be undone.`,
+                        confirmLabel: "Delete",
+                        intent: "destructive",
+                      });
+                      if (!ok) return;
+                      await deleteGroup(gid);
+                      if (
+                        selection?.kind === "group" &&
+                        selection.groupId === gid
+                      ) {
+                        select(null);
+                      }
+                    })(),
+                },
+              ],
+            });
+            return;
+          }
+          // Column bands cover the canvas — treat their right-click as a
+          // pane right-click and let the pane-menu builder figure out the
+          // day + storyline from the event coords.
+          if (node.type === "columnBand") {
+            openPaneMenu(e);
+            return;
+          }
+        }}
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          openPaneMenu(event as unknown as MouseEvent);
         }}
         onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
@@ -2162,7 +2948,7 @@ export function GraphView({
                   const rf = rfRef.current;
                   const c = selectionCenter(selection);
                   if (!rf || !c) return;
-                  rf.setCenter(c.x, c.y, { zoom: 1.2, duration: 350 });
+                  rf.setCenter(c.x, c.y, { zoom: 1, duration: 350 });
                 }}
               >
                 <IconZoomScan size={16} stroke={2.4} />
@@ -2221,6 +3007,12 @@ export function GraphView({
         }}
       />
       <StickyDayGutter rows={labelRows} viewport={vp} />
+      <GraphContextMenu
+        anchor={contextMenu?.anchor ?? null}
+        items={contextMenu?.items ?? []}
+        onClose={() => setContextMenu(null)}
+      />
+      {confirmDialog}
     </div>
   );
 }
