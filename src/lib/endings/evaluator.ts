@@ -26,6 +26,8 @@ import {
   type EndingVariableKind,
   type ScoringAggregateRef,
 } from "@/lib/db/enums";
+import type { EndingVariableValue } from "@/lib/db/types";
+import { substituteVariables } from "./text-substitution";
 
 export interface EvalBlock {
   id: string;
@@ -67,6 +69,10 @@ export interface EvalChip {
 
 export interface EvalVariable {
   id: string;
+  /** Display name. Used by `substituteVariables` to resolve `@[Name]`
+   *  tokens in text-block bodies. UNIQUE in the DB (see migration 0009),
+   *  so name lookups can't silently collide. */
+  name: string;
   kind: EndingVariableKind;
   /** Set when kind === 'aggregate_ref'. */
   aggregate_ref: AggregateRef | null;
@@ -573,6 +579,10 @@ export interface EvalInputs {
   chips: EvalChip[];
   variables: EvalVariable[];
   selections: PreviewSelections;
+  /** Optional. Used by `substituteVariables` to resolve `@[Name]` tokens
+   *  in text-block bodies. Callers that don't care about substitution
+   *  (static analysis, non-preview tests) can omit. */
+  values?: EndingVariableValue[];
 }
 
 interface Indexes {
@@ -580,6 +590,12 @@ interface Indexes {
   rowsByBlock: Map<string, EvalRow[]>;
   chipsByRow: Map<string, EvalChip[]>;
   variableById: Map<string, EvalVariable>;
+  /** Name → variable, for `@[Name]` substitution. Empty when no variables
+   *  share a name (which is enforced by the DB UNIQUE constraint). */
+  variableByName: Map<string, EvalVariable>;
+  /** ending_variable_values.id → .value (display label). Empty when
+   *  EvalInputs.values is omitted. */
+  valuesById: Map<string, string>;
 }
 
 function buildIndexes(input: EvalInputs): Indexes {
@@ -615,9 +631,23 @@ function buildIndexes(input: EvalInputs): Indexes {
   }
 
   const variableById = new Map<string, EvalVariable>();
-  for (const v of input.variables) variableById.set(v.id, v);
+  const variableByName = new Map<string, EvalVariable>();
+  for (const v of input.variables) {
+    variableById.set(v.id, v);
+    variableByName.set(v.name, v);
+  }
 
-  return { byParent, rowsByBlock, chipsByRow, variableById };
+  const valuesById = new Map<string, string>();
+  for (const v of input.values ?? []) valuesById.set(v.id, v.value);
+
+  return {
+    byParent,
+    rowsByBlock,
+    chipsByRow,
+    variableById,
+    variableByName,
+    valuesById,
+  };
 }
 
 export function parentKey(
@@ -916,7 +946,15 @@ function renderBlocks(
   for (const b of blocks) {
     if (b.block_type === "text") {
       const trimmed = b.text.trim();
-      if (trimmed.length > 0) out.push(b.text);
+      if (trimmed.length > 0) {
+        out.push(
+          substituteVariables(b.text, {
+            variableByName: indexes.variableByName,
+            selections,
+            valuesById: indexes.valuesById,
+          })
+        );
+      }
       continue;
     }
     if (b.block_type === "result") {

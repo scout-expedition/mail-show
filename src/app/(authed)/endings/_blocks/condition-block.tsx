@@ -216,7 +216,7 @@ export function ConditionBlock({
           onChange={(e) => onChangeSummary(e.target.value)}
           placeholder="Summary…"
           aria-label="Block summary"
-          className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground/60 focus:border-border focus:shadow-sm focus:outline-none"
+          className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
         />
         <div className="flex shrink-0 items-center gap-2">
           {blockAnalysis ? (

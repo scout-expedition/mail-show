@@ -181,6 +181,7 @@ export function LogicPreviewView({
       variables: variables.map(
         (v): EvalVariable => ({
           id: v.id,
+          name: v.name,
           kind: v.kind,
           aggregate_ref: v.aggregate_ref,
         })
