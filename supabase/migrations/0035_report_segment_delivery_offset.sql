@@ -113,30 +113,13 @@ end$$;
 
 -- Recreate report_segments_view. effective_day_id resolves via:
 --   1. absolute pin if set
---   2. default day (letter min effective + 1) + offset (default offset = 0)
--- The CTE materializes default_number once per report_group so the per-row
--- expression stays flat.
+--   2. otherwise: (min effective day across the report's TRIGGERING letters)
+--      + 1 + offset.
+-- Using the triggering letters specifically (not every letter in the group)
+-- matches what the inspector panel computes, so inspector + graph + day
+-- queries all agree once a trigger letter carries its own override.
 drop view if exists public.report_segments_view;
 create view public.report_segments_view as
-with report_base as (
-  select
-    rg.id as report_group_id,
-    coalesce(
-      (
-        select min(d_il.number)
-        from public.inspection_letters_view ilv
-        join public.days d_il on d_il.id = ilv.effective_day_id
-        where ilv.letter_group_id = rg.letter_group_id
-      ),
-      (
-        select d_lg.number
-        from public.letter_groups lg2
-        join public.days d_lg on d_lg.id = lg2.delivery_day_id
-        where lg2.id = rg.letter_group_id
-      )
-    ) + 1 as default_number
-  from public.report_groups rg
-)
 select
   rs.*,
   rg.letter_group_id,
@@ -149,11 +132,31 @@ select
     else (
       select d.id
       from public.days d
-      where d.number = rb.default_number + coalesce(rs.delivery_day_offset, 0)
+      where d.number = (
+        coalesce(
+          (
+            select min(d_il.number)
+            from public.actions a
+            join public.inspection_letters_view ilv on ilv.id = a.inspection_letter_id
+            join public.days d_il on d_il.id = ilv.effective_day_id
+            where a.report_segment_id = rs.id
+          ),
+          (
+            select min(d_il.number)
+            from public.inspection_letters_view ilv
+            join public.days d_il on d_il.id = ilv.effective_day_id
+            where ilv.letter_group_id = rg.letter_group_id
+          ),
+          (
+            select d_lg.number
+            from public.days d_lg
+            where d_lg.id = lg.delivery_day_id
+          )
+        ) + 1 + coalesce(rs.delivery_day_offset, 0)
+      )
     )
   end as effective_day_id
 from public.report_segments rs
 join public.report_groups rg on rg.id = rs.report_group_id
 join public.letter_groups lg on lg.id = rg.letter_group_id
-join public.storylines sl on sl.id = lg.storyline_id
-join report_base rb on rb.report_group_id = rs.report_group_id;
+join public.storylines sl on sl.id = lg.storyline_id;
