@@ -604,3 +604,102 @@ presence following the Phase 1 pattern exactly.
   Adding an `updated_by` column would require a migration + trigger and is
   out of scope; the bare attribution is consistent with what the toast was
   always showing in practice.
+
+### ✅ Phase 4 Reference data — cities / citizens / nations (2026-05-13)
+
+Converted three reference-data editors to instant-save + multi-user collab
+on branch `collab-reference-data-instant-save`.
+
+#### What shipped
+
+- **Migration** `supabase/migrations/0032_realtime_publication_reference_data.sql`
+  — adds `cities`, `citizens`, `nations` to `supabase_realtime` with
+  `replica identity full`. Matches 0031 style (idempotent via
+  `pg_publication_tables` guard). User must apply to remote Supabase project
+  (see follow-ups below).
+
+- **`src/app/(authed)/cities/`**
+  - `patchCity(id, patch)` narrow server action (no `revalidatePath`).
+  - `page.tsx` fetches `auth.getUser()` + `profileFromMetadata` and passes
+    `currentUserId` / `currentEmail` / `currentProfile` to the editor.
+  - `cities-editor.tsx` rewritten: `WorkspacePresenceProvider` (channel
+    `cities-editor`), `AvatarStack` in toolbar, each `CityRow` owns
+    `useInstantField` instances for `name` / `code` / `nation_id` with
+    `FieldHighlight`. `postgres_changes` handler: UPDATE merges columns,
+    DELETE removes row + toast, INSERT appends + `router.refresh()`. Save
+    button and dirty-flag machinery removed.
+
+- **`src/app/(authed)/citizens/`**
+  - `patchCitizen(id, patch)` narrow server action (no `revalidatePath`).
+  - Page wiring identical to cities pattern.
+  - `citizens-editor.tsx` rewritten: 5 `useInstantField` hooks per row
+    (`name` / `type` / `citizen_id` / `city_id` / `nation_id`). City→nation
+    FK auto-fill preserved: when `city_id` changes the `city.nation_id` is
+    propagated via `nationIdField.set()` + a local mirror update; when
+    `nation_id` changes incompatible cities are cleared. `TypePill` simplified
+    to `CitizenType` only (DB never holds empty string). Full validation
+    display (missing/duplicate/format rings) retained in read-only view.
+
+- **`src/app/(authed)/nations/`**
+  - `patchNation(id, patch)` narrow server action (no `revalidatePath`).
+  - Page wiring identical to cities pattern.
+  - `nations-editor.tsx` rewritten: 5 `useInstantField` hooks per row
+    (`name` / `abbreviation` / `color_hex` / `icon_type` / `icon_value`).
+    Drag-to-reorder remains **structural** (calls `updateAllNations` with
+    `revalidatePath`) — fires on `onDragEnd` after the local array is
+    reordered in place, so the server catches up. `DeleteX` now uses
+    `useConfirm()` instead of the bare `confirm()` call (consistency fix).
+
+#### Verification
+
+- `pnpm typecheck` clean.
+- `pnpm lint` net-neutral (42 problems pre/post).
+- `pnpm test` clean (309 tests).
+
+#### Locked-in lessons
+
+**Lesson — `Citizen.type` is always `CitizenType` at the DB layer.** The old
+editor used a `RowState` local type with `type: CitizenType | ""` to represent
+"unset" in the form. The DB never holds an empty string for this column — the
+`createCitizen` action inserts `type: "npc"`. Instant-save binds directly to
+the `Citizen` row, so the `""` special case disappears: `TypePill` accepts
+`CitizenType` only and the type-unset filter (`typeFilter === "unset"`) becomes
+dead UI (kept for forward-compat if a future migration allows null). Callers
+who previously needed `CitizenType | ""` should just treat the DB value as
+always valid.
+
+**Lesson — FK-coupled fields need both the `useInstantField.set()` AND a local
+mirror update.** When `city_id` is changed and `nation_id` must follow, calling
+`nationIdField.set(newNationId)` alone is not enough — the enclosing `CitizenRow`
+reads `row.nation_id` for its `availableCities` filter and the validation
+display, so a separate `onRowUpdate({ nation_id })` call updates the mirror that
+drives those derived reads. The `useInstantField` instance only owns its own
+field's value; cross-field propagation must go through the shared mirror.
+
+**Lesson — Drag-to-reorder is a structural mutation, not a field patch.** The
+nations list has drag-to-reorder. The `sort_order` column exists on every row
+but updating it requires a multi-row write (all rows get new indices). This
+cannot be done as a single-field `patchNation` call. The `updateAllNations`
+coarse action (which calls `revalidatePath`) is the right vehicle — it fires on
+`onDragEnd` after the local array is re-spliced. This is consistent with the
+plan: "structural mutations keep `revalidatePath`."
+
+#### Follow-ups
+
+- **User must apply migration 0032** to remote Supabase via the MCP
+  `apply_migration` tool or the SQL editor. If a sibling branch's agent also
+  creates a `0032_*.sql`, the files must be sequenced and possibly renumbered
+  before merging. Coordinate with the sorting-letters agent.
+- **Duplicate city-code guard is per-row only.** The old editor tracked
+  duplicate codes across all rows in a `codeCounts` map and blocked save.
+  Instant-save cannot block cross-row — the server's `updateAllCities` used to
+  enforce uniqueness, but `patchCity` patches one row at a time and cannot see
+  sibling rows. A server-side unique constraint on `cities.code` would be the
+  correct enforcement layer; add one in a follow-up migration.
+- **Citizens "Unset" type filter** — the old editor supported filtering by
+  `type === ""` (unset). With `CitizenType` always valid at the DB, this filter
+  returns 0 rows and is effectively dead. Remove the "Unset" option from the
+  filter select in a future cleanup PR.
+- **Phase 4 long-tail** surfaces still remaining: `storylines`, `actions`
+  editor, `sorting`, `playthroughs`, `physical`, `days`, ending variables,
+  endings documents.
