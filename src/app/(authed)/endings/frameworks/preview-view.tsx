@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import {
   EMPTY_SELECTIONS,
   aggregateKey,
-  evaluateFramework,
+  evaluateDocumentDetailed,
   resolveAggregatesDetailed,
   shadowedRowIds,
   type EvalBlock,
@@ -20,6 +20,7 @@ import {
   type EvalVariable,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
+import type { SubstitutionSegment } from "@/lib/endings/text-substitution";
 import type {
   BlockState,
   ChipState,
@@ -223,7 +224,26 @@ export function PreviewView({
       resolvedAggregates,
     ]
   );
-  const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
+  const evaluation = useMemo(
+    () => evaluateDocumentDetailed(evalInputs),
+    [evalInputs]
+  );
+  const paragraphs = evaluation.paragraphs;
+  const paragraphSegments = evaluation.paragraphSegments;
+
+  // Names of variables that authored `@[Name]` tokens in the body but
+  // didn't resolve to a value (unknown name, unset selection, or
+  // unresolved aggregate). The right-side input list yellows their
+  // labels so authors can spot what still needs a value.
+  const unresolvedVariableNames = useMemo(() => {
+    const out = new Set<string>();
+    for (const segs of paragraphSegments) {
+      for (const seg of segs) {
+        if (seg.kind === "unresolved") out.add(seg.variableName);
+      }
+    }
+    return out;
+  }, [paragraphSegments]);
 
   // Aggregate ties surfaced on the framework's referenced chips. The
   // resolution itself happens in `resolveAggregates` above (rolls
@@ -387,31 +407,41 @@ export function PreviewView({
 
           {buckets.text.length > 0 ? (
             <div className="mb-2 grid gap-2 sm:grid-cols-2">
-              {buckets.text.map((v) => (
-                <div
-                  key={v.id}
-                  className="grid grid-cols-[1fr_1fr] items-center gap-2"
-                >
-                  <Label className="!text-xs">{v.name}</Label>
-                  <Select
-                    aria-label={v.name}
-                    value={selections.textValueIds[v.id] ?? ""}
-                    onChange={(e) =>
-                      onChangeText(v.id, e.target.value || null)
-                    }
-                    className={cn("h-8", GHOST_FIELD)}
+              {buckets.text.map((v) => {
+                const isUnresolved = unresolvedVariableNames.has(v.name);
+                return (
+                  <div
+                    key={v.id}
+                    className="grid grid-cols-[1fr_1fr] items-center gap-2"
                   >
-                    <option value="">—</option>
-                    {values
-                      .filter((val) => val.variable_id === v.id)
-                      .map((val) => (
-                        <option key={val.id} value={val.id}>
-                          {val.value}
-                        </option>
-                      ))}
-                  </Select>
-                </div>
-              ))}
+                    <Label
+                      className={cn(
+                        "!text-xs",
+                        isUnresolved && "text-amber-300"
+                      )}
+                    >
+                      {v.name}
+                    </Label>
+                    <Select
+                      aria-label={v.name}
+                      value={selections.textValueIds[v.id] ?? ""}
+                      onChange={(e) =>
+                        onChangeText(v.id, e.target.value || null)
+                      }
+                      className={cn("h-8", GHOST_FIELD)}
+                    >
+                      <option value="">—</option>
+                      {values
+                        .filter((val) => val.variable_id === v.id)
+                        .map((val) => (
+                          <option key={val.id} value={val.id}>
+                            {val.value}
+                          </option>
+                        ))}
+                    </Select>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 
@@ -579,15 +609,36 @@ export function PreviewView({
             (no blocks to render)
           </p>
         ) : (
-          paragraphs.map((para, i) => (
+          paragraphSegments.map((segments, i) => (
             <p key={i} className="whitespace-pre-wrap">
-              {para}
+              {segments.map((seg, j) => (
+                <PreviewSegment key={j} segment={seg} />
+              ))}
             </p>
           ))
         )}
       </article>
     </div>
   );
+}
+
+function PreviewSegment({ segment }: { segment: SubstitutionSegment }) {
+  if (segment.kind === "value") {
+    // Resolved variable value — render in the primary blue accent so
+    // authors can see where substitution occurred at a glance.
+    return <span className="text-[var(--primary)]">{segment.text}</span>;
+  }
+  if (segment.kind === "unresolved") {
+    // Literal `@[Name]` token that didn't resolve (unknown name, unset
+    // value, or unresolved aggregate). Yellow warning chrome matches
+    // the unset-input label in the right-hand panel.
+    return (
+      <span className="text-amber-300" title="Variable not set">
+        {segment.text}
+      </span>
+    );
+  }
+  return <>{segment.text}</>;
 }
 
 function chipSummary(

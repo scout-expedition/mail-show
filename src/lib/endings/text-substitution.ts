@@ -29,7 +29,7 @@ function aggKey(ref: string, side: "top" | "bottom"): string {
 // brackets; the UNIQUE constraint on `ending_variables.name` doesn't
 // prevent `]` per se, but it's an unsupported character for this token
 // syntax.
-const TOKEN_RE = /(?<![A-Za-z0-9@])@\[([^\]]+)\]/g;
+export const TOKEN_RE = /(?<![A-Za-z0-9@])@\[([^\]]+)\]/g;
 
 export interface SubstitutionContext {
   /** Name → variable lookup. Built once per evaluation in buildIndexes. */
@@ -43,21 +43,73 @@ export interface SubstitutionContext {
 }
 
 /**
+ * A typed slice of substitution output. Used by preview surfaces to
+ * color value substitutions vs unresolved literals.
+ *
+ *  - `literal`: prose that wasn't part of a `@[Name]` token.
+ *  - `value`: a token that was successfully resolved; `text` is the
+ *     resolved display string and `variableName` is the source name.
+ *  - `unresolved`: a token whose variable was unknown, unset, or
+ *     produced no aggregate winner. `text` is the literal `@[Name]`
+ *     fallback (same string the evaluator would emit), `variableName`
+ *     is the captured name.
+ */
+export type SubstitutionSegment =
+  | { kind: "literal"; text: string }
+  | { kind: "value"; text: string; variableName: string }
+  | { kind: "unresolved"; text: string; variableName: string };
+
+/**
+ * Tokenize `text` into resolved-value / unresolved-token / literal
+ * segments. Same matching rules as `substituteVariables`; this is the
+ * underlying primitive — `substituteVariables` just joins these
+ * segments back into a string.
+ */
+export function substituteVariablesToSegments(
+  text: string,
+  ctx: SubstitutionContext
+): SubstitutionSegment[] {
+  const segments: SubstitutionSegment[] = [];
+  let cursor = 0;
+  // Cloning the regex avoids cross-call `lastIndex` state issues.
+  const re = new RegExp(TOKEN_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > cursor) {
+      segments.push({ kind: "literal", text: text.slice(cursor, match.index) });
+    }
+    const name = match[1];
+    const variable = ctx.variableByName.get(name);
+    const resolved = variable ? resolveVariableValue(variable, ctx) : null;
+    if (resolved != null) {
+      segments.push({ kind: "value", text: resolved, variableName: name });
+    } else {
+      segments.push({ kind: "unresolved", text: match[0], variableName: name });
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) {
+    segments.push({ kind: "literal", text: text.slice(cursor) });
+  }
+  return segments;
+}
+
+/**
  * Replace `@[Variable Name]` tokens in `text` with the variable's current
  * value resolved from `ctx`. Unknown variables, unset values, and
  * unresolved aggregates leave the literal token in place so authors can
  * spot typos and missing selections in preview output.
+ *
+ * Implemented as a string-flatten over `substituteVariablesToSegments`
+ * so the two paths can't drift.
  */
 export function substituteVariables(
   text: string,
   ctx: SubstitutionContext
 ): string {
-  return text.replace(TOKEN_RE, (match, name: string) => {
-    const variable = ctx.variableByName.get(name);
-    if (!variable) return match;
-    const resolved = resolveVariableValue(variable, ctx);
-    return resolved ?? match;
-  });
+  return substituteVariablesToSegments(text, ctx)
+    .map((seg) => seg.text)
+    .join("");
 }
 
 /**

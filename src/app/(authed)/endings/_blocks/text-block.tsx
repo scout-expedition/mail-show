@@ -16,7 +16,7 @@ import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import { duplicateBlock } from "../_shared/document-actions";
 import { useConfirm } from "@/components/confirm-dialog";
-import { MentionTextarea } from "./mention-autocomplete";
+import { LexicalTextBlockEditor } from "./lexical/text-block-editor";
 
 export function TextBlock({
   block,
@@ -179,18 +179,11 @@ export function TextBlock({
           </div>
         </div>
         {collapsed ? null : (
-          <MentionTextarea
+          <LexicalTextBlockEditor
             value={block.text}
             onChange={onChange}
             variables={variables}
             placeholder="Paragraph text…"
-            style={{
-              fontVariantLigatures: "none",
-              backgroundColor: "var(--block-result-bg)",
-            }}
-            className={cn(
-              "!text-sm border-transparent shadow-none focus:border-border focus-visible:shadow-sm"
-            )}
           />
         )}
       </div>
