@@ -125,3 +125,39 @@ export async function deleteSortingLetter(formData: FormData) {
   if (error) throw new Error(error.message);
   redirect("/sorting/letters");
 }
+
+/**
+ * Narrow per-field patch for instant-save. Does NOT call revalidatePath —
+ * realtime fans out the change to all subscribed clients.
+ */
+export async function patchSortingLetter(
+  id: string,
+  patch: Partial<{
+    day_id: string;
+    sort_id: number;
+    storage_location: string | null;
+    is_counterfeit: boolean;
+    recipient_type: import("@/lib/db/enums").AddressType;
+    recipient_name: string | null;
+    recipient_citizen_number: string | null;
+    recipient_city_id: string | null;
+    recipient_city_name: string | null;
+    recipient_city_code: string | null;
+    recipient_nation_id: string | null;
+    sender_type: import("@/lib/db/enums").AddressType;
+    sender_name: string | null;
+    sender_citizen_number: string | null;
+    sender_city_id: string | null;
+    sender_city_name: string | null;
+    sender_city_code: string | null;
+    sender_nation_id: string | null;
+    notes: string | null;
+  }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("sorting_letters")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
