@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  commitMentionToken,
   detectMentionTrigger,
   filterVariablesForMention,
 } from "./mention-autocomplete";
@@ -184,55 +183,8 @@ describe("filterVariablesForMention", () => {
   });
 });
 
-// ---------------------------------------------------------------------
-// commitMentionToken
-// ---------------------------------------------------------------------
-
-describe("commitMentionToken", () => {
-  it("inserts `@[Name]` at the trigger position with a collapsed caret", () => {
-    // text: "hi @mai" with caret at 7 (end). Trigger at atIdx=3.
-    const out = commitMentionToken("hi @mai", 3, 7, "Mainstage Performer");
-    expect(out.value).toBe("hi @[Mainstage Performer]");
-    expect(out.caret).toBe(25);
-  });
-
-  it("keeps text after the caret intact when committing mid-string", () => {
-    // text: "hi @mai tail" with caret at 7 (between `i` and ` tail`).
-    const out = commitMentionToken("hi @mai tail", 3, 7, "Mainstage");
-    expect(out.value).toBe("hi @[Mainstage] tail");
-    expect(out.caret).toBe(15); // after the closing `]`
-  });
-
-  it("replaces a selection inside the query through selectionEnd", () => {
-    // text: "hi @foo" with selection (start=4, end=7) over `foo`.
-    // selectionEnd=7 means commit consumes the whole `foo` even though
-    // the trigger captured only `f` before the selection. The atIdx=3
-    // marks the `@`, selectionEnd=7 marks the end of the query+suffix
-    // to drop.
-    const out = commitMentionToken("hi @foo", 3, 7, "Bob");
-    expect(out.value).toBe("hi @[Bob]");
-    expect(out.caret).toBe(9);
-  });
-
-  it("does not preserve a selected suffix on the right (regression for selectionStart-vs-selectionEnd bug)", () => {
-    // text: "hi @foo", trigger at 3, selectionStart=4 (between `@` and
-    // `f`), selectionEnd=7. If commit used selectionStart by mistake,
-    // result would be "hi @[Bob]foo". With selectionEnd, the suffix
-    // is dropped as intended.
-    const out = commitMentionToken("hi @foo", 3, 7, "Bob");
-    expect(out.value).not.toContain("foo");
-    expect(out.value).toBe("hi @[Bob]");
-  });
-
-  it("handles an `@` at start of string", () => {
-    const out = commitMentionToken("@bo", 0, 3, "Bob");
-    expect(out.value).toBe("@[Bob]");
-    expect(out.caret).toBe(6);
-  });
-
-  it("handles names with spaces", () => {
-    const out = commitMentionToken("Welcome @c", 8, 10, "City of Brass");
-    expect(out.value).toBe("Welcome @[City of Brass]");
-    expect(out.caret).toBe(24);
-  });
-});
+// `commitMentionToken` was removed in Phase 3 — the textarea-based
+// commit path no longer exists; pill insertion now goes through
+// Lexical's editor.update API directly (see lexical/mention-trigger-
+// plugin.tsx). The behaviour those tests covered is now exercised by
+// the editor-interaction tests in `lexical/text-block-editor.test.tsx`.

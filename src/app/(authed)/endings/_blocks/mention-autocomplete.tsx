@@ -1,28 +1,12 @@
 "use client";
 
-// Floating autocomplete popup for the @[Variable Name] tag flow.
-// Triggered when the user types `@` in the body textarea: a popup of
-// matching variables opens, arrow keys navigate, Enter/Tab/click commits
-// `@[Name]` at the caret.
-//
-// `MentionTextarea` wraps a plain <textarea> with auto-grow (same shape
-// as `AutoTextarea` from components/panel.tsx) plus the trigger
-// detection. Kept as a sibling component instead of extending
-// AutoTextarea because trigger detection needs direct ref access to the
-// textarea element (for selectionStart + setting caret after commit),
-// which AutoTextarea doesn't forward.
+// Autocomplete popup for the @[Variable Name] tag flow + the pure
+// helpers (trigger detection, filtering) the Lexical editor plugin
+// uses. The textarea-based driver from Phase 2 was retired in Phase 3
+// when the text-block body switched to a Lexical contenteditable —
+// only the popup + helpers remain.
 
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
-import { Textarea } from "@/components/ui/textarea";
+import { Fragment, useEffect, useRef, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import type { VariableState } from "@/lib/endings/block-state";
 import { paletteColor } from "@/lib/endings/color-palette";
@@ -58,32 +42,6 @@ export function detectMentionTrigger(
     }
   }
   return null;
-}
-
-/**
- * Compute the post-commit textarea state. Replaces text from `atIdx`
- * through the end of any current selection (`selectionEnd`) with the
- * `@[variableName]` token, and returns the new value + the desired
- * caret position (immediately after the closing `]`).
- *
- * `selectionEnd` (not `selectionStart`) is intentional: if the user
- * selects text inside their `@query` before committing, the selected
- * suffix would otherwise survive on the right and produce malformed
- * output like `@[Name]foo`.
- */
-export function commitMentionToken(
-  value: string,
-  atIdx: number,
-  selectionEnd: number,
-  variableName: string
-): { value: string; caret: number } {
-  const insert = `@[${variableName}]`;
-  const before = value.slice(0, atIdx);
-  const after = value.slice(selectionEnd);
-  return {
-    value: before + insert + after,
-    caret: atIdx + insert.length,
-  };
 }
 
 // ---------------------------------------------------------------------
@@ -142,21 +100,24 @@ const KIND_LABEL: Record<VariableState["kind"], string> = {
 // Popup
 // ---------------------------------------------------------------------
 
-interface MentionPopupProps {
+export interface MentionAutocompletePopupProps {
   filtered: VariableState[];
   activeIndex: number;
   onChangeActiveIndex: (i: number) => void;
   onCommit: (variable: VariableState) => void;
+  /** Pixel coordinates for absolute positioning. Caller computes from
+   *  the caret's bounding rect (Lexical) or the textarea's wrapper
+   *  position. */
+  position: { top: number; left: number };
 }
 
-function MentionPopup({
+export function MentionAutocompletePopup({
   filtered,
   activeIndex,
   onChangeActiveIndex,
   onCommit,
-}: MentionPopupProps) {
-  // Refs keyed by candidate index, so the active row can scroll into
-  // view without us walking past divider elements with nth-child math.
+  position,
+}: MentionAutocompletePopupProps) {
   const itemRefs = useRef<Array<HTMLLIElement | null>>([]);
   itemRefs.current.length = filtered.length;
   useEffect(() => {
@@ -164,9 +125,24 @@ function MentionPopup({
     if (el) el.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
+  // Both render branches share these positioning styles so the
+  // empty-state fallback and the populated list anchor at the same
+  // caret coordinates. `position: fixed` so the caller-supplied coords
+  // (which come from `getBoundingClientRect()`, i.e. viewport-relative)
+  // work directly without needing the popup's parent to be positioned.
+  const positionStyle: CSSProperties = {
+    position: "fixed",
+    top: position.top,
+    left: position.left,
+    zIndex: 20,
+  };
+
   if (filtered.length === 0) {
     return (
-      <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg">
+      <div
+        style={positionStyle}
+        className="w-56 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg"
+      >
         No matching variables.
       </div>
     );
@@ -174,16 +150,14 @@ function MentionPopup({
 
   return (
     <ul
+      style={positionStyle}
       role="listbox"
       aria-label="Variable autocomplete"
-      className="absolute left-0 top-full z-20 mt-1 max-h-56 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 text-xs shadow-lg"
+      className="max-h-56 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 text-xs shadow-lg"
     >
       {filtered.map((v, i) => {
         const isActive = i === activeIndex;
         const color = v.color_hex ?? paletteColor(v.color_index);
-        // Divider before this row whenever the kind changes from the
-        // previous row. Empty groups produce no divider because there's
-        // no preceding row with the prior kind.
         const showDivider = i > 0 && filtered[i - 1].kind !== v.kind;
         return (
           <Fragment key={v.id}>
@@ -200,8 +174,8 @@ function MentionPopup({
               }}
               role="option"
               aria-selected={isActive}
-              // mousedown (not click) so the textarea's blur doesn't
-              // fire before commit.
+              // mousedown (not click) so the editor's blur doesn't fire
+              // before commit.
               onMouseDown={(e) => {
                 e.preventDefault();
                 onCommit(v);
@@ -226,150 +200,5 @@ function MentionPopup({
         );
       })}
     </ul>
-  );
-}
-
-// ---------------------------------------------------------------------
-// Textarea + autocomplete composition
-// ---------------------------------------------------------------------
-
-export interface MentionTextareaProps {
-  value: string;
-  onChange: (value: string) => void;
-  variables: VariableState[];
-  placeholder?: string;
-  className?: string;
-  style?: CSSProperties;
-  /** Minimum visible rows. Defaults to 2 (matches AutoTextarea). */
-  minRows?: number;
-}
-
-export function MentionTextarea({
-  value,
-  onChange,
-  variables,
-  placeholder,
-  className,
-  style,
-  minRows = 2,
-}: MentionTextareaProps) {
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const [trigger, setTrigger] = useState<{
-    atIdx: number;
-    query: string;
-  } | null>(null);
-  const [activeIndex, setActiveIndex] = useState(0);
-
-  // Auto-grow to fit content (same shape as panel.tsx's AutoTextarea —
-  // can't reuse directly because that component owns its ref).
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
-
-  // Reset highlight whenever the query changes.
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [trigger?.query]);
-
-  const filtered = useMemo(
-    () => filterVariablesForMention(variables, trigger?.query ?? ""),
-    [variables, trigger?.query]
-  );
-
-  const refreshTrigger = useCallback((el: HTMLTextAreaElement) => {
-    setTrigger(detectMentionTrigger(el.value, el.selectionStart));
-  }, []);
-
-  const commit = useCallback(
-    (variable: VariableState) => {
-      const el = ref.current;
-      if (!el || !trigger) return;
-      const { value: next, caret } = commitMentionToken(
-        value,
-        trigger.atIdx,
-        el.selectionEnd,
-        variable.name
-      );
-      onChange(next);
-      setTrigger(null);
-      // Restore focus + caret on the next paint (after the controlled
-      // value has rendered).
-      requestAnimationFrame(() => {
-        const t = ref.current;
-        if (!t) return;
-        t.focus();
-        t.setSelectionRange(caret, caret);
-      });
-    },
-    [trigger, value, onChange]
-  );
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (!trigger) return;
-      if (filtered.length === 0) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          setTrigger(null);
-        }
-        return;
-      }
-      switch (e.key) {
-        case "ArrowDown":
-          e.preventDefault();
-          setActiveIndex((i) => (i + 1) % filtered.length);
-          break;
-        case "ArrowUp":
-          e.preventDefault();
-          setActiveIndex((i) => (i - 1 + filtered.length) % filtered.length);
-          break;
-        case "Enter":
-        case "Tab":
-          e.preventDefault();
-          commit(filtered[activeIndex]);
-          break;
-        case "Escape":
-          e.preventDefault();
-          setTrigger(null);
-          break;
-      }
-    },
-    [trigger, filtered, activeIndex, commit]
-  );
-
-  return (
-    <div className="relative">
-      <Textarea
-        ref={ref}
-        value={value}
-        rows={minRows}
-        placeholder={placeholder}
-        style={style}
-        className={cn("resize-none overflow-hidden", className)}
-        onChange={(e) => {
-          onChange(e.target.value);
-          refreshTrigger(e.currentTarget);
-        }}
-        onSelect={(e) => refreshTrigger(e.currentTarget)}
-        onKeyDown={handleKeyDown}
-        onBlur={() => {
-          // Close on blur, but defer one tick so click-commits on the
-          // popup land before the blur fires (popup uses mousedown to
-          // pre-empt blur, but belt-and-braces).
-          setTimeout(() => setTrigger(null), 0);
-        }}
-      />
-      {trigger ? (
-        <MentionPopup
-          filtered={filtered}
-          activeIndex={activeIndex}
-          onChangeActiveIndex={setActiveIndex}
-          onCommit={commit}
-        />
-      ) : null}
-    </div>
   );
 }
