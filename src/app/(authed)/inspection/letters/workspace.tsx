@@ -73,7 +73,7 @@ import {
 } from "./actions";
 import {
   deleteStoryline,
-  updateStorylineFields,
+  patchStoryline,
 } from "../storylines/actions";
 import { IconPicker } from "@/components/icon-picker";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
@@ -112,7 +112,6 @@ import {
   IconDiamond,
   IconHammer,
   IconMailOpened,
-  IconRestore,
   IconWorldBolt,
 } from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
@@ -5902,48 +5901,6 @@ function DeleteButton({
 const MUTED_ADD_BTN =
   "inline-flex h-8 items-center gap-1.5 rounded-md border border-border/40 px-3 text-xs text-muted-foreground/60 transition-colors hover:border-foreground/40 hover:bg-accent hover:text-accent-foreground disabled:opacity-40";
 
-/**
- * Icon-only save + revert pair. Revert is guarded with a confirm modal when
- * the field is dirty. The pair is hidden entirely until there are unsaved
- * changes (or a save is in flight).
- */
-function SaveRevert({
-  dirty,
-  pending,
-  onSave,
-  onRevert,
-}: {
-  dirty: boolean;
-  pending: boolean;
-  onSave: () => void;
-  onRevert: () => void;
-}) {
-  if (!dirty && !pending) return null;
-  return (
-    <div className="flex items-center gap-1">
-      <button
-        type="button"
-        onClick={onRevert}
-        disabled={pending}
-        aria-label="Revert to saved"
-        title="Revert to saved"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <IconRestore size={14} aria-hidden />
-      </button>
-      <button
-        type="button"
-        onClick={onSave}
-        disabled={pending}
-        aria-label="Save"
-        title="Save"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {pending ? <Spinner /> : <Save size={14} aria-hidden />}
-      </button>
-    </div>
-  );
-}
 
 /**
  * Footer showing when and by whom a record was last updated. Renders nothing
@@ -6002,8 +5959,7 @@ function CreatingPill() {
 
 /**
  * Inline storyline editor that occupies slot 1 in place of the group panel.
- * Tracks its own dirty state — the parent workspace no longer mirrors it.
- * (Phase 4 long-tail: convert to instant-save and drop the dirty flag.)
+ * Uses instant-save (useInstantField) — no dirty flag or SaveRevert button.
  */
 function StorylineInspector({
   storyline,
@@ -6039,6 +5995,8 @@ function StorylineInspector({
     intent?: "destructive" | "default";
   }) => Promise<boolean>;
 }) {
+  // Local mirror for display — kept so icon/color picker can update all
+  // three fields simultaneously before the instant-save hooks see them.
   const [state, setState] = useState(() => ({
     name: storyline.name,
     abbreviation: storyline.abbreviation,
@@ -6047,11 +6005,12 @@ function StorylineInspector({
     icon_value: storyline.icon_value,
     color_hex: storyline.color_hex,
   }));
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
-  const [rowPending, startRowAction] = useTransition();
+  const [, startRowAction] = useTransition();
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Resync the local mirror when a different storyline is selected.
+  // Instant-save hooks are remounted via key={storyline.id} at the call site,
+  // so their debounce timers reset automatically.
   useEffect(() => {
     setState({
       name: storyline.name,
@@ -6061,47 +6020,119 @@ function StorylineInspector({
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
     });
-    setDirty(false);
     setPickerOpen(false);
   }, [storyline.id]);
 
-  function update<K extends keyof typeof state>(k: K, v: (typeof state)[K]) {
-    setState((s) => ({ ...s, [k]: v }));
-    setDirty(true);
-  }
+  // Presence context — the parent WorkspacePresenceProvider is already wired.
+  const { setFocus, peers, pingActivity } = usePresenceContext();
 
-  async function saveNow() {
-    await updateStorylineFields({
-      id: storyline.id,
-      name: state.name,
-      abbreviation: state.abbreviation,
-      description: state.description,
-      icon_type: state.icon_type,
-      icon_value: state.icon_value,
-      color_hex: state.color_hex,
-    });
-    setDirty(false);
-  }
-
-  async function revert() {
-    if (!dirty) return;
-    const ok = await onConfirmDialog({
-      title: "Discard storyline changes?",
-      message: "Any unsaved edits will be lost.",
-      confirmLabel: "Revert",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    setState({
-      name: storyline.name,
-      abbreviation: storyline.abbreviation,
-      description: storyline.description,
+  // ----- Instant-save fields -----
+  // value= uses the canonical server row (storyline.X), NOT state.X, to avoid
+  // the B3 no-save bug (local mirror identical to valueRef → commit short-circuits).
+  const nameField = useInstantField<string>({
+    value: storyline.name,
+    onCommit: async (next) => {
+      await patchStoryline(storyline.id, { name: next });
+    },
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "storylines", recordId: storyline.id, field: "name" }
+          : null
+      ),
+    onActivity: pingActivity,
+  });
+  const abbrField = useInstantField<string>({
+    value: storyline.abbreviation,
+    onCommit: async (next) => {
+      await patchStoryline(storyline.id, { abbreviation: next });
+    },
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? {
+              table: "storylines",
+              recordId: storyline.id,
+              field: "abbreviation",
+            }
+          : null
+      ),
+    onActivity: pingActivity,
+  });
+  const descriptionField = useInstantField<string | null>({
+    value: storyline.description,
+    onCommit: async (next) => {
+      await patchStoryline(storyline.id, { description: next });
+    },
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? {
+              table: "storylines",
+              recordId: storyline.id,
+              field: "description",
+            }
+          : null
+      ),
+    onActivity: pingActivity,
+  });
+  // Icon + color are patched together (the picker emits all three at once).
+  // We commit via a single patchStoryline call that carries all three fields.
+  const iconColorField = useInstantField<{
+    icon_type: string;
+    icon_value: string | null;
+    color_hex: string;
+  }>({
+    value: {
       icon_type: storyline.icon_type,
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
-    });
-    setDirty(false);
-  }
+    },
+    equals: (a, b) =>
+      a.icon_type === b.icon_type &&
+      a.icon_value === b.icon_value &&
+      a.color_hex === b.color_hex,
+    onCommit: async (next) => {
+      await patchStoryline(storyline.id, {
+        icon_type: next.icon_type as import("@/lib/db/enums").IconType,
+        icon_value: next.icon_value,
+        color_hex: next.color_hex,
+      });
+    },
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? {
+              table: "storylines",
+              recordId: storyline.id,
+              field: "icon_color",
+            }
+          : null
+      ),
+    onActivity: pingActivity,
+  });
+
+  // Focus-key descriptors for FieldHighlight wrappers.
+  const nameFocus: PresenceFocus = {
+    table: "storylines",
+    recordId: storyline.id,
+    field: "name",
+  };
+  const abbrFocus: PresenceFocus = {
+    table: "storylines",
+    recordId: storyline.id,
+    field: "abbreviation",
+  };
+  const descriptionFocus: PresenceFocus = {
+    table: "storylines",
+    recordId: storyline.id,
+    field: "description",
+  };
+  const iconColorFocus: PresenceFocus = {
+    table: "storylines",
+    recordId: storyline.id,
+    field: "icon_color",
+  };
 
   function handleAddGroup() {
     startRowAction(async () => {
@@ -6212,16 +6243,8 @@ function StorylineInspector({
       <PanelHeader
         title="Storyline"
         icon={<BookOpen size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={dirty || orderDirty}
+        dirty={orderDirty}
         showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty}
-            pending={pending}
-            onSave={() => startSave(saveNow)}
-            onRevert={revert}
-          />
-        }
         menu={
           groups.length === 0 ? (
             <OverflowMenu
@@ -6248,94 +6271,127 @@ function StorylineInspector({
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
         <BackLink onNavigate={onBack} />
-        <button
-          type="button"
-          onClick={() => setPickerOpen((v) => !v)}
-          aria-expanded={pickerOpen}
-          aria-label="Edit icon and color"
-          title="Edit icon and color"
-          className={cn(
-            "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
-            pickerOpen ? "border-foreground/60" : "border-border"
-          )}
-          style={{
-            background: state.color_hex,
-            color: readableOnHex(state.color_hex),
-          }}
-        >
-          {state.icon_value ? (
-            <IconDisplay
-              type={state.icon_type}
-              value={state.icon_value}
-              size={14}
-            />
-          ) : (
-            <span className="font-mono text-[9px] opacity-70">ic</span>
-          )}
-        </button>
-        <Input
-          value={state.name}
-          onChange={(e) => update("name", e.target.value)}
-          placeholder="Storyline name"
-          className={cn(
-            "h-7 flex-1 px-1 text-base font-semibold text-foreground",
-            GHOST_FIELD
-          )}
-        />
+        <FieldHighlight peers={peers} focusKey={iconColorFocus}>
+          <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
+            <button
+              type="button"
+              onClick={() => setPickerOpen((v) => !v)}
+              aria-expanded={pickerOpen}
+              aria-label="Edit icon and color"
+              title="Edit icon and color"
+              className={cn(
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
+                pickerOpen ? "border-foreground/60" : "border-border"
+              )}
+              style={{
+                background: state.color_hex,
+                color: readableOnHex(state.color_hex),
+              }}
+            >
+              {state.icon_value ? (
+                <IconDisplay
+                  type={state.icon_type}
+                  value={state.icon_value}
+                  size={14}
+                />
+              ) : (
+                <span className="font-mono text-[9px] opacity-70">ic</span>
+              )}
+            </button>
+          </div>
+        </FieldHighlight>
+        <FieldHighlight peers={peers} focusKey={nameFocus} className="flex-1">
+          <Input
+            value={nameField.value}
+            onChange={(e) => {
+              setState((s) => ({ ...s, name: e.target.value }));
+              nameField.set(e.target.value);
+            }}
+            onFocus={nameField.onFocus}
+            onBlur={nameField.onBlur}
+            placeholder="Storyline name"
+            className={cn(
+              "h-7 w-full px-1 text-base font-semibold text-foreground",
+              GHOST_FIELD
+            )}
+          />
+        </FieldHighlight>
         <Label
           htmlFor="storyline-abbr"
           className="shrink-0 self-center"
         >
           Abbr
         </Label>
-        <Input
-          id="storyline-abbr"
-          value={state.abbreviation}
-          onChange={(e) =>
-            update(
-              "abbreviation",
-              e.target.value.toUpperCase().slice(0, 1)
-            )
-          }
-          maxLength={1}
-          className={cn(
-            "h-7 w-7 shrink-0 px-0 text-center font-mono text-xs uppercase",
-            GHOST_FIELD
-          )}
-        />
+        <FieldHighlight peers={peers} focusKey={abbrFocus}>
+          <Input
+            id="storyline-abbr"
+            value={abbrField.value}
+            onChange={(e) => {
+              const next = e.target.value.toUpperCase().slice(0, 1);
+              setState((s) => ({ ...s, abbreviation: next }));
+              abbrField.set(next);
+            }}
+            onFocus={abbrField.onFocus}
+            onBlur={abbrField.onBlur}
+            maxLength={1}
+            className={cn(
+              "h-7 w-7 shrink-0 px-0 text-center font-mono text-xs uppercase",
+              GHOST_FIELD
+            )}
+          />
+        </FieldHighlight>
       </div>
 
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-6 flex flex-col gap-1">
           <Label>Description</Label>
-          <AutoTextarea
-            value={state.description ?? ""}
-            onChange={(e) =>
-              update("description", e.target.value || null)
-            }
-            minRows={2}
-            className={GHOST_FIELD}
-          />
+          <FieldHighlight peers={peers} focusKey={descriptionFocus}>
+            <AutoTextarea
+              value={descriptionField.value ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                setState((s) => ({ ...s, description: next }));
+                descriptionField.set(next);
+              }}
+              onFocus={descriptionField.onFocus}
+              onBlur={descriptionField.onBlur}
+              minRows={2}
+              className={GHOST_FIELD}
+            />
+          </FieldHighlight>
         </div>
       </div>
 
       {pickerOpen ? (
         <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
-          <IconPicker
-            initialType={state.icon_type}
-            initialValue={state.icon_value}
-            emitHiddenFields={false}
-            onChange={(next) => {
-              setState((s) => ({
-                ...s,
-                icon_type: next.type,
-                icon_value: next.value || null,
-              }));
-              setDirty(true);
-            }}
-            color={state.color_hex}
-            onColorChange={(c) => update("color_hex", c)}
-          />
+          <FieldHighlight peers={peers} focusKey={iconColorFocus}>
+            <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
+              <IconPicker
+                initialType={state.icon_type}
+                initialValue={state.icon_value}
+                emitHiddenFields={false}
+                onChange={(next) => {
+                  const updated = {
+                    icon_type: next.type,
+                    icon_value: next.value || null,
+                    color_hex: state.color_hex,
+                  };
+                  setState((s) => ({ ...s, ...updated }));
+                  iconColorField.set(updated);
+                }}
+                color={state.color_hex}
+                onColorChange={(c) => {
+                  const updated = {
+                    icon_type: state.icon_type,
+                    icon_value: state.icon_value,
+                    color_hex: c,
+                  };
+                  setState((s) => ({ ...s, color_hex: c }));
+                  iconColorField.set(updated);
+                }}
+              />
+            </div>
+          </FieldHighlight>
         </div>
       ) : null}
 
