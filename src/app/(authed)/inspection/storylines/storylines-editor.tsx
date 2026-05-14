@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useTransition, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useTransition, useState } from "react";
 import { IconPicker } from "@/components/icon-picker";
 import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   usePresenceContext,
 } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import type { Storyline } from "@/lib/db/types";
@@ -69,6 +70,7 @@ export function StorylinesEditor({
  * mutation (saves sort_order for all rows via `reorderStorylines`).
  */
 function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
+  const router = useRouter();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
 
@@ -81,6 +83,30 @@ function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
     // "adjust state during render" — resync mirror when RSC props change.
     setRows(storylines);
   }
+
+  // Coalesce bursts of INSERTs into one RSC refetch. Matching the
+  // workspace.tsx B5 pattern: debounce 100 ms + startTransition wrap so
+  // Next 16 doesn't coalesce the refresh away before it invalidates the route.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+      }
+    },
+    []
+  );
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      startTransition(() => {
+        router.refresh();
+      });
+    }, 100);
+  }, [router]);
 
   // Subscribe to postgres_changes on "storylines" so edits from peers
   // (and other surfaces like the inline inspector) fan out in real time.
@@ -98,15 +124,15 @@ function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
       } else if (change.eventType === "DELETE") {
         setRows((prev) => prev.filter((r) => r.id !== change.old.id));
       } else if (change.eventType === "INSERT") {
-        // INSERT: debounce a router refresh so the RSC layer resyncs.
-        // We can't import router here (server-action scope), so we trigger
-        // a lightweight window reload of just the props via a DOM event that
-        // the page container picks up — simpler: just let the next RSC push
-        // handle it. For now fall through (the page will get the new row on
-        // next navigation or manual refresh).
+        // A peer created a new storyline — the raw postgres payload doesn't
+        // include computed columns, so refresh the RSC layer to reseed the
+        // mirror with the full row. Debounced to coalesce burst inserts;
+        // wrapped in startTransition so Next 16 schedules the refetch
+        // rather than coalescing it away (B5 lesson #1).
+        scheduleRefresh();
       }
     });
-  }, [onPostgresChanges]);
+  }, [onPostgresChanges, scheduleRefresh]);
 
   // ----- Drag-reorder -----
   const [dragIndex, setDragIndex] = useState<number | null>(null);

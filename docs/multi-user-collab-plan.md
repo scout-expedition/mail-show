@@ -474,6 +474,8 @@ Three deliverables shipped in one PR.
   - `<FieldHighlight>` wraps every field in every row.
 - `src/app/(authed)/inspection/storylines/page.tsx` updated to fetch `auth.getUser()` + `profileFromMetadata` and pass `currentUserId` / `currentEmail` / `currentProfile` down to `StorylinesEditor`.
 
+**Codex review fix:** added INSERT branch with debounced startTransition refresh, matching the workspace.tsx pattern. The empty INSERT handler in `StorylinesEditorInner` was replaced with a `scheduleRefresh()` call backed by a 100 ms debounce timer (cleared on unmount) and `startTransition(() => router.refresh())` — without the `startTransition` wrap Next 16 coalesces the refresh away before it can invalidate the route.
+
 #### Spot-check: `src/app/(authed)/inspection/actions/editor.tsx`
 
 This is `ActionTemplatesEditor` — a bulk drag-reorder editor for *action template* rows (name, icon, color, paired template), saving all rows at once via `updateAllActionTemplates`. It is NOT the per-letter `patchAction` surface from Phase 1. It has no connection to `patchAction` and its dirty+Save pattern is appropriate for bulk drag-reorder (same rationale as the storylines reorder). **No conversion needed.**
