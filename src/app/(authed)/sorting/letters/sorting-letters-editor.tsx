@@ -18,7 +18,6 @@ import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
-import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
@@ -73,7 +72,7 @@ function SortingLettersEditorInner({
   days: Day[];
 }) {
   const router = useRouter();
-  const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
+  const { peers, onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
 
   // Mirror server array so postgres_changes can fan out without a page reload.
@@ -160,12 +159,6 @@ function SortingLettersEditorInner({
           ))}
         </Select>
 
-        <AvatarStack
-          peers={peers}
-          self={selfPeer}
-          popupAlign="right"
-          className="ml-3"
-        />
       </div>
 
       <div className="overflow-hidden rounded-md border border-border bg-card">

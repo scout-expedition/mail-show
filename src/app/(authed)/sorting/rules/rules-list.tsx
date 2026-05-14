@@ -23,7 +23,6 @@ import {
   ConditionBuilderInline,
   type BuilderCondition,
 } from "@/components/condition-builder";
-import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
@@ -93,7 +92,7 @@ function RulesListInner({
   days: Day[];
 }) {
   const router = useRouter();
-  const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
+  const { peers, onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
 
   // Mirror rules + conditions so postgres_changes fans out without reload.
@@ -205,12 +204,7 @@ function RulesListInner({
       {toaster}
       <div className="flex flex-col gap-2 font-mono">
         {rules.length > 0 ? (
-          <div className="mb-1 flex items-center justify-between">
-            <AvatarStack
-              peers={peers}
-              self={selfPeer}
-              popupAlign="left"
-            />
+          <div className="mb-1 flex items-center justify-end">
             <Button type="button" variant="ghost" size="sm" onClick={toggleAll}>
               {allOpen ? "Collapse all" : "Expand all"}
             </Button>
