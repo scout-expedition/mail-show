@@ -18,7 +18,6 @@ import type { Nation } from "@/lib/db/types";
 import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import type { PresenceProfile, PresencePeer } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import { deleteNation, patchNation, updateAllNations } from "./actions";
@@ -62,7 +61,7 @@ export function NationsEditor({
 
 function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) {
   const router = useRouter();
-  const { peers, selfPeer, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
   const { toast, toaster } = useToast();
   const [, startReorderTransition] = useTransition();
 
@@ -147,14 +146,6 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
   return (
     <>
       {toaster}
-      <div className="mb-4 flex items-center justify-end">
-        <AvatarStack
-          peers={peers}
-          self={selfPeer ?? undefined}
-          popupAlign="right"
-          className="mr-auto"
-        />
-      </div>
 
       <div className="overflow-hidden rounded-md border border-border bg-card">
         <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
@@ -165,7 +156,13 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
           <span />
         </div>
         {rows.map((row, i) => {
-          const expanded = expandedId === row.id;
+          // Force the icon-picker drawer open when a peer is focused on this
+          // row's icon field, so the FieldHighlight ring has an element to
+          // render against. Local user can also click to expand.
+          const peerEditingIcon = peers.some(
+            (p) => p.focus?.recordId === row.id && p.focus?.field === "icon_value"
+          );
+          const expanded = expandedId === row.id || peerEditingIcon;
           return (
             <div
               key={row.id}

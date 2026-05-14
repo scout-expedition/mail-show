@@ -19,7 +19,6 @@ import type { City, Nation } from "@/lib/db/types";
 import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import { deleteCity, patchCity } from "./actions";
@@ -81,7 +80,7 @@ function CitiesEditorInner({
   nations: Nation[];
 }) {
   const router = useRouter();
-  const { peers, selfPeer, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
   const { toast, toaster } = useToast();
   const [, startDeleteTransition] = useTransition();
 
@@ -158,12 +157,6 @@ function CitiesEditorInner({
     <>
       {toaster}
       <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-        <AvatarStack
-          peers={peers}
-          self={selfPeer ?? undefined}
-          popupAlign="right"
-          className="mr-auto"
-        />
         <Label className="!text-xs">Filter</Label>
         <Select
           value={filterNationId}
@@ -279,6 +272,12 @@ function CityRow({
 
   const codeError = !isValidCityCode(codeField.value);
 
+  // Expand the row to input mode when a peer focuses any field on this row,
+  // so the FieldHighlight rings have an element to render against. Without
+  // this, peer rings can never appear on rows the local user isn't editing.
+  const peerEditingHere = peers.some((p) => p.focus?.recordId === row.id);
+  const showInputs = editing || peerEditingHere;
+
   function handleBlur(e: React.FocusEvent<HTMLDivElement>) {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
       setEditing(false);
@@ -314,7 +313,7 @@ function CityRow({
           />
         ) : null}
       </span>
-      {editing ? (
+      {showInputs ? (
         <>
           <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
             <Input
@@ -323,7 +322,7 @@ function CityRow({
               onFocus={nameField.onFocus}
               onBlur={nameField.onBlur}
               className={cn("h-8", !nameField.value.trim() && "ring-2 ring-destructive")}
-              autoFocus
+              autoFocus={editing}
               required
             />
           </FieldHighlight>
