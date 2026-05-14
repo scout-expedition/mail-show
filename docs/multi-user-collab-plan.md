@@ -497,3 +497,110 @@ This is `ActionTemplatesEditor` — a bulk drag-reorder editor for *action templ
 - **Remaining Phase 4 surfaces.** Sorting letters/rules, cities, citizens, nations, playthroughs, physical, days, ending variables. Each ships as its own PR.
 - **Phase 4b — Endings documents.** Pending design pass (`docs/endings-collab-plan.md`).
 - **Final cleanup PR.** Delete `updateAllStorylines`, `updateStorylineFields` once every caller is converted; delete `auto-save-form.tsx`, `unsaved-dialog.tsx` once all surfaces are converted.
+
+### ✅ Phase 4 Sorting (2026-05-13)
+
+Converted `/sorting/letters` and `/sorting/rules` to instant-save + multi-user
+presence following the Phase 1 pattern exactly.
+
+#### Files changed
+
+- `supabase/migrations/0034_realtime_publication_sorting.sql` *(new)* —
+  Adds `sorting_letters`, `sorting_rules`, `sorting_rule_conditions` to
+  `supabase_realtime` with `replica identity full`. Idempotent (same guard
+  as 0031/0032).
+- `src/app/(authed)/sorting/letters/actions.ts` *(edit)* — Added
+  `patchSortingLetter(id, patch)`. Does NOT call `revalidatePath`.
+  Existing coarse actions (`createSortingLetter`, `updateSortingLetter`,
+  `updateAllSortingLetters`, `deleteSortingLetter`) kept for compat.
+- `src/app/(authed)/sorting/letters/page.tsx` *(edit)* — Now fetches
+  `auth.getUser()`, builds `presenceProfile`, passes `currentUserId` /
+  `currentEmail` / `currentProfile` to `SortingLettersEditor`.
+- `src/app/(authed)/sorting/letters/sorting-letters-editor.tsx` *(rewrite)* —
+  Split into `SortingLettersEditor` (outer, mounts `WorkspacePresenceProvider`
+  on channel `sorting-letters`) + `SortingLettersEditorInner` (reads context).
+  Per-row `SortingLetterRow` component uses `useInstantField` for `day_id`,
+  `recipient_name`, `sender_name`, `is_counterfeit`, `storage_location`.
+  `<FieldHighlight>` wraps every editable cell. `<AvatarStack>` in the filter
+  bar header. `postgres_changes` reducer: UPDATE column-merges the mirror;
+  DELETE drops the row + emits a destructive toast; INSERT debounce-refreshes
+  via `router.refresh()` in `startTransition`. Removed: `dirty` flag,
+  `useTransition` for save, `Save` button, bulk `updateAllSortingLetters` call
+  on explicit save, the `<form>` wrapper, hidden form inputs.
+- `src/app/(authed)/sorting/rules/actions.ts` *(edit)* — Added
+  `patchSortingRule(id, patch)`. Does NOT call `revalidatePath`. Kept
+  `saveRuleAll` (dead code, same compat-hold pattern as Phase 1). `saveConditions`
+  kept as the structural condition replacement path (still calls `revalidatePath`
+  because conditions are delete+re-insert — not a field-level patch).
+- `src/app/(authed)/sorting/rules/page.tsx` *(edit)* — Same auth/profile pattern.
+- `src/app/(authed)/sorting/rules/rules-list.tsx` *(rewrite)* — Split into
+  `RulesList` (outer, `WorkspacePresenceProvider` on channel `sorting-rules`) +
+  `RulesListInner` (mirrors `rules` + `conditionsByRule`; `postgres_changes`
+  handler; `<AvatarStack>`) + `RuleRow` (instant-save for `letter`,
+  `destination_slot`, `day_implemented_id`, `storage_location`, `summary` via
+  `patchSortingRule`; conditions still use explicit `saveConditions` + dirty
+  button). `<FieldHighlight>` on every scalar field. `<div onFocus onBlur>`
+  around the `Select` for `day_implemented_id` (doesn't forward focus props).
+
+#### Design decisions
+
+- **Conditions kept on manual save.** `sorting_rule_conditions` is a
+  position-ordered set always replaced wholesale (delete+insert). Instant-save
+  is not meaningful here — the user builds the full condition set before
+  committing. The "Save conditions" button remains; only the scalar rule fields
+  (`letter`, `slot`, `day`, `storage`, `summary`) are instant-save.
+- **One channel per surface, not a combined channel.** `/sorting/letters` and
+  `/sorting/rules` are distinct pages; they get separate channels
+  (`sorting-letters`, `sorting-rules`) to avoid cross-surface noise.
+- **`SortingLetterRow` as a separate component.** Each row needs its own
+  `useInstantField` instances (5 per row), so the row must be its own React
+  component. This matches the `ActionEditor` per-action pattern in
+  `LettersWorkspaceInner`.
+
+#### Follow-ups
+
+- **User must apply migration 0034** via Supabase MCP (`apply_migration`) or
+  the Supabase SQL editor before realtime fan-out works on sorting tables.
+- **`updateAllSortingLetters` is now unreachable** from the list editor (the
+  bulk form + Save button are gone). The action is kept for compat; remove in
+  the final Phase 4 cleanup PR alongside `auto-save-form.tsx` etc.
+- **`/sorting/letters/[id]` detail page** still uses a plain server-action
+  form (`updateSortingLetter`). Not converted — it's a low-traffic detail
+  view. Convert in a later cleanup pass if desired.
+- **`saveRuleAll`** is now dead code in `rules/actions.ts`; remove in the
+  final cleanup PR.
+
+#### Locked-in lessons
+
+- **Lesson from sorting** — Row-level components are the right boundary for
+  `useInstantField` when the editor renders a variable-length list. Hoisting
+  all hooks into the parent (one set per row × N rows) is not safe with
+  React's rules-of-hooks. Extract a `<RowComponent key={row.id} row={row} />`
+  and put the hooks there — the `key` prop ensures unmount-cleanup (flush) on
+  row removal.
+
+**Codex review fixes:**
+
+- **`matchMode` stale-clobber on peer-only `match_mode` change.** `RuleRow`
+  was syncing `matchMode` only when `condServerKey` (a hash of condition
+  identity/order) changed. If a peer updated `match_mode` without touching
+  conditions, the hash was unchanged, so the local state stayed at the old
+  value and the next "Save conditions" from this user would write the stale
+  mode back. Fixed with an additional "adjust state during render" pair
+  `[lastSeenMatchMode, setLastSeenMatchMode]` that compares to `rule.match_mode`
+  each render. Resync fires when the server value changes AND `condsDirty` is
+  false — the `!condsDirty` guard ensures we don't clobber a user's
+  in-progress edit: when `condsDirty=true` the user has already touched the
+  condition block (which sets `matchMode` locally) and the resync is
+  correctly suppressed. This is the right semantic because `matchMode` is part
+  of the conditions block and its dirtiness is tracked by `condsDirty`.
+
+- **Delete-toast attribution always "Someone".** The DELETE toast in both
+  `sorting-letters-editor.tsx` and `rules-list.tsx` tried to read
+  `oldRow.updated_by`, but `sorting_letters` and `sorting_rules` have no
+  `updated_by` column (unlike `inspection_letters`). The lookup always fell
+  back to `"Someone"`. Fixed by removing the dead lookup and hardcoding
+  `"Someone deleted a sorting letter"` / `"Someone deleted a sorting rule"`.
+  Adding an `updated_by` column would require a migration + trigger and is
+  out of scope; the bare attribution is consistent with what the toast was
+  always showing in practice.
