@@ -24,6 +24,9 @@ export type TextBlockComponent = ComponentType<{
   onChange: (text: string) => void;
   onChangeSummary: (summary: string) => void;
   onDelete: () => void;
+  /** Authoring variable list, fed into the `@[Name]` autocomplete
+   *  popup. Same array DocumentEditor passes to BlockList. */
+  variables: VariableState[];
 }>;
 
 export type ResultBlockComponent = ComponentType<{
@@ -246,6 +249,7 @@ export function BlockList({
                 onChange={(text) => onUpdateBlock(b.id, { text })}
                 onChangeSummary={(summary) => onUpdateBlock(b.id, { summary })}
                 onDelete={() => handleDeleteBlock(b.id)}
+                variables={variables}
               />
             ) : (
               (() => {

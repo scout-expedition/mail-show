@@ -9,24 +9,27 @@ import {
   GripVertical,
   Trash2,
 } from "lucide-react";
-import { AutoTextarea, OverflowMenu } from "@/components/panel";
+import { OverflowMenu } from "@/components/panel";
 import { cn } from "@/lib/utils";
-import type { BlockState } from "@/lib/endings/block-state";
+import type { BlockState, VariableState } from "@/lib/endings/block-state";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import { duplicateBlock } from "../_shared/document-actions";
 import { useConfirm } from "@/components/confirm-dialog";
+import { MentionTextarea } from "./mention-autocomplete";
 
 export function TextBlock({
   block,
   onChange,
   onChangeSummary,
   onDelete,
+  variables,
 }: {
   block: BlockState;
   onChange: (text: string) => void;
   onChangeSummary: (summary: string) => void;
   onDelete: () => void;
+  variables: VariableState[];
 }) {
   const [, startTransition] = useTransition();
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -176,18 +179,15 @@ export function TextBlock({
           </div>
         </div>
         {collapsed ? null : (
-          <AutoTextarea
+          <MentionTextarea
             value={block.text}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={onChange}
+            variables={variables}
             placeholder="Paragraph text…"
             style={{
               fontVariantLigatures: "none",
               backgroundColor: "var(--block-result-bg)",
             }}
-            // AutoTextarea sizes height to scrollHeight on every value
-            // change; `rows={2}` (its default) enforces the 2-line
-            // minimum. Don't add `flex-1` — it fights the inline-style
-            // height and produces clipped/scrolling textareas.
             className={cn(
               "!text-sm border-transparent shadow-none focus:border-border focus-visible:shadow-sm"
             )}
