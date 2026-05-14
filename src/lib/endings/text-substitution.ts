@@ -23,6 +23,12 @@ function aggKey(ref: string, side: "top" | "bottom"): string {
 // triggering substitution — the leading `@` must not follow an
 // alphanumeric or another `@`. Whitespace and punctuation are fine, so
 // `Hello, @[Name]!` substitutes as expected.
+//
+// Variable names containing `]` are not supported — the inner class
+// `[^\]]+` stops at the first `]`. Authors should pick names without
+// brackets; the UNIQUE constraint on `ending_variables.name` doesn't
+// prevent `]` per se, but it's an unsupported character for this token
+// syntax.
 const TOKEN_RE = /(?<![A-Za-z0-9@])@\[([^\]]+)\]/g;
 
 export interface SubstitutionContext {
