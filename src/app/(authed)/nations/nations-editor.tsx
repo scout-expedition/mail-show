@@ -184,11 +184,6 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
                 expanded={expanded}
                 onToggleExpand={() => setExpandedId(expanded ? null : row.id)}
                 onActivity={pingActivity}
-                onRowUpdate={(patch) =>
-                  setRows((prev) =>
-                    prev.map((r) => (r.id === row.id ? { ...r, ...patch } : r))
-                  )
-                }
               />
             </div>
           );
@@ -209,14 +204,12 @@ function NationRow({
   expanded,
   onToggleExpand,
   onActivity,
-  onRowUpdate,
 }: {
   row: Nation;
   peers: PresencePeer[];
   expanded: boolean;
   onToggleExpand: () => void;
   onActivity: () => void;
-  onRowUpdate: (patch: Partial<Nation>) => void;
 }) {
   const { setFocus } = usePresenceContext();
   const fg = readableOn(row.color_hex);
@@ -335,13 +328,9 @@ function NationRow({
                 onChange={(next) => {
                   iconTypeField.set(next.type);
                   iconValueField.set(next.value ?? "");
-                  onRowUpdate({ icon_type: next.type, icon_value: next.value ?? null });
                 }}
                 color={colorField.value}
-                onColorChange={(c) => {
-                  colorField.set(c);
-                  onRowUpdate({ color_hex: c });
-                }}
+                onColorChange={(c) => colorField.set(c)}
               />
             </div>
           </FieldHighlight>
