@@ -14,8 +14,8 @@
 // list are bound in by the `makeResultBlock` factory below — the editor
 // builds one per logic doc.
 
-import { useMemo, useRef, useTransition, type ComponentType } from "react";
-import { Copy, GripVertical, Trash2 } from "lucide-react";
+import { useMemo, useRef, type ComponentType } from "react";
+import { GripVertical, Trash2 } from "lucide-react";
 import { Select } from "@/components/ui/select";
 import { OverflowMenu } from "@/components/panel";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -37,7 +37,6 @@ import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { BlockState } from "@/lib/endings/block-state";
 import type { EndingDocument } from "@/lib/db/types";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
-import { duplicateBlock } from "../_shared/document-actions";
 import { DropLine } from "./text-block";
 
 export type ResultOption = { value: string; label: string };
@@ -67,7 +66,6 @@ export function ResultBlock({
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
-  const [, startTransition] = useTransition();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const isDragging = drag.dragId === block.id;
   const targetBefore =
@@ -243,15 +241,6 @@ export function ResultBlock({
         <div className="flex w-6 shrink-0 items-start justify-center pt-[12px]">
           <OverflowMenu
             items={[
-              {
-                label: "Duplicate Result Block",
-                icon: <Copy size={10} aria-hidden />,
-                onClick: () => {
-                  startTransition(async () => {
-                    await duplicateBlock({ id: block.id });
-                  });
-                },
-              },
               {
                 label: "Delete Result Block",
                 intent: "destructive",

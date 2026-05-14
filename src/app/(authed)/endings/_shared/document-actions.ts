@@ -619,10 +619,27 @@ export async function duplicateBlock(input: {
     }
   }
 
-  // Insert the cloned blocks in the same order they were collected
-  // (parents before children). The root takes insertSort; descendants
-  // keep their relative sort_orders within their own parent.
-  const newBlockRows = blocks.map((b) => ({
+  // Topological insert: a descendant block's parent_row_id must reference
+  // a row that already exists in the DB. Insert root block first, then
+  // alternate "rows under just-inserted blocks" + "blocks under just-
+  // inserted rows" until both queues drain. Bulk-inserting all blocks
+  // first violates ending_blocks_parent_row_fk.
+  const blocksByOldParentRow = new Map<string, typeof blocks>();
+  for (const b of blocks) {
+    if (b.id === original.id) continue;
+    const key = b.parent_row_id!;
+    const list = blocksByOldParentRow.get(key);
+    if (list) list.push(b);
+    else blocksByOldParentRow.set(key, [b]);
+  }
+  const rowsByOldBlock = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const list = rowsByOldBlock.get(r.condition_block_id);
+    if (list) list.push(r);
+    else rowsByOldBlock.set(r.condition_block_id, [r]);
+  }
+
+  const makeBlockRow = (b: typeof blocks[number]) => ({
     id: blockIdMap.get(b.id)!,
     document_id: b.document_id,
     parent_block_id:
@@ -638,24 +655,42 @@ export async function duplicateBlock(input: {
     result_value: b.result_value,
     summary: b.summary,
     sort_order: b.id === original.id ? insertSort : b.sort_order,
-  }));
-  if (newBlockRows.length > 0) {
-    const { error: insertBlocksErr } = await supabase
+  });
+  const makeRowRow = (r: typeof rows[number]) => ({
+    id: rowIdMap.get(r.id)!,
+    condition_block_id: blockIdMap.get(r.condition_block_id)!,
+    sort_order: r.sort_order,
+  });
+
+  const rootBlock = blocks.find((b) => b.id === original.id)!;
+  {
+    const { error } = await supabase
       .from("ending_blocks")
-      .insert(newBlockRows);
-    if (insertBlocksErr) throw new Error(insertBlocksErr.message);
+      .insert([makeBlockRow(rootBlock)]);
+    if (error) throw new Error(error.message);
   }
 
-  if (rows.length > 0) {
-    const newRows = rows.map((r) => ({
-      id: rowIdMap.get(r.id)!,
-      condition_block_id: blockIdMap.get(r.condition_block_id)!,
-      sort_order: r.sort_order,
-    }));
-    const { error: insertRowsErr } = await supabase
-      .from("ending_condition_rows")
-      .insert(newRows);
-    if (insertRowsErr) throw new Error(insertRowsErr.message);
+  let frontierBlockOldIds: string[] = [rootBlock.id];
+  while (frontierBlockOldIds.length > 0) {
+    const rowsToInsert = frontierBlockOldIds.flatMap(
+      (bid) => rowsByOldBlock.get(bid) ?? []
+    );
+    if (rowsToInsert.length > 0) {
+      const { error } = await supabase
+        .from("ending_condition_rows")
+        .insert(rowsToInsert.map(makeRowRow));
+      if (error) throw new Error(error.message);
+    }
+    const childBlocks = rowsToInsert.flatMap(
+      (r) => blocksByOldParentRow.get(r.id) ?? []
+    );
+    if (childBlocks.length > 0) {
+      const { error } = await supabase
+        .from("ending_blocks")
+        .insert(childBlocks.map(makeBlockRow));
+      if (error) throw new Error(error.message);
+    }
+    frontierBlockOldIds = childBlocks.map((b) => b.id);
   }
 
   if (blockVars.length > 0) {
@@ -915,40 +950,76 @@ export async function duplicateRow(input: {
   rowIdMap.set(input.id, newRowId);
   for (const r of childRows) rowIdMap.set(r.id, randomUUID());
 
-  if (blocks.length > 0) {
-    const newBlocks = blocks.map((b) => ({
-      id: blockIdMap.get(b.id)!,
-      document_id: b.document_id,
-      parent_block_id:
-        b.parent_block_id && blockIdMap.has(b.parent_block_id)
-          ? blockIdMap.get(b.parent_block_id)!
-          : b.parent_block_id,
-      parent_row_id:
-        b.parent_row_id && rowIdMap.has(b.parent_row_id)
-          ? rowIdMap.get(b.parent_row_id)!
-          : b.parent_row_id,
-      block_type: b.block_type,
-      text: b.text,
-      result_value: b.result_value,
-      summary: b.summary,
-      sort_order: b.sort_order,
-    }));
-    const { error: insertBlocksErr } = await supabase
-      .from("ending_blocks")
-      .insert(newBlocks);
-    if (insertBlocksErr) throw new Error(insertBlocksErr.message);
+  // Topological insert: direct-child blocks (parent_row_id = newRowId,
+  // which was inserted above) go first, then alternate "rows under just-
+  // inserted blocks" + "blocks under just-inserted rows" until both
+  // queues drain. Bulk-inserting all blocks first violates
+  // ending_blocks_parent_row_fk on the descendants.
+  const blocksByOldParentRow = new Map<string, typeof blocks>();
+  for (const b of blocks) {
+    const key = b.parent_row_id!;
+    const list = blocksByOldParentRow.get(key);
+    if (list) list.push(b);
+    else blocksByOldParentRow.set(key, [b]);
+  }
+  const rowsByOldBlock = new Map<string, typeof childRows>();
+  for (const r of childRows) {
+    const list = rowsByOldBlock.get(r.condition_block_id);
+    if (list) list.push(r);
+    else rowsByOldBlock.set(r.condition_block_id, [r]);
   }
 
-  if (childRows.length > 0) {
-    const newChildRows = childRows.map((r) => ({
-      id: rowIdMap.get(r.id)!,
-      condition_block_id: blockIdMap.get(r.condition_block_id)!,
-      sort_order: r.sort_order,
-    }));
-    const { error: rowErr2 } = await supabase
-      .from("ending_condition_rows")
-      .insert(newChildRows);
-    if (rowErr2) throw new Error(rowErr2.message);
+  const makeBlockRow = (b: typeof blocks[number]) => ({
+    id: blockIdMap.get(b.id)!,
+    document_id: b.document_id,
+    parent_block_id:
+      b.parent_block_id && blockIdMap.has(b.parent_block_id)
+        ? blockIdMap.get(b.parent_block_id)!
+        : b.parent_block_id,
+    parent_row_id:
+      b.parent_row_id && rowIdMap.has(b.parent_row_id)
+        ? rowIdMap.get(b.parent_row_id)!
+        : b.parent_row_id,
+    block_type: b.block_type,
+    text: b.text,
+    result_value: b.result_value,
+    summary: b.summary,
+    sort_order: b.sort_order,
+  });
+  const makeRowRow = (r: typeof childRows[number]) => ({
+    id: rowIdMap.get(r.id)!,
+    condition_block_id: blockIdMap.get(r.condition_block_id)!,
+    sort_order: r.sort_order,
+  });
+
+  // Seed the frontier with direct-child blocks under the cloned row.
+  let frontierBlocks = blocksByOldParentRow.get(input.id) ?? [];
+  if (frontierBlocks.length > 0) {
+    const { error } = await supabase
+      .from("ending_blocks")
+      .insert(frontierBlocks.map(makeBlockRow));
+    if (error) throw new Error(error.message);
+  }
+  while (frontierBlocks.length > 0) {
+    const rowsToInsert = frontierBlocks.flatMap(
+      (b) => rowsByOldBlock.get(b.id) ?? []
+    );
+    if (rowsToInsert.length > 0) {
+      const { error } = await supabase
+        .from("ending_condition_rows")
+        .insert(rowsToInsert.map(makeRowRow));
+      if (error) throw new Error(error.message);
+    }
+    const childBlocks = rowsToInsert.flatMap(
+      (r) => blocksByOldParentRow.get(r.id) ?? []
+    );
+    if (childBlocks.length > 0) {
+      const { error } = await supabase
+        .from("ending_blocks")
+        .insert(childBlocks.map(makeBlockRow));
+      if (error) throw new Error(error.message);
+    }
+    frontierBlocks = childBlocks;
   }
 
   if (blockVars.length > 0) {
