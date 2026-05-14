@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
-import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import type { PresenceFocus } from "@/lib/realtime/presence";
 import type { PresenceProfile } from "@/lib/realtime/presence";
@@ -72,7 +71,7 @@ export function StorylinesEditor({
 function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
   const router = useRouter();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
+  const { peers, onPostgresChanges } = usePresenceContext();
 
   // Mirror rows locally so drag-reorder works without RSC round-trips, and
   // so postgres_changes UPDATEs/DELETEs can fan out without a page reload.
@@ -179,11 +178,6 @@ function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
   return (
     <>
       <div className="mb-4 flex items-center justify-end gap-2">
-        <AvatarStack
-          peers={peers}
-          self={selfPeer}
-          popupAlign="right"
-        />
         {orderDirty ? (
           <>
             <Button
