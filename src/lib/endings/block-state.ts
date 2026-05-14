@@ -28,6 +28,10 @@ export interface BlockState {
    *  folos, …) for tiebreak docs, or a framework document UUID for the
    *  `framework_selection` doc. Null on text and condition blocks. */
   result_value: string | null;
+  /** Authoring-only label shown in the block header between the variable
+   *  pills and the kebab. Empty string is the editor default. Ignored by
+   *  the evaluator. */
+  summary: string;
   sort_order: number;
 }
 

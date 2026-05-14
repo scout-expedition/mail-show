@@ -63,6 +63,7 @@ export function ConditionBlock({
   values,
   onDeleteBlock,
   onChangeChip,
+  onChangeSummary,
   renderRowContent,
   getRowBlockCount,
 }: {
@@ -75,6 +76,7 @@ export function ConditionBlock({
   values: EndingVariableValue[];
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
+  onChangeSummary: (summary: string) => void;
   /** Render the recursive child-block list for a given row. */
   renderRowContent: (row: RowState) => React.ReactNode;
   /** Number of blocks under each row's children area. Used to close
@@ -159,8 +161,8 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
-        <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+      <div className={cn("group/header flex items-center gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
+        <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
             draggable
@@ -208,7 +210,15 @@ export function ConditionBlock({
             confirm={confirm}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={block.summary}
+          onChange={(e) => onChangeSummary(e.target.value)}
+          placeholder="Summary…"
+          aria-label="Block summary"
+          className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-xs font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground/60 focus:border-border focus:shadow-sm focus:outline-none"
+        />
+        <div className="flex shrink-0 items-center gap-2">
           {blockAnalysis ? (
             <BlockAnalysisBadge
               analysis={blockAnalysis}

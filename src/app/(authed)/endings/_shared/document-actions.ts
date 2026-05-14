@@ -487,7 +487,7 @@ export async function duplicateBlock(input: {
   const { data: original, error: lookupErr } = await supabase
     .from("ending_blocks")
     .select(
-      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, summary, sort_order"
     )
     .eq("id", input.id)
     .single();
@@ -511,6 +511,7 @@ export async function duplicateBlock(input: {
     block_type: string;
     text: string | null;
     result_value: string | null;
+    summary: string | null;
     sort_order: number;
   }> = [original as typeof blocks[number]];
   const rows: Array<{
@@ -556,7 +557,7 @@ export async function duplicateBlock(input: {
           supabase
             .from("ending_blocks")
             .select(
-              "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+              "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, summary, sort_order"
             )
             .in("parent_block_id", conditionIds),
         ]);
@@ -635,6 +636,7 @@ export async function duplicateBlock(input: {
     block_type: b.block_type,
     text: b.text,
     result_value: b.result_value,
+    summary: b.summary,
     sort_order: b.id === original.id ? insertSort : b.sort_order,
   }));
   if (newBlockRows.length > 0) {
@@ -832,6 +834,7 @@ export async function duplicateRow(input: {
     block_type: string;
     text: string | null;
     result_value: string | null;
+    summary: string | null;
     sort_order: number;
   }> = [];
   const childRows: Array<{
@@ -858,7 +861,7 @@ export async function duplicateRow(input: {
   const { data: directChildren } = await supabase
     .from("ending_blocks")
     .select(
-      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+      "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, summary, sort_order"
     )
     .eq("parent_row_id", input.id);
   blocks.push(...((directChildren ?? []) as typeof blocks));
@@ -881,7 +884,7 @@ export async function duplicateRow(input: {
         supabase
           .from("ending_blocks")
           .select(
-            "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, sort_order"
+            "id, document_id, parent_block_id, parent_row_id, block_type, text, result_value, summary, sort_order"
           )
           .in("parent_block_id", conditionIds),
       ]);
@@ -927,6 +930,7 @@ export async function duplicateRow(input: {
       block_type: b.block_type,
       text: b.text,
       result_value: b.result_value,
+      summary: b.summary,
       sort_order: b.sort_order,
     }));
     const { error: insertBlocksErr } = await supabase
@@ -1344,6 +1348,8 @@ export type BlockPayload = {
    *  for text/condition blocks; can also be null for an unset
    *  fallback. */
   result_value: string | null;
+  /** Authoring-only header label. Null when unset. */
+  summary: string | null;
   sort_order: number;
 };
 
@@ -1470,6 +1476,7 @@ export async function saveDocument(input: {
         block_type: b.block_type,
         text,
         result_value,
+        summary: b.summary,
         sort_order: b.sort_order,
       })
       .eq("id", b.id);

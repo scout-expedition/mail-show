@@ -307,6 +307,7 @@ export interface EndingBlock {
   block_type: EndingBlockType;
   text: string | null;
   result_value: string | null;
+  summary: string | null;
   sort_order: number;
 }
 

@@ -194,6 +194,7 @@ export function DocumentEditor({
           block_type: b.block_type,
           text: b.text ?? "",
           result_value: b.result_value,
+          summary: b.summary ?? "",
           sort_order: b.sort_order,
         })
       ),
@@ -758,6 +759,7 @@ export function DocumentEditor({
           block_type: b.block_type,
           text: b.text,
           result_value: b.result_value,
+          summary: b.summary === "" ? null : b.summary,
           sort_order: i,
         });
         if (b.block_type === "condition") {
@@ -780,6 +782,7 @@ export function DocumentEditor({
         block_type: fallbackBlock.block_type,
         text: null,
         result_value: fallbackBlock.result_value,
+        summary: null,
         sort_order: 999999,
       });
     }

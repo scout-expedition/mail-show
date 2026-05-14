@@ -704,6 +704,7 @@ describe("shared document actions", () => {
             block_type: "text",
             text: "updated",
             result_value: null,
+            summary: null,
             sort_order: 0,
           },
           {
@@ -713,6 +714,7 @@ describe("shared document actions", () => {
             block_type: "condition",
             text: "",
             result_value: null,
+            summary: null,
             sort_order: 1,
           },
         ],
@@ -778,6 +780,96 @@ describe("shared document actions", () => {
       ).rejects.toThrow(/cannot be empty/i);
     });
 
+    it("persists block.summary on text and condition blocks", async () => {
+      const fwId = await seedFrameworkDoc();
+      const { id: textId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "text",
+      });
+      const { id: condId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "condition",
+      });
+
+      await saveDocument({
+        document_id: fwId,
+        name: `${TEST_PREFIX}summary`,
+        blocks: [
+          {
+            id: textId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "text",
+            text: "",
+            result_value: null,
+            summary: "scene-opens-on-rain",
+            sort_order: 0,
+          },
+          {
+            id: condId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "condition",
+            text: "",
+            result_value: null,
+            summary: "branch-on-class",
+            sort_order: 1,
+          },
+        ],
+        rows: [],
+        chips: [],
+      });
+
+      const { data: rows } = await sb
+        .from("ending_blocks")
+        .select("id, summary")
+        .in("id", [textId, condId]);
+      const byId = new Map((rows ?? []).map((r) => [r.id, r.summary]));
+      expect(byId.get(textId)).toBe("scene-opens-on-rain");
+      expect(byId.get(condId)).toBe("branch-on-class");
+
+      // Clearing back to empty string round-trips as NULL.
+      await saveDocument({
+        document_id: fwId,
+        name: `${TEST_PREFIX}summary`,
+        blocks: [
+          {
+            id: textId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "text",
+            text: "",
+            result_value: null,
+            summary: null,
+            sort_order: 0,
+          },
+          {
+            id: condId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "condition",
+            text: "",
+            result_value: null,
+            summary: null,
+            sort_order: 1,
+          },
+        ],
+        rows: [],
+        chips: [],
+      });
+      const { data: cleared } = await sb
+        .from("ending_blocks")
+        .select("id, summary")
+        .in("id", [textId, condId]);
+      for (const r of cleared ?? []) {
+        expect(r.summary).toBeNull();
+      }
+    });
+
     it("rejects a result block payload on a framework doc", async () => {
       const fwId = await seedFrameworkDoc();
       const { id: blockId } = await addBlock({
@@ -798,6 +890,7 @@ describe("shared document actions", () => {
               block_type: "result",
               text: "",
               result_value: "proletariat",
+              summary: null,
               sort_order: 0,
             },
           ],
@@ -830,6 +923,7 @@ describe("shared document actions", () => {
               block_type: "text",
               text: "should not stick",
               result_value: null,
+              summary: null,
               sort_order: 0,
             },
           ],
