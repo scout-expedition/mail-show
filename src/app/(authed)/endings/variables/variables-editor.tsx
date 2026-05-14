@@ -1,16 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useState,
+  useTransition,
+} from "react";
+import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { useConfirm } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast";
 import {
   GHOST_FIELD,
   MUTED_ADD_BTN,
   PanelHeader,
-  SaveRevert,
   Spinner,
 } from "@/components/panel";
 import { cn } from "@/lib/utils";
@@ -23,11 +30,20 @@ import type {
   EndingVariableValue,
 } from "@/lib/db/types";
 import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type { PresencePeer, PresenceProfile } from "@/lib/realtime/presence";
+import type { PostgresChange } from "@/lib/realtime/channel";
+import {
   createEndingVariable,
   createEndingVariableValue,
   deleteEndingVariable,
   deleteEndingVariableValue,
-  updateAllEndingVariables,
+  patchEndingVariable,
+  patchEndingVariableValue,
 } from "./actions";
 
 type ValueState = { id: string; value: string; sort_order: number };
@@ -49,7 +65,48 @@ type SortMode = "created_desc" | "alpha_asc";
 const VIEW_KEY = "endings-variables-view";
 const SORT_KEY = "endings-variables-sort";
 
+const VAR_TABLE = "ending_variables";
+const VALUE_TABLE = "ending_variable_values";
+
 export function VariablesEditor({
+  variables,
+  values,
+  frameworks,
+  frameworkVariableRefs,
+  logicConditions,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  frameworks: EndingFramework[];
+  frameworkVariableRefs: Array<{ framework_id: string; variable_id: string }>;
+  logicConditions: Array<Pick<EndingLogicRuleCondition, "variable_id">>;
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="endings-variables"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={[VAR_TABLE, VALUE_TABLE]}
+    >
+      <VariablesEditorInner
+        variables={variables}
+        values={values}
+        frameworks={frameworks}
+        frameworkVariableRefs={frameworkVariableRefs}
+        logicConditions={logicConditions}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function VariablesEditorInner({
   variables,
   values,
   frameworks,
@@ -62,6 +119,10 @@ export function VariablesEditor({
   frameworkVariableRefs: Array<{ framework_id: string; variable_id: string }>;
   logicConditions: Array<Pick<EndingLogicRuleCondition, "variable_id">>;
 }) {
+  const router = useRouter();
+  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { toast, toaster } = useToast();
+
   const initial = useMemo<VariableState[]>(() => {
     const byVar = new Map<string, ValueState[]>();
     for (const v of values) {
@@ -86,96 +147,122 @@ export function VariablesEditor({
       }));
   }, [variables, values]);
 
+  // Local mirror — seeded from server props, reconciled by server-prop
+  // changes (structural revalidate on create/delete) AND by postgres_changes
+  // (column-level updates from peer edits). Per-field typed text lives inside
+  // each child VariableCard's useInstantField hooks; the mirror only carries
+  // server-authoritative values.
   const [rows, setRows] = useState<VariableState[]>(initial);
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
-  const [view, setView] = useLocalStorage<ViewMode>(VIEW_KEY, "grouped");
-  const [sort, setSort] = useLocalStorage<SortMode>(SORT_KEY, "created_desc");
-  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(
-    () => new Set()
-  );
-  const [expandedVars, setExpandedVars] = useState<Set<string>>(
-    () => new Set()
-  );
 
+  // Server-prop reconcile: preserve local order for kept rows; append new
+  // rows; drop deleted rows. Mirrors the cities pattern.
   useEffect(() => {
-    if (!dirty) {
-      setRows(initial);
-      return;
-    }
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const initialIds = new Set(initial.map((r) => r.id));
       const kept = prev.filter((r) => initialIds.has(r.id));
       const keptIds = new Set(kept.map((r) => r.id));
-      const merged = kept.map((r) => {
-        const serverR = initial.find((s) => s.id === r.id)!;
-        const prevValIds = new Set(r.values.map((v) => v.id));
-        const serverValIds = new Set(serverR.values.map((v) => v.id));
-        const keptVals = r.values.filter((v) => serverValIds.has(v.id));
-        const addedVals = serverR.values.filter((v) => !prevValIds.has(v.id));
-        return { ...r, values: [...keptVals, ...addedVals] };
-      });
       const additions = initial.filter((s) => !prevById.has(s.id));
-      if (additions.length === 0 && merged.length === prev.length) {
-        const same = merged.every(
-          (r, i) =>
-            r.id === prev[i].id && r.values.length === prev[i].values.length
-        );
-        if (same) return prev;
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions.filter((a) => !keptIds.has(a.id))];
+    });
+  }, [initial]);
+
+  // postgres_changes handler — merges column-level updates from peers.
+  // INSERT triggers router.refresh() so server-derived joins (variable refs)
+  // recompute. DELETE splices locally so the user doesn't see a phantom row
+  // until the next nav.
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      if (change.table === VAR_TABLE) {
+        if (change.eventType === "UPDATE" && change.new) {
+          const updated = change.new as unknown as EndingVariable;
+          if (updated.kind !== "text") return;
+          setRows((prev) =>
+            prev.map((r) =>
+              r.id === updated.id
+                ? {
+                    ...r,
+                    name: updated.name,
+                    default_value_id: updated.default_value_id,
+                    sort_order: updated.sort_order,
+                    color_index: updated.color_index,
+                    color_hex: updated.color_hex,
+                  }
+                : r
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const deleted = change.old as unknown as { id: string };
+          setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const inserted = change.new as unknown as EndingVariable;
+          if (inserted.kind !== "text") return;
+          startTransition(() => router.refresh());
+        }
+        return;
       }
-      return [...merged, ...additions.filter((a) => !keptIds.has(a.id))];
-    });
-  }, [initial, dirty]);
-
-  function updateVariable(id: string, patch: Partial<VariableState>) {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-    setDirty(true);
-  }
-
-  function updateValue(varId: string, valId: string, text: string) {
-    setRows((prev) =>
-      prev.map((r) =>
-        r.id === varId
-          ? {
+      if (change.table === VALUE_TABLE) {
+        if (change.eventType === "UPDATE" && change.new) {
+          const v = change.new as unknown as EndingVariableValue;
+          setRows((prev) =>
+            prev.map((r) =>
+              r.id === v.variable_id
+                ? {
+                    ...r,
+                    values: r.values.map((existing) =>
+                      existing.id === v.id
+                        ? {
+                            ...existing,
+                            value: v.value,
+                            sort_order: v.sort_order,
+                          }
+                        : existing
+                    ),
+                  }
+                : r
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const old = change.old as unknown as { id: string };
+          setRows((prev) =>
+            prev.map((r) => ({
               ...r,
-              values: r.values.map((v) =>
-                v.id === valId ? { ...v, value: text } : v
-              ),
-            }
-          : r
-      )
-    );
-    setDirty(true);
-  }
-
-  function revert() {
-    setRows(initial);
-    setDirty(false);
-  }
-
-  function save() {
-    const payload = rows.map((r, i) => ({
-      id: r.id,
-      name: r.name,
-      default_value_id: r.default_value_id,
-      sort_order: i,
-      color_hex: r.color_hex,
-      values: r.values.map((v, j) => ({
-        id: v.id,
-        value: v.value,
-        sort_order: j,
-      })),
-    }));
-    startSave(async () => {
-      await updateAllEndingVariables(payload);
-      setDirty(false);
+              values: r.values.filter((v) => v.id !== old.id),
+            }))
+          );
+        } else if (change.eventType === "INSERT" && change.new) {
+          const v = change.new as unknown as EndingVariableValue;
+          setRows((prev) =>
+            prev.map((r) =>
+              r.id === v.variable_id
+                ? {
+                    ...r,
+                    values: r.values.some((x) => x.id === v.id)
+                      ? r.values
+                      : [
+                          ...r.values,
+                          {
+                            id: v.id,
+                            value: v.value,
+                            sort_order: v.sort_order,
+                          },
+                        ].sort((a, b) => a.sort_order - b.sort_order),
+                  }
+                : r
+            )
+          );
+        }
+      }
     });
-  }
+  }, [onPostgresChanges, router]);
 
-  const anyBlocked = rows.some(
-    (r) => !r.name.trim() || r.values.some((v) => !v.value.trim())
+  const [view, setView] = useLocalStorage<ViewMode>(VIEW_KEY, "grouped");
+  const [sort, setSort] = useLocalStorage<SortMode>(SORT_KEY, "created_desc");
+  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(
+    () => new Set()
   );
+  const [expandedVars, setExpandedVars] = useState<Set<string>>(() => new Set());
 
   const variableRefs = useMemo(() => {
     const byFramework = new Map<string, Set<string>>();
@@ -232,7 +319,6 @@ export function VariablesEditor({
     if (sort === "alpha_asc") {
       copy.sort((a, b) => a.name.localeCompare(b.name));
     } else {
-      // created_desc — most-recent first.
       copy.sort((a, b) => b.created_at.localeCompare(a.created_at));
     }
     return copy;
@@ -258,6 +344,7 @@ export function VariablesEditor({
 
   return (
     <>
+      {toaster}
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <div
@@ -302,19 +389,6 @@ export function VariablesEditor({
             </label>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          {anyBlocked ? (
-            <span className="text-xs text-destructive">
-              Fill in every name and value to save.
-            </span>
-          ) : null}
-          <SaveRevert
-            dirty={dirty && !anyBlocked}
-            pending={pending}
-            onSave={save}
-            onRevert={revert}
-          />
-        </div>
       </div>
 
       <div className="flex flex-col gap-4">
@@ -332,14 +406,9 @@ export function VariablesEditor({
               onToggle={() => togglePanel(panel.key)}
               expandedIds={expandedVars}
               onToggleVariable={toggleVariable}
-              onChangeName={(id, name) => updateVariable(id, { name })}
-              onChangeDefault={(id, vid) =>
-                updateVariable(id, { default_value_id: vid })
-              }
-              onChangeColor={(id, hex) =>
-                updateVariable(id, { color_hex: hex })
-              }
-              onChangeValue={updateValue}
+              peers={peers}
+              onActivity={pingActivity}
+              onPatchError={(msg) => toast({ message: msg, intent: "destructive" })}
             />
           ))
         ) : (
@@ -347,12 +416,9 @@ export function VariablesEditor({
             rows={sortedRows}
             expandedIds={expandedVars}
             onToggleVariable={toggleVariable}
-            onChangeName={(id, name) => updateVariable(id, { name })}
-            onChangeDefault={(id, vid) =>
-              updateVariable(id, { default_value_id: vid })
-            }
-            onChangeColor={(id, hex) => updateVariable(id, { color_hex: hex })}
-            onChangeValue={updateValue}
+            peers={peers}
+            onActivity={pingActivity}
+            onPatchError={(msg) => toast({ message: msg, intent: "destructive" })}
           />
         )}
       </div>
@@ -375,10 +441,9 @@ function GroupPanel({
   onToggle,
   expandedIds,
   onToggleVariable,
-  onChangeName,
-  onChangeDefault,
-  onChangeColor,
-  onChangeValue,
+  peers,
+  onActivity,
+  onPatchError,
 }: {
   title: string;
   rows: VariableState[];
@@ -386,10 +451,9 @@ function GroupPanel({
   onToggle: () => void;
   expandedIds: Set<string>;
   onToggleVariable: (id: string) => void;
-  onChangeName: (id: string, name: string) => void;
-  onChangeDefault: (id: string, vid: string | null) => void;
-  onChangeColor: (id: string, hex: string | null) => void;
-  onChangeValue: (varId: string, valId: string, text: string) => void;
+  peers: PresencePeer[];
+  onActivity: () => void;
+  onPatchError: (msg: string) => void;
 }) {
   return (
     <section className="overflow-hidden rounded-md border border-border bg-card">
@@ -420,10 +484,9 @@ function GroupPanel({
               row={row}
               expanded={expandedIds.has(row.id)}
               onToggle={() => onToggleVariable(row.id)}
-              onChangeName={(name) => onChangeName(row.id, name)}
-              onChangeDefault={(vid) => onChangeDefault(row.id, vid)}
-              onChangeColor={(hex) => onChangeColor(row.id, hex)}
-              onChangeValue={(valId, text) => onChangeValue(row.id, valId, text)}
+              peers={peers}
+              onActivity={onActivity}
+              onPatchError={onPatchError}
             />
           ))}
         </div>
@@ -436,18 +499,16 @@ function ListView({
   rows,
   expandedIds,
   onToggleVariable,
-  onChangeName,
-  onChangeDefault,
-  onChangeColor,
-  onChangeValue,
+  peers,
+  onActivity,
+  onPatchError,
 }: {
   rows: VariableState[];
   expandedIds: Set<string>;
   onToggleVariable: (id: string) => void;
-  onChangeName: (id: string, name: string) => void;
-  onChangeDefault: (id: string, vid: string | null) => void;
-  onChangeColor: (id: string, hex: string | null) => void;
-  onChangeValue: (varId: string, valId: string, text: string) => void;
+  peers: PresencePeer[];
+  onActivity: () => void;
+  onPatchError: (msg: string) => void;
 }) {
   return (
     <section className="rounded-md border border-border bg-card p-3">
@@ -458,10 +519,9 @@ function ListView({
             row={row}
             expanded={expandedIds.has(row.id)}
             onToggle={() => onToggleVariable(row.id)}
-            onChangeName={(name) => onChangeName(row.id, name)}
-            onChangeDefault={(vid) => onChangeDefault(row.id, vid)}
-            onChangeColor={(hex) => onChangeColor(row.id, hex)}
-            onChangeValue={(valId, text) => onChangeValue(row.id, valId, text)}
+            peers={peers}
+            onActivity={onActivity}
+            onPatchError={onPatchError}
           />
         ))}
       </div>
@@ -473,23 +533,82 @@ function VariableCard({
   row,
   expanded,
   onToggle,
-  onChangeName,
-  onChangeDefault,
-  onChangeColor,
-  onChangeValue,
+  peers,
+  onActivity,
+  onPatchError,
 }: {
   row: VariableState;
   expanded: boolean;
   onToggle: () => void;
-  onChangeName: (name: string) => void;
-  onChangeDefault: (valId: string | null) => void;
-  onChangeColor: (hex: string | null) => void;
-  onChangeValue: (valId: string, text: string) => void;
+  peers: PresencePeer[];
+  onActivity: () => void;
+  onPatchError: (msg: string) => void;
 }) {
-  const [pending, startTransition] = useTransition();
+  const { setFocus } = usePresenceContext();
+  const [pending, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
-  const effectiveColor = row.color_hex ?? paletteColor(row.color_index);
+  async function commit<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Save failed.";
+      onPatchError(msg);
+      throw err;
+    }
+  }
+
+  const nameField = useInstantField({
+    value: row.name,
+    onCommit: (v) => commit(() => patchEndingVariable(row.id, { name: v })),
+    onFocusChange: (focused) => {
+      setFocus(
+        focused ? { table: VAR_TABLE, recordId: row.id, field: "name" } : null
+      );
+    },
+    onActivity,
+  });
+
+  const defaultField = useInstantField<string | null>({
+    value: row.default_value_id,
+    onCommit: (v) =>
+      commit(() => patchEndingVariable(row.id, { default_value_id: v })),
+    onFocusChange: (focused) => {
+      setFocus(
+        focused
+          ? { table: VAR_TABLE, recordId: row.id, field: "default_value_id" }
+          : null
+      );
+    },
+    onActivity,
+  });
+
+  const colorField = useInstantField<string | null>({
+    value: row.color_hex,
+    onCommit: (v) =>
+      commit(() => patchEndingVariable(row.id, { color_hex: v })),
+    onFocusChange: (focused) => {
+      setFocus(
+        focused ? { table: VAR_TABLE, recordId: row.id, field: "color_hex" } : null
+      );
+    },
+    onActivity,
+  });
+
+  const effectiveColor = colorField.value ?? paletteColor(row.color_index);
+
+  // Force-expand when a peer is focused on any of this row's nested values
+  // so the FieldHighlight rings have an element to render against. Peer
+  // focus on the variable row itself (name/default/color) is always visible
+  // because the row chrome is always rendered.
+  const valueIds = useMemo(
+    () => new Set(row.values.map((v) => v.id)),
+    [row.values]
+  );
+  const peerOnValueHere = peers.some(
+    (p) => p.focus?.table === VALUE_TABLE && p.focus && valueIds.has(p.focus.recordId)
+  );
+  const showValues = expanded || peerOnValueHere;
 
   async function confirmDeleteVariable() {
     const ok = await confirmDialog({
@@ -501,26 +620,13 @@ function VariableCard({
     if (!ok) return;
     const fd = new FormData();
     fd.set("id", row.id);
-    startTransition(() => deleteEndingVariable(fd));
-  }
-
-  async function confirmDeleteValue(valId: string, valText: string) {
-    const ok = await confirmDialog({
-      title: "Delete value?",
-      message: `"${valText}" will be permanently removed. Column children of condition blocks referencing this value, logic rules, and letter-action assignments will also be removed.`,
-      confirmLabel: "Delete",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const fd = new FormData();
-    fd.set("id", valId);
-    startTransition(() => deleteEndingVariableValue(fd));
+    startDeleteTransition(() => deleteEndingVariable(fd));
   }
 
   function addValue() {
     const fd = new FormData();
     fd.set("variable_id", row.id);
-    startTransition(() => createEndingVariableValue(fd));
+    startDeleteTransition(() => createEndingVariableValue(fd));
   }
 
   return (
@@ -539,49 +645,75 @@ function VariableCard({
             <ChevronRight size={14} aria-hidden />
           )}
         </button>
-        <label
-          aria-label="Variable color"
-          title="Variable color (used for chips in the frameworks editor)"
-          className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
+        <FieldHighlight
+          peers={peers}
+          focusKey={{ table: VAR_TABLE, recordId: row.id, field: "color_hex" }}
         >
-          <span
-            aria-hidden
-            className="block h-4 w-4 rounded-sm border border-border/60"
-            style={{ backgroundColor: effectiveColor }}
+          <label
+            aria-label="Variable color"
+            title="Variable color (used for chips in the frameworks editor)"
+            className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
+          >
+            <span
+              aria-hidden
+              className="block h-4 w-4 rounded-sm border border-border/60"
+              style={{ backgroundColor: effectiveColor }}
+            />
+            <input
+              type="color"
+              value={effectiveColor}
+              onChange={(e) => colorField.set(e.target.value)}
+              onFocus={colorField.onFocus}
+              onBlur={colorField.onBlur}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
+          </label>
+        </FieldHighlight>
+        <FieldHighlight
+          peers={peers}
+          focusKey={{ table: VAR_TABLE, recordId: row.id, field: "name" }}
+        >
+          <Input
+            value={nameField.value}
+            onChange={(e) => nameField.set(e.target.value)}
+            onFocus={nameField.onFocus}
+            onBlur={nameField.onBlur}
+            placeholder="Variable name"
+            className={cn(
+              "h-8 min-w-0 font-medium",
+              GHOST_FIELD,
+              !nameField.value.trim() && "ring-2 ring-destructive",
+              nameField.status === "error" && "ring-2 ring-destructive"
+            )}
           />
-          <input
-            type="color"
-            value={effectiveColor}
-            onChange={(e) => onChangeColor(e.target.value)}
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-          />
-        </label>
-        <Input
-          value={row.name}
-          onChange={(e) => onChangeName(e.target.value)}
-          placeholder="Variable name"
-          className={cn(
-            "h-8 min-w-0 font-medium",
-            GHOST_FIELD,
-            !row.name.trim() && "ring-2 ring-destructive"
-          )}
-        />
+        </FieldHighlight>
         <span className="hidden text-xs text-muted-foreground sm:inline">
           Default
         </span>
-        <Select
-          value={row.default_value_id ?? ""}
-          onChange={(e) => onChangeDefault(e.target.value || null)}
-          aria-label="Default value"
-          className={cn("h-8 w-full", GHOST_FIELD)}
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: VAR_TABLE,
+            recordId: row.id,
+            field: "default_value_id",
+          }}
         >
-          <option value="">—</option>
-          {row.values.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.value || "(unnamed)"}
-            </option>
-          ))}
-        </Select>
+          <Select
+            value={defaultField.value ?? ""}
+            onChange={(e) => defaultField.set(e.target.value || null)}
+            onFocus={defaultField.onFocus}
+            onBlur={defaultField.onBlur}
+            aria-label="Default value"
+            className={cn("h-8 w-full", GHOST_FIELD)}
+          >
+            <option value="">—</option>
+            {row.values.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.value || "(unnamed)"}
+              </option>
+            ))}
+          </Select>
+        </FieldHighlight>
         <button
           type="button"
           disabled={pending}
@@ -594,13 +726,13 @@ function VariableCard({
         </button>
       </div>
 
-      {expanded ? (
+      {showValues ? (
         <div className="border-t border-border/40">
-          {row.color_hex ? (
+          {colorField.value ? (
             <div className="flex items-center justify-end px-3 py-1 text-[10px] text-muted-foreground/70">
               <button
                 type="button"
-                onClick={() => onChangeColor(null)}
+                onClick={() => colorField.set(null)}
                 title="Clear custom color (use palette default)"
                 className="uppercase tracking-widest hover:text-foreground"
               >
@@ -614,31 +746,13 @@ function VariableCard({
             </p>
           ) : (
             row.values.map((val) => (
-              <div
+              <ValueRow
                 key={val.id}
-                className="grid grid-cols-[1fr_36px] items-center gap-2 border-t border-border/30 px-3 py-1 first:border-t-0"
-              >
-                <Input
-                  value={val.value}
-                  onChange={(e) => onChangeValue(val.id, e.target.value)}
-                  placeholder="Value"
-                  className={cn(
-                    "h-8",
-                    GHOST_FIELD,
-                    !val.value.trim() && "ring-2 ring-destructive"
-                  )}
-                />
-                <button
-                  type="button"
-                  disabled={pending}
-                  aria-label="Delete value"
-                  title="Delete value"
-                  onClick={() => confirmDeleteValue(val.id, val.value)}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
-                >
-                  <Trash2 size={12} aria-hidden />
-                </button>
-              </div>
+                val={val}
+                peers={peers}
+                onActivity={onActivity}
+                onPatchError={onPatchError}
+              />
             ))
           )}
           <div className="flex justify-center border-t border-border/30 bg-muted/5 px-3 py-1.5">
@@ -660,6 +774,88 @@ function VariableCard({
           </div>
         </div>
       ) : null}
+      {confirmDialogEl}
+    </div>
+  );
+}
+
+function ValueRow({
+  val,
+  peers,
+  onActivity,
+  onPatchError,
+}: {
+  val: ValueState;
+  peers: PresencePeer[];
+  onActivity: () => void;
+  onPatchError: (msg: string) => void;
+}) {
+  const { setFocus } = usePresenceContext();
+  const [pending, startDeleteTransition] = useTransition();
+  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+
+  const valueField = useInstantField({
+    value: val.value,
+    onCommit: async (v) => {
+      try {
+        await patchEndingVariableValue(val.id, { value: v });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Save failed.";
+        onPatchError(msg);
+        throw err;
+      }
+    },
+    onFocusChange: (focused) => {
+      setFocus(
+        focused ? { table: VALUE_TABLE, recordId: val.id, field: "value" } : null
+      );
+    },
+    onActivity,
+  });
+
+  async function confirmDeleteValue() {
+    const ok = await confirmDialog({
+      title: "Delete value?",
+      message: `"${val.value}" will be permanently removed. Column children of condition blocks referencing this value, logic rules, and letter-action assignments will also be removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    const fd = new FormData();
+    fd.set("id", val.id);
+    startDeleteTransition(() => deleteEndingVariableValue(fd));
+  }
+
+  return (
+    <div className="grid grid-cols-[1fr_36px] items-center gap-2 border-t border-border/30 px-3 py-1 first:border-t-0">
+      <FieldHighlight
+        peers={peers}
+        focusKey={{ table: VALUE_TABLE, recordId: val.id, field: "value" }}
+      >
+        <Input
+          value={valueField.value}
+          onChange={(e) => valueField.set(e.target.value)}
+          onFocus={valueField.onFocus}
+          onBlur={valueField.onBlur}
+          placeholder="Value"
+          className={cn(
+            "h-8",
+            GHOST_FIELD,
+            !valueField.value.trim() && "ring-2 ring-destructive",
+            valueField.status === "error" && "ring-2 ring-destructive"
+          )}
+        />
+      </FieldHighlight>
+      <button
+        type="button"
+        disabled={pending}
+        aria-label="Delete value"
+        title="Delete value"
+        onClick={confirmDeleteValue}
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
+      >
+        <Trash2 size={12} aria-hidden />
+      </button>
       {confirmDialogEl}
     </div>
   );

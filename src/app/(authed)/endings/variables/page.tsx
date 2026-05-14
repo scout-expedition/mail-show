@@ -9,6 +9,7 @@
 
 import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import type {
   EndingDocument,
   EndingFramework,
@@ -19,6 +20,16 @@ import { VariablesEditor } from "./variables-editor";
 
 export default async function EndingVariablesPage() {
   const supabase = await createSupabaseServerClient();
+  const { data: meData } = await supabase.auth.getUser();
+  const currentUserId = meData.user?.id;
+  const currentEmail = meData.user?.email;
+  const meProfile = profileFromMetadata(meData.user?.user_metadata);
+  const presenceProfile = {
+    displayName: meProfile.display_name,
+    avatarIconType: meProfile.avatar_icon_type,
+    avatarIconValue: meProfile.avatar_icon_value,
+    avatarColorHex: meProfile.avatar_color_hex,
+  };
   const [
     { data: varData },
     { data: valueData },
@@ -109,6 +120,9 @@ export default async function EndingVariablesPage() {
         frameworks={frameworkRows}
         frameworkVariableRefs={frameworkVariableRefs}
         logicConditions={logicConditions}
+        currentUserId={currentUserId}
+        currentEmail={currentEmail}
+        currentProfile={presenceProfile}
       />
     </div>
   );

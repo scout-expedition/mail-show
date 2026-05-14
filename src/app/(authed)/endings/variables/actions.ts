@@ -203,6 +203,90 @@ export async function createEndingVariableValue(formData: FormData) {
   revalidateEndings();
 }
 
+/**
+ * Narrow per-field patch — called by useInstantField in VariablesEditor.
+ * Does NOT call revalidatePath; realtime fans out the change to other clients.
+ * Trims + validates the patched columns; rejects empties and dup names.
+ */
+export async function patchEndingVariable(
+  id: string,
+  patch: Partial<{
+    name: string;
+    default_value_id: string | null;
+    sort_order: number;
+    color_hex: string | null;
+  }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const sanitized: typeof patch = { ...patch };
+
+  if (sanitized.name !== undefined) {
+    const trimmed = sanitized.name.trim();
+    if (!trimmed) throw new Error("Variable name cannot be empty.");
+    const { data: conflict } = await supabase
+      .from("ending_variables")
+      .select("id")
+      .ilike("name", trimmed)
+      .neq("id", id)
+      .maybeSingle();
+    if (conflict) throw new Error(`Duplicate variable name: ${trimmed}`);
+    sanitized.name = trimmed;
+  }
+
+  if (sanitized.color_hex !== undefined && sanitized.color_hex !== null) {
+    const trimmed = sanitized.color_hex.trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+      throw new Error(`Invalid color "${trimmed}" — expected #RRGGBB.`);
+    }
+    sanitized.color_hex = trimmed;
+  }
+
+  const { error } = await supabase
+    .from("ending_variables")
+    .update(sanitized)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Narrow per-field patch for a single value row. Trims + enforces non-empty
+ * + per-variable value-text uniqueness. No revalidatePath; realtime fans out.
+ */
+export async function patchEndingVariableValue(
+  id: string,
+  patch: Partial<{ value: string; sort_order: number }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const sanitized: typeof patch = { ...patch };
+
+  if (sanitized.value !== undefined) {
+    const trimmed = sanitized.value.trim();
+    if (!trimmed) throw new Error("Value cannot be empty.");
+    const { data: existing } = await supabase
+      .from("ending_variable_values")
+      .select("variable_id")
+      .eq("id", id)
+      .maybeSingle();
+    if (existing) {
+      const { data: conflict } = await supabase
+        .from("ending_variable_values")
+        .select("id")
+        .eq("variable_id", existing.variable_id)
+        .ilike("value", trimmed)
+        .neq("id", id)
+        .maybeSingle();
+      if (conflict) throw new Error(`Duplicate value: ${trimmed}`);
+    }
+    sanitized.value = trimmed;
+  }
+
+  const { error } = await supabase
+    .from("ending_variable_values")
+    .update(sanitized)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 type VariablePayload = {
   id: string;
   name: string;
