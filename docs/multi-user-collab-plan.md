@@ -612,11 +612,13 @@ on branch `collab-reference-data-instant-save`.
 
 #### What shipped
 
-- **Migration** `supabase/migrations/0032_realtime_publication_reference_data.sql`
+- **Migration** `supabase/migrations/0035_realtime_publication_reference_data.sql`
   — adds `cities`, `citizens`, `nations` to `supabase_realtime` with
   `replica identity full`. Matches 0031 style (idempotent via
   `pg_publication_tables` guard). User must apply to remote Supabase project
-  (see follow-ups below).
+  (see follow-ups below). *(Renumbered from 0032 → 0035 to avoid collision with
+  `0032_realtime_ending_assignments.sql` and `0033_ending_assignment_nullable_value.sql`
+  on main, and `0034` reserved by the sibling sorting branch.)*
 
 - **`src/app/(authed)/cities/`**
   - `patchCity(id, patch)` narrow server action (no `revalidatePath`).
@@ -635,10 +637,14 @@ on branch `collab-reference-data-instant-save`.
   - `citizens-editor.tsx` rewritten: 5 `useInstantField` hooks per row
     (`name` / `type` / `citizen_id` / `city_id` / `nation_id`). City→nation
     FK auto-fill preserved: when `city_id` changes the `city.nation_id` is
-    propagated via `nationIdField.set()` + a local mirror update; when
-    `nation_id` changes incompatible cities are cleared. `TypePill` simplified
-    to `CitizenType` only (DB never holds empty string). Full validation
-    display (missing/duplicate/format rings) retained in read-only view.
+    propagated via `nationIdField.set()`; when `nation_id` changes incompatible
+    cities are cleared via `cityIdField.set("")`. Both fields debounce
+    independently and realtime echoes confirm the final values. The
+    `availableCities` filter reads `nationIdField.value` (the hook's in-progress
+    local value) so the dropdown options update instantly without waiting for a
+    realtime echo. `TypePill` simplified to `CitizenType` only (DB never holds
+    empty string); the dead "Unset" type filter removed. Full validation display
+    (missing/duplicate/format rings) retained in read-only view.
 
 - **`src/app/(authed)/nations/`**
   - `patchNation(id, patch)` narrow server action (no `revalidatePath`).
@@ -668,13 +674,15 @@ dead UI (kept for forward-compat if a future migration allows null). Callers
 who previously needed `CitizenType | ""` should just treat the DB value as
 always valid.
 
-**Lesson — FK-coupled fields need both the `useInstantField.set()` AND a local
-mirror update.** When `city_id` is changed and `nation_id` must follow, calling
-`nationIdField.set(newNationId)` alone is not enough — the enclosing `CitizenRow`
-reads `row.nation_id` for its `availableCities` filter and the validation
-display, so a separate `onRowUpdate({ nation_id })` call updates the mirror that
-drives those derived reads. The `useInstantField` instance only owns its own
-field's value; cross-field propagation must go through the shared mirror.
+**Lesson — FK-coupled fields: use the hook's `value` return for derived reads,
+not a parent mirror.** When `city_id` changes and `nation_id` must follow,
+calling `nationIdField.set(newNationId)` is all that's needed. The
+`useInstantField` hook's `value` return IS its in-progress local value, so
+consumers can read it directly (e.g. `nationIdField.value` in an `availableCities`
+useMemo) to get instant UI feedback without touching the shared rows mirror.
+The parent mirror updates via postgres_changes, not via synchronous `onRowUpdate`
+calls. Do NOT call `onRowUpdate` after `field.set()` — that triggers B3 (see
+below in Codex review fixes).
 
 **Lesson — Drag-to-reorder is a structural mutation, not a field patch.** The
 nations list has drag-to-reorder. The `sort_order` column exists on every row
@@ -684,22 +692,49 @@ coarse action (which calls `revalidatePath`) is the right vehicle — it fires o
 `onDragEnd` after the local array is re-spliced. This is consistent with the
 plan: "structural mutations keep `revalidatePath`."
 
+**Codex review fixes:** Three B3 violations and one nit were caught during
+Codex review and fixed before merge:
+
+- **B3 fix — citizens `onRowUpdate` removed.** The original code called
+  `field.set(value)` followed immediately by `onRowUpdate({ field: value })` for
+  `type`, `city_id`, and `nation_id`. Because `useInstantField`'s `commitNow`
+  compares `localValue` to `valueRef.current` (the server value), and both were
+  set to the user's typed value in the same render cycle, the equality check
+  short-circuited and the patch action never fired. Fix: removed all
+  `onRowUpdate` calls from field change handlers; the rows mirror now updates
+  exclusively via the postgres_changes handler. The `availableCities` filter
+  was updated to read `nationIdField.value` (the hook's local in-progress value)
+  instead of `row.nation_id` so city options update instantly when nation
+  changes — this is the canonical pattern for FK-coupled display without
+  touching the parent mirror.
+
+- **B3 fix — nations `onRowUpdate` removed.** The `IconPicker.onChange` and
+  `onColorChange` callbacks both called `field.set(...)` + `onRowUpdate({...})`
+  for `icon_type`, `icon_value`, and `color_hex`. Same silent-no-op failure
+  mode. Fixed by removing `onRowUpdate` from both callbacks; `NationRow`'s
+  `onRowUpdate` prop was deleted entirely.
+
+- **Migration renumber (0032 → 0035).** The original migration was numbered
+  `0032_realtime_publication_reference_data.sql`, which collided with
+  `0032_realtime_ending_assignments.sql` already on main. Renumbered to 0035
+  (0034 reserved for the sibling sorting branch). No internal content
+  references its own number.
+
+- **Nit — "Unset" type filter removed.** `CitizenType` is `"hero" | "npc"`
+  only; the DB never stores null/empty. The "Unset" `<option>` and its
+  `typeFilter === "unset"` branch were dead code. Removed from the filter
+  select and the `TypeFilter` union type.
+
 #### Follow-ups
 
-- **User must apply migration 0032** to remote Supabase via the MCP
-  `apply_migration` tool or the SQL editor. If a sibling branch's agent also
-  creates a `0032_*.sql`, the files must be sequenced and possibly renumbered
-  before merging. Coordinate with the sorting-letters agent.
+- **User must apply migration 0035** to remote Supabase via the MCP
+  `apply_migration` tool or the SQL editor.
 - **Duplicate city-code guard is per-row only.** The old editor tracked
   duplicate codes across all rows in a `codeCounts` map and blocked save.
   Instant-save cannot block cross-row — the server's `updateAllCities` used to
   enforce uniqueness, but `patchCity` patches one row at a time and cannot see
   sibling rows. A server-side unique constraint on `cities.code` would be the
   correct enforcement layer; add one in a follow-up migration.
-- **Citizens "Unset" type filter** — the old editor supported filtering by
-  `type === ""` (unset). With `CitizenType` always valid at the DB, this filter
-  returns 0 rows and is effectively dead. Remove the "Unset" option from the
-  filter select in a future cleanup PR.
 - **Phase 4 long-tail** surfaces still remaining: `storylines`, `actions`
   editor, `sorting`, `playthroughs`, `physical`, `days`, ending variables,
   endings documents.
