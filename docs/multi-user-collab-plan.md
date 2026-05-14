@@ -443,3 +443,55 @@ avatars carry that signal now). What remained: the global avatar stack.
   duplicates `NAV_ITEMS`. Tolerable for now; revisit if routes start
   changing more often (e.g. hoist `NAV_ITEMS` into a shared
   non-client module).
+
+### ✅ Phase 4 Storylines (2026-05-13)
+
+Three deliverables shipped in one PR.
+
+#### 1. StorylineInspector (workspace.tsx slot 1)
+
+- Removed `dirty` / `pending` / `startSave` / `saveNow` / `revert` / `onConfirmDialog`-for-revert from `StorylineInspector`.
+- Removed `SaveRevert` from the panel header (and deleted the now-unused `SaveRevert` component entirely since it had no other callers; `IconRestore` import cleaned up too).
+- Replaced `update("name", …)` / `update("abbreviation", …)` / `update("description", …)` with `useInstantField` hooks bound to `patchStoryline` — 3 text hooks + 1 compound `iconColorField` (icon type, icon value, color hex patched together since the picker emits all three simultaneously).
+- Local `state` object kept for display so the icon picker can update all three fields before the hook sees them; `nameField.value`, `abbrField.value`, `descriptionField.value` drive their inputs instead of `state.X` (B3 lesson: must use server-row, not parent mirror). State also syncs via a `useEffect` on `storyline.id` for cross-selection resets.
+- Each input wrapped in `<FieldHighlight>`. The icon picker button wrapped in `<div onFocus onBlur>` for event bubbling (same as DaySelect pattern in B2).
+- `usePresenceContext()` called inside `StorylineInspector`; the parent `WorkspacePresenceProvider` is already wired so nothing extra needed at the outer layer.
+
+#### 2. patchStoryline server action
+
+- Added `patchStoryline(id, patch)` to `src/app/(authed)/inspection/storylines/actions.ts`. Does NOT call `revalidatePath` — realtime fans out. The `StorylinePatchFields` type covers all user-editable columns (`name`, `abbreviation`, `description`, `icon_type`, `icon_value`, `color_hex`).
+- Added `reorderStorylines(ids)` to write `sort_order` for drag-reorder (structural mutation, keeps `revalidatePath`).
+- The old `updateStorylineFields` and `updateAllStorylines` are kept for compat; they'll be removed in the final Phase 4 cleanup PR once every caller is converted.
+
+#### 3. Standalone storylines editor
+
+- `src/app/(authed)/inspection/storylines/storylines-editor.tsx` rewritten:
+  - `StorylinesEditor` (outer shell) mounts `WorkspacePresenceProvider` on channel `storylines-editor`, subscribed to the `storylines` postgres table.
+  - `StorylinesEditorInner` mirrors rows via "adjust state during render", subscribes to `onPostgresChanges` for UPDATE/DELETE fan-out without page reload.
+  - `StorylineRow` sub-component owns its own `useInstantField` hooks per field (name, abbreviation, description, icon+color). `key={row.id}` at the call site ensures hooks remount + debounce timers reset when a row takes a new slot after reorder.
+  - Drag-reorder is a structural mutation: `reorderStorylines(ids)` writes `sort_order`; "Save order" / "Cancel" buttons appear only when `orderDirty`.
+  - `<AvatarStack>` rendered in the header (right side), showing all peers on the `storylines-editor` channel.
+  - `<FieldHighlight>` wraps every field in every row.
+- `src/app/(authed)/inspection/storylines/page.tsx` updated to fetch `auth.getUser()` + `profileFromMetadata` and pass `currentUserId` / `currentEmail` / `currentProfile` down to `StorylinesEditor`.
+
+#### Spot-check: `src/app/(authed)/inspection/actions/editor.tsx`
+
+This is `ActionTemplatesEditor` — a bulk drag-reorder editor for *action template* rows (name, icon, color, paired template), saving all rows at once via `updateAllActionTemplates`. It is NOT the per-letter `patchAction` surface from Phase 1. It has no connection to `patchAction` and its dirty+Save pattern is appropriate for bulk drag-reorder (same rationale as the storylines reorder). **No conversion needed.**
+
+#### Metrics
+
+- `pnpm typecheck` — clean
+- `pnpm lint` — 40 problems (19 errors, 21 warnings) vs. 42 baseline (net improved by 2)
+- `pnpm test` — 309/309 pass (unchanged)
+
+#### Locked-in lessons
+
+**Lesson — Compound fields (icon + color) need a compound instant-save hook.** The `IconPicker` emits `icon_type`, `icon_value`, and `color_hex` together in a single `onChange`. Splitting them into three separate `useInstantField` hooks would require the parent to merge them before committing, and each keystroke on the color input would fire three separate patches. The cleaner model: one hook with a compound value type + a custom `equals` predicate, and a single `patchStoryline` call that carries all three. Downstream: the compound field's `value=` must still be the canonical server-row (three separate `row.X` properties) rather than the local `iconState` mirror, per the B3 rule.
+
+**Lesson — `StorylineRow` sub-component is the right hook scope boundary.** Putting `useInstantField` hooks at the list level (in `StorylinesEditorInner`) would require either one hook per row × per field (unbounded array of hooks, violates rules of hooks for dynamic lists), or coalescing patches in a Map (the `scheduleActionPatch` pattern from B3 LetterActionsCard). Extracting `StorylineRow` as a component solves this cleanly: hooks are per-row, `key={row.id}` handles remount/timer-reset on reorder.
+
+#### Open follow-ups
+
+- **Remaining Phase 4 surfaces.** Sorting letters/rules, cities, citizens, nations, playthroughs, physical, days, ending variables. Each ships as its own PR.
+- **Phase 4b — Endings documents.** Pending design pass (`docs/endings-collab-plan.md`).
+- **Final cleanup PR.** Delete `updateAllStorylines`, `updateStorylineFields` once every caller is converted; delete `auto-save-form.tsx`, `unsaved-dialog.tsx` once all surfaces are converted.
