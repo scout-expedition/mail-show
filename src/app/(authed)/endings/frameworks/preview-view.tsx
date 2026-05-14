@@ -92,6 +92,7 @@ export function PreviewView({
       variables.map(
         (v): EvalVariable => ({
           id: v.id,
+          name: v.name,
           kind: v.kind,
           aggregate_ref: v.aggregate_ref,
         })
@@ -206,12 +207,21 @@ export function PreviewView({
       rows: rows as EvalRow[],
       chips: evalChips,
       variables: evalVariables,
+      values,
       selections: {
         ...baseSelections,
         resolved_aggregates: resolvedAggregates,
       },
     }),
-    [blocks, rows, evalChips, evalVariables, baseSelections, resolvedAggregates]
+    [
+      blocks,
+      rows,
+      evalChips,
+      evalVariables,
+      values,
+      baseSelections,
+      resolvedAggregates,
+    ]
   );
   const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
 

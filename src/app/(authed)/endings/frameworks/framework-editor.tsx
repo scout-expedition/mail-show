@@ -76,6 +76,7 @@ export function FrameworkEditor({
     if (!tiebreakDocsRaw) return undefined;
     const evalVariables: EvalVariable[] = variables.map((v) => ({
       id: v.id,
+      name: v.name,
       kind: v.kind,
       aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
     }));

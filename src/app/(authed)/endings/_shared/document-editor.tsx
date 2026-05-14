@@ -63,6 +63,7 @@ import {
   EMPTY_SELECTIONS,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
+import { extractVariableTagNames } from "@/lib/endings/text-substitution";
 import {
   numericRowOverlaps,
   staticShadowedRows,
@@ -431,6 +432,7 @@ export function DocumentEditor({
   const analysisCtx = useMemo<AnalysisContext>(() => {
     const evalVariables = variableState.map((v) => ({
       id: v.id,
+      name: v.name,
       kind: v.kind,
       aggregate_ref: v.aggregate_ref,
     }));
@@ -505,10 +507,22 @@ export function DocumentEditor({
     tiebreakDocsSummary,
   ]);
 
-  // Variables actually referenced by any chip (for the preview UI).
+  // Variables actually referenced by any chip OR by an `@[Name]` token
+  // inside a text block (for the preview UI). The text-block scan counts
+  // tags toward the input set so authors can dial in values for
+  // variables that aren't otherwise on a chip.
   const referencedVariables = useMemo(() => {
     const ids = new Set<string>();
     for (const c of chipState) ids.add(c.variable_id);
+    const variableByName = new Map<string, VariableState>();
+    for (const v of variableState) variableByName.set(v.name, v);
+    for (const b of blockState) {
+      if (b.block_type !== "text" || !b.text) continue;
+      for (const name of extractVariableTagNames(b.text)) {
+        const v = variableByName.get(name);
+        if (v) ids.add(v.id);
+      }
+    }
     const numberRefByName = new Map<string, VariableState>();
     for (const v of variableState) {
       if (v.kind === "number_ref" && v.number_ref) {
@@ -529,7 +543,7 @@ export function DocumentEditor({
       }
     }
     return variableState.filter((v) => ids.has(v.id));
-  }, [chipState, variableState]);
+  }, [chipState, variableState, blockState]);
 
   useEffect(() => {
     setPreviewSelections((prev) => {
