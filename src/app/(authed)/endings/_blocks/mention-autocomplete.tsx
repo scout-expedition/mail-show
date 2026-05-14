@@ -60,6 +60,32 @@ export function detectMentionTrigger(
   return null;
 }
 
+/**
+ * Compute the post-commit textarea state. Replaces text from `atIdx`
+ * through the end of any current selection (`selectionEnd`) with the
+ * `@[variableName]` token, and returns the new value + the desired
+ * caret position (immediately after the closing `]`).
+ *
+ * `selectionEnd` (not `selectionStart`) is intentional: if the user
+ * selects text inside their `@query` before committing, the selected
+ * suffix would otherwise survive on the right and produce malformed
+ * output like `@[Name]foo`.
+ */
+export function commitMentionToken(
+  value: string,
+  atIdx: number,
+  selectionEnd: number,
+  variableName: string
+): { value: string; caret: number } {
+  const insert = `@[${variableName}]`;
+  const before = value.slice(0, atIdx);
+  const after = value.slice(selectionEnd);
+  return {
+    value: before + insert + after,
+    caret: atIdx + insert.length,
+  };
+}
+
 // ---------------------------------------------------------------------
 // Filter + sort
 // ---------------------------------------------------------------------
@@ -261,13 +287,12 @@ export function MentionTextarea({
     (variable: VariableState) => {
       const el = ref.current;
       if (!el || !trigger) return;
-      const insert = `@[${variable.name}]`;
-      // Replace from the `@` through the current caret with the full
-      // token. Keeps any text after the caret intact.
-      const before = value.slice(0, trigger.atIdx);
-      const after = value.slice(el.selectionStart);
-      const next = before + insert + after;
-      const nextCaret = trigger.atIdx + insert.length;
+      const { value: next, caret } = commitMentionToken(
+        value,
+        trigger.atIdx,
+        el.selectionEnd,
+        variable.name
+      );
       onChange(next);
       setTrigger(null);
       // Restore focus + caret on the next paint (after the controlled
@@ -276,7 +301,7 @@ export function MentionTextarea({
         const t = ref.current;
         if (!t) return;
         t.focus();
-        t.setSelectionRange(nextCaret, nextCaret);
+        t.setSelectionRange(caret, caret);
       });
     },
     [trigger, value, onChange]
