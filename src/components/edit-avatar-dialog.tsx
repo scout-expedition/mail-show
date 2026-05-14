@@ -34,7 +34,7 @@ export function EditAvatarDialog({
   onError?: (message: string) => void;
 }) {
   const [iconType, setIconType] = useState<IconType>(
-    initial.avatar_icon_type ?? "lucide"
+    initial.avatar_icon_type ?? "animal"
   );
   const [iconValue, setIconValue] = useState<string>(
     initial.avatar_icon_value ?? ""

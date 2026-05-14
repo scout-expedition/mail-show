@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
+import { ANIMALS } from "@/lib/animals";
 
 const LUCIDE_NAMES = Object.keys(LucideModule).filter(
   (k) =>
@@ -25,6 +26,7 @@ const MAX_RESULTS = 240;
 const TYPES: { id: IconType; label: string }[] = [
   { id: "lucide", label: "Lucide" },
   { id: "tabler", label: "Tabler" },
+  { id: "animal", label: "Animals" },
   { id: "emoji", label: "Emoji" },
   { id: "svg", label: "SVG" },
 ];
@@ -97,7 +99,9 @@ export function IconPicker({
             ? "Paste or type any emoji."
             : type === "svg"
               ? "Paste raw <svg>…</svg> markup."
-              : "Search and click an icon."}
+              : type === "animal"
+                ? "Search and click an animal."
+                : "Search and click an icon."}
         </div>
         {onColorChange ? (
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -126,6 +130,8 @@ export function IconPicker({
           selected={value}
           onSelect={setValue}
         />
+      ) : type === "animal" ? (
+        <AnimalGrid selected={value} onSelect={setValue} />
       ) : type === "emoji" ? (
         <Input
           value={value}
@@ -234,6 +240,135 @@ function IconGrid({
   );
 }
 
+function AnimalGrid({
+  selected,
+  onSelect,
+}: {
+  selected: string;
+  onSelect: (value: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [browseVariant, setBrowseVariant] = useState<"outline" | "fill">("fill");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 120);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const [selectedSlug, selectedVariantRaw] = selected.split(":");
+  const variant = selectedSlug
+    ? selectedVariantRaw === "fill" ? "fill" : "outline"
+    : browseVariant;
+
+  const filtered = useMemo(() => {
+    const q = debounced.trim().toLowerCase();
+    if (!q) return ANIMALS;
+    return ANIMALS.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        a.keywords.some((k) => k.includes(q))
+    );
+  }, [debounced]);
+
+  const toggleVariant = (next: "outline" | "fill") => {
+    if (selectedSlug) {
+      onSelect(`${selectedSlug}:${next}`);
+    } else {
+      setBrowseVariant(next);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <div className="flex rounded-md border border-border text-xs">
+          {(["outline", "fill"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => toggleVariant(v)}
+              className={cn(
+                "px-3 py-1 capitalize transition-colors first:rounded-l-md last:rounded-r-md",
+                variant === v
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search animals…"
+          className="max-w-xs"
+        />
+      </div>
+      <div
+        className="grid max-h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
+        role="listbox"
+      >
+        {filtered.map((animal) => {
+          const isSelected = selected === `${animal.slug}:${variant}`;
+          return (
+            <button
+              key={animal.slug}
+              type="button"
+              onClick={() => onSelect(`${animal.slug}:${variant}`)}
+              title={animal.name}
+              aria-selected={isSelected}
+              className={cn(
+                "flex h-9 items-center justify-center rounded hover:bg-accent",
+                isSelected && "bg-accent ring-1 ring-primary"
+              )}
+            >
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 18,
+                  height: 18,
+                  backgroundColor: "currentColor",
+                  maskImage: `url(/animals/${variant}/${animal.slug}.svg)`,
+                  WebkitMaskImage: `url(/animals/${variant}/${animal.slug}.svg)`,
+                  maskSize: "contain",
+                  WebkitMaskSize: "contain",
+                  maskRepeat: "no-repeat",
+                  WebkitMaskRepeat: "no-repeat",
+                  maskPosition: "center",
+                  WebkitMaskPosition: "center",
+                  ...(variant === "outline"
+                    ? { filter: "drop-shadow(0 0 0.75px currentColor)" }
+                    : {}),
+                }}
+              />
+            </button>
+          );
+        })}
+        {filtered.length === 0 ? (
+          <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
+            No matches.
+          </p>
+        ) : null}
+      </div>
+      {selectedSlug ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="font-mono capitalize">{selectedSlug}</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => onSelect("")}
+          >
+            clear
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function IconPreview({ type, value }: { type: IconType; value: string }) {
   let node: React.ReactNode = (
     <span className="text-muted-foreground">?</span>
@@ -250,6 +385,31 @@ function IconPreview({ type, value }: { type: IconType; value: string }) {
       value
     ];
     if (Icon) node = <Icon size={22} />;
+  } else if (type === "animal") {
+    const [slug, rawVariant] = value.split(":");
+    const variant = rawVariant === "fill" ? "fill" : "outline";
+    if (slug)
+      node = (
+        <span
+          style={{
+            display: "inline-block",
+            width: 22,
+            height: 22,
+            backgroundColor: "currentColor",
+            maskImage: `url(/animals/${variant}/${slug}.svg)`,
+            WebkitMaskImage: `url(/animals/${variant}/${slug}.svg)`,
+            maskSize: "contain",
+            WebkitMaskSize: "contain",
+            maskRepeat: "no-repeat",
+            WebkitMaskRepeat: "no-repeat",
+            maskPosition: "center",
+            WebkitMaskPosition: "center",
+            ...(variant === "outline"
+              ? { filter: "drop-shadow(0 0 0.75px currentColor)" }
+              : {}),
+          }}
+        />
+      );
   } else if (type === "emoji") {
     node = <span className="text-xl">{value}</span>;
   } else if (type === "svg") {

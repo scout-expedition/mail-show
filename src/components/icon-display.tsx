@@ -45,6 +45,33 @@ export function IconDisplay({
       </span>
     );
   }
+  if (type === "animal") {
+    const [slug, rawVariant] = (value ?? "").split(":");
+    const variant = rawVariant === "fill" ? "fill" : "outline";
+    if (!slug) return null;
+    return (
+      <span
+        className={className}
+        style={{
+          display: "inline-block",
+          width: size,
+          height: size,
+          backgroundColor: "currentColor",
+          maskImage: `url(/animals/${variant}/${slug}.svg)`,
+          WebkitMaskImage: `url(/animals/${variant}/${slug}.svg)`,
+          maskSize: "contain",
+          WebkitMaskSize: "contain",
+          maskRepeat: "no-repeat",
+          WebkitMaskRepeat: "no-repeat",
+          maskPosition: "center",
+          WebkitMaskPosition: "center",
+          ...(variant === "outline"
+            ? { filter: "drop-shadow(0 0 0.75px currentColor)" }
+            : {}),
+        }}
+      />
+    );
+  }
   if (type === "emoji") {
     return (
       <span

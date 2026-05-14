@@ -1,6 +1,6 @@
 // Enum values mirrored from supabase/migrations/0001_init.sql.
 
-export const ICON_TYPES = ["lucide", "tabler", "emoji", "svg"] as const;
+export const ICON_TYPES = ["lucide", "tabler", "animal", "emoji", "svg"] as const;
 export type IconType = (typeof ICON_TYPES)[number];
 
 export const CITIZEN_TYPES = ["hero", "npc"] as const;
