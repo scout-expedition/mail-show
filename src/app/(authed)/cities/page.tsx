@@ -3,12 +3,23 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import type { City, Nation } from "@/lib/db/types";
 import { bulkCreateCities, createCity } from "./actions";
 import { CitiesEditor } from "./cities-editor";
 
 export default async function CitiesPage() {
   const supabase = await createSupabaseServerClient();
+  const { data: meData } = await supabase.auth.getUser();
+  const currentUserId = meData.user?.id;
+  const currentEmail = meData.user?.email;
+  const meProfile = profileFromMetadata(meData.user?.user_metadata);
+  const presenceProfile = {
+    displayName: meProfile.display_name,
+    avatarIconType: meProfile.avatar_icon_type,
+    avatarIconValue: meProfile.avatar_icon_value,
+    avatarColorHex: meProfile.avatar_color_hex,
+  };
   const [{ data: cityData }, { data: nationData }] = await Promise.all([
     supabase.from("cities").select("*").order("name"),
     supabase.from("nations").select("*").order("sort_order"),
@@ -23,7 +34,13 @@ export default async function CitiesPage() {
         description="Each city has a code and belongs to a nation."
       />
 
-      <CitiesEditor cities={cities} nations={nations} />
+      <CitiesEditor
+        cities={cities}
+        nations={nations}
+        currentUserId={currentUserId}
+        currentEmail={currentEmail}
+        currentProfile={presenceProfile}
+      />
 
       <div className="mt-4 flex justify-center">
         <form action={createCity}>
