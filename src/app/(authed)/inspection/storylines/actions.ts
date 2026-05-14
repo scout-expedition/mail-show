@@ -6,6 +6,30 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { IconType } from "@/lib/db/enums";
 import { normalizeHex } from "@/lib/color";
 
+type StorylinePatchFields = {
+  name: string;
+  abbreviation: string;
+  description: string | null;
+  icon_type: IconType;
+  icon_value: string | null;
+  color_hex: string;
+};
+
+/**
+ * Narrow per-field patch used by instant-save hooks on the storyline inspector
+ * and standalone editor. Does NOT call revalidatePath — realtime fans out
+ * changes to other clients. Structural mutations (create/delete/reorder) still
+ * call revalidatePath as before.
+ */
+export async function patchStoryline(
+  id: string,
+  patch: Partial<StorylinePatchFields>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.from("storylines").update(patch).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 function nilStr(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
   return s === "" ? null : s;
@@ -139,6 +163,23 @@ export async function deleteStoryline(formData: FormData) {
   if (!id) return;
   const { error } = await supabase.from("storylines").delete().eq("id", id);
   if (error) throw new Error(error.message);
+  revalidatePath("/inspection/storylines");
+}
+
+/**
+ * Persist a new sort order for storylines. Receives an array of ids in the
+ * desired display order; writes `sort_order = index` for each. Structural
+ * mutation — keeps revalidatePath so the RSC layer resyncs display order.
+ */
+export async function reorderStorylines(ids: string[]) {
+  const supabase = await createSupabaseServerClient();
+  for (let i = 0; i < ids.length; i++) {
+    const { error } = await supabase
+      .from("storylines")
+      .update({ sort_order: i })
+      .eq("id", ids[i]);
+    if (error) throw new Error(error.message);
+  }
   revalidatePath("/inspection/storylines");
 }
 
