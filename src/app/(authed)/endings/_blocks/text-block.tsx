@@ -95,7 +95,7 @@ export function TextBlock({
         )}
         style={{ backgroundColor: "var(--block-card)" }}
       >
-        <div className={cn("group/header flex items-center gap-2 px-0", collapsed ? "pb-0" : "pb-2")}>
+        <div className={cn("group/header flex items-center gap-1 px-0", collapsed ? "pb-0" : "pb-2")}>
           <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
             <span
               aria-hidden
@@ -143,7 +143,7 @@ export function TextBlock({
             onChange={(e) => onChangeSummary(e.target.value)}
             placeholder="Summary…"
             aria-label="Block summary"
-            className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-xs font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground/60 focus:border-border focus:shadow-sm focus:outline-none"
+            className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:text-muted-foreground/60 focus:border-border focus:shadow-sm focus:outline-none"
           />
           <div className="flex shrink-0 items-center gap-2">
             <OverflowMenu
