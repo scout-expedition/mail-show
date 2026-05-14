@@ -30,7 +30,7 @@ import type { PostgresChange } from "@/lib/realtime/channel";
 import { deleteCitizen, patchCitizen } from "./actions";
 
 type SortMode = "name" | "type" | "nation";
-type TypeFilter = "all" | "hero" | "npc" | "unset";
+type TypeFilter = "all" | "hero" | "npc";
 
 type RowValidation = {
   missingType: boolean;
@@ -193,10 +193,7 @@ function CitizensEditorInner({
   const view = useMemo(() => {
     let list = rows.slice();
     if (typeFilter !== "all") {
-      list = list.filter((r) => {
-        if (typeFilter === "unset") return !r.type;
-        return r.type === typeFilter;
-      });
+      list = list.filter((r) => r.type === typeFilter);
     }
     if (nationFilter) {
       list = list.filter((r) => r.nation_id === nationFilter);
@@ -238,7 +235,6 @@ function CitizensEditorInner({
           <option value="all">All</option>
           <option value="hero">Hero</option>
           <option value="npc">NPC</option>
-          <option value="unset">Unset</option>
         </Select>
         <Label className="ml-3 !text-xs">Nation</Label>
         <Select
@@ -286,11 +282,6 @@ function CitizensEditorInner({
             cityById={cityById}
             peers={peers}
             onActivity={pingActivity}
-            onRowUpdate={(patch) =>
-              setRows((prev) =>
-                prev.map((r) => (r.id === row.id ? { ...r, ...patch } : r))
-              )
-            }
             onDelete={() => {
               startDeleteTransition(async () => {
                 const fd = new FormData();
@@ -328,7 +319,6 @@ function CitizenRow({
   cityById,
   peers,
   onActivity,
-  onRowUpdate,
   onDelete,
 }: {
   row: Citizen;
@@ -340,19 +330,10 @@ function CitizenRow({
   cityById: Map<string, City>;
   peers: PresencePeer[];
   onActivity: () => void;
-  onRowUpdate: (patch: Partial<Citizen>) => void;
   onDelete: () => void;
 }) {
   const { setFocus } = usePresenceContext();
   const [editing, setEditing] = useState(false);
-
-  const availableCities = useMemo(
-    () =>
-      row.nation_id
-        ? cities.filter((c) => c.nation_id === row.nation_id)
-        : cities,
-    [cities, row.nation_id]
-  );
 
   const v = validateRow(row, duplicateIds);
   const cityName = cities.find((c) => c.id === row.city_id)?.name ?? "";
@@ -411,6 +392,17 @@ function CitizenRow({
     onActivity,
   });
 
+  // Use the hook's local (in-progress) nation value so the city dropdown
+  // filters correctly the moment the user selects a nation — before
+  // realtime echoes the change back to row.nation_id.
+  const availableCities = useMemo(
+    () =>
+      nationIdField.value
+        ? cities.filter((c) => c.nation_id === nationIdField.value)
+        : cities,
+    [cities, nationIdField.value]
+  );
+
   const cidRing = v.duplicateCitizenId || v.badCitizenIdFormat
     ? "ring-2 ring-destructive ring-offset-0"
     : missingClass(row.type, v.missingCitizenId);
@@ -442,10 +434,7 @@ function CitizenRow({
           <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "type" }}>
             <TypePill
               value={typeField.value}
-              onChange={(t) => {
-                typeField.set(t);
-                onRowUpdate({ type: t });
-              }}
+              onChange={(t) => typeField.set(t)}
               onFocus={typeField.onFocus}
               onBlur={typeField.onBlur}
             />
@@ -470,15 +459,13 @@ function CitizenRow({
                 onChange={(e) => {
                   const newCityId = e.target.value;
                   cityIdField.set(newCityId);
-                  // Auto-fill nation from city FK
+                  // Auto-fill nation from city FK — both fields debounce
+                  // independently; realtime echoes confirm the final values.
                   if (newCityId) {
                     const city = cityById.get(newCityId);
                     if (city) {
                       nationIdField.set(city.nation_id);
-                      onRowUpdate({ city_id: newCityId, nation_id: city.nation_id });
                     }
-                  } else {
-                    onRowUpdate({ city_id: null });
                   }
                 }}
                 className={cn("h-8", missingClass(row.type, v.missingCityId))}
@@ -502,13 +489,11 @@ function CitizenRow({
                 onChange={(e) => {
                   const newNationId = e.target.value;
                   nationIdField.set(newNationId);
-                  // Clear city if it's from a different nation
+                  // Clear city if it belongs to a different nation — both
+                  // fields debounce independently; realtime echoes confirm.
                   const currentCity = cityById.get(cityIdField.value);
                   if (currentCity && currentCity.nation_id !== newNationId) {
                     cityIdField.set("");
-                    onRowUpdate({ nation_id: newNationId || null, city_id: null });
-                  } else {
-                    onRowUpdate({ nation_id: newNationId || null });
                   }
                 }}
                 className={cn("h-8", missingClass(row.type, v.missingNationId))}
@@ -533,10 +518,7 @@ function CitizenRow({
           </ReadCell>
           <TypePill
             value={row.type}
-            onChange={(t) => {
-              typeField.set(t);
-              onRowUpdate({ type: t });
-            }}
+            onChange={(t) => typeField.set(t)}
           />
           <ReadCell className={cidRing}>
             {row.citizen_id || <span className="text-muted-foreground">—</span>}
