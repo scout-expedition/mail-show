@@ -89,19 +89,17 @@ export function EditAvatarDialog({
           <div className="text-xs text-muted-foreground">Preview</div>
         </div>
 
-        <div className="rounded-md border border-border bg-accent/10 px-3 py-3">
-          <IconPicker
-            initialType={iconType}
-            initialValue={iconValue || null}
-            emitHiddenFields={false}
-            onChange={(next) => {
-              setIconType(next.type);
-              setIconValue(next.value);
-            }}
-            color={colorHex}
-            onColorChange={setColorHex}
-          />
-        </div>
+        <IconPicker
+          initialType={iconType}
+          initialValue={iconValue || null}
+          emitHiddenFields={false}
+          onChange={(next) => {
+            setIconType(next.type);
+            setIconValue(next.value);
+          }}
+          color={colorHex}
+          onColorChange={setColorHex}
+        />
 
         <div className="mt-6 flex justify-end gap-2">
           <Button

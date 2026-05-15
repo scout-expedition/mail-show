@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useRef, useTransition, useState } from "react";
-import { IconPicker } from "@/components/icon-picker";
+import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -371,7 +371,7 @@ function StorylineRow({
           <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
             <button
               type="button"
-              onClick={() => setExpandedIcon((v) => !v)}
+              onClick={() => setExpandedIcon(true)}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-border"
               style={{ background: iconState.color_hex, color: fg }}
               title="Icon and color"
@@ -447,38 +447,24 @@ function StorylineRow({
         />
       </div>
 
-      {expandedIcon ? (
-        <div className="border-t border-border bg-accent/10 px-3 py-3">
-          <FieldHighlight peers={peers} focusKey={fk("icon_color")}>
-            <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
-              <IconPicker
-                initialType={iconState.icon_type}
-                initialValue={iconState.icon_value}
-                emitHiddenFields={false}
-                onChange={(next) => {
-                  const updated = {
-                    icon_type: next.type,
-                    icon_value: next.value || null,
-                    color_hex: iconState.color_hex,
-                  };
-                  setIconState((s) => ({ ...s, ...updated }));
-                  iconColorField.set(updated);
-                }}
-                color={iconState.color_hex}
-                onColorChange={(c) => {
-                  const updated = {
-                    icon_type: iconState.icon_type,
-                    icon_value: iconState.icon_value,
-                    color_hex: c,
-                  };
-                  setIconState((s) => ({ ...s, color_hex: c }));
-                  iconColorField.set(updated);
-                }}
-              />
-            </div>
-          </FieldHighlight>
-        </div>
-      ) : null}
+      {expandedIcon && (
+        <IconPickerDialog
+          title="Edit icon"
+          initialType={iconState.icon_type}
+          initialValue={iconState.icon_value}
+          initialColor={iconState.color_hex}
+          onSave={(p) => {
+            const updated = {
+              icon_type: p.type,
+              icon_value: p.value || null,
+              color_hex: p.color,
+            };
+            setIconState((s) => ({ ...s, ...updated }));
+            iconColorField.set(updated);
+          }}
+          onClose={() => setExpandedIcon(false)}
+        />
+      )}
     </div>
   );
 }

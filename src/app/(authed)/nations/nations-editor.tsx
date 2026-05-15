@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { IconDisplay } from "@/components/icon-display";
-import { IconPicker } from "@/components/icon-picker";
+import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -82,7 +82,6 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
     });
   }, [initialNations]);
 
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // postgres_changes handler
@@ -155,36 +154,25 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
           <Label>Abbr</Label>
           <span />
         </div>
-        {rows.map((row, i) => {
-          // Force the icon-picker drawer open when a peer is focused on this
-          // row's icon field, so the FieldHighlight ring has an element to
-          // render against. Local user can also click to expand.
-          const peerEditingIcon = peers.some(
-            (p) => p.focus?.recordId === row.id && p.focus?.field === "icon_value"
-          );
-          const expanded = expandedId === row.id || peerEditingIcon;
-          return (
-            <div
-              key={row.id}
-              draggable
-              onDragStart={() => setDragIndex(i)}
-              onDragOver={(e) => handleDragOver(e, i)}
-              onDragEnd={handleDragEnd}
-              className={cn(
-                "border-t border-border first:border-t-0",
-                dragIndex === i && "opacity-60"
-              )}
-            >
-              <NationRow
-                row={row}
-                peers={peers}
-                expanded={expanded}
-                onToggleExpand={() => setExpandedId(expanded ? null : row.id)}
-                onActivity={pingActivity}
-              />
-            </div>
-          );
-        })}
+        {rows.map((row, i) => (
+          <div
+            key={row.id}
+            draggable
+            onDragStart={() => setDragIndex(i)}
+            onDragOver={(e) => handleDragOver(e, i)}
+            onDragEnd={handleDragEnd}
+            className={cn(
+              "border-t border-border first:border-t-0",
+              dragIndex === i && "opacity-60"
+            )}
+          >
+            <NationRow
+              row={row}
+              peers={peers}
+              onActivity={pingActivity}
+            />
+          </div>
+        ))}
         {rows.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-muted-foreground">
             No nations yet.
@@ -198,17 +186,14 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
 function NationRow({
   row,
   peers,
-  expanded,
-  onToggleExpand,
   onActivity,
 }: {
   row: Nation;
   peers: PresencePeer[];
-  expanded: boolean;
-  onToggleExpand: () => void;
   onActivity: () => void;
 }) {
   const { setFocus } = usePresenceContext();
+  const [dialogOpen, setDialogOpen] = useState(false);
   const fg = readableOn(row.color_hex);
   const focusBase = { table: "nations", recordId: row.id };
 
@@ -261,24 +246,28 @@ function NationRow({
     <>
       <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 px-3 py-1">
         <DragHandle />
-        <button
-          type="button"
-          onClick={onToggleExpand}
-          className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
-          style={{ background: colorField.value, color: fg }}
-          title="Icon and color"
-          aria-label="Edit icon and color"
-        >
-          {iconValueField.value ? (
-            <IconDisplay
-              type={iconTypeField.value as IconType}
-              value={iconValueField.value}
-              size={14}
-            />
-          ) : (
-            <span className="font-mono text-[9px] opacity-70">ic</span>
-          )}
-        </button>
+        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "icon_value" }}>
+          <div onFocus={iconValueField.onFocus} onBlur={iconValueField.onBlur}>
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
+              style={{ background: colorField.value, color: fg }}
+              title="Icon and color"
+              aria-label="Edit icon and color"
+            >
+              {iconValueField.value ? (
+                <IconDisplay
+                  type={iconTypeField.value as IconType}
+                  value={iconValueField.value}
+                  size={14}
+                />
+              ) : (
+                <span className="font-mono text-[9px] opacity-70">ic</span>
+              )}
+            </button>
+          </div>
+        </FieldHighlight>
         <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
           <Input
             value={nameField.value}
@@ -302,37 +291,20 @@ function NationRow({
         <DeleteX id={row.id} name={row.name} />
       </div>
 
-      {expanded ? (
-        <div className="border-t border-border bg-accent/10 px-3 py-3">
-          <FieldHighlight
-            peers={peers}
-            focusKey={{ ...focusBase, field: "icon_value" }}
-          >
-            <div
-              onFocus={() => {
-                iconValueField.onFocus();
-                colorField.onFocus();
-              }}
-              onBlur={() => {
-                iconValueField.onBlur();
-                colorField.onBlur();
-              }}
-            >
-              <IconPicker
-                initialType={iconTypeField.value as IconType}
-                initialValue={iconValueField.value || null}
-                emitHiddenFields={false}
-                onChange={(next) => {
-                  iconTypeField.set(next.type);
-                  iconValueField.set(next.value ?? "");
-                }}
-                color={colorField.value}
-                onColorChange={(c) => colorField.set(c)}
-              />
-            </div>
-          </FieldHighlight>
-        </div>
-      ) : null}
+      {dialogOpen && (
+        <IconPickerDialog
+          title="Edit icon"
+          initialType={iconTypeField.value as IconType}
+          initialValue={iconValueField.value || null}
+          initialColor={colorField.value}
+          onSave={(p) => {
+            iconTypeField.set(p.type);
+            iconValueField.set(p.value);
+            colorField.set(p.color);
+          }}
+          onClose={() => setDialogOpen(false)}
+        />
+      )}
     </>
   );
 }

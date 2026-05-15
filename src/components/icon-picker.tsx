@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import { ANIMALS } from "@/lib/animals";
+import { EMOJIS } from "@/lib/emojis";
 
 const LUCIDE_NAMES = Object.keys(LucideModule).filter(
   (k) =>
@@ -58,15 +59,26 @@ export function IconPicker({
   onColorChange?: (next: string) => void;
 }) {
   const [type, setTypeState] = useState<IconType>(initialType);
-  const [value, setValueState] = useState<string>(initialValue ?? "");
+  const [perTypeValue, setPerTypeValue] = useState<Partial<Record<IconType, string>>>({
+    [initialType]: initialValue ?? "",
+  });
+  // The last icon the user actually clicked — tab navigation alone doesn't change this.
+  const [committed, setCommitted] = useState<{ type: IconType; value: string }>({
+    type: initialType,
+    value: initialValue ?? "",
+  });
+
+  const value = perTypeValue[type] ?? "";
 
   const setType = (t: IconType) => {
     setTypeState(t);
-    onChange?.({ type: t, value });
+    // Don't update committed or call onChange — just navigate the tab.
   };
   const setValue = (v: string) => {
-    setValueState(v);
-    onChange?.({ type, value: v });
+    setPerTypeValue((prev) => ({ ...prev, [type]: v }));
+    const next = { type, value: v };
+    setCommitted(next);
+    onChange?.(next);
   };
 
   const typeField = `${namePrefix}icon_type`;
@@ -81,7 +93,7 @@ export function IconPicker({
             type="button"
             onClick={() => setType(t.id)}
             className={cn(
-              "-mb-px border-b-2 px-3 py-1.5 font-mono text-xs uppercase tracking-wide transition-colors",
+              "-mb-px border-b-2 px-2.5 py-1 font-mono !text-[9px] uppercase tracking-wide transition-colors",
               type === t.id
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
@@ -93,10 +105,10 @@ export function IconPicker({
       </div>
 
       <div className="flex items-center gap-3">
-        <IconPreview type={type} value={value} />
+        <IconPreview type={committed.type} value={committed.value} />
         <div className="flex-1 text-xs text-muted-foreground">
           {type === "emoji"
-            ? "Paste or type any emoji."
+            ? "Search and click one emoji."
             : type === "svg"
               ? "Paste raw <svg>…</svg> markup."
               : type === "animal"
@@ -133,26 +145,15 @@ export function IconPicker({
       ) : type === "animal" ? (
         <AnimalGrid selected={value} onSelect={setValue} />
       ) : type === "emoji" ? (
-        <Input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="🚩"
-          className="max-w-xs"
-        />
+        <EmojiGrid selected={value} onSelect={setValue} />
       ) : (
-        <Textarea
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          rows={4}
-          placeholder="<svg viewBox='0 0 24 24'>…</svg>"
-          className="font-mono text-xs"
-        />
+        <SvgInput value={value} onChange={setValue} />
       )}
 
       {emitHiddenFields ? (
         <>
-          <input type="hidden" name={typeField} value={type} />
-          <input type="hidden" name={valueField} value={value} />
+          <input type="hidden" name={typeField} value={committed.type} />
+          <input type="hidden" name={valueField} value={committed.value} />
         </>
       ) : null}
     </div>
@@ -195,7 +196,7 @@ function IconGrid({
         className="max-w-xs"
       />
       <div
-        className="grid max-h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
+        className="grid h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
         role="listbox"
       >
         {filtered.map((name) => {
@@ -236,6 +237,118 @@ function IconGrid({
           </Button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function EmojiGrid({
+  selected,
+  onSelect,
+}: {
+  selected: string;
+  onSelect: (v: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query), 120);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const filtered = useMemo(() => {
+    const q = debounced.trim().toLowerCase();
+    if (!q) return EMOJIS;
+    return EMOJIS.filter(
+      (e) =>
+        e.name.toLowerCase().includes(q) ||
+        e.keywords.some((k) => k.includes(q))
+    );
+  }, [debounced]);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search emoji…"
+        className="max-w-xs"
+      />
+      <div
+        className="grid h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
+        role="listbox"
+      >
+        {filtered.map((e) => (
+          <button
+            key={e.emoji}
+            type="button"
+            onClick={() => onSelect(e.emoji)}
+            title={e.name}
+            aria-selected={selected === e.emoji}
+            className={cn(
+              "flex h-9 items-center justify-center rounded text-xl hover:bg-accent",
+              selected === e.emoji && "bg-accent ring-1 ring-primary"
+            )}
+          >
+            {e.emoji}
+          </button>
+        ))}
+        {filtered.length === 0 ? (
+          <p className="col-span-full py-6 text-center text-xs text-muted-foreground">
+            No matches.
+          </p>
+        ) : null}
+      </div>
+      {selected ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="text-xl">{selected}</span>
+          <Button type="button" size="sm" variant="ghost" onClick={() => onSelect("")}>
+            clear
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SvgInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [raw, setRaw] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleChange = (text: string) => {
+    setRaw(text);
+    if (!text.trim()) {
+      setError(null);
+      onChange(text);
+      return;
+    }
+    try {
+      const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+      if (doc.querySelector("parsererror")) {
+        setError("Invalid XML — check your markup.");
+        return;
+      }
+      if (doc.documentElement.tagName.toLowerCase() !== "svg") {
+        setError("Root element must be <svg>.");
+        return;
+      }
+      setError(null);
+      onChange(text);
+    } catch {
+      setError("Invalid SVG.");
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <Textarea
+        value={raw}
+        onChange={(e) => handleChange(e.target.value)}
+        rows={4}
+        placeholder="<svg viewBox='0 0 24 24'>…</svg>"
+        className={cn("font-mono text-xs", error ? "border-destructive" : "")}
+      />
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }
@@ -307,7 +420,7 @@ function AnimalGrid({
         />
       </div>
       <div
-        className="grid max-h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
+        className="grid h-64 grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1 overflow-y-auto rounded-md border border-border bg-muted/20 p-2"
         role="listbox"
       >
         {filtered.map((animal) => {
