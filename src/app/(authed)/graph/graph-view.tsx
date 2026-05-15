@@ -2777,15 +2777,36 @@ export function GraphView({
       if (node.id.startsWith("group:")) {
         const pg = parseGroupNodeId(node.id);
         const gid = pg?.groupId ?? "";
-        const entry = groupMeta.find((g) => g.gid === gid);
-        if (!entry) return;
         // Find the target row by asking where the pointer released.
         const flowPt = rf.screenToFlowPosition({
           x: (event as MouseEvent).clientX,
           y: (event as MouseEvent).clientY,
         });
         const targetRowId = rowAtFlowY(flowPt.y);
-        if (!targetRowId || targetRowId === entry.rowId) return;
+        if (!targetRowId) return;
+        // Faux instance (`group:GID@DAY`): the outline box that gathers a
+        // group's letters which were pulled to an override day. Dragging
+        // it re-targets THOSE letters' delivery overrides — the group's
+        // own delivery day is untouched.
+        if (pg?.dayKey != null) {
+          if (targetRowId === pg.dayKey) return;
+          const instanceLetters = letters.filter(
+            (l) =>
+              l.letter_group_id === gid &&
+              (l.effective_day_id ?? "unscheduled") === pg.dayKey
+          );
+          const targetDayId =
+            targetRowId === "unscheduled" ? null : targetRowId;
+          void (async () => {
+            for (const l of instanceLetters) {
+              await moveInspectionLetterToDay(l.id, targetDayId);
+            }
+          })();
+          return;
+        }
+        const entry = groupMeta.find((g) => g.gid === gid);
+        if (!entry) return;
+        if (targetRowId === entry.rowId) return;
         const previousDayId =
           entry.rowId === "unscheduled" ? null : entry.rowId;
         recordUndo?.({
@@ -2831,7 +2852,37 @@ export function GraphView({
             const pg = parseGroupNodeId(nn.id);
             return pg?.groupId !== sourceGid;
           });
-        if (intersecting.length === 0) return;
+        if (intersecting.length === 0) {
+          // Dropped on empty space, not onto another group. When the
+          // letter is the ONLY letter in its group, the drag reads as
+          // moving the whole group to that day — the group has no other
+          // content, so a per-letter override would just desync the
+          // (now-empty) group pill from its sole letter.
+          const sourceGroupLetters = letters.filter(
+            (l) => l.letter_group_id === sourceGid
+          );
+          if (sourceGroupLetters.length !== 1) return;
+          const flowPt = rf.screenToFlowPosition({
+            x: (event as MouseEvent).clientX,
+            y: (event as MouseEvent).clientY,
+          });
+          const targetRowId = rowAtFlowY(flowPt.y);
+          if (!targetRowId) return;
+          const meta = groupMeta.find((g) => g.gid === sourceGid);
+          if (!meta || meta.rowId === targetRowId) return;
+          const previousDayId =
+            meta.rowId === "unscheduled" ? null : meta.rowId;
+          recordUndo?.({
+            kind: "moveLetterGroup",
+            groupId: sourceGid,
+            previousDayId,
+          });
+          void moveLetterGroupToDay(
+            sourceGid,
+            targetRowId === "unscheduled" ? null : targetRowId
+          );
+          return;
+        }
         const targetGroupNode = intersecting[0];
         const targetGid = parseGroupNodeId(targetGroupNode.id)?.groupId ?? "";
         const targetStoryline = groupMeta.find(
