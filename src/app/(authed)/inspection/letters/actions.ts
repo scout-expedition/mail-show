@@ -430,6 +430,114 @@ export async function moveReportSegmentToDay(
 }
 
 /**
+ * Move an inspection letter's effective delivery day to `dayId` by storing a
+ * RELATIVE offset from its letter group's delivery day. A null target (or a
+ * target equal to the group's own day) clears the override entirely. Used by
+ * the graph faux-group drag and the "Unpin" context-menu action — both want
+ * the letter to keep tracking its group after the move. Falls back to an
+ * absolute pin only when the group has no delivery day to anchor against.
+ */
+export async function moveInspectionLetterToDay(
+  letterId: string,
+  dayId: string | null
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  let overrideId: string | null = null;
+  let offset: number | null = null;
+  if (dayId != null) {
+    const { data: letter } = await supabase
+      .from("inspection_letters")
+      .select("letter_group_id")
+      .eq("id", letterId)
+      .maybeSingle();
+    let groupDayNumber: number | null = null;
+    if (letter) {
+      const { data: lg } = await supabase
+        .from("letter_groups")
+        .select("delivery_day_id")
+        .eq("id", letter.letter_group_id as string)
+        .maybeSingle();
+      if (lg?.delivery_day_id) {
+        const { data: gd } = await supabase
+          .from("days")
+          .select("number")
+          .eq("id", lg.delivery_day_id as string)
+          .maybeSingle();
+        groupDayNumber = gd ? (gd.number as number) : null;
+      }
+    }
+    const { data: target } = await supabase
+      .from("days")
+      .select("number")
+      .eq("id", dayId)
+      .maybeSingle();
+    if (target && groupDayNumber != null) {
+      const delta = (target.number as number) - groupDayNumber;
+      offset = delta === 0 ? null : delta;
+    } else {
+      overrideId = dayId;
+    }
+  }
+
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update({
+      delivery_day_override_id: overrideId,
+      delivery_day_offset: offset,
+      updated_by: updatedBy,
+    })
+    .eq("id", letterId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/** Pin an inspection letter to an absolute delivery day (clears any offset). */
+export async function pinInspectionLetterToDay(
+  letterId: string,
+  dayId: string
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update({
+      delivery_day_override_id: dayId,
+      delivery_day_offset: null,
+      updated_by: updatedBy,
+    })
+    .eq("id", letterId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/** Pin a report segment to an absolute delivery day (clears any offset). */
+export async function pinReportSegmentToDay(
+  segmentId: string,
+  dayId: string
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("report_segments")
+    .update({
+      delivery_day_override_id: dayId,
+      delivery_day_offset: null,
+      updated_by: updatedBy,
+    })
+    .eq("id", segmentId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
  * Move an inspection letter to a different group within the same
  * storyline. Re-slots variants in both groups, renumbers pieces in the
  * old group, and nulls any `actions.next_letter_variant` refs on the

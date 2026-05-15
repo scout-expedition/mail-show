@@ -20,6 +20,10 @@ export type LetterNodeData = {
   /** True while this card is part of an in-progress drag preview —
    *  rendered semi-transparent so the move reads as provisional. */
   dragGhost?: boolean;
+  /** Filled pin — the letter carries an absolute delivery override. */
+  pinned?: boolean;
+  /** Signed offset text (e.g. "+2") — the letter carries a relative override. */
+  offsetText?: string | null;
   onSelect?: () => void;
 };
 
@@ -90,6 +94,8 @@ function LetterNode({ data }: NodeProps) {
             selected={d.selected}
             selfRingColor={d.selfRingColor}
             peerRingColors={d.peerRingColors}
+            pinned={d.pinned}
+            offsetText={d.offsetText}
           />
         </div>
       </Handle>

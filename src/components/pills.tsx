@@ -1,4 +1,4 @@
-import { Mail, MailOpen, Mails, Megaphone } from "lucide-react";
+import { Mail, MailOpen, Mails, Megaphone, Pin } from "lucide-react";
 import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import type { Storyline } from "@/lib/db/types";
@@ -92,6 +92,42 @@ function composeSelectionShadow(opts: {
   return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
+/**
+ * Trailing delivery indicator rendered right-aligned inside a graph pill:
+ *   • `pinned` → a filled pin (the object is committed to an absolute day:
+ *     a letter group's delivery day, or a letter/report absolute override).
+ *   • `offsetText` → small signed text (e.g. "+2", "-1") when the object
+ *     carries a relative delivery offset instead.
+ * Renders nothing when neither applies — callers outside the graph (e.g.
+ * inspector breadcrumbs) simply don't pass these props.
+ */
+function PillDeliveryMeta({
+  pinned,
+  offsetText,
+}: {
+  pinned?: boolean;
+  offsetText?: string | null;
+}) {
+  if (pinned) {
+    return (
+      <Pin
+        size={10}
+        aria-hidden
+        className="ml-auto shrink-0"
+        fill="currentColor"
+      />
+    );
+  }
+  if (offsetText) {
+    return (
+      <span className="ml-auto shrink-0 font-mono text-[9px] font-semibold tabular-nums opacity-80">
+        {offsetText}
+      </span>
+    );
+  }
+  return null;
+}
+
 /** [Mails][abbr+sequence] pill with a storyline-color border on a card fill. */
 export function LetterGroupPill({
   storyline,
@@ -101,6 +137,7 @@ export function LetterGroupPill({
   selected,
   selfRingColor,
   peerRingColors,
+  pinned,
 }: {
   storyline: Pick<Storyline, "abbreviation" | "color_hex"> | undefined;
   sequence: number;
@@ -111,6 +148,8 @@ export function LetterGroupPill({
   selfRingColor?: string;
   /** Stacked outer rings, one per peer co-selecting this pill. */
   peerRingColors?: string[];
+  /** Show a filled pin — the group is committed to an absolute delivery day. */
+  pinned?: boolean;
 }) {
   const abbr = storyline?.abbreviation ?? "?";
   const color = storyline?.color_hex ?? "#888888";
@@ -132,6 +171,7 @@ export function LetterGroupPill({
         {abbr}
         {sequence}
       </span>
+      <PillDeliveryMeta pinned={pinned} />
     </span>
   );
 }
@@ -143,12 +183,18 @@ export function InspectionLetterPill({
   className,
   closed,
   style,
+  pinned,
+  offsetText,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   contentId: string;
   className?: string;
   closed?: boolean;
   style?: React.CSSProperties;
+  /** Filled pin — the letter carries an absolute delivery override. */
+  pinned?: boolean;
+  /** Signed offset text (e.g. "+2") — the letter carries a relative override. */
+  offsetText?: string | null;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   const Icon = closed ? Mail : MailOpen;
@@ -162,6 +208,7 @@ export function InspectionLetterPill({
     >
       <Icon size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">{contentId}</span>
+      <PillDeliveryMeta pinned={pinned} offsetText={offsetText} />
     </span>
   );
 }
@@ -175,11 +222,17 @@ export function ReportSegmentPill({
   reportId,
   className,
   style,
+  pinned,
+  offsetText,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   reportId: string;
   className?: string;
   style?: React.CSSProperties;
+  /** Filled pin — the report carries an absolute delivery override. */
+  pinned?: boolean;
+  /** Signed offset text (e.g. "+2") — the report carries a relative override. */
+  offsetText?: string | null;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   return (
@@ -195,6 +248,7 @@ export function ReportSegmentPill({
     >
       <Megaphone size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">{reportId}</span>
+      <PillDeliveryMeta pinned={pinned} offsetText={offsetText} />
     </span>
   );
 }
@@ -276,6 +330,8 @@ export function InspectionLetterCard({
   selected,
   selfRingColor,
   peerRingColors,
+  pinned,
+  offsetText,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   contentId: string;
@@ -285,6 +341,8 @@ export function InspectionLetterCard({
   selected?: boolean;
   selfRingColor?: string;
   peerRingColors?: string[];
+  pinned?: boolean;
+  offsetText?: string | null;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   return (
@@ -300,6 +358,8 @@ export function InspectionLetterCard({
       <InspectionLetterPill
         storyline={storyline}
         contentId={contentId}
+        pinned={pinned}
+        offsetText={offsetText}
         className={cn(
           "!rounded-none",
           widthPx ? "justify-start" : undefined
@@ -320,6 +380,8 @@ export function ReportSegmentCard({
   selected,
   selfRingColor,
   peerRingColors,
+  pinned,
+  offsetText,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   reportId: string;
@@ -329,6 +391,8 @@ export function ReportSegmentCard({
   selected?: boolean;
   selfRingColor?: string;
   peerRingColors?: string[];
+  pinned?: boolean;
+  offsetText?: string | null;
 }) {
   const color = storyline?.color_hex ?? "#888888";
   // The report pill is a 40% mix of storyline + card; the card border matches
@@ -347,6 +411,8 @@ export function ReportSegmentCard({
       <ReportSegmentPill
         storyline={storyline}
         reportId={reportId}
+        pinned={pinned}
+        offsetText={offsetText}
         className={cn(
           "!rounded-none",
           widthPx ? "justify-start" : undefined

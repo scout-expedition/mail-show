@@ -25,6 +25,8 @@ export type LetterGroupData = {
   pendingAdd?: boolean;
   /** Part of an in-progress drag preview — rendered semi-transparent. */
   dragGhost?: boolean;
+  /** Filled pin — the group is committed to an absolute delivery day. */
+  pinned?: boolean;
   onSelect?: () => void;
 };
 
@@ -58,6 +60,7 @@ function LetterGroupNode({ data }: NodeProps) {
           selected={d.selected}
           selfRingColor={d.selfRingColor}
           peerRingColors={d.peerRingColors}
+          pinned={d.pinned}
         />
         {d.name ? (
           <div

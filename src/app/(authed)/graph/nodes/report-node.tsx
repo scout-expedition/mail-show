@@ -17,6 +17,10 @@ export type ReportNodeData = {
   pendingAdd?: boolean;
   /** Part of an in-progress drag preview — rendered semi-transparent. */
   dragGhost?: boolean;
+  /** Filled pin — the report carries an absolute delivery override. */
+  pinned?: boolean;
+  /** Signed offset text (e.g. "+2") — the report carries a relative override. */
+  offsetText?: string | null;
   onSelect?: () => void;
 };
 
@@ -81,6 +85,8 @@ function ReportNode({ data }: NodeProps) {
             selected={d.selected}
             selfRingColor={d.selfRingColor}
             peerRingColors={d.peerRingColors}
+            pinned={d.pinned}
+            offsetText={d.offsetText}
           />
         </div>
       </Handle>

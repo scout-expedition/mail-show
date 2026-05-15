@@ -24,7 +24,7 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Pin, PinOff, Trash2 } from "lucide-react";
 import { readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -57,9 +57,12 @@ import {
   deleteReportSegment,
   duplicateInspectionLetter,
   duplicateReportSegment,
+  moveInspectionLetterToDay,
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
+  pinInspectionLetterToDay,
+  pinReportSegmentToDay,
   setActionNextLetterByLetterId,
   setActionReportSegment,
 } from "../inspection/letters/actions";
@@ -364,6 +367,11 @@ function toRoman(n: number): string {
     }
   }
   return out;
+}
+
+/** Signed display text for a relative delivery offset, e.g. 3 → "+3". */
+function formatDeliveryOffset(n: number): string {
+  return n > 0 ? `+${n}` : `${n}`;
 }
 
 function letterDisplayId(
@@ -1153,6 +1161,11 @@ export function GraphView({
               peerRingColors: peerSegments?.get(sid),
               pendingDelete: pendingDeletes.segments[sid] === true,
               pendingAdd: ghostSegmentIdSet.has(sid),
+              pinned: seg.delivery_day_override_id != null,
+              offsetText:
+                seg.delivery_day_offset != null
+                  ? formatDeliveryOffset(seg.delivery_day_offset)
+                  : null,
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
             // Per-node `draggable` overrides ReactFlow's global
@@ -1216,6 +1229,10 @@ export function GraphView({
               peerRingColors: peerGroups?.get(gid),
               pendingDelete: pendingDeletes.groups[gid] === true,
               pendingAdd: ghostGroupIdSet.has(gid),
+              // Pin only the group's primary (home-day) instance — faux
+              // instances render letters pulled away by overrides, so the
+              // group-delivery pin doesn't belong on them.
+              pinned: gi.dayKey == null && gi.group.delivery_day_id != null,
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: editingEnabled,
@@ -1281,6 +1298,11 @@ export function GraphView({
                   if (lid && pendingDeletes.letters[lid] === true) return true;
                   return pendingDeletes.groups[gid] === true;
                 })(),
+                pinned: primary?.delivery_day_override_id != null,
+                offsetText:
+                  primary?.delivery_day_offset != null
+                    ? formatDeliveryOffset(primary.delivery_day_offset)
+                    : null,
                 onSelect: () =>
                   select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
@@ -3659,6 +3681,47 @@ export function GraphView({
               }
             }
             const items: GraphContextMenuItem[] = [];
+            // Pin / Unpin: commit this letter to an absolute day, or release
+            // an absolute pin back to a relative offset (cleared when the
+            // resulting day matches the group's own delivery day).
+            {
+              const effDayId = letter.effective_day_id;
+              const effDay = effDayId
+                ? days.find((d) => d.id === effDayId)
+                : undefined;
+              if (effDayId && effDay) {
+                const variantLetters = letters.filter(
+                  (l) =>
+                    l.letter_group_id === parsed.groupId &&
+                    variantKey(l.variant) === parsed.variantKey
+                );
+                const dayLabel = effDay.identifier ?? `D${effDay.number}`;
+                if (letter.delivery_day_override_id != null) {
+                  items.push({
+                    label: `Unpin from ${dayLabel}`,
+                    icon: <PinOff size={12} aria-hidden />,
+                    onClick: () =>
+                      void (async () => {
+                        for (const l of variantLetters) {
+                          await moveInspectionLetterToDay(l.id, effDayId);
+                        }
+                      })(),
+                  });
+                } else {
+                  items.push({
+                    label: `Pin to ${dayLabel}`,
+                    icon: <Pin size={12} fill="currentColor" aria-hidden />,
+                    onClick: () =>
+                      void (async () => {
+                        for (const l of variantLetters) {
+                          await pinInspectionLetterToDay(l.id, effDayId);
+                        }
+                      })(),
+                  });
+                }
+                items.push({ divider: true });
+              }
+            }
             if (!hasActions && templateEntries.length > 0) {
               items.push({
                 label: "Add Actions",
@@ -3724,9 +3787,38 @@ export function GraphView({
           }
           if (node.id.startsWith("report:")) {
             const segId = node.id.slice("report:".length);
+            const reportItems: GraphContextMenuItem[] = [];
+            // Pin / Unpin: commit this report to an absolute day, or release
+            // an absolute pin back to a relative offset (cleared when the
+            // resulting day matches the report's default day).
+            {
+              const seg = segments.find((s) => s.id === segId);
+              const effDayId = seg?.effective_day_id ?? null;
+              const effDay = effDayId
+                ? days.find((d) => d.id === effDayId)
+                : undefined;
+              if (seg && effDayId && effDay) {
+                const dayLabel = effDay.identifier ?? `D${effDay.number}`;
+                if (seg.delivery_day_override_id != null) {
+                  reportItems.push({
+                    label: `Unpin from ${dayLabel}`,
+                    icon: <PinOff size={12} aria-hidden />,
+                    onClick: () => void moveReportSegmentToDay(segId, effDayId),
+                  });
+                } else {
+                  reportItems.push({
+                    label: `Pin to ${dayLabel}`,
+                    icon: <Pin size={12} fill="currentColor" aria-hidden />,
+                    onClick: () => void pinReportSegmentToDay(segId, effDayId),
+                  });
+                }
+                reportItems.push({ divider: true });
+              }
+            }
             setContextMenu({
               anchor,
               items: [
+                ...reportItems,
                 {
                   label: "Duplicate Report",
                   icon: copyIcon,
