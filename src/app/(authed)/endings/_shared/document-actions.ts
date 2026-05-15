@@ -1860,15 +1860,23 @@ export async function saveDocument(input: {
 /**
  * Structural reorder for a single document — bulk-updates sort_order
  * + parent_block_id + parent_row_id across blocks, rows, chips, and
- * header variables in a single transaction-shaped pass.
+ * header variables.
  *
  * Per-field patches (patchBlock/patchRow/patchChip/patchBlockVariable)
  * intentionally don't allow moving between parents — moves go through
- * this action so the result-uniqueness invariant + the unique
- * (parent, sort_order) constraints can be enforced atomically.
+ * this action so the result-uniqueness invariant is enforced once
+ * across the full post-move state.
  *
- * Uses the two-step shift trick (bump by 1e6 first, then settle) so
- * intermediate states don't collide with the unique sort_order index.
+ * Result-uniqueness is checked against the MERGED post-move state:
+ * the proposed positions for moved blocks plus the current positions
+ * of unchanged blocks at the affected destination groups. Without the
+ * merge, dropping a text block into a sibling group that already
+ * holds a (non-moved) result block evades validation.
+ *
+ * The endings schema has no unique (parent, sort_order) constraint,
+ * so intermediate duplicate sort_order values during the bulk update
+ * are harmless — we update each row directly without a shift dance.
+ *
  * Does NOT call revalidatePath; realtime fans out the change.
  */
 export async function reorderTree(input: {
@@ -1885,31 +1893,45 @@ export async function reorderTree(input: {
 }): Promise<void> {
   const supabase = await createSupabaseServerClient();
 
-  // Validate result-uniqueness post-reorder by checking the proposed
-  // (parent_block_id, parent_row_id) groupings. We need the block_type
-  // for each input block — fetch in one round-trip.
-  const blockIds = input.blocks.map((b) => b.id);
-  if (blockIds.length > 0) {
-    const { data: existing } = await supabase
+  if (input.blocks.length > 0) {
+    // Merge proposed moves with the current document state so the
+    // result-uniqueness check sees the full post-move composition of
+    // each affected sibling group — not just the moved blocks.
+    const { data: existing, error: fetchErr } = await supabase
       .from("ending_blocks")
-      .select("id, block_type")
-      .in("id", blockIds);
-    const blockTypes = new Map<string, EndingBlockType>(
-      ((existing ?? []) as Array<{ id: string; block_type: EndingBlockType }>)
-        .map((b) => [b.id, b.block_type])
-    );
-    const groups = new Map<
-      string,
-      Array<{ id: string; block_type: EndingBlockType }>
-    >();
-    for (const b of input.blocks) {
-      const bt = blockTypes.get(b.id);
-      if (!bt || bt === "fallback") continue;
+      .select("id, parent_block_id, parent_row_id, block_type")
+      .eq("document_id", input.document_id);
+    if (fetchErr) throw new Error(fetchErr.message);
+
+    const proposedById = new Map(input.blocks.map((b) => [b.id, b]));
+    type Merged = {
+      id: string;
+      parent_block_id: string | null;
+      parent_row_id: string | null;
+      block_type: EndingBlockType;
+    };
+    const merged: Merged[] = ((existing ?? []) as Array<{
+      id: string;
+      parent_block_id: string | null;
+      parent_row_id: string | null;
+      block_type: EndingBlockType;
+    }>).map((b) => {
+      const proposed = proposedById.get(b.id);
+      return {
+        id: b.id,
+        parent_block_id: proposed ? proposed.parent_block_id : b.parent_block_id,
+        parent_row_id: proposed ? proposed.parent_row_id : b.parent_row_id,
+        block_type: b.block_type,
+      };
+    });
+
+    const groups = new Map<string, Merged[]>();
+    for (const b of merged) {
+      if (b.block_type === "fallback") continue;
       const key = `${b.parent_block_id ?? "root"}:${b.parent_row_id ?? "root"}`;
-      const entry = { id: b.id, block_type: bt };
       const list = groups.get(key);
-      if (list) list.push(entry);
-      else groups.set(key, [entry]);
+      if (list) list.push(b);
+      else groups.set(key, [b]);
     }
     for (const list of groups.values()) {
       const hasResult = list.some((b) => b.block_type === "result");
@@ -1921,11 +1943,7 @@ export async function reorderTree(input: {
     }
   }
 
-  const SHIFT = 1_000_000;
-
-  // Pass 1: bump every row's sort_order by +SHIFT so the final settle
-  // pass can land any permutation without colliding with the (parent,
-  // sort_order) unique constraint mid-update.
+  // Single-pass updates — no unique-sort_order constraint to dodge.
   await Promise.all([
     ...input.blocks.map(async (b) => {
       const { error } = await supabase
@@ -1933,7 +1951,7 @@ export async function reorderTree(input: {
         .update({
           parent_block_id: b.parent_block_id,
           parent_row_id: b.parent_row_id,
-          sort_order: b.sort_order + SHIFT,
+          sort_order: b.sort_order,
         })
         .eq("id", b.id);
       if (error) throw new Error(`block ${b.id}: ${error.message}`);
@@ -1943,7 +1961,7 @@ export async function reorderTree(input: {
         .from("ending_condition_rows")
         .update({
           condition_block_id: r.condition_block_id,
-          sort_order: r.sort_order + SHIFT,
+          sort_order: r.sort_order,
         })
         .eq("id", r.id);
       if (error) throw new Error(`row ${r.id}: ${error.message}`);
@@ -1953,40 +1971,8 @@ export async function reorderTree(input: {
         .from("ending_condition_row_chips")
         .update({
           row_id: c.row_id,
-          sort_order: c.sort_order + SHIFT,
+          sort_order: c.sort_order,
         })
-        .eq("id", c.id);
-      if (error) throw new Error(`chip ${c.id}: ${error.message}`);
-    }),
-    ...input.header_vars.map(async (bv) => {
-      const { error } = await supabase
-        .from("ending_condition_block_variables")
-        .update({ sort_order: bv.sort_order + SHIFT })
-        .eq("id", bv.id);
-      if (error) throw new Error(`block_variable ${bv.id}: ${error.message}`);
-    }),
-  ]);
-
-  // Pass 2: settle to the final sort_order.
-  await Promise.all([
-    ...input.blocks.map(async (b) => {
-      const { error } = await supabase
-        .from("ending_blocks")
-        .update({ sort_order: b.sort_order })
-        .eq("id", b.id);
-      if (error) throw new Error(`block ${b.id}: ${error.message}`);
-    }),
-    ...input.rows.map(async (r) => {
-      const { error } = await supabase
-        .from("ending_condition_rows")
-        .update({ sort_order: r.sort_order })
-        .eq("id", r.id);
-      if (error) throw new Error(`row ${r.id}: ${error.message}`);
-    }),
-    ...input.chips.map(async (c) => {
-      const { error } = await supabase
-        .from("ending_condition_row_chips")
-        .update({ sort_order: c.sort_order })
         .eq("id", c.id);
       if (error) throw new Error(`chip ${c.id}: ${error.message}`);
     }),
