@@ -204,6 +204,15 @@ export async function createEndingVariableValue(formData: FormData) {
 }
 
 /**
+ * Escape Postgres ILIKE wildcards (`%`, `_`) and the backslash escape itself
+ * so user input is matched literally. Without this, a name like `%foo%`
+ * would broaden the uniqueness check across every row containing "foo".
+ */
+function escapeForLike(s: string): string {
+  return s.replace(/[\\%_]/g, "\\$&");
+}
+
+/**
  * Narrow per-field patch — called by useInstantField in VariablesEditor.
  * Does NOT call revalidatePath; realtime fans out the change to other clients.
  * Trims + validates the patched columns; rejects empties and dup names.
@@ -226,7 +235,7 @@ export async function patchEndingVariable(
     const { data: conflict } = await supabase
       .from("ending_variables")
       .select("id")
-      .ilike("name", trimmed)
+      .ilike("name", escapeForLike(trimmed))
       .neq("id", id)
       .maybeSingle();
     if (conflict) throw new Error(`Duplicate variable name: ${trimmed}`);
@@ -272,7 +281,7 @@ export async function patchEndingVariableValue(
         .from("ending_variable_values")
         .select("id")
         .eq("variable_id", existing.variable_id)
-        .ilike("value", trimmed)
+        .ilike("value", escapeForLike(trimmed))
         .neq("id", id)
         .maybeSingle();
       if (conflict) throw new Error(`Duplicate value: ${trimmed}`);
