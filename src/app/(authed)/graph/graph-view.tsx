@@ -422,6 +422,65 @@ export function GraphView({
     [onSelectionChange]
   );
 
+  // Optimistic delete tracking. When the user confirms a delete on a
+  // letter / report / group / action, we add its id to the matching
+  // bucket so the layout can render it greyed-out + pulsing for the
+  // brief moment between dispatch and revalidation. Entries are auto-
+  // dropped by the useEffect below once the entity disappears from the
+  // server data.
+  type PendingDeleteBuckets = {
+    letters: Record<string, true>;
+    segments: Record<string, true>;
+    groups: Record<string, true>;
+    actions: Record<string, true>;
+  };
+  const [pendingDeletes, setPendingDeletes] = useState<PendingDeleteBuckets>({
+    letters: {},
+    segments: {},
+    groups: {},
+    actions: {},
+  });
+  const markPendingDelete = useCallback(
+    (kind: keyof PendingDeleteBuckets, id: string) => {
+      setPendingDeletes((prev) => ({
+        ...prev,
+        [kind]: { ...prev[kind], [id]: true },
+      }));
+    },
+    []
+  );
+  // Drop pending-delete ids the moment the entity is no longer in the
+  // server-side list (i.e. revalidation has caught up).
+  useEffect(() => {
+    setPendingDeletes((prev) => {
+      const letterIds = new Set(letters.map((l) => l.id));
+      const segmentIds = new Set(segments.map((s) => s.id));
+      const groupIds = new Set(letterGroups.map((g) => g.id));
+      const actionIds = new Set(actions.map((a) => a.id));
+      let changed = false;
+      const cleanup = (
+        kind: keyof PendingDeleteBuckets,
+        liveIds: Set<string>
+      ): Record<string, true> => {
+        const out: Record<string, true> = {};
+        let kindChanged = false;
+        for (const id of Object.keys(prev[kind])) {
+          if (liveIds.has(id)) out[id] = true;
+          else kindChanged = true;
+        }
+        if (kindChanged) changed = true;
+        return kindChanged ? out : prev[kind];
+      };
+      const next: PendingDeleteBuckets = {
+        letters: cleanup("letters", letterIds),
+        segments: cleanup("segments", segmentIds),
+        groups: cleanup("groups", groupIds),
+        actions: cleanup("actions", actionIds),
+      };
+      return changed ? next : prev;
+    });
+  }, [letters, segments, letterGroups, actions]);
+
   // Optimistic overrides for in-flight edge reconnects. The layout
   // useMemo reads from these maps first, so the dragged edge snaps to
   // the new target the instant the user drops — no flash of the old
@@ -926,6 +985,7 @@ export function GraphView({
               selected: segSelected,
               selfRingColor: segSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerSegments?.get(sid),
+              pendingDelete: pendingDeletes.segments[sid] === true,
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
             // Per-node `draggable` overrides ReactFlow's global
@@ -963,6 +1023,7 @@ export function GraphView({
               selected: groupSelected,
               selfRingColor: groupSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerGroups?.get(gid),
+              pendingDelete: pendingDeletes.groups[gid] === true,
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: editingEnabled,
@@ -1018,6 +1079,16 @@ export function GraphView({
                   ? selfRingColor ?? undefined
                   : undefined,
                 peerRingColors: peerLetters?.get(`${gid}:${vk}`),
+                pendingDelete: (() => {
+                  // A letter's primary instance is also marked pending
+                  // when its parent group is being deleted (server
+                  // cascades). Cover both so the whole group reads as
+                  // greyed out during the delete.
+                  const lid = primaryLetterByGroupVariant.get(`${gid}:${vk}`)
+                    ?.id;
+                  if (lid && pendingDeletes.letters[lid] === true) return true;
+                  return pendingDeletes.groups[gid] === true;
+                })(),
                 onSelect: () =>
                   select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
@@ -1766,6 +1837,7 @@ export function GraphView({
                     intent: "destructive",
                   });
                   if (!ok) return;
+                  markPendingDelete("actions", aId);
                   await deleteActionRow(groupId, aId);
                   if (
                     selection?.kind === "actions" &&
@@ -1824,6 +1896,14 @@ export function GraphView({
           selected: chipSelected,
           selfRingColor: chipSelected ? selfRingColor ?? undefined : undefined,
           peerRingColors: peerActions?.get(c.action.id),
+          pendingDelete: pendingDeletes.actions[c.action.id] === true,
+          // Pulse the chip + line while a reconnect overlay is in
+          // flight for this action — the layout already snaps to the
+          // optimistic target, so this is the only "something is
+          // happening" signal until revalidation lands.
+          optimisticPending:
+            c.action.id in optimisticNextByAction ||
+            c.action.id in optimisticReportByAction,
           onSelect: onChipSelect,
           onContextMenu: onChipContextMenu,
           // The chip only appears on letter → report segment connections
@@ -1978,6 +2058,7 @@ export function GraphView({
     peerLetters,
     peerSegments,
     peerActions,
+    pendingDeletes,
   ]);
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -3025,6 +3106,76 @@ export function GraphView({
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
         }}
+        onEdgeClick={(_, edge) => {
+          // Edge IDs encode the action + kind: `a:<actionId>:<ls|sn|ln|stub>`.
+          // Clicking any segment selects the underlying action so the
+          // inspector opens at the same place the chip click would.
+          const m = edge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
+          if (!m) return;
+          const [, actionId] = m;
+          const action = actions.find((a) => a.id === actionId);
+          if (!action) return;
+          const srcLetter = letters.find(
+            (l) => l.id === action.inspection_letter_id
+          );
+          if (!srcLetter) return;
+          select({
+            kind: "actions",
+            groupId: srcLetter.letter_group_id,
+            variantKey: srcLetter.variant ?? "",
+            actionId,
+          });
+        }}
+        onEdgeContextMenu={(event, edge) => {
+          event.preventDefault();
+          const e = event as unknown as MouseEvent;
+          e.stopPropagation();
+          const m = edge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
+          if (!m) return;
+          const [, actionId, edgeKind] = m;
+          // Stub edges represent an action with neither report nor
+          // next-letter — nothing to disconnect.
+          if (edgeKind === "stub") return;
+          const action = actions.find((a) => a.id === actionId);
+          if (!action) return;
+          // ls → clears the report link; sn/ln → clears the next letter.
+          const clearsReport = edgeKind === "ls";
+          const label = clearsReport
+            ? "Disconnect Report"
+            : "Disconnect Next Letter";
+          const anchor = { x: e.clientX, y: e.clientY };
+          setContextMenu({
+            anchor,
+            items: [
+              {
+                label,
+                icon: <Trash2 size={12} aria-hidden />,
+                intent: "destructive",
+                onClick: () =>
+                  void (async () => {
+                    if (clearsReport) {
+                      recordUndo?.({
+                        kind: "setReport",
+                        actionId,
+                        previousReportSegmentId:
+                          action.report_segment_id ?? null,
+                      });
+                      await dispatchReportSegment(actionId, null);
+                    } else {
+                      const previousLetterId =
+                        resolveCurrentNextLetterId(actionId);
+                      recordUndo?.({
+                        kind: "setNextLetter",
+                        actionId,
+                        previousLetterId,
+                      });
+                      await dispatchNextLetter(actionId, null, null);
+                    }
+                  })(),
+              },
+            ],
+          });
+        }}
         onNodeContextMenu={(event, node) => {
           event.preventDefault();
           const e = event as unknown as MouseEvent;
@@ -3124,6 +3275,7 @@ export function GraphView({
                     intent: "destructive",
                   });
                   if (!ok) return;
+                  markPendingDelete("letters", letter.id);
                   await deleteInspectionLetter(parsed.groupId, letter.id);
                   if (
                     selection?.kind === "letter" &&
@@ -3168,6 +3320,7 @@ export function GraphView({
                         intent: "destructive",
                       });
                       if (!ok) return;
+                      markPendingDelete("segments", segId);
                       await deleteReportSegment(segId);
                       if (
                         selection?.kind === "segment" &&
@@ -3261,6 +3414,7 @@ export function GraphView({
                         intent: "destructive",
                       });
                       if (!ok) return;
+                      markPendingDelete("groups", gid);
                       await deleteGroup(gid);
                       if (
                         selection?.kind === "group" &&

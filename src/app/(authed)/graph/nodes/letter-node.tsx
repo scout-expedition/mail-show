@@ -13,6 +13,10 @@ export type LetterNodeData = {
   selected?: boolean;
   selfRingColor?: string;
   peerRingColors?: string[];
+  /** True while a delete is in flight for this letter (or its parent
+   *  group). Fades the card and animates a soft pulse so the user sees
+   *  the optimistic deletion in progress. */
+  pendingDelete?: boolean;
   onSelect?: () => void;
 };
 
@@ -36,7 +40,12 @@ const FULL_CARD_HANDLE_STYLE: React.CSSProperties = {
 function LetterNode({ data }: NodeProps) {
   const d = data as unknown as LetterNodeData;
   return (
-    <div className="relative">
+    <div
+      className={
+        "relative transition-opacity" +
+        (d.pendingDelete ? " animate-pulse opacity-40" : "")
+      }
+    >
       {/*
         Small top-center Handle stays as the canonical endpoint anchor for
         edges that target this letter directly (locked-mode arrows). In

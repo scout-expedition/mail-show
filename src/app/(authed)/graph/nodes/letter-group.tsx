@@ -18,6 +18,8 @@ export type LetterGroupData = {
   selfRingColor?: string;
   /** Avatar colors of peers who currently have this group selected. */
   peerRingColors?: string[];
+  /** True while a delete is in flight for this group. */
+  pendingDelete?: boolean;
   onSelect?: () => void;
 };
 
@@ -27,10 +29,11 @@ function LetterGroupNode({ data }: NodeProps) {
     <div
       style={{ width: d.width, height: d.height }}
       className={
-        "relative rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow] duration-100" +
+        "relative rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow,opacity] duration-100" +
         (d.hovered
           ? " bg-[color-mix(in_srgb,var(--ring)_15%,transparent)] ring-2 ring-ring ring-offset-1 ring-offset-background"
-          : "")
+          : "") +
+        (d.pendingDelete ? " animate-pulse opacity-40" : "")
       }
     >
       {/* `.group-drag-handle` is the only area ReactFlow accepts as a

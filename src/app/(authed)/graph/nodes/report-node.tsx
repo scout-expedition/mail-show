@@ -13,6 +13,7 @@ export type ReportNodeData = {
   selected?: boolean;
   selfRingColor?: string;
   peerRingColors?: string[];
+  pendingDelete?: boolean;
   onSelect?: () => void;
 };
 
@@ -32,7 +33,12 @@ const FULL_CARD_HANDLE_STYLE: React.CSSProperties = {
 function ReportNode({ data }: NodeProps) {
   const d = data as unknown as ReportNodeData;
   return (
-    <div className="relative">
+    <div
+      className={
+        "relative transition-opacity" +
+        (d.pendingDelete ? " animate-pulse opacity-40" : "")
+      }
+    >
       {/*
         Small top-center Handle: canonical endpoint anchor for any edge
         that targets this report directly (locked-mode arrows). In edit

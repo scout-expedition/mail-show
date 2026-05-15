@@ -57,6 +57,13 @@ export type ActionIconEdgeData = {
   selfRingColor?: string;
   /** Avatar colors of peers co-selecting this chip — stacked outer rings. */
   peerRingColors?: string[];
+  /** True while a delete-action is in flight — chip + lines fade and
+   *  pulse so the user sees the optimistic removal in progress. */
+  pendingDelete?: boolean;
+  /** True while a reconnect / link change is in flight (chip already
+   *  snapped to the new target). Adds a subtle pulse on the chip so
+   *  the user sees that the change is still saving. */
+  optimisticPending?: boolean;
   /** Click handler that opens the inspector panel for this action. */
   onSelect?: () => void;
   /** Right-click handler attached to the chip — used to surface a small
@@ -126,12 +133,27 @@ function ActionIconEdgeComponent({
   const chipX = d.chipX;
   const chipY = d.chipY;
   const hideChip = !!d.hideChip;
+  // Pending-delete fades the whole edge; optimistic-pending leaves it
+  // at full color but the chip+lines pulse.
+  const pendingDelete = !!d.pendingDelete;
+  const optimisticPending = !!d.optimisticPending;
+  const baseOpacity = pendingDelete ? 0.4 : 1;
   const strokeStyle = invalid
-    ? { stroke: color, strokeWidth: 1.75, strokeDasharray: "6 4" }
-    : { stroke: color, strokeWidth: 1.75 };
+    ? {
+        stroke: color,
+        strokeWidth: 1.75,
+        strokeDasharray: "6 4",
+        opacity: baseOpacity,
+      }
+    : { stroke: color, strokeWidth: 1.75, opacity: baseOpacity };
   const path2StrokeStyle = invalid
-    ? { stroke: path2Color, strokeWidth: 1.75, strokeDasharray: "6 4" }
-    : { stroke: path2Color, strokeWidth: 1.75 };
+    ? {
+        stroke: path2Color,
+        strokeWidth: 1.75,
+        strokeDasharray: "6 4",
+        opacity: baseOpacity,
+      }
+    : { stroke: path2Color, strokeWidth: 1.75, opacity: baseOpacity };
 
   // Cubic bezier segments so the line leaves the source and arrives at the
   // target perpendicular to the pill edges (vertical exit / entry via
@@ -197,8 +219,28 @@ function ActionIconEdgeComponent({
       ? chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX
       : chipX - CHIP_PX / 2 - CHIP_TO_BADGES_GAP_PX;
 
+  // Selection halo: when the action is selected, paint a wider, partly
+  // transparent stroke beneath each segment in the user's avatar color
+  // so the line itself reads as selected — mirrors the ring around the
+  // chip. Falls back to `var(--ring)` when no avatar color is wired.
+  const haloColor = d.selfRingColor ?? "var(--ring)";
+  const haloStyle = {
+    stroke: haloColor,
+    strokeWidth: 5,
+    opacity: 0.55,
+  };
+  const selected = !!d.selected;
   return (
     <>
+      {selected && single ? (
+        <BaseEdge id={`${id}-halo-s`} path={single} style={haloStyle} />
+      ) : null}
+      {selected && path1 ? (
+        <BaseEdge id={`${id}-halo-a`} path={path1} style={haloStyle} />
+      ) : null}
+      {selected && path2 ? (
+        <BaseEdge id={`${id}-halo-b`} path={path2} style={haloStyle} />
+      ) : null}
       {single ? (
         <BaseEdge
           id={`${id}-s`}
@@ -253,12 +295,16 @@ function ActionIconEdgeComponent({
       {hideChip ? null : (
       <EdgeLabelRenderer>
         <div
-          className="nodrag nopan"
+          className={
+            "nodrag nopan" +
+            (pendingDelete || optimisticPending ? " animate-pulse" : "")
+          }
           style={{
             position: "absolute",
             transform: `translate(-50%, -50%) translate(${chipX}px, ${chipY}px)`,
             pointerEvents: "none",
             zIndex: 10,
+            opacity: baseOpacity,
           }}
           title={d.actionName}
         >
