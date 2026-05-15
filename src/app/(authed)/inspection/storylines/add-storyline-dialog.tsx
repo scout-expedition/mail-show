@@ -132,7 +132,7 @@ function Dialog({
           </div>
         </div>
 
-        <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
+        <div className="mt-3">
           <IconPicker
             initialType={iconType}
             initialValue={iconValue || null}

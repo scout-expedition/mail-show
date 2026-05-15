@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useTransition } from "react";
-import { IconPicker } from "@/components/icon-picker";
+import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -171,7 +171,7 @@ export function ActionTemplatesEditor({
                 <DragHandle />
                 <button
                   type="button"
-                  onClick={() => setExpandedId(expanded ? null : row.id)}
+                  onClick={() => setExpandedId(row.id)}
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
                   style={{ background: row.color_hex, color: fg }}
                   title="Icon and color"
@@ -256,23 +256,22 @@ export function ActionTemplatesEditor({
                 <DeleteX id={row.id} name={row.name} />
               </div>
 
-              {expanded ? (
-                <div className="border-t border-border bg-accent/10 px-3 py-3">
-                  <IconPicker
-                    initialType={row.icon_type}
-                    initialValue={row.icon_value}
-                    emitHiddenFields={false}
-                    onChange={(next) =>
-                      updateRow(row.id, {
-                        icon_type: next.type,
-                        icon_value: next.value,
-                      })
-                    }
-                    color={row.color_hex}
-                    onColorChange={(c) => updateRow(row.id, { color_hex: c })}
-                  />
-                </div>
-              ) : null}
+              {expanded && (
+                <IconPickerDialog
+                  title="Edit icon"
+                  initialType={row.icon_type}
+                  initialValue={row.icon_value}
+                  initialColor={row.color_hex}
+                  onSave={(p) =>
+                    updateRow(row.id, {
+                      icon_type: p.type,
+                      icon_value: p.value,
+                      color_hex: p.color,
+                    })
+                  }
+                  onClose={() => setExpandedId(null)}
+                />
+              )}
             </div>
           );
         })}

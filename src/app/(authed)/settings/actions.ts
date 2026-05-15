@@ -12,6 +12,8 @@ import {
   validatePassword,
 } from "@/lib/auth/validation";
 import { ICON_TYPES, type IconType } from "@/lib/db/enums";
+import { profileFromMetadata } from "@/lib/auth/profile";
+import { pickRandomAvatar } from "@/lib/auth/assign-avatar";
 
 function parseAvatarFields(formData: FormData): {
   avatar_icon_type: IconType | null;
@@ -60,8 +62,16 @@ export async function inviteUser(
   const redirectTo = confirmUrl(origin, "/auth/set-password");
 
   const service = createSupabaseServiceClient();
+
+  const { data: usersData } = await service.auth.admin.listUsers({ perPage: 200 });
+  const existingProfiles = (usersData?.users ?? []).map((u) =>
+    profileFromMetadata(u.user_metadata)
+  );
+  const avatar = pickRandomAvatar(existingProfiles);
+
   const { error } = await service.auth.admin.inviteUserByEmail(check.email, {
     redirectTo,
+    data: avatar,
   });
   if (error) return { status: "error", error: error.message };
 

@@ -75,7 +75,7 @@ import {
   deleteStoryline,
   patchStoryline,
 } from "../storylines/actions";
-import { IconPicker } from "@/components/icon-picker";
+import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import type { PostgresChange } from "@/lib/realtime/channel";
@@ -6275,7 +6275,7 @@ function StorylineInspector({
           <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
             <button
               type="button"
-              onClick={() => setPickerOpen((v) => !v)}
+              onClick={() => setPickerOpen(true)}
               aria-expanded={pickerOpen}
               aria-label="Edit icon and color"
               title="Edit icon and color"
@@ -6362,38 +6362,24 @@ function StorylineInspector({
         </div>
       </div>
 
-      {pickerOpen ? (
-        <div className="mt-3 rounded-md border border-border bg-accent/10 px-3 py-3">
-          <FieldHighlight peers={peers} focusKey={iconColorFocus}>
-            <div onFocus={iconColorField.onFocus} onBlur={iconColorField.onBlur}>
-              <IconPicker
-                initialType={state.icon_type}
-                initialValue={state.icon_value}
-                emitHiddenFields={false}
-                onChange={(next) => {
-                  const updated = {
-                    icon_type: next.type,
-                    icon_value: next.value || null,
-                    color_hex: state.color_hex,
-                  };
-                  setState((s) => ({ ...s, ...updated }));
-                  iconColorField.set(updated);
-                }}
-                color={state.color_hex}
-                onColorChange={(c) => {
-                  const updated = {
-                    icon_type: state.icon_type,
-                    icon_value: state.icon_value,
-                    color_hex: c,
-                  };
-                  setState((s) => ({ ...s, color_hex: c }));
-                  iconColorField.set(updated);
-                }}
-              />
-            </div>
-          </FieldHighlight>
-        </div>
-      ) : null}
+      {pickerOpen && (
+        <IconPickerDialog
+          title="Edit icon"
+          initialType={state.icon_type}
+          initialValue={state.icon_value}
+          initialColor={state.color_hex}
+          onSave={(p) => {
+            const updated = {
+              icon_type: p.type,
+              icon_value: p.value || null,
+              color_hex: p.color,
+            };
+            setState((s) => ({ ...s, ...updated }));
+            iconColorField.set(updated);
+          }}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
 
       <div className="mt-4 rounded-md border border-border">
         <div className="flex h-10 items-center gap-2 rounded-t-md border-b border-border bg-white/[0.04] px-3">
