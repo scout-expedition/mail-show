@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useUnsavedDialog } from "@/components/panel";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
   EndingBlock,
@@ -14,7 +13,6 @@ import type {
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
-import type { EditorHandle } from "../_shared/document-editor";
 import { FrameworkEditor } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
 import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
@@ -157,28 +155,10 @@ function FrameworksWorkspaceInner({
     return { editorBlocks, editorRows, editorChips, editorBlockVariables };
   }, [selected, blocks, rows, chips, blockVariables]);
 
-  const editorHandleRef = useRef<EditorHandle>({
-    dirty: false,
-    save: async () => {},
-  });
-  const { ask, dialog } = useUnsavedDialog();
-
-  async function navigateTo(frameworkId: string | null) {
-    if (editorHandleRef.current.dirty) {
-      const outcome = await ask(
-        "Unsaved changes",
-        "This framework has unsaved changes. Save before switching?"
-      );
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        try {
-          await editorHandleRef.current.save();
-        } catch (e) {
-          console.error(e);
-          return;
-        }
-      }
-    }
+  function navigateTo(frameworkId: string | null) {
+    // Autosave + blur-flush handles in-flight writes. The 400ms debounce
+    // window may swallow a quick tab switch right after a keystroke; the
+    // saving-gate followup will await idle before navigating.
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
     if (frameworkId) qs.set("framework", frameworkId);
     else qs.delete("framework");
@@ -208,16 +188,12 @@ function FrameworksWorkspaceInner({
           tiebreakDocsSummary={tiebreakDocsSummary}
           tiebreakDocsRaw={tiebreakDocsRaw}
           onDeleted={() => navigateTo(null)}
-          registerHandle={(h) => {
-            editorHandleRef.current = h;
-          }}
         />
       ) : (
         <div className="rounded-md border border-border bg-card px-6 py-10 text-center text-sm text-muted-foreground">
           Select or create a framework.
         </div>
       )}
-      {dialog}
     </div>
   );
 }

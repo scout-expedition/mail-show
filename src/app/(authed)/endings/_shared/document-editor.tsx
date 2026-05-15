@@ -27,11 +27,7 @@ import { ChevronsDownUp, ChevronsUpDown, Eye, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
-import {
-  GHOST_FIELD,
-  PanelHeader,
-  SaveRevert,
-} from "@/components/panel";
+import { GHOST_FIELD, PanelHeader } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type {
   EndingBlock,
@@ -77,8 +73,6 @@ import {
   patchChip,
   patchDocument,
   reorderTree,
-  saveDocument,
-  type BlockPayload,
 } from "./document-actions";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
@@ -90,7 +84,6 @@ import {
   type DragContext,
   type DragTarget,
 } from "./lib/drag";
-import { PickerCtx, type PickerContext } from "./lib/picker";
 import {
   AnalysisCtx,
   indexOverlap,
@@ -103,6 +96,13 @@ import {
   type CollapseMode,
 } from "./lib/total-collapse";
 
+/**
+ * @deprecated Retained as a typed shape for the legacy
+ * frameworks/logic parent wrappers until they drop the prop entirely.
+ * After autosave migration, dirty is always false and save() is a
+ * no-op — the parent's "wait for in-flight saves before navigating"
+ * concern is handled by useInstantField's blur-flush + 400ms debounce.
+ */
 export type EditorHandle = {
   dirty: boolean;
   save: () => Promise<void>;
@@ -137,7 +137,10 @@ export interface DocumentEditorProps {
   /** Called after a successful framework deletion. Logic docs are
    *  seed-immortal; pass undefined to hide the delete button. */
   onDeleted?: () => void;
-  registerHandle: (h: EditorHandle) => void;
+  /** @deprecated Kept for backwards compatibility while the framework /
+   *  logic workspace parents drop their tab-switch dialog. The editor
+   *  always reports dirty:false now; in-flight commits flush on blur. */
+  registerHandle?: (h: EditorHandle) => void;
   /** Override the panel title. Defaults to the document's name when
    *  framework, or the kind label when logic. */
   panelTitle?: string;
@@ -268,8 +271,7 @@ export function DocumentEditor({
   const [blockVariableState, setBlockVariableState] = useState<
     BlockVariableState[]
   >(initial.blockVariables);
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
+  const [pending, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
 
   const [dragId, setDragId] = useState<string | null>(null);
@@ -336,17 +338,15 @@ export function DocumentEditor({
   );
   const collapseDirty = collapseOverrides.size > 0;
 
-  // Reconcile incoming server state with local edits. name is reconciled
-  // by the useInstantField hook's own LWW logic (it watches the `value`
-  // prop), so we don't touch it here.
+  // Reconcile incoming server state with local edits.
+  //
+  // Two sources push into the local mirror: (1) server-prop changes
+  // after a structural revalidate (add/delete/duplicate), and (2)
+  // postgres echo for column-level updates from peers. The merge here
+  // handles case 1 — keep typed-but-uncommitted state for known ids,
+  // append new ids from the server, drop ids that vanished. Per-leaf
+  // useInstantField hooks own typed text and reconcile their own LWW.
   useEffect(() => {
-    if (!dirty) {
-      setBlockState(initial.blocks);
-      setRowState(initial.rows);
-      setChipState(initial.chips);
-      setBlockVariableState(initial.blockVariables);
-      return;
-    }
     setBlockState((prev) =>
       mergeServer(prev, initial.blocks, (a, b) => a.id === b.id)
     );
@@ -359,7 +359,7 @@ export function DocumentEditor({
     setBlockVariableState((prev) =>
       mergeServer(prev, initial.blockVariables, (a, b) => a.id === b.id)
     );
-  }, [initial, dirty]);
+  }, [initial]);
 
   // Postgres echo handler — merges column-level updates from peers into
   // the local mirror for all four ending tables, scoped to blocks /
@@ -533,17 +533,6 @@ export function DocumentEditor({
       }
     });
   }, [onPostgresChanges, document.id, blockState, rowState]);
-
-  // Open chip-picker count — Save is disabled while any picker is mid-pick.
-  const [openPickerCount, setOpenPickerCount] = useState(0);
-  const pickerCtx: PickerContext = useMemo(
-    () => ({
-      openCount: openPickerCount,
-      register: () => setOpenPickerCount((n) => n + 1),
-      unregister: () => setOpenPickerCount((n) => Math.max(0, n - 1)),
-    }),
-    [openPickerCount]
-  );
 
   const nationColorByName = useMemo(() => {
     const m = new Map<string, string>();
@@ -1026,106 +1015,16 @@ export function DocumentEditor({
     };
   }, [dragId, doCommit]);
 
-  // Save ----------------------------------------------------------------
-  async function doSave() {
-    if (isFramework) {
-      const trimmedName = name.trim();
-      if (!trimmedName) return;
-    }
-    const blockPayload: BlockPayload[] = [];
-    function walk(parentBlockId: string | null, parentRowId: string | null) {
-      const list =
-        byParent.get(`${parentBlockId ?? "root"}:${parentRowId ?? "root"}`) ??
-        [];
-      list.forEach((b, i) => {
-        blockPayload.push({
-          id: b.id,
-          parent_block_id: parentBlockId,
-          parent_row_id: parentRowId,
-          block_type: b.block_type,
-          text: b.text,
-          result_value: b.result_value,
-          summary: b.summary === "" ? null : b.summary,
-          sort_order: i,
-        });
-        if (b.block_type === "condition") {
-          for (const r of rowsByConditionBlock.get(b.id) ?? []) {
-            walk(b.id, r.id);
-          }
-        }
-      });
-    }
-    walk(null, null);
-
-    // Fallback block lives outside the byParent walk (it's pinned at the
-    // bottom and not part of the recursive tree); append it explicitly so
-    // saveDocument writes its result_value.
-    if (fallbackBlock) {
-      blockPayload.push({
-        id: fallbackBlock.id,
-        parent_block_id: null,
-        parent_row_id: null,
-        block_type: fallbackBlock.block_type,
-        text: null,
-        result_value: fallbackBlock.result_value,
-        summary: null,
-        sort_order: 999999,
-      });
-    }
-
-    const rowPayload = rowState.map((r, i) => ({
-      id: r.id,
-      condition_block_id: r.condition_block_id,
-      sort_order: i,
-    }));
-
-    const chipPayload = chipState.map((c, i) => ({
-      id: c.id,
-      row_id: c.row_id,
-      variable_id: c.variable_id,
-      operator: c.operator,
-      text_value_id: c.text_value_id,
-      number_value: c.number_value,
-      aggregate_value: c.aggregate_value,
-      sort_order: i,
-    }));
-
-    const headerPayload = blockVariableState.map((bv, i) => ({
-      id: bv.id,
-      sort_order: i,
-    }));
-
-    await saveDocument({
-      document_id: document.id,
-      name: isFramework ? name.trim() : null,
-      blocks: blockPayload,
-      rows: rowPayload,
-      chips: chipPayload,
-      header_vars: headerPayload,
-    });
-    setDirty(false);
-  }
-
-  function handleSave() {
-    startSave(doSave);
-  }
-  function handleRevert() {
-    // Name is autosaved per-field — there's nothing to revert. The other
-    // arrays still need the manual revert until their leaves migrate.
-    setBlockState(initial.blocks);
-    setRowState(initial.rows);
-    setChipState(initial.chips);
-    setBlockVariableState(initial.blockVariables);
-    setDirty(false);
-  }
-
-  const doSaveRef = useRef(doSave);
+  // The legacy bulk-save path is gone. Every editable field (document
+  // name, block text/summary/result_value, chips, header variables) now
+  // commits through its own patchX action; drag-reorders fire
+  // reorderTree directly. The parent's `registerHandle` callback is
+  // notified once at mount with dirty:false so the workspace's
+  // unsaved-changes dialog never prompts. We keep the handle interface
+  // until the parents drop it (next commit).
   useEffect(() => {
-    doSaveRef.current = doSave;
-  });
-  useEffect(() => {
-    registerHandle({ dirty, save: () => doSaveRef.current() });
-  }, [dirty, registerHandle]);
+    registerHandle?.({ dirty: false, save: async () => {} });
+  }, [registerHandle]);
 
   async function handleDelete() {
     if (!onDeleted) return;
@@ -1138,23 +1037,13 @@ export function DocumentEditor({
     if (!ok) return;
     const fd = new FormData();
     fd.set("id", document.id);
-    startSave(async () => {
+    startDeleteTransition(async () => {
       await deleteFrameworkDocument(fd);
       onDeleted();
     });
   }
 
   const nameInvalid = isFramework && !name.trim();
-
-  useEffect(() => {
-    if (!dirty) return;
-    function onBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
 
   let body: ReactNode;
   if (previewOn && renderPreview) {
@@ -1224,43 +1113,40 @@ export function DocumentEditor({
         ) : null}
 
         <DragCtx.Provider value={dragCtx}>
-          <PickerCtx.Provider value={pickerCtx}>
-            <AnalysisCtx.Provider value={analysisCtx}>
-              <TotalCollapseCtx.Provider value={collapseCtx}>
-                <BlockList
-                  parent={{ parent_block_id: null, parent_row_id: null }}
-                  byParent={byParent}
-                  rowsByConditionBlock={rowsByConditionBlock}
-                  chipsByRow={chipsByRow}
-                  declaredByBlock={declaredByBlock}
-                  variableIndex={variableIndex}
-                  variables={authoringVariableState}
-                  values={values}
-                  document_id={document.id}
-                  leaves={leaves}
-                  onUpdateBlock={updateBlock}
-                  onChangeChip={updateChip}
+          <AnalysisCtx.Provider value={analysisCtx}>
+            <TotalCollapseCtx.Provider value={collapseCtx}>
+              <BlockList
+                parent={{ parent_block_id: null, parent_row_id: null }}
+                byParent={byParent}
+                rowsByConditionBlock={rowsByConditionBlock}
+                chipsByRow={chipsByRow}
+                declaredByBlock={declaredByBlock}
+                variableIndex={variableIndex}
+                variables={authoringVariableState}
+                values={values}
+                document_id={document.id}
+                leaves={leaves}
+                onUpdateBlock={updateBlock}
+                onChangeChip={updateChip}
+              />
+              {fallback && fallbackBlock ? (
+                <FallbackBlock
+                  block={fallbackBlock}
+                  options={fallback.options}
+                  subsetFrameworks={fallback.subsetFrameworks}
+                  subsetEnabled={fallback.subsetEnabled}
+                  helperText={fallback.helperText}
+                  emptyLabel={fallback.emptyLabel}
+                  title={fallback.title}
                 />
-                {fallback && fallbackBlock ? (
-                  <FallbackBlock
-                    block={fallbackBlock}
-                    options={fallback.options}
-                    subsetFrameworks={fallback.subsetFrameworks}
-                    subsetEnabled={fallback.subsetEnabled}
-                    helperText={fallback.helperText}
-                    emptyLabel={fallback.emptyLabel}
-                    title={fallback.title}
-                  />
-                ) : null}
-              </TotalCollapseCtx.Provider>
-            </AnalysisCtx.Provider>
-          </PickerCtx.Provider>
+              ) : null}
+            </TotalCollapseCtx.Provider>
+          </AnalysisCtx.Provider>
         </DragCtx.Provider>
       </div>
     );
   }
 
-  const saveDisabled = openPickerCount > 0;
   const headerTitle =
     panelTitle ?? (isFramework ? document.name ?? "(unnamed)" : document.kind);
 
@@ -1268,16 +1154,6 @@ export function DocumentEditor({
     <section className="overflow-hidden rounded-md border border-border bg-card">
       <PanelHeader
         title={headerTitle}
-        dirty={dirty}
-        showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty && !nameInvalid && !saveDisabled}
-            pending={pending}
-            onSave={handleSave}
-            onRevert={handleRevert}
-          />
-        }
         menu={
           <div className="flex items-center gap-1">
             <CollapseModeToggleGroup

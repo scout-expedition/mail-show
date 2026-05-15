@@ -13,9 +13,8 @@
 // Each editor saves itself; switching tabs prompts an unsaved-changes
 // dialog the same way the Frameworks workspace does between frameworks.
 
-import { useCallback, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useUnsavedDialog } from "@/components/panel";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
   ENDING_DOCUMENT_KIND_LABELS,
@@ -32,10 +31,7 @@ import type {
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
-import {
-  DocumentEditor,
-  type EditorHandle,
-} from "../_shared/document-editor";
+import { DocumentEditor } from "../_shared/document-editor";
 import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import { makeResultBlock } from "../_blocks/result-block";
@@ -346,41 +342,11 @@ function LogicEditorInner({
     return m;
   }, [logicDocs, editorDataByDoc]);
 
-  // Track each visible editor's dirty state + save fn so tab switches
-  // can prompt an unsaved-changes dialog. Keyed by document id.
-  const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
-  const { ask, dialog } = useUnsavedDialog();
-
-  const registerHandleFor = useCallback(
-    (docId: string) => (h: EditorHandle) => {
-      editorHandlesRef.current.set(docId, h);
-    },
-    []
-  );
-
-  async function navigateToTab(nextTabId: LogicTabId) {
+  function navigateToTab(nextTabId: LogicTabId) {
     if (nextTabId === activeTab) return;
-    const dirtyHandles: EditorHandle[] = [];
-    for (const handle of editorHandlesRef.current.values()) {
-      if (handle.dirty) dirtyHandles.push(handle);
-    }
-    if (dirtyHandles.length > 0) {
-      const outcome = await ask(
-        "Unsaved changes",
-        "There are unsaved changes on this tab. Save before switching?"
-      );
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        try {
-          for (const h of dirtyHandles) await h.save();
-        } catch (e) {
-          console.error(e);
-          return;
-        }
-      }
-    }
-    // Drop stale handles so the next tab's editors register fresh.
-    editorHandlesRef.current = new Map();
+    // Autosave + blur-flush handles in-flight writes. The 400ms debounce
+    // window may swallow a quick tab switch right after a keystroke; the
+    // saving-gate followup will await idle before navigating.
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
     qs.set("tab", nextTabId);
     router.push(`/endings/logic?${qs.toString()}`);
@@ -432,7 +398,6 @@ function LogicEditorInner({
               nations={nations}
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}
-              registerHandle={registerHandleFor(doc.id)}
               fallback={fallback}
               tiebreakDocsSummary={tiebreakDocsSummary}
               renderPreview={(args) => (
@@ -456,7 +421,6 @@ function LogicEditorInner({
           );
         })}
       </div>
-      {dialog}
     </div>
   );
 }
