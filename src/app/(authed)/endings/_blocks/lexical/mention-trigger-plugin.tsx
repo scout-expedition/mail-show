@@ -4,12 +4,13 @@
 // autocomplete popup at the caret, and commits a MentionNode on
 // Enter / Tab / click.
 //
-// Reuses the pure helpers from `../mention-autocomplete.tsx`:
+// Reuses:
 //   - detectMentionTrigger(text, caret) — backwards scan for a valid
 //     `@` (same lookbehind as the substitution regex)
-//   - filterVariablesForMention(variables, query) — kind-grouped filter
 //   - MentionAutocompletePopup — the rendered list (props-driven so we
 //     can position it at the caret via absolute coords)
+// both from `../mention-autocomplete.tsx`, plus the shared
+// `filterVariables` kind-grouped filter from the variable-picker module.
 
 import {
   $createTextNode,
@@ -35,9 +36,9 @@ import {
   useState,
 } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
+import { filterVariables } from "@/components/variable-picker/variable-filter";
 import {
   detectMentionTrigger,
-  filterVariablesForMention,
   MentionAutocompletePopup,
 } from "../mention-autocomplete";
 import { $createMentionNode } from "./mention-node";
@@ -64,7 +65,7 @@ export function MentionTriggerPlugin({
   const [activeIndex, setActiveIndex] = useState(0);
 
   const filtered = useMemo(
-    () => filterVariablesForMention(variables, trigger?.query ?? ""),
+    () => filterVariables(variables, trigger?.query ?? ""),
     [variables, trigger?.query]
   );
 

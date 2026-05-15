@@ -12,6 +12,7 @@ import {
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
+import { createPortal } from "react-dom";
 import { AppPresence } from "@/components/app-presence";
 import { usePresenceUser } from "@/components/presence-user-context";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
@@ -23,6 +24,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { filterVariables } from "@/components/variable-picker/variable-filter";
+import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 import {
   formatCitizenIdInput,
   generateRandomCitizenId,
@@ -5418,11 +5421,17 @@ function ActionVariableChip({
 }
 
 /**
- * "+ Ending" button that opens a list of unassigned variables. Picking one
- * inserts a new ending assignment row already bound to that variable —
- * there's no intermediate "row exists but no variable picked yet" state,
- * which the previous flow allowed and which let the realtime patch path
- * silently drop unbound rows.
+ * "+ Ending variable" picker — a search-filtered autocomplete (mirrors
+ * the endings text-block variable-tag popup). Picking a variable inserts
+ * an ending assignment row already bound to it; there's no intermediate
+ * "row exists but no variable picked yet" state, which the previous flow
+ * allowed and which let the realtime patch path silently drop unbound
+ * rows.
+ *
+ * The popup is portaled to <body> + `position: fixed`: the action editor
+ * sits inside the 5-panel slide, whose `transform` would otherwise both
+ * reparent and clip a fixed child. The anchor is recomputed on
+ * scroll/resize since `getBoundingClientRect` coords are viewport-relative.
  */
 function AddEndingVariableMenu({
   variables,
@@ -5436,78 +5445,103 @@ function AddEndingVariableMenu({
   disabledReason?: string;
 }) {
   const [open, setOpen] = useState(false);
-  // Keyboard-highlighted option; -1 = mouse mode. Menu options are not
-  // tab stops — arrows move this, Enter commits.
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const ref = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  // Keyboard-highlighted row; the search input owns nav, rows are not
+  // tab stops.
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = filterVariables(variables, query);
+
+  const computePos = useCallback(() => {
+    const btn = buttonRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    // Over-estimate the popup width so the right-edge clamp stays safe.
+    const width = 260;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+    setPos({ top: r.bottom + 4, left });
+  }, []);
+
+  // Outside-click closes. The popup is portaled out of `wrapRef`, so the
+  // check has to cover both the trigger and the portaled popup.
   useEffect(() => {
+    if (!open) return;
     function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t)) return;
+      if (popupRef.current?.contains(t)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [open]);
+
+  // Keep the fixed popup pinned to the trigger as the page scrolls or
+  // resizes — the rect coords are viewport-relative and otherwise stale.
+  useLayoutEffect(() => {
+    if (!open) return;
+    computePos();
+    window.addEventListener("scroll", computePos, true);
+    window.addEventListener("resize", computePos);
+    return () => {
+      window.removeEventListener("scroll", computePos, true);
+      window.removeEventListener("resize", computePos);
+    };
+  }, [open, computePos]);
+
+  // Focus the search input once the popup is mounted (open + positioned).
+  // Re-firing on a scroll-driven `pos` change is a no-op when the input
+  // already holds focus.
   useEffect(() => {
-    if (!open || activeIndex < 0 || !listRef.current) return;
-    const el = listRef.current.querySelectorAll("[role='option']")[
-      activeIndex
-    ] as HTMLElement | undefined;
-    el?.scrollIntoView({ block: "nearest" });
-  }, [open, activeIndex]);
+    if (open && pos) inputRef.current?.focus();
+  }, [open, pos]);
 
   function openMenu() {
     if (disabled) return;
+    setQuery("");
     setActiveIndex(0);
     setOpen(true);
   }
-  function commitAt(idx: number) {
-    const v = variables[idx];
-    if (!v) return;
-    onPick(v.id);
+  function closeMenu(refocus: boolean) {
     setOpen(false);
+    if (refocus) buttonRef.current?.focus();
   }
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (!open) {
-      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
-        e.preventDefault();
-        openMenu();
-      }
-      return;
-    }
+  function commit(variableId: string) {
+    onPick(variableId);
+    closeMenu(true);
+  }
+  function handleInputKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
-      setOpen(false);
+      closeMenu(true);
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveIndex((i) => (i + 1) % variables.length);
+      setActiveIndex((i) => Math.min(i + 1, filtered.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActiveIndex(
-        (i) => (i - 1 + variables.length) % variables.length
-      );
-    } else if (e.key === "Home") {
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      setActiveIndex(0);
-    } else if (e.key === "End") {
-      e.preventDefault();
-      setActiveIndex(variables.length - 1);
-    } else if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      if (activeIndex >= 0) commitAt(activeIndex);
+      const v = filtered[activeIndex];
+      if (v) commit(v.id);
     }
   }
+
   return (
-    <div ref={ref} className="relative inline-flex">
+    <div ref={wrapRef} className="relative inline-flex">
       {/* Trigger matches the frameworks "+ block" InsertionZone button. */}
       <button
+        ref={buttonRef}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label="Add ending variable"
-        onClick={() => (open ? setOpen(false) : openMenu())}
-        onKeyDown={handleKeyDown}
+        onClick={() => (open ? closeMenu(false) : openMenu())}
         disabled={disabled}
         title={disabledReason ?? "Add ending variable"}
         className={cn(
@@ -5519,38 +5553,44 @@ function AddEndingVariableMenu({
       >
         <Plus size={12} aria-hidden />
       </button>
-      {open && variables.length > 0 ? (
-        <div
-          ref={listRef}
-          role="listbox"
-          className="absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md"
-        >
-          {variables.map((v, idx) => {
-            const color = v.color_hex ?? paletteColor(v.color_index);
-            return (
-              <button
-                key={v.id}
-                type="button"
-                tabIndex={-1}
-                role="option"
-                aria-selected={idx === activeIndex}
-                onMouseEnter={() => setActiveIndex(idx)}
-                onClick={() => {
-                  onPick(v.id);
-                  setOpen(false);
+      {open && pos
+        ? createPortal(
+            <div
+              ref={popupRef}
+              style={{ position: "fixed", top: pos.top, left: pos.left }}
+              className="z-50 flex w-64 flex-col overflow-hidden rounded-md border border-border bg-popover text-xs text-foreground shadow-lg"
+            >
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setActiveIndex(0);
                 }}
-                className={cn(
-                  "flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs focus:outline-none",
-                  idx === activeIndex && "bg-accent/60"
-                )}
-                style={{ color }}
-              >
-                {v.name}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+                onKeyDown={handleInputKeyDown}
+                placeholder="Search variables…"
+                aria-label="Search ending variables"
+                className="border-b border-border bg-transparent px-2 py-1.5 focus:outline-none"
+              />
+              {filtered.length > 0 ? (
+                <VariableOptionList
+                  filtered={filtered}
+                  activeIndex={activeIndex}
+                  onChangeActiveIndex={setActiveIndex}
+                  onCommit={(v) => commit(v.id)}
+                  ariaLabel="Ending variables"
+                  className="w-full"
+                />
+              ) : (
+                <div className="px-2 py-2 text-muted-foreground">
+                  No matching variables.
+                </div>
+              )}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
