@@ -35,13 +35,13 @@ type WorkspaceData = {
 };
 
 export function MorningReportsWorkspace({
-  selectedDayId,
+  selectedDayIdentifier,
   currentUserId,
   currentEmail,
   currentProfile,
   ...data
 }: WorkspaceData & {
-  selectedDayId: string | null;
+  selectedDayIdentifier: string | null;
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -61,25 +61,31 @@ export function MorningReportsWorkspace({
         "inspection_letters",
       ]}
     >
-      <MorningReportsWorkspaceInner data={data} selectedDayId={selectedDayId} />
+      <MorningReportsWorkspaceInner
+        data={data}
+        selectedDayIdentifier={selectedDayIdentifier}
+      />
     </WorkspacePresenceProvider>
   );
 }
 
 function MorningReportsWorkspaceInner({
   data,
-  selectedDayId,
+  selectedDayIdentifier,
 }: {
   data: WorkspaceData;
-  selectedDayId: string | null;
+  selectedDayIdentifier: string | null;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { setSelection } = usePresenceContext();
 
   const effectiveDay = useMemo(
-    () => data.days.find((d) => d.id === selectedDayId) ?? data.days[0] ?? null,
-    [data.days, selectedDayId]
+    () =>
+      data.days.find((d) => d.identifier === selectedDayIdentifier) ??
+      data.days[0] ??
+      null,
+    [data.days, selectedDayIdentifier]
   );
   const previousDay = useMemo(
     () =>
@@ -103,9 +109,12 @@ function MorningReportsWorkspaceInner({
     });
   }, [effectiveDayId, setSelection]);
 
+  // The day list passes a day id; the URL carries the human identifier
+  // (e.g. ?day=D2) so the address bar stays readable.
   function navigateTo(dayId: string) {
+    const day = data.days.find((d) => d.id === dayId);
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
-    qs.set("day", dayId);
+    qs.set("day", day?.identifier ?? dayId);
     router.push(`/top-of-day/morning-reports?${qs.toString()}`);
   }
 

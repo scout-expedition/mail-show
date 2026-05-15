@@ -10,6 +10,8 @@ import { BLOCK_TEXTAREA_CLASS, BlockFrame, HeaderTitle } from "./block-shell";
 import { MarkdownTextarea } from "@/components/markdown-textarea";
 import { ReportSegmentPill } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { formatDayReportId } from "@/lib/ids";
 import {
   resolveCollapsed,
@@ -32,6 +34,7 @@ export function PinnedBlock({
 }) {
   const collapse = useMorningCollapse();
   const collapsed = resolveCollapsed("pinned", field, collapse);
+  const { peers, setFocus } = usePresenceContext();
 
   const text = useInstantField<string>({
     value: value ?? "",
@@ -44,6 +47,8 @@ export function PinnedBlock({
           : { report_sign_off: next }
       );
     },
+    onFocusChange: (focused) =>
+      setFocus(focused ? { table: "days", recordId: dayId, field } : null),
   });
 
   const reportId = formatDayReportId({
@@ -66,14 +71,19 @@ export function PinnedBlock({
         </span>
       }
     >
-      <div onFocus={text.onFocus} onBlur={text.onBlur}>
-        <MarkdownTextarea
-          value={text.value}
-          onChange={(e) => text.set(e.target.value)}
-          minRows={2}
-          className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-        />
-      </div>
+      <FieldHighlight
+        peers={peers}
+        focusKey={{ table: "days", recordId: dayId, field }}
+      >
+        <div onFocus={text.onFocus} onBlur={text.onBlur}>
+          <MarkdownTextarea
+            value={text.value}
+            onChange={(e) => text.set(e.target.value)}
+            minRows={2}
+            className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
+          />
+        </div>
+      </FieldHighlight>
     </BlockFrame>
   );
 }

@@ -20,6 +20,8 @@ import {
   ReportSegmentPill,
 } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { patchReportSegment } from "@/app/(authed)/inspection/letters/actions";
 import { resolveCollapsed, useMorningCollapse } from "../_lib/collapse";
 import type { ReportSegmentView, Storyline } from "@/lib/db/types";
@@ -50,6 +52,7 @@ export function ReportBlock({
 }) {
   const collapse = useMorningCollapse();
   const collapsed = resolveCollapsed("report", segment.id, collapse);
+  const { peers, setFocus } = usePresenceContext();
 
   const summary = useInstantField<string>({
     value: segment.summary ?? "",
@@ -57,6 +60,12 @@ export function ReportBlock({
       patchReportSegment(segment.id, {
         summary: v.trim() === "" ? null : v,
       }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "report_segments", recordId: segment.id, field: "summary" }
+          : null
+      ),
   });
   const content = useInstantField<string>({
     value: segment.content ?? "",
@@ -64,6 +73,12 @@ export function ReportBlock({
       patchReportSegment(segment.id, {
         content: v.trim() === "" ? null : v,
       }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "report_segments", recordId: segment.id, field: "content" }
+          : null
+      ),
   });
 
   return (
@@ -74,24 +89,42 @@ export function ReportBlock({
         <ReportSegmentPill storyline={storyline} reportId={segment.report_id} />
       }
       headerExtra={
-        <HeaderInput
-          value={summary.value}
-          placeholder="Summary…"
-          aria-label="Report summary"
-          onChange={(e) => summary.set(e.target.value)}
-          onFocus={summary.onFocus}
-          onBlur={summary.onBlur}
-        />
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: "report_segments",
+            recordId: segment.id,
+            field: "summary",
+          }}
+        >
+          <HeaderInput
+            value={summary.value}
+            placeholder="Summary…"
+            aria-label="Report summary"
+            onChange={(e) => summary.set(e.target.value)}
+            onFocus={summary.onFocus}
+            onBlur={summary.onBlur}
+          />
+        </FieldHighlight>
       }
     >
-      <div onFocus={content.onFocus} onBlur={content.onBlur}>
-        <MarkdownTextarea
-          value={content.value}
-          onChange={(e) => content.set(e.target.value)}
-          minRows={2}
-          className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-        />
-      </div>
+      <FieldHighlight
+        peers={peers}
+        focusKey={{
+          table: "report_segments",
+          recordId: segment.id,
+          field: "content",
+        }}
+      >
+        <div onFocus={content.onFocus} onBlur={content.onBlur}>
+          <MarkdownTextarea
+            value={content.value}
+            onChange={(e) => content.set(e.target.value)}
+            minRows={2}
+            className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
+          />
+        </div>
+      </FieldHighlight>
       <BlockSectionLabel>
         {triggers.length > 0 ? `Triggers (${triggers.length})` : "Trigger"}
       </BlockSectionLabel>

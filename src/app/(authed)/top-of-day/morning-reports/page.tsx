@@ -19,7 +19,7 @@ export default async function MorningReportsPage({
 }: {
   searchParams: Promise<{ day?: string }>;
 }) {
-  const { day: selectedDayId } = await searchParams;
+  const { day: selectedDayIdentifier } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
@@ -70,7 +70,7 @@ export default async function MorningReportsPage({
         letters={(letterData ?? []) as InspectionLetterView[]}
         actions={(actionData ?? []) as ActionRow[]}
         templates={(templateData ?? []) as ActionTemplate[]}
-        selectedDayId={selectedDayId ?? null}
+        selectedDayIdentifier={selectedDayIdentifier ?? null}
         currentUserId={currentUserId}
         currentEmail={currentEmail}
         currentProfile={presenceProfile}

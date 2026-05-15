@@ -10,6 +10,8 @@ import { BlockFrame, HeaderInput, type DragApi } from "./block-shell";
 import { ReportBlock, type Trigger } from "./report-block";
 import { LetterGroupPill } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { patchLetterGroup } from "@/app/(authed)/inspection/letters/actions";
 import { resolveCollapsed, useMorningCollapse } from "../_lib/collapse";
 import type { LetterGroup, ReportSegmentView, Storyline } from "@/lib/db/types";
@@ -32,10 +34,17 @@ export function LetterGroupBlock({
   const collapse = useMorningCollapse();
   const collapseKey = `lg:${letterGroup.id}`;
   const collapsed = resolveCollapsed("letter_group", collapseKey, collapse);
+  const { peers, setFocus } = usePresenceContext();
 
   const name = useInstantField<string>({
     value: letterGroup.name ?? "",
     onCommit: (v) => patchLetterGroup(letterGroup.id, { name: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "letter_groups", recordId: letterGroup.id, field: "name" }
+          : null
+      ),
   });
 
   return (
@@ -48,14 +57,23 @@ export function LetterGroupBlock({
         <LetterGroupPill storyline={storyline} sequence={letterGroup.sequence} />
       }
       headerExtra={
-        <HeaderInput
-          value={name.value}
-          placeholder="Letter group name…"
-          aria-label="Letter group name"
-          onChange={(e) => name.set(e.target.value)}
-          onFocus={name.onFocus}
-          onBlur={name.onBlur}
-        />
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: "letter_groups",
+            recordId: letterGroup.id,
+            field: "name",
+          }}
+        >
+          <HeaderInput
+            value={name.value}
+            placeholder="Letter group name…"
+            aria-label="Letter group name"
+            onChange={(e) => name.set(e.target.value)}
+            onFocus={name.onFocus}
+            onBlur={name.onBlur}
+          />
+        </FieldHighlight>
       }
     >
       {segments.length === 0 ? (

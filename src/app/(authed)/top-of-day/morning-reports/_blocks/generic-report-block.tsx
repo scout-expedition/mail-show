@@ -17,6 +17,8 @@ import {
 import { MarkdownTextarea } from "@/components/markdown-textarea";
 import { ReportSegmentPill } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { formatDayReportId } from "@/lib/ids";
 import { resolveCollapsed, useMorningCollapse } from "../_lib/collapse";
 import {
@@ -40,6 +42,7 @@ export function GenericReportBlock({
   const collapsed = resolveCollapsed("generic", block.id, collapse);
   const { confirm, dialog } = useConfirm();
   const [, startTransition] = useTransition();
+  const { peers, setFocus } = usePresenceContext();
 
   const summary = useInstantField<string>({
     value: block.summary ?? "",
@@ -47,6 +50,12 @@ export function GenericReportBlock({
       patchGenericReportBlock(block.id, {
         summary: v.trim() === "" ? null : v,
       }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "day_report_blocks", recordId: block.id, field: "summary" }
+          : null
+      ),
   });
   const content = useInstantField<string>({
     value: block.content ?? "",
@@ -54,6 +63,12 @@ export function GenericReportBlock({
       patchGenericReportBlock(block.id, {
         content: v.trim() === "" ? null : v,
       }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "day_report_blocks", recordId: block.id, field: "content" }
+          : null
+      ),
   });
 
   const reportId =
@@ -69,14 +84,23 @@ export function GenericReportBlock({
         onToggleCollapse={() => collapse.setOverride(block.id, !collapsed)}
         leading={<ReportSegmentPill storyline={undefined} reportId={reportId} />}
         headerExtra={
-          <HeaderInput
-            value={summary.value}
-            placeholder="Summary…"
-            aria-label="Report summary"
-            onChange={(e) => summary.set(e.target.value)}
-            onFocus={summary.onFocus}
-            onBlur={summary.onBlur}
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={{
+              table: "day_report_blocks",
+              recordId: block.id,
+              field: "summary",
+            }}
+          >
+            <HeaderInput
+              value={summary.value}
+              placeholder="Summary…"
+              aria-label="Report summary"
+              onChange={(e) => summary.set(e.target.value)}
+              onFocus={summary.onFocus}
+              onBlur={summary.onBlur}
+            />
+          </FieldHighlight>
         }
         menu={
           <OverflowMenu
@@ -104,14 +128,23 @@ export function GenericReportBlock({
           />
         }
       >
-        <div onFocus={content.onFocus} onBlur={content.onBlur}>
-          <MarkdownTextarea
-            value={content.value}
-            onChange={(e) => content.set(e.target.value)}
-            minRows={2}
-            className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-          />
-        </div>
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: "day_report_blocks",
+            recordId: block.id,
+            field: "content",
+          }}
+        >
+          <div onFocus={content.onFocus} onBlur={content.onBlur}>
+            <MarkdownTextarea
+              value={content.value}
+              onChange={(e) => content.set(e.target.value)}
+              minRows={2}
+              className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
+            />
+          </div>
+        </FieldHighlight>
       </BlockFrame>
       {dialog}
     </>
