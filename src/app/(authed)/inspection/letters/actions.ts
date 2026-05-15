@@ -1421,7 +1421,8 @@ export async function createNextLetterGroupAndLetter(
  * can select it client-side instead of navigating.
  */
 export async function createLetterGroupInStoryline(
-  storylineId: string
+  storylineId: string,
+  deliveryDayId: string | null = null
 ): Promise<{ group: LetterGroup }> {
   const supabase = await createSupabaseServerClient();
   const { data: existing } = await supabase
@@ -1437,11 +1438,13 @@ export async function createLetterGroupInStoryline(
       storyline_id: storylineId,
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
+      delivery_day_id: deliveryDayId,
     })
     .select("*")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
   revalidatePath(`/inspection/storylines/${storylineId}`);
   return { group: data as LetterGroup };
 }

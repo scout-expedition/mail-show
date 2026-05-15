@@ -20,7 +20,7 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { Copy, MailOpen, Megaphone, Trash2 } from "lucide-react";
+import { Copy, MailOpen, Mails, Megaphone, Trash2 } from "lucide-react";
 import { StorylinePill } from "@/components/pills";
 import { useConfirm } from "@/components/confirm-dialog";
 import type {
@@ -42,6 +42,7 @@ import {
 import {
   batchMoveToDay,
   createInspectionLettersInGroup,
+  createLetterGroupInStoryline,
   createReportSegmentsForGroupAtDay,
   deleteActionRow,
   deleteGroup,
@@ -1991,12 +1992,30 @@ export function GraphView({
       }
     }
 
-    const addIcon = (
+    const reportIcon = (
       <span className="inline-flex items-center gap-1.5">
         <span aria-hidden>+</span>
         <Megaphone size={11} aria-hidden />
       </span>
     );
+    const groupIcon = (
+      <span className="inline-flex items-center gap-1.5">
+        <span aria-hidden>+</span>
+        <Mails size={11} aria-hidden />
+      </span>
+    );
+    const createLetterGroupHere = () => {
+      void (async () => {
+        const { group } = await createLetterGroupInStoryline(
+          storylineId,
+          targetDayId
+        );
+        // Pre-seed the new group with one letter so it has content on the
+        // graph; the user can add more via the inspector.
+        await createInspectionLettersInGroup(group.id, 1);
+        queueFocus({ kind: "group", groupId: group.id });
+      })();
+    };
     const showCreateMenu = (anchorGroup: LetterGroup | null) => {
       const makeCreator = (n: number) => () => {
         if (!anchorGroup) return;
@@ -2015,20 +2034,26 @@ export function GraphView({
         anchor,
         items: [
           {
+            label: "Letter Group",
+            icon: groupIcon,
+            onClick: createLetterGroupHere,
+          },
+          { divider: true },
+          {
             label: "Report Segment",
-            icon: addIcon,
+            icon: reportIcon,
             disabled: !anchorGroup,
             onClick: makeCreator(1),
           },
           {
             label: "2 Report Segments",
-            icon: addIcon,
+            icon: reportIcon,
             disabled: !anchorGroup,
             onClick: makeCreator(2),
           },
           {
             label: "3 Report Segments",
-            icon: addIcon,
+            icon: reportIcon,
             disabled: !anchorGroup,
             onClick: makeCreator(3),
           },
@@ -2040,13 +2065,20 @@ export function GraphView({
       showCreateMenu(candidates[0] ?? null);
       return;
     }
-    // Ambiguous: ask which group should anchor before showing the create
-    // menu. Click → re-opens the menu with the picked group baked in.
+    // Ambiguous: the Letter Group option doesn't need an anchor, so it
+    // ships immediately; the Report Segment paths need the user to pick
+    // which group should anchor them.
     setContextMenu({
       anchor,
       items: [
+        {
+          label: "Letter Group",
+          icon: groupIcon,
+          onClick: createLetterGroupHere,
+        },
+        { divider: true },
         ...candidates.map((g) => ({
-          label: `Group ${g.sequence}${g.name ? ` — ${g.name}` : ""}`,
+          label: `Reports for Group ${g.sequence}${g.name ? ` — ${g.name}` : ""}`,
           onClick: () => showCreateMenu(g),
         })),
       ],
