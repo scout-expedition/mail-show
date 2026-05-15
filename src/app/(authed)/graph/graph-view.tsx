@@ -20,7 +20,7 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { Copy, MailOpen, Mails, Megaphone, Trash2 } from "lucide-react";
+import { ChevronRight, Copy, MailOpen, Mails, Megaphone, Plus, Trash2 } from "lucide-react";
 import { StorylinePill } from "@/components/pills";
 import { useConfirm } from "@/components/confirm-dialog";
 import type {
@@ -40,6 +40,7 @@ import {
   type ImpactFilter,
 } from "@/lib/graph-overlay";
 import {
+  addActionFromTemplate,
   batchMoveToDay,
   createInspectionLettersInGroup,
   createLetterGroupInStoryline,
@@ -2864,7 +2865,7 @@ export function GraphView({
           const anchor = { x: e.clientX, y: e.clientY };
           const trashIcon = <Trash2 size={12} aria-hidden />;
           const copyIcon = <Copy size={12} aria-hidden />;
-          // Letter → duplicate + delete.
+          // Letter → duplicate + delete (+ Add Actions when empty).
           if (node.id.startsWith("letter:")) {
             const parsed = parseLetterNodeId(node.id);
             if (!parsed) return;
@@ -2874,51 +2875,107 @@ export function GraphView({
                 (l.variant ?? "") === parsed.variantKey
             );
             if (!letter) return;
-            setContextMenu({
-              anchor,
-              items: [
-                {
-                  label: "Duplicate Letter",
-                  icon: copyIcon,
+            const hasActions = actions.some(
+              (a) => a.inspection_letter_id === letter.id
+            );
+            // Dedup paired templates to single "A + B" entries (mirrors
+            // the inspector's action picker). The lower-sort_order
+            // template id is the canonical anchor and
+            // addActionFromTemplate inserts both halves server-side.
+            const templateById = new Map(
+              actionTemplates.map((t) => [t.id, t])
+            );
+            const templateEntries: Array<{ id: string; label: string }> = [];
+            const seenTemplateIds = new Set<string>();
+            for (const t of actionTemplates) {
+              if (seenTemplateIds.has(t.id)) continue;
+              const partner = t.paired_template_id
+                ? templateById.get(t.paired_template_id)
+                : undefined;
+              if (partner) {
+                const [a, b] =
+                  t.sort_order <= partner.sort_order
+                    ? [t, partner]
+                    : [partner, t];
+                templateEntries.push({
+                  id: a.id,
+                  label: `${a.name} + ${b.name}`,
+                });
+                seenTemplateIds.add(a.id);
+                seenTemplateIds.add(b.id);
+              } else {
+                templateEntries.push({ id: t.id, label: t.name });
+                seenTemplateIds.add(t.id);
+              }
+            }
+            const openTemplatePicker = () => {
+              setContextMenu({
+                anchor,
+                items: templateEntries.map((entry) => ({
+                  label: entry.label,
+                  icon: <Plus size={12} aria-hidden />,
                   onClick: () =>
                     void (async () => {
-                      const { newLetterId } = await duplicateInspectionLetter(
-                        letter.id
+                      await addActionFromTemplate(
+                        parsed.groupId,
+                        letter.id,
+                        entry.id
                       );
-                      // Variant is reassigned server-side; we don't know
-                      // the variant until the data refreshes. Queue by id
-                      // via a one-shot lookup in the focus-flush effect:
-                      // store the letter's group + a sentinel variant of
-                      // "" and let the effect resolve via id matching.
-                      const _ = newLetterId; // for now, no focus until we resolve via id
                     })(),
-                },
-                { divider: true },
-                {
-                  label: "Delete Letter",
-                  icon: trashIcon,
-                  intent: "destructive",
-                  onClick: () =>
-                    void (async () => {
-                      const ok = await confirm({
-                        title: "Delete letter?",
-                        message: `${letter.content_id} and its actions will be removed. This cannot be undone.`,
-                        confirmLabel: "Delete",
-                        intent: "destructive",
-                      });
-                      if (!ok) return;
-                      await deleteInspectionLetter(parsed.groupId, letter.id);
-                      if (
-                        selection?.kind === "letter" &&
-                        selection.groupId === parsed.groupId &&
-                        selection.variantKey === parsed.variantKey
-                      ) {
-                        select(null);
-                      }
-                    })(),
-                },
-              ],
+                })),
+              });
+            };
+            const items: GraphContextMenuItem[] = [];
+            if (!hasActions && templateEntries.length > 0) {
+              items.push({
+                label: "Add Actions",
+                icon: <Plus size={12} aria-hidden />,
+                trailing: <ChevronRight size={12} aria-hidden />,
+                onClick: openTemplatePicker,
+              });
+              items.push({ divider: true });
+            }
+            items.push({
+              label: "Duplicate Letter",
+              icon: copyIcon,
+              onClick: () =>
+                void (async () => {
+                  const { newLetterId } = await duplicateInspectionLetter(
+                    letter.id
+                  );
+                  // Variant is reassigned server-side; we don't know
+                  // the variant until the data refreshes. Queue by id
+                  // via a one-shot lookup in the focus-flush effect:
+                  // store the letter's group + a sentinel variant of
+                  // "" and let the effect resolve via id matching.
+                  const _ = newLetterId; // for now, no focus until we resolve via id
+                })(),
             });
+            items.push({ divider: true });
+            items.push({
+              label: "Delete Letter",
+              icon: trashIcon,
+              intent: "destructive",
+              onClick: () =>
+                void (async () => {
+                  const ok = await confirm({
+                    title: "Delete letter?",
+                    message: `${letter.content_id} and its actions will be removed. This cannot be undone.`,
+                    confirmLabel: "Delete",
+                    intent: "destructive",
+                  });
+                  if (!ok) return;
+                  await deleteInspectionLetter(parsed.groupId, letter.id);
+                  if (
+                    selection?.kind === "letter" &&
+                    selection.groupId === parsed.groupId &&
+                    selection.variantKey === parsed.variantKey
+                  ) {
+                    select(null);
+                  }
+                })(),
+            });
+            setContextMenu({ anchor, items });
             return;
           }
           if (node.id.startsWith("report:")) {

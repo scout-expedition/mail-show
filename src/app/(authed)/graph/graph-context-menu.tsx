@@ -7,6 +7,8 @@ export type GraphContextMenuItem =
   | {
       label: string;
       icon?: React.ReactNode;
+      /** Optional trailing decoration (e.g. ChevronRight for "opens submenu"). */
+      trailing?: React.ReactNode;
       onClick: () => void;
       disabled?: boolean;
       intent?: "default" | "destructive";
@@ -110,7 +112,9 @@ export function GraphContextMenu({
             onClick={() => {
               if (item.disabled) return;
               item.onClick();
-              onClose();
+              // Items with a trailing decoration (e.g. submenu indicator)
+              // keep the menu open so the click can re-anchor it.
+              if (!item.trailing) onClose();
             }}
             className={cn(
               "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-[11px] tracking-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50",
@@ -120,7 +124,8 @@ export function GraphContextMenu({
             )}
           >
             {item.icon}
-            {item.label}
+            <span className="flex-1">{item.label}</span>
+            {item.trailing}
           </button>
         );
       })}
