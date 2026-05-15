@@ -141,9 +141,16 @@ export function ConditionBlock({
     });
   }
 
+  const dragFocusKey = {
+    table: "ending_blocks",
+    recordId: block.id,
+    field: "drag",
+  } as const;
+
   return (
     <div ref={ref} className="relative">
       <DropLine active={targetBefore} side="top" />
+      <FieldHighlight peers={peers} focusKey={dragFocusKey}>
       <div
         ref={cardRef}
         onDragEnter={(e) => {
@@ -375,6 +382,7 @@ export function ConditionBlock({
         </>
       )}
       </div>
+      </FieldHighlight>
       <DropLine active={targetAfter} side="bottom" />
       {confirmDialog}
     </div>

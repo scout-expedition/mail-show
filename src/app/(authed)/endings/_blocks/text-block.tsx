@@ -20,6 +20,7 @@ import { LexicalTextBlockEditor } from "./lexical/text-block-editor";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { useMemo } from "react";
 
 export function TextBlock({
   block,
@@ -31,6 +32,18 @@ export function TextBlock({
   variables: VariableState[];
 }) {
   const { peers, setFocus } = usePresenceContext();
+
+  // Drag highlight: presence focus on field="drag" indicates a peer (or
+  // self) is currently dragging this block. Same focusKey used in the
+  // FieldHighlight wrapper below.
+  const dragFocusKey = useMemo(
+    () => ({
+      table: "ending_blocks",
+      recordId: block.id,
+      field: "drag",
+    }),
+    [block.id]
+  );
 
   // text + summary commit independently — each owns its own debounce.
   // The hook's value prop comes from the parent mirror (block.text /
@@ -93,6 +106,11 @@ export function TextBlock({
   return (
     <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
+      <FieldHighlight
+        peers={peers}
+        focusKey={dragFocusKey}
+        className="flex flex-1 flex-col"
+      >
       <div
         ref={cardRef}
         onDragEnter={(e) => {
@@ -235,6 +253,7 @@ export function TextBlock({
           </FieldHighlight>
         )}
       </div>
+      </FieldHighlight>
       <DropLine active={targetAfter} side="bottom" />
       {confirmDialog}
     </div>

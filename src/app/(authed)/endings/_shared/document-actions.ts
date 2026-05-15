@@ -1519,14 +1519,20 @@ export async function patchChip(
         ? patch.aggregate_value
         : (existing.aggregate_value as string | null),
   };
+  // Reject only when MULTIPLE value slots are set — that's an
+  // internally inconsistent chip the evaluator can't reason about. A
+  // chip with all slots null is legal (it's a freshly-cleared "—"
+  // pick) and the evaluator treats it as no-match. The legacy bulk
+  // save accepted this state; rejecting it broke peer echo for users
+  // who picked "—" in the value dropdown.
   const filled = [
     merged.text_value_id,
     merged.number_value,
     merged.aggregate_value,
   ].filter((v) => v != null).length;
-  if (filled !== 1) {
+  if (filled > 1) {
     throw new Error(
-      "patchChip: exactly one of text_value_id, number_value, or aggregate_value must be non-null after the patch."
+      "patchChip: at most one of text_value_id, number_value, or aggregate_value may be non-null."
     );
   }
 

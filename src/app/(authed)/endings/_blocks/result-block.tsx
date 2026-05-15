@@ -161,9 +161,20 @@ export function ResultBlock({
     resultField.set(formatRandomSubset(ordered));
   }
 
+  const dragFocusKey = {
+    table: "ending_blocks",
+    recordId: block.id,
+    field: "drag",
+  } as const;
+
   return (
     <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
+      <FieldHighlight
+        peers={peers}
+        focusKey={dragFocusKey}
+        className="flex flex-1 flex-col"
+      >
       <div
         ref={cardRef}
         onDragEnter={(e) => {
@@ -288,6 +299,7 @@ export function ResultBlock({
           />
         </div>
       </div>
+      </FieldHighlight>
       <DropLine active={targetAfter} side="bottom" />
       {confirmDialog}
     </div>

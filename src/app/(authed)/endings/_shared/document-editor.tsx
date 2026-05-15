@@ -27,6 +27,7 @@ import { ChevronsDownUp, ChevronsUpDown, Eye, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast";
 import { GHOST_FIELD, PanelHeader } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type {
@@ -273,6 +274,7 @@ export function DocumentEditor({
   >(initial.blockVariables);
   const [pending, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const { toast, toaster } = useToast();
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragHeight, setDragHeight] = useState<number | null>(null);
@@ -337,6 +339,23 @@ export function DocumentEditor({
     [collapseMode, collapseOverrides, setCollapseOverride]
   );
   const collapseDirty = collapseOverrides.size > 0;
+
+  // Broadcast presence focus while a block is being dragged. Peers
+  // watching this document see a ring around the dragged block in the
+  // dragger's avatar color via FieldHighlight on each leaf's card.
+  // Cleared on drag end (commit / cancel / dragend listener — all of
+  // those set dragId back to null).
+  useEffect(() => {
+    if (dragId) {
+      setFocus({
+        table: "ending_blocks",
+        recordId: dragId,
+        field: "drag",
+      });
+    } else {
+      setFocus(null);
+    }
+  }, [dragId, setFocus]);
 
   // Reconcile incoming server state with local edits.
   //
@@ -776,18 +795,20 @@ export function DocumentEditor({
     // the structural-save path so we don't double-write text/result.
   }
   function updateChip(id: string, patch: Partial<ChipState>) {
+    // Snapshot the pre-patch chip so we can roll back the optimistic
+    // mirror if the server rejects (silent failure mode bit us before).
+    const previousChip = chipState.find((c) => c.id === id);
     setChipState((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
     );
-    // Fire and forget — postgres echo will reconcile the mirror with the
-    // committed server value. Errors flip to the console and a toast in
-    // a followup; today, the bulk Save path acts as the safety net.
-    void patchChip(id, patch).catch(() => {
-      // Server rejected (e.g. invalid operator/value-slot combo). The
-      // optimistic mutation above stays in the mirror until either the
-      // user fixes it (next picker click commits again) or postgres
-      // echo of an unrelated change refreshes the chip. The bulk Save
-      // button is still wired and would catch this on next press.
+    void patchChip(id, patch).catch((err) => {
+      const message = err instanceof Error ? err.message : "Save failed.";
+      toast({ message, intent: "destructive" });
+      if (previousChip) {
+        setChipState((prev) =>
+          prev.map((c) => (c.id === id ? previousChip : c))
+        );
+      }
     });
   }
 
@@ -1182,6 +1203,7 @@ export function DocumentEditor({
       />
       {body}
       {confirmDialogEl}
+      {toaster}
     </section>
   );
 }
