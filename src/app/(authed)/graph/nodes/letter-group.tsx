@@ -20,6 +20,9 @@ export type LetterGroupData = {
   peerRingColors?: string[];
   /** True while a delete is in flight for this group. */
   pendingDelete?: boolean;
+  /** True while this group is an optimistic ghost (server create in
+   *  flight). Rendered with the same pulse/greyout as pendingDelete. */
+  pendingAdd?: boolean;
   onSelect?: () => void;
 };
 
@@ -33,7 +36,7 @@ function LetterGroupNode({ data }: NodeProps) {
         (d.hovered
           ? " bg-[color-mix(in_srgb,var(--ring)_15%,transparent)] ring-2 ring-ring ring-offset-1 ring-offset-background"
           : "") +
-        (d.pendingDelete ? " animate-pulse opacity-40" : "")
+        (d.pendingDelete || d.pendingAdd ? " animate-pulse opacity-40" : "")
       }
     >
       {/* `.group-drag-handle` is the only area ReactFlow accepts as a

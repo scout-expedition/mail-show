@@ -14,6 +14,7 @@ export type ReportNodeData = {
   selfRingColor?: string;
   peerRingColors?: string[];
   pendingDelete?: boolean;
+  pendingAdd?: boolean;
   onSelect?: () => void;
 };
 
@@ -36,7 +37,7 @@ function ReportNode({ data }: NodeProps) {
     <div
       className={
         "relative transition-opacity" +
-        (d.pendingDelete ? " animate-pulse opacity-40" : "")
+        (d.pendingDelete || d.pendingAdd ? " animate-pulse opacity-40" : "")
       }
     >
       {/*

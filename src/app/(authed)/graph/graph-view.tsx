@@ -331,6 +331,37 @@ function variantKey(v: string | null): string {
   return v ?? "";
 }
 
+// Compact lowercase roman-numeral encoder — used to pre-pick variants on
+// optimistic-ghost report segments before the server returns. Limited to
+// the small integer range we actually need on the graph.
+function toRoman(n: number): string {
+  if (n <= 0) return String(n);
+  const pairs: Array<[number, string]> = [
+    [1000, "m"],
+    [900, "cm"],
+    [500, "d"],
+    [400, "cd"],
+    [100, "c"],
+    [90, "xc"],
+    [50, "l"],
+    [40, "xl"],
+    [10, "x"],
+    [9, "ix"],
+    [5, "v"],
+    [4, "iv"],
+    [1, "i"],
+  ];
+  let out = "";
+  let rem = n;
+  for (const [v, ch] of pairs) {
+    while (rem >= v) {
+      out += ch;
+      rem -= v;
+    }
+  }
+  return out;
+}
+
 function letterDisplayId(
   abbr: string,
   sequence: number,
@@ -421,6 +452,84 @@ export function GraphView({
     (sel: GraphSelection | null) => onSelectionChange?.(sel),
     [onSelectionChange]
   );
+
+  // Optimistic add tracking. When the user triggers a create on a
+  // letter group or report segment, we synthesize a fully-shaped
+  // "ghost" entity here and the layout treats it as a normal row —
+  // so the new card appears in its target cell immediately (pulsing
+  // + greyed via the pendingAdd flag). After the server returns the
+  // real id we stamp `resolvedRealId`; the cleanup effect drops the
+  // ghost the moment the matching real entity lands in server data.
+  // Errors clear the ghost immediately so the UI reverts to truth.
+  type PendingAdd<T extends { id: string }> = {
+    tempId: string;
+    ghost: T;
+    resolvedRealId: string | null;
+  };
+  const [pendingAdds, setPendingAdds] = useState<{
+    groups: PendingAdd<LetterGroup>[];
+    segments: PendingAdd<ReportSegmentView>[];
+  }>({ groups: [], segments: [] });
+  const nextGhostIdRef = useRef(0);
+  const makeGhostId = useCallback((prefix: string) => {
+    const n = ++nextGhostIdRef.current;
+    return `ghost-${prefix}-${Date.now()}-${n}`;
+  }, []);
+  const removePendingGroup = useCallback((tempId: string) => {
+    setPendingAdds((prev) => ({
+      ...prev,
+      groups: prev.groups.filter((p) => p.tempId !== tempId),
+    }));
+  }, []);
+  const removePendingSegment = useCallback((tempId: string) => {
+    setPendingAdds((prev) => ({
+      ...prev,
+      segments: prev.segments.filter((p) => p.tempId !== tempId),
+    }));
+  }, []);
+  const resolvePendingGroup = useCallback(
+    (tempId: string, realId: string) => {
+      setPendingAdds((prev) => ({
+        ...prev,
+        groups: prev.groups.map((p) =>
+          p.tempId === tempId ? { ...p, resolvedRealId: realId } : p
+        ),
+      }));
+    },
+    []
+  );
+  const resolvePendingSegment = useCallback(
+    (tempId: string, realId: string) => {
+      setPendingAdds((prev) => ({
+        ...prev,
+        segments: prev.segments.map((p) =>
+          p.tempId === tempId ? { ...p, resolvedRealId: realId } : p
+        ),
+      }));
+    },
+    []
+  );
+
+  // Drop resolved ghosts once the matching real entity has landed.
+  useEffect(() => {
+    setPendingAdds((prev) => {
+      const realGroupIds = new Set(letterGroups.map((g) => g.id));
+      const realSegIds = new Set(segments.map((s) => s.id));
+      const stayedGroup = (p: PendingAdd<LetterGroup>) =>
+        p.resolvedRealId == null || !realGroupIds.has(p.resolvedRealId);
+      const stayedSeg = (p: PendingAdd<ReportSegmentView>) =>
+        p.resolvedRealId == null || !realSegIds.has(p.resolvedRealId);
+      const nextGroups = prev.groups.filter(stayedGroup);
+      const nextSegments = prev.segments.filter(stayedSeg);
+      if (
+        nextGroups.length === prev.groups.length &&
+        nextSegments.length === prev.segments.length
+      ) {
+        return prev;
+      }
+      return { groups: nextGroups, segments: nextSegments };
+    });
+  }, [letterGroups, segments]);
 
   // Optimistic delete tracking. When the user confirms a delete on a
   // letter / report / group / action, we add its id to the matching
@@ -591,6 +700,31 @@ export function GraphView({
     groupMeta,
   } = useMemo(() => {
     // -------------------------------------------------------------
+    // Augment server data with optimistic-add ghosts. Each ghost is
+    // a full LetterGroup / ReportSegmentView so the rest of the
+    // layout code treats it as a normal entity (positioned in its
+    // cell, styled by id). A ghost whose `resolvedRealId` has landed
+    // in real server data is filtered out here so we never render the
+    // real + ghost simultaneously.
+    // -------------------------------------------------------------
+    const realGroupIds = new Set(letterGroups.map((g) => g.id));
+    const realSegmentIds = new Set(segments.map((s) => s.id));
+    const ghostGroupIdSet = new Set<string>();
+    const ghostSegmentIdSet = new Set<string>();
+    const augmentedLetterGroups: LetterGroup[] = letterGroups.slice();
+    for (const p of pendingAdds.groups) {
+      if (p.resolvedRealId && realGroupIds.has(p.resolvedRealId)) continue;
+      augmentedLetterGroups.push(p.ghost);
+      ghostGroupIdSet.add(p.ghost.id);
+    }
+    const augmentedSegments: ReportSegmentView[] = segments.slice();
+    for (const p of pendingAdds.segments) {
+      if (p.resolvedRealId && realSegmentIds.has(p.resolvedRealId)) continue;
+      augmentedSegments.push(p.ghost);
+      ghostSegmentIdSet.add(p.ghost.id);
+    }
+
+    // -------------------------------------------------------------
     // Rows (days + unscheduled bucket) — flow top→down
     // -------------------------------------------------------------
     const rowIds: string[] = [...days.map((d) => d.id), "unscheduled"];
@@ -651,7 +785,7 @@ export function GraphView({
     // "group:GID@DAY"). instancesByGroup gives all instances for a group.
     const groupInstancesById = new Map<string, GroupInstance>();
     const instancesByGroup = new Map<string, GroupInstance[]>();
-    for (const g of letterGroups) {
+    for (const g of augmentedLetterGroups) {
       const storyline = storylineById.get(g.storyline_id);
       if (!storyline) continue;
       const groupLetters = letters.filter((l) => l.letter_group_id === g.id);
@@ -772,7 +906,7 @@ export function GraphView({
     // first followed by override-day instances. `cell.groupIds` actually
     // holds GROUP INSTANCE node ids ("group:GID" or "group:GID@DAY"), not
     // raw group ids — same key the placement and edge logic looks up.
-    const orderedGroups = letterGroups
+    const orderedGroups = augmentedLetterGroups
       .slice()
       .sort((a, b) => a.sequence - b.sequence);
     for (const g of orderedGroups) {
@@ -786,8 +920,8 @@ export function GraphView({
     // Segments into cells, sorted L→R by report variant (i, ii, iii, …)
     // so same-letter-group reports always render in canonical order within
     // a cell.
-    const segmentById = new Map(segments.map((s) => [s.id, s]));
-    const orderedSegments = segments
+    const segmentById = new Map(augmentedSegments.map((s) => [s.id, s]));
+    const orderedSegments = augmentedSegments
       .slice()
       .sort(
         (a, b) =>
@@ -986,6 +1120,7 @@ export function GraphView({
               selfRingColor: segSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerSegments?.get(sid),
               pendingDelete: pendingDeletes.segments[sid] === true,
+              pendingAdd: ghostSegmentIdSet.has(sid),
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
             // Per-node `draggable` overrides ReactFlow's global
@@ -1024,6 +1159,7 @@ export function GraphView({
               selfRingColor: groupSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerGroups?.get(gid),
               pendingDelete: pendingDeletes.groups[gid] === true,
+              pendingAdd: ghostGroupIdSet.has(gid),
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: editingEnabled,
@@ -2059,6 +2195,7 @@ export function GraphView({
     peerSegments,
     peerActions,
     pendingDeletes,
+    pendingAdds,
   ]);
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -2209,28 +2346,118 @@ export function GraphView({
       </span>
     );
     const createLetterGroupHere = () => {
+      // Optimistic ghost: shaped like a real LetterGroup so the layout
+      // drops it into the (storyline, day) cell immediately. Sequence
+      // picks the next available so the ghost sorts at the tail (where
+      // the real one will land server-side).
+      const sameStorylineGroups = letterGroups.filter(
+        (g) => g.storyline_id === storylineId
+      );
+      const nextSeq =
+        sameStorylineGroups.length === 0
+          ? 1
+          : Math.max(...sameStorylineGroups.map((g) => g.sequence)) + 1;
+      const tempId = makeGhostId("group");
+      const ghost: LetterGroup = {
+        id: tempId,
+        storyline_id: storylineId,
+        name: "New Group",
+        notes: null,
+        sequence: nextSeq,
+        delivery_day_id: targetDayId,
+      };
+      setPendingAdds((prev) => ({
+        ...prev,
+        groups: [
+          ...prev.groups,
+          { tempId, ghost, resolvedRealId: null },
+        ],
+      }));
       void (async () => {
-        const { group } = await createLetterGroupInStoryline(
-          storylineId,
-          targetDayId
-        );
-        // Pre-seed the new group with one letter so it has content on the
-        // graph; the user can add more via the inspector.
-        await createInspectionLettersInGroup(group.id, 1);
-        queueFocus({ kind: "group", groupId: group.id });
+        try {
+          const { group } = await createLetterGroupInStoryline(
+            storylineId,
+            targetDayId
+          );
+          // Pre-seed the new group with one letter so it has content on the
+          // graph; the user can add more via the inspector.
+          await createInspectionLettersInGroup(group.id, 1);
+          resolvePendingGroup(tempId, group.id);
+          queueFocus({ kind: "group", groupId: group.id });
+        } catch (err) {
+          removePendingGroup(tempId);
+          throw err;
+        }
       })();
     };
     const showCreateMenu = (anchorGroup: LetterGroup | null) => {
       const makeCreator = (n: number) => () => {
         if (!anchorGroup) return;
+        // Optimistic ghosts: one per requested segment. Variants i/ii/iii
+        // are picked to follow the existing ones in this report group so
+        // the layout's roman-numeral sort places them at the tail.
+        const sameGroupSegs = segments.filter(
+          (s) => s.letter_group_id === anchorGroup.id
+        );
+        const existingMax = Math.max(
+          0,
+          ...sameGroupSegs.map((s) => romanToInt(s.variant))
+        );
+        const storyline = storylines.find(
+          (s) => s.id === anchorGroup.storyline_id
+        );
+        const ghostTempIds: string[] = [];
+        const ghosts: PendingAdd<ReportSegmentView>[] = [];
+        for (let i = 1; i <= n; i++) {
+          const tempId = makeGhostId("seg");
+          ghostTempIds.push(tempId);
+          const variant = toRoman(existingMax + i);
+          ghosts.push({
+            tempId,
+            ghost: {
+              id: tempId,
+              report_group_id: "",
+              variant,
+              summary: null,
+              content: null,
+              delivery_day_override_id: null,
+              delivery_day_offset: null,
+              sort_order: existingMax + i,
+              updated_at: new Date(0).toISOString(),
+              updated_by: null,
+              letter_group_id: anchorGroup.id,
+              storyline_id: anchorGroup.storyline_id,
+              storyline_abbreviation:
+                storyline?.abbreviation ?? "",
+              group_sequence: anchorGroup.sequence,
+              report_id: "R-?",
+              effective_day_id: targetDayId,
+            },
+            resolvedRealId: null,
+          });
+        }
+        setPendingAdds((prev) => ({
+          ...prev,
+          segments: [...prev.segments, ...ghosts],
+        }));
         void (async () => {
-          const { segmentIds } = await createReportSegmentsForGroupAtDay(
-            anchorGroup.id,
-            n,
-            targetDayId
-          );
-          if (segmentIds[0]) {
-            queueFocus({ kind: "segment", segmentId: segmentIds[0] });
+          try {
+            const { segmentIds } = await createReportSegmentsForGroupAtDay(
+              anchorGroup.id,
+              n,
+              targetDayId
+            );
+            ghostTempIds.forEach((tempId, idx) => {
+              const realId = segmentIds[idx];
+              if (realId) resolvePendingSegment(tempId, realId);
+              else removePendingSegment(tempId);
+            });
+            if (segmentIds[0]) {
+              queueFocus({ kind: "segment", segmentId: segmentIds[0] });
+            }
+          } catch (err) {
+            ghostTempIds.forEach(removePendingSegment);
+            throw err;
           }
         })();
       };
@@ -3299,10 +3526,44 @@ export function GraphView({
                   icon: copyIcon,
                   onClick: () =>
                     void (async () => {
-                      const { newSegmentId } = await duplicateReportSegment(
-                        segId
-                      );
-                      queueFocus({ kind: "segment", segmentId: newSegmentId });
+                      // Ghost a sibling segment so the duplicate appears
+                      // in the same cell instantly. Variant is picked to
+                      // sort at the tail of the report group.
+                      const sourceSeg = segments.find((s) => s.id === segId);
+                      const tempId = makeGhostId("seg");
+                      if (sourceSeg) {
+                        const sameGroupSegs = segments.filter(
+                          (s) => s.letter_group_id === sourceSeg.letter_group_id
+                        );
+                        const existingMax = Math.max(
+                          0,
+                          ...sameGroupSegs.map((s) => romanToInt(s.variant))
+                        );
+                        const ghost: ReportSegmentView = {
+                          ...sourceSeg,
+                          id: tempId,
+                          variant: toRoman(existingMax + 1),
+                          sort_order: existingMax + 1,
+                          report_id: "R-?",
+                        };
+                        setPendingAdds((prev) => ({
+                          ...prev,
+                          segments: [
+                            ...prev.segments,
+                            { tempId, ghost, resolvedRealId: null },
+                          ],
+                        }));
+                      }
+                      try {
+                        const { newSegmentId } = await duplicateReportSegment(
+                          segId
+                        );
+                        if (sourceSeg) resolvePendingSegment(tempId, newSegmentId);
+                        queueFocus({ kind: "segment", segmentId: newSegmentId });
+                      } catch (err) {
+                        if (sourceSeg) removePendingSegment(tempId);
+                        throw err;
+                      }
                     })(),
                 },
                 { divider: true },
