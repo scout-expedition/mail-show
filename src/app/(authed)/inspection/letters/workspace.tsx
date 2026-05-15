@@ -2480,16 +2480,7 @@ function LettersWorkspaceInner({
                 segments.find((s) => s.id === selectedSegmentId) ?? null
               }
               days={days}
-              groupDeliveryDayId={(() => {
-                if (!groupState.delivery_day_id) return null;
-                const cur = days.find(
-                  (d) => d.id === groupState.delivery_day_id
-                );
-                if (!cur) return null;
-                return (
-                  days.find((d) => d.number === cur.number + 1)?.id ?? null
-                );
-              })()}
+              groupDeliveryDayId={groupState.delivery_day_id}
               allActions={allActions}
               allLetters={allLetters}
               storylines={storylines}
@@ -2547,17 +2538,7 @@ function LettersWorkspaceInner({
                 segments.find((s) => s.id === selectedSegmentId) ?? null
               }
               days={days}
-              groupDeliveryDayId={(() => {
-                // Segment default is the day AFTER the letter group delivers.
-                if (!groupState.delivery_day_id) return null;
-                const cur = days.find(
-                  (d) => d.id === groupState.delivery_day_id
-                );
-                if (!cur) return null;
-                return (
-                  days.find((d) => d.number === cur.number + 1)?.id ?? null
-                );
-              })()}
+              groupDeliveryDayId={groupState.delivery_day_id}
               allActions={allActions}
               allLetters={allLetters}
               storylines={storylines}

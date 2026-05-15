@@ -302,6 +302,10 @@ const edgeTypes = {
   actionIcon: ActionIconEdge,
 };
 
+// Stable empty-edges reference, used to hide all edges during a drag without
+// handing ReactFlow a fresh array identity on every render.
+const EMPTY_EDGES: Edge[] = [];
+
 // Variant key for a letter row. Null variants collapse to "".
 /**
  * Convert a lowercase roman numeral ("i", "ii", "iii", "iv", "ix", …) to its
@@ -1249,7 +1253,10 @@ export function GraphView({
         // of reports. Sits behind the report cards (zIndex -5, above the
         // row band) and uses the row's top-half height so every box in a
         // row reads at a uniform height.
-        const REPORT_CLUSTER_PAD = 8;
+        // Padding around the report run, matched to the letter-group box's
+        // vertical inset (GROUP_PAD_TOP/BOTTOM) so the two outline boxes read
+        // with the same breathing room.
+        const REPORT_CLUSTER_PAD = 14;
         for (const cl of reportClusters) {
           n.push({
             id: `reportcluster:${rowId}:${cl.groupId}`,
@@ -2387,14 +2394,22 @@ export function GraphView({
   useEffect(() => {
     if (!isDragging) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        dragCanceledRef.current = true;
-        // Force ReactFlow's pointer-drag to release so onNodeDragStop
-        // fires and our cancel branch runs.
-        document.dispatchEvent(
-          new MouseEvent("mouseup", { bubbles: true, cancelable: true })
-        );
-      }
+      if (e.key !== "Escape") return;
+      dragCanceledRef.current = true;
+      // Freeze the drag immediately: clear the preview so decoratedNodes
+      // returns the static layout (the object snaps home) and onNodeDrag
+      // bails on further pointer moves. This makes Escape effective even
+      // if the synthetic release below doesn't end ReactFlow's gesture.
+      setDragPreview(null);
+      setHoveredRowId(null);
+      setHoveredColumnId(null);
+      setHoveredGroupId(null);
+      setIsDragging(false);
+      // Best-effort: end ReactFlow's drag gesture now so the pointer is
+      // released. Its XYDrag listens on the window — dispatch both pointer
+      // and mouse up since the listener set depends on the input type.
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -2781,6 +2796,9 @@ export function GraphView({
   // re-renders when the resolved id actually changes (state setter dedupe).
   const onNodeDrag = useCallback(
     (event: React.MouseEvent | MouseEvent, node: Node) => {
+      // Escape was pressed mid-drag — ignore further pointer moves so the
+      // snapped-back layout stays put until the gesture actually ends.
+      if (dragCanceledRef.current) return;
       const rf = rfRef.current;
       if (!rf) return;
       const flowPt = rf.screenToFlowPosition({
@@ -3416,7 +3434,7 @@ export function GraphView({
   // outside the layout useMemo so per-frame hover updates don't trigger
   // the heavy O(nodes+edges) recompute.
   const decoratedNodes = useMemo<Node[]>(() => {
-    if (!hoveredRowId && !hoveredGroupId && !dragPreview) return nodes;
+    if (!hoveredGroupId && !dragPreview) return nodes;
 
     // Drag preview: ghost the dragged node + its children, and shadow-
     // shift the items that move relative to it. For a letter-group drag
@@ -3439,24 +3457,8 @@ export function GraphView({
       }
     }
 
-    // Scope the drop-target highlight to a single (column × day) cell —
-    // the dragged node's own storyline column intersected with the row
-    // under the pointer — instead of tinting the whole row band.
-    const hoveredCol = hoveredColumnId
-      ? labelCols.find((c) => c.id === hoveredColumnId)
-      : undefined;
-    const hoveredCell = hoveredCol
-      ? { x: hoveredCol.baseX, width: hoveredCol.width }
-      : null;
-
     return nodes.map((n) => {
       let next = n;
-      if (hoveredRowId && n.id === `band:${hoveredRowId}`) {
-        next = {
-          ...next,
-          data: { ...next.data, hovered: true, hoveredCell },
-        };
-      }
       if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
         next = { ...next, data: { ...next.data, hovered: true } };
       }
@@ -3510,15 +3512,7 @@ export function GraphView({
       }
       return next;
     });
-  }, [
-    nodes,
-    hoveredRowId,
-    hoveredColumnId,
-    hoveredGroupId,
-    dragPreview,
-    segments,
-    labelCols,
-  ]);
+  }, [nodes, hoveredGroupId, dragPreview, segments]);
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use
@@ -3751,7 +3745,10 @@ export function GraphView({
     >
       <ReactFlow
         nodes={decoratedNodes}
-        edges={edges}
+        // Action chips/connectors are laid out from static node positions,
+        // so they can't follow a node mid-drag — hide every edge while a
+        // drag is in progress and let them re-draw on drop.
+        edges={isDragging ? EMPTY_EDGES : edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
@@ -4388,6 +4385,30 @@ export function GraphView({
           </div>
         </Panel>
       </ReactFlow>
+      {/* Drop-zone highlight — the (storyline column × day row) cell the
+          dragged node will land in. Rendered as a plain overlay (not a
+          ReactFlow node) so the per-frame decoratedNodes churn can't make
+          it flicker; it just updates style in place while the drag runs. */}
+      {isDragging && hoveredRowId && hoveredColumnId
+        ? (() => {
+            const row = labelRows.find((r) => r.rowId === hoveredRowId);
+            const col = labelCols.find((c) => c.id === hoveredColumnId);
+            if (!row || !col) return null;
+            return (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute rounded-sm border-2 border-dashed border-ring"
+                style={{
+                  left: col.baseX * vp.zoom + vp.x,
+                  top: row.baseY * vp.zoom + vp.y,
+                  width: col.width * vp.zoom,
+                  height: row.height * vp.zoom,
+                  background: "color-mix(in srgb, var(--ring) 10%, transparent)",
+                }}
+              />
+            );
+          })()
+        : null}
       {/* dark scrim behind storyline pills, above day-gutter labels —
           matches the inspector PanelHeader's 40px height. */}
       <div
