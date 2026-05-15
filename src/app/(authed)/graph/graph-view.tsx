@@ -2049,9 +2049,8 @@ export function GraphView({
             id: `connect:${a.id}:next`,
             type: "connectionSource",
             position: { x: nextX, y: nextY },
-            // Match the connected next-letter terminator's grey
-            // (path2Color for letter→next edges) so a disconnected stub
-            // and a connected circle read as the same colour.
+            // An action with a report gains its next-letter as a grey
+            // `sn` edge, so paint the disconnected stub the same grey.
             data: { kind: "next", color: "#5e5e5e" },
             draggable: false,
             selectable: false,
@@ -2072,17 +2071,14 @@ export function GraphView({
     for (const p of placements) {
       const c = p.candidate;
       const resolved = resolveAction(c.action);
-      // Edges that lead INTO a letter (segment→next-letter or
-      // letter→next-letter direct) render in muted grey on the
-      // chip→letter segment. The letter→chip leg of an `ln` edge stays
-      // in the action's color (only the post-chip segment is muted).
+      // Report → next-letter continuations (`sn`) render in muted grey.
+      // Every other edge — including a letter → next-letter direct link
+      // (`ln`) — draws end-to-end in the action's own color.
       const isReportSource = c.source.startsWith("report:");
       const isLetterTargetForChip = c.target.startsWith("letter:");
       const isSegmentToNextLetter = isReportSource && isLetterTargetForChip;
-      const isLetterToNextLetter = c.kind === "ln";
       const baseColor = resolved.color || "#ffffff";
       const color = isSegmentToNextLetter ? "#5e5e5e" : baseColor;
-      const path2Color = isLetterToNextLetter ? "#5e5e5e" : undefined;
       // Arrowhead always matches the line that draws into it — no
       // override for converging targets or muted segment-source lines.
       const arrowColor = color;
@@ -2174,10 +2170,8 @@ export function GraphView({
         reconnectable,
         data: {
           color,
-          path2Color,
-          // When the line is muted grey (segment→next-letter) we still
-          // want the action chip itself to read in the action's own
-          // color. ln edges already paint chip with `color` (= baseColor).
+          // When the line is muted grey (segment→next-letter) the action
+          // chip itself still reads in the action's own color.
           chipColor: isSegmentToNextLetter ? baseColor : undefined,
           iconType: resolved.iconType,
           iconValue: resolved.iconValue,
@@ -3118,7 +3112,6 @@ export function GraphView({
      *  multiple outgoing actions). */
     sourceXOffset: number;
     color: string;
-    path2Color: string;
     chipColor: string;
     iconType: import("@/lib/db/enums").IconType;
     iconValue: string | null;
@@ -3146,7 +3139,6 @@ export function GraphView({
         chipY: data.chipY,
         sourceXOffset: data.sourceXOffset ?? 0,
         color: data.color,
-        path2Color: data.path2Color ?? data.color,
         chipColor: data.chipColor ?? data.color,
         iconType: data.iconType,
         iconValue: data.iconValue,
@@ -3632,7 +3624,7 @@ export function GraphView({
           <path
             d={path2}
             fill="none"
-            stroke={v.path2Color}
+            stroke={v.color}
             strokeWidth={1.75}
           />
           {/* Chip portaled into ReactFlow's edge-label-renderer

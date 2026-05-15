@@ -17,12 +17,6 @@ import type { ActiveImpact } from "@/lib/graph-overlay";
 export type ActionIconEdgeData = {
   color: string;
   /**
-   * Override for the SECOND bezier segment (chip → target). Used to
-   * paint letter→chip in the action's own color while chip→next-letter
-   * stays muted grey on `ln` edges. Falls back to `color` when unset.
-   */
-  path2Color?: string;
-  /**
    * Optional override for the action-chip background, used when the line
    * itself is muted (e.g. `ln` edges paint a grey line into a next letter
    * but the chip should keep the action's own color). Falls back to
@@ -128,7 +122,6 @@ function ActionIconEdgeComponent({
   const d = data as unknown as ActionIconEdgeData;
   const invalid = !!d.invalid;
   const color = invalid ? "#ef4444" : d.color || "#ffffff";
-  const path2Color = invalid ? color : d.path2Color ?? color;
   const terminator = d.terminator ?? "arrow";
   const chipX = d.chipX;
   const chipY = d.chipY;
@@ -146,14 +139,6 @@ function ActionIconEdgeComponent({
         opacity: baseOpacity,
       }
     : { stroke: color, strokeWidth: 1.75, opacity: baseOpacity };
-  const path2StrokeStyle = invalid
-    ? {
-        stroke: path2Color,
-        strokeWidth: 1.75,
-        strokeDasharray: "6 4",
-        opacity: baseOpacity,
-      }
-    : { stroke: path2Color, strokeWidth: 1.75, opacity: baseOpacity };
 
   // Cubic bezier segments so the line leaves the source and arrives at the
   // target perpendicular to the pill edges (vertical exit / entry via
@@ -260,7 +245,7 @@ function ActionIconEdgeComponent({
         <BaseEdge
           id={`${id}-b`}
           path={path2}
-          style={path2StrokeStyle}
+          style={strokeStyle}
           markerEnd={markerEnd}
         />
       ) : null}
@@ -284,10 +269,7 @@ function ActionIconEdgeComponent({
                 width: 12,
                 height: 12,
                 borderRadius: "50%",
-                // Terminator sits at the END of the second bezier
-                // segment, so use that segment's color (matches the
-                // muted grey on letter→next-letter direct edges).
-                background: path2Color,
+                background: color,
                 border: "1.5px solid var(--background)",
                 boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
               }}
