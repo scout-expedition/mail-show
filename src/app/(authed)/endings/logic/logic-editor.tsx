@@ -13,7 +13,7 @@
 // Each editor saves itself; switching tabs prompts an unsaved-changes
 // dialog the same way the Frameworks workspace does between frameworks.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
@@ -32,7 +32,10 @@ import type {
   Nation,
 } from "@/lib/db/types";
 import { DocumentEditor } from "../_shared/document-editor";
-import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
+import {
+  usePresenceContext,
+  WorkspacePresenceProvider,
+} from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import { makeResultBlock } from "../_blocks/result-block";
 import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
@@ -227,8 +230,23 @@ function LogicEditorInner({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { setSelection, peers } = usePresenceContext();
   const tabParam = searchParams?.get("tab") ?? null;
   const activeTab: LogicTabId = isLogicTabId(tabParam) ? tabParam : DEFAULT_TAB;
+
+  // Broadcast which logic tab the local user is editing. Peers in a
+  // different tab still appear in the global avatar stack; the tab-bar
+  // dots show who's currently on which tab specifically.
+  useEffect(() => {
+    setSelection({
+      storylineId: null,
+      groupId: null,
+      letterId: null,
+      segmentId: null,
+      view: "logic",
+      payload: { endingTabId: activeTab },
+    });
+  }, [activeTab, setSelection]);
 
   // Index logic docs by kind for fast lookup. Each kind is a singleton
   // by partial unique index so the first match is the only match.
@@ -363,6 +381,43 @@ function LogicEditorInner({
         activeId={activeTab}
         onSelect={(id) => {
           void navigateToTab(id);
+        }}
+        renderTrailing={(tabId) => {
+          const peersOnTab = peers.filter(
+            (p) => p.selection?.payload?.endingTabId === tabId
+          );
+          if (peersOnTab.length === 0) return null;
+          const visible = peersOnTab.slice(0, 3);
+          const overflow = peersOnTab.length - visible.length;
+          return (
+            <span
+              className="inline-flex items-center gap-0.5"
+              aria-label={
+                peersOnTab.length === 1
+                  ? `${peersOnTab[0].email} is on this tab`
+                  : `${peersOnTab.length} others on this tab`
+              }
+            >
+              {visible.map((peer) => (
+                <span
+                  key={peer.userId}
+                  className="rounded-full"
+                  style={{
+                    width: 6,
+                    height: 6,
+                    backgroundColor:
+                      peer.profile?.avatarColorHex ?? peer.color,
+                  }}
+                  title={peer.email}
+                />
+              ))}
+              {overflow > 0 ? (
+                <span className="text-[9px] tabular-nums">
+                  +{overflow}
+                </span>
+              ) : null}
+            </span>
+          );
         }}
       />
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
@@ -15,7 +15,10 @@ import type {
 } from "@/lib/db/types";
 import { FrameworkEditor } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
-import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
+import {
+  usePresenceContext,
+  WorkspacePresenceProvider,
+} from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 
 export function FrameworksWorkspace({
@@ -127,6 +130,7 @@ function FrameworksWorkspaceInner({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { setSelection } = usePresenceContext();
   const effectiveId =
     (selectedFrameworkId &&
       frameworks.find((f) => f.id === selectedFrameworkId)?.id) ??
@@ -137,6 +141,19 @@ function FrameworksWorkspaceInner({
   // Publish the selected framework name as a breadcrumb extension so peers
   // see "Endings > Frameworks > <Name>" in the AppPresence hover popup.
   useBreadcrumbExtension(selected?.name ? [selected.name] : []);
+
+  // Broadcast which framework the local user is editing so RecordPresence
+  // on the framework-list rows can show peer dots next to the active row.
+  useEffect(() => {
+    setSelection({
+      storylineId: null,
+      groupId: null,
+      letterId: null,
+      segmentId: null,
+      view: "frameworks",
+      payload: { endingFrameworkId: effectiveId },
+    });
+  }, [effectiveId, setSelection]);
 
   // Filter once per (selected, blocks/rows/chips) change. Without memoization
   // these `.filter()` calls produce new arrays every render, which makes the

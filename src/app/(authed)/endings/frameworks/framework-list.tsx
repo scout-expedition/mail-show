@@ -6,6 +6,7 @@ import { PanelHeader, Spinner } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type { EndingDocument } from "@/lib/db/types";
 import { createFrameworkDocument } from "../_shared/document-actions";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 
 export function FrameworkList({
   frameworks,
@@ -17,6 +18,7 @@ export function FrameworkList({
   onSelect: (id: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
+  const { peers } = usePresenceContext();
 
   function handleCreate() {
     startTransition(async () => {
@@ -37,6 +39,12 @@ export function FrameworkList({
           <ul>
             {frameworks.map((f) => {
               const active = f.id === selectedId;
+              // Peers whose presence selection points at this framework
+              // — their dot color matches the avatar stack so the user
+              // can correlate "person A is in framework X" at a glance.
+              const peersOnFramework = peers.filter(
+                (p) => p.selection?.payload?.endingFrameworkId === f.id
+              );
               return (
                 <li key={f.id}>
                   <button
@@ -47,7 +55,42 @@ export function FrameworkList({
                       active && "bg-accent/60 text-accent-foreground"
                     )}
                   >
-                    <span className="truncate">{f.name ?? "(unnamed)"}</span>
+                    <span className="flex-1 truncate">{f.name ?? "(unnamed)"}</span>
+                    {peersOnFramework.length > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-0.5"
+                        aria-label={
+                          peersOnFramework.length === 1
+                            ? `${peersOnFramework[0].email} is in this framework`
+                            : `${peersOnFramework.length} others in this framework`
+                        }
+                      >
+                        {peersOnFramework.slice(0, 3).map((peer) => (
+                          <span
+                            key={peer.userId}
+                            className="rounded-full"
+                            style={{
+                              width: 6,
+                              height: 6,
+                              backgroundColor:
+                                peer.profile?.avatarColorHex ?? peer.color,
+                            }}
+                            title={peer.email}
+                          />
+                        ))}
+                        {peersOnFramework.length > 3 ? (
+                          <span
+                            className="text-[9px] font-medium tabular-nums text-muted-foreground"
+                            title={peersOnFramework
+                              .slice(3)
+                              .map((p) => p.email)
+                              .join(", ")}
+                          >
+                            +{peersOnFramework.length - 3}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
                   </button>
                 </li>
               );
