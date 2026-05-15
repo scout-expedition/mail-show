@@ -24,7 +24,7 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Trash2 } from "lucide-react";
 import { readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -49,6 +49,7 @@ import {
   batchMoveToDay,
   createInspectionLettersInGroup,
   createLetterGroupInStoryline,
+  createNextDay,
   createReportSegmentsForGroupAtDay,
   deleteActionRow,
   deleteGroup,
@@ -73,6 +74,7 @@ import {
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
 import ReportNode from "./nodes/report-node";
+import ReportClusterNode from "./nodes/report-cluster";
 import StubTargetNode from "./nodes/stub-target";
 import EndpointTargetNode from "./nodes/endpoint-target";
 
@@ -287,6 +289,7 @@ const nodeTypes = {
   letterGroup: LetterGroupNode,
   letter: LetterNode,
   report: ReportNode,
+  reportCluster: ReportClusterNode,
   stubTarget: StubTargetNode,
   endpointTarget: EndpointTargetNode,
   connectionSource: ConnectionSourceNode,
@@ -918,14 +921,16 @@ export function GraphView({
       }
     }
 
-    // Segments into cells, sorted L→R by report variant (i, ii, iii, …)
-    // so same-letter-group reports always render in canonical order within
-    // a cell.
+    // Segments into cells, clustered by letter-group sequence first
+    // (so reports of the same letter group are always contiguous and
+    // can be wrapped in a single outline box), then L→R by report
+    // variant (i, ii, iii, …) within each cluster.
     const segmentById = new Map(augmentedSegments.map((s) => [s.id, s]));
     const orderedSegments = augmentedSegments
       .slice()
       .sort(
         (a, b) =>
+          a.group_sequence - b.group_sequence ||
           romanToInt(a.variant) - romanToInt(b.variant) ||
           a.variant.localeCompare(b.variant)
       );
@@ -1093,14 +1098,40 @@ export function GraphView({
         const topY = rowY;
         const bottomY = rowY + rowTopH + (rowBothHalves ? CELL_VGAP : 0);
 
-        // Reports row in top half — stacked horizontally, centered in column.
+        // Reports row in top half — stacked horizontally, centered in
+        // column. Reports of the same letter group are contiguous (see
+        // the group-sequence sort above); we track each contiguous run
+        // so a cluster outline box can be drawn around it.
         let reportsX = colCenterX - cell.topHalfW / 2;
+        const reportClusters: Array<{
+          groupId: string;
+          minX: number;
+          maxX: number;
+        }> = [];
+        let curReportCluster: {
+          groupId: string;
+          minX: number;
+          maxX: number;
+        } | null = null;
         for (const sid of cell.segmentIds) {
           const seg = segmentById.get(sid);
           if (!seg) continue;
           const storyline = storylineById.get(seg.storyline_id);
           if (!storyline) continue;
           const segNodeId = `report:${sid}`;
+          if (
+            !curReportCluster ||
+            curReportCluster.groupId !== seg.letter_group_id
+          ) {
+            curReportCluster = {
+              groupId: seg.letter_group_id,
+              minX: reportsX,
+              maxX: reportsX + CARD_W,
+            };
+            reportClusters.push(curReportCluster);
+          } else {
+            curReportCluster.maxX = reportsX + CARD_W;
+          }
           segmentAbsPos.set(segNodeId, {
             x: reportsX,
             y: topY,
@@ -1133,6 +1164,30 @@ export function GraphView({
             focusable: false,
           });
           reportsX += CARD_W + CELL_GAP;
+        }
+
+        // Cluster outline boxes: one per contiguous same-letter-group run
+        // of reports. Sits behind the report cards (zIndex -5, above the
+        // row band) and uses the row's top-half height so every box in a
+        // row reads at a uniform height.
+        const REPORT_CLUSTER_PAD = 8;
+        for (const cl of reportClusters) {
+          n.push({
+            id: `reportcluster:${rowId}:${cl.groupId}`,
+            type: "reportCluster",
+            position: {
+              x: cl.minX - REPORT_CLUSTER_PAD,
+              y: topY - REPORT_CLUSTER_PAD,
+            },
+            data: {
+              width: cl.maxX - cl.minX + REPORT_CLUSTER_PAD * 2,
+              height: rowTopH + REPORT_CLUSTER_PAD * 2,
+            },
+            draggable: false,
+            selectable: false,
+            focusable: false,
+            zIndex: -5,
+          });
         }
 
         // Groups row in bottom half — stacked horizontally, centered in column.
@@ -2289,6 +2344,22 @@ export function GraphView({
     if (!rowId || !storylineId) return;
     const targetDayId = rowId === "unscheduled" ? null : rowId;
     const anchor = { x: e.clientX, y: e.clientY };
+    // The unscheduled row is a holding bucket, not a real day —
+    // creating letter groups / report segments there isn't allowed.
+    // The only thing you can do is add a new day.
+    if (rowId === "unscheduled") {
+      setContextMenu({
+        anchor,
+        items: [
+          {
+            label: "Add Day",
+            icon: <CalendarPlus size={12} aria-hidden />,
+            onClick: () => void createNextDay(),
+          },
+        ],
+      });
+      return;
+    }
     // Resolve the candidate letter group(s) to anchor new segments to:
     // always the group(s) in the closest preceding day of this
     // storyline. The current selection is intentionally NOT consulted —
@@ -2460,9 +2531,8 @@ export function GraphView({
     const groupRowIcon = <Mails size={12} aria-hidden />;
 
     // One report-segment menu row. With a single candidate group it's a
-    // direct click; with several, it fans out to a submenu so the user
-    // picks which letter group the segments anchor to — and the parent
-    // label gets a trailing "…" to signal the continuation.
+    // direct click; with several, it fans out to a submenu where each
+    // row reads "<W2>: <Group name>" (name truncates if long).
     const reportItem = (n: number, label: string): GraphContextMenuItem => {
       if (candidates.length === 0) {
         return { label, icon: reportIcon, disabled: true, onClick: () => {} };
@@ -2471,11 +2541,11 @@ export function GraphView({
         return { label, icon: reportIcon, onClick: makeCreator(n, candidates[0]) };
       }
       return {
-        label: `${label}…`,
+        label: `${label} in`,
         icon: reportIcon,
         trailing: <ChevronRight size={12} aria-hidden />,
         submenu: candidates.map((g) => ({
-          label: `…in Group ${groupLabel(g)}`,
+          label: g.name ? `${groupLabel(g)}: ${g.name}` : groupLabel(g),
           icon: groupRowIcon,
           onClick: makeCreator(n, g),
         })),

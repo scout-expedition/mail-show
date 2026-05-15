@@ -177,7 +177,7 @@ export function GraphContextMenu({
             )}
           >
             {item.icon}
-            <span className="flex-1">{item.label}</span>
+            <span className="min-w-0 flex-1 truncate">{item.label}</span>
             {item.trailing}
           </button>
         );

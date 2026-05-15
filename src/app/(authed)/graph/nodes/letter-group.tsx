@@ -32,7 +32,7 @@ function LetterGroupNode({ data }: NodeProps) {
     <div
       style={{ width: d.width, height: d.height }}
       className={
-        "relative rounded-md border border-transparent bg-white/5 transition-[background-color,box-shadow,opacity] duration-100" +
+        "relative rounded-md border border-white/15 transition-[background-color,box-shadow,opacity] duration-100" +
         (d.hovered
           ? " bg-[color-mix(in_srgb,var(--ring)_15%,transparent)] ring-2 ring-ring ring-offset-1 ring-offset-background"
           : "") +

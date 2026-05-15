@@ -1580,6 +1580,7 @@ export async function createNextDay(): Promise<{ newDayId: string }> {
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
   revalidatePath("/days");
+  revalidatePath("/graph");
   return { newDayId: data!.id as string };
 }
 
