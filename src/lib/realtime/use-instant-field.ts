@@ -53,7 +53,19 @@ export function instantFieldReducer<T>(
     case "remote":
       if (state.status === "dirty" || state.status === "saving") {
         // Local typing wins for now — stash the latest remote instead of
-        // dropping it, so it can be replayed once the save settles.
+        // dropping it, so it can be replayed once the save settles. A
+        // remote that repeats the exact value already stashed is a true
+        // no-op; return the same state so React skips the re-render.
+        // Compare with Object.is, NOT the caller's `equals`: a loose
+        // predicate could call two distinct values equal, and saveError
+        // / saveSuccess read pendingRemote.value back out — so we must
+        // keep the genuinely-latest value unless it is truly identical.
+        if (
+          state.pendingRemote !== null &&
+          Object.is(state.pendingRemote.value, action.value)
+        ) {
+          return state;
+        }
         return { ...state, pendingRemote: { value: action.value } };
       }
       if (equals(action.value, state.localValue)) return state;

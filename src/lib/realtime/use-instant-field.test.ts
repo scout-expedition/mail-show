@@ -109,6 +109,46 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
     });
   });
 
+  it("returns the same state when a remote repeats the already-stashed value", () => {
+    const stashed = instantFieldReducer(saving("local"), {
+      type: "remote",
+      value: "peer",
+    });
+    expect(
+      instantFieldReducer(stashed, { type: "remote", value: "peer" })
+    ).toBe(stashed);
+  });
+
+  it("returns the same state when a remote repeats the stashed value while dirty", () => {
+    const stashed = instantFieldReducer(dirty("local"), {
+      type: "remote",
+      value: "peer",
+    });
+    expect(
+      instantFieldReducer(stashed, { type: "remote", value: "peer" })
+    ).toBe(stashed);
+  });
+
+  it("does not short-circuit on a loose-equals match — keeps the latest value", () => {
+    // "abc" is custom-equals "ABC" but not Object.is-equal. The no-op
+    // short-circuit must use Object.is, so the stash still updates to the
+    // genuinely-latest value (saveError / saveSuccess read it back out).
+    const caseInsensitive = (a: string, b: string) =>
+      a.toLowerCase() === b.toLowerCase();
+    const stashed = instantFieldReducer(
+      saving("local"),
+      { type: "remote", value: "ABC" },
+      caseInsensitive
+    );
+    const next = instantFieldReducer(
+      stashed,
+      { type: "remote", value: "abc" },
+      caseInsensitive
+    );
+    expect(next).not.toBe(stashed);
+    expect(next.pendingRemote).toEqual({ value: "abc" });
+  });
+
   it("applies remote update when in error state (field already reverted)", () => {
     expect(
       instantFieldReducer(errored("a"), { type: "remote", value: "b" })
