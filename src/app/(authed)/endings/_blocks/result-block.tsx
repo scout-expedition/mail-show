@@ -13,7 +13,7 @@
 // bound in by the `makeResultBlock` factory below — the editor builds
 // one per logic doc.
 
-import { useMemo, useRef, type ComponentType } from "react";
+import { useMemo, useRef, useState, type ComponentType } from "react";
 import { GripVertical, Trash2 } from "lucide-react";
 import { Select } from "@/components/ui/select";
 import { OverflowMenu } from "@/components/panel";
@@ -41,12 +41,13 @@ import { DropLine } from "./text-block";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { SubsetPills } from "./subset-pills";
 
 export type ResultOption = { value: string; label: string };
 
-/** Marker value for the "Random (custom subset)" dropdown row. The
- *  picker rewrites this to a real subset sentinel once the user has
- *  toggled the framework checkboxes. */
+/** Marker value for the "Random (subset)" dropdown row. The picker
+ *  rewrites this to a real subset sentinel once the user has toggled
+ *  the framework pills. */
 const SUBSET_PICKER_VALUE = `${RANDOM_SUBSET_SENTINEL_PREFIX}__pending__`;
 
 export function ResultBlock({
@@ -69,6 +70,12 @@ export function ResultBlock({
   const drag = useDrag();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { peers, setFocus } = usePresenceContext();
+  // Local working copy of the subset selection while editing. null =
+  // not editing (picker reflects the saved value); a non-null array
+  // (including []) drives the picker, so the selection can sit at zero
+  // — an empty subset can't be persisted, so it just isn't saved —
+  // until the author picks at least one framework.
+  const [subsetDraft, setSubsetDraft] = useState<string[] | null>(null);
 
   // result_value autosaves through patchBlock. The Select fires on every
   // option change, so commit + blur-flush both reach the server cleanly.
@@ -95,7 +102,7 @@ export function ResultBlock({
     drag.target.position === "after";
 
   function nearTarget(e: React.DragEvent): DragTarget {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = (cardRef.current ?? e.currentTarget).getBoundingClientRect();
     const position = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
     return {
       kind: "near",
@@ -110,6 +117,10 @@ export function ResultBlock({
   const isEmpty = value === "";
   const subset = subsetEnabled ? parseRandomSubset(value) : null;
   const isSubset = subset != null;
+  // Show the pill picker for a persisted subset OR a fresh draft.
+  const showSubsetPicker = isSubset || subsetDraft != null;
+  // Pills reflect the local draft while editing, else the saved subset.
+  const subsetSelected = subsetDraft ?? subset ?? [];
   // If the persisted value is no longer in the option list (e.g. a
   // framework was deleted), surface it as an "unknown" entry so the
   // author notices and re-picks. We never hide it silently. Subset
@@ -117,48 +128,34 @@ export function ResultBlock({
   const valueKnown =
     isEmpty || isSubset || options.some((o) => o.value === value);
 
-  // Subset count for the dropdown label. Frameworks no longer in the
-  // available list (deleted) still count toward the stored size — the
-  // user sees "(missing: …)" in the inline picker.
-  const subsetSize = subset?.length ?? 0;
-  const subsetTotal = subsetFrameworks?.length ?? 0;
-  const subsetLabel = isSubset
-    ? `Random (subset: ${subsetSize}${
-        subsetTotal > 0 ? ` of ${subsetTotal}` : ""
-      })`
-    : "";
-
   function handleSelectChange(next: string) {
     if (next === SUBSET_PICKER_VALUE) {
-      // Default subset = every available framework. Authors then
-      // uncheck what they don't want. Empty subset is rejected by
-      // server validation, so we never seed an empty list.
-      const defaultIds = (subsetFrameworks ?? []).map((f) => f.value);
-      if (defaultIds.length === 0) return; // no frameworks → nothing to pick
-      resultField.set(formatRandomSubset(defaultIds));
+      // Open the picker empty; nothing is persisted until a pill is on.
+      setSubsetDraft([]);
       return;
     }
+    setSubsetDraft(null);
     resultField.set(next);
   }
 
   function toggleSubsetId(id: string) {
-    if (!isSubset) return;
-    const current = new Set(subset);
+    const current = new Set(subsetDraft ?? subset ?? []);
     if (current.has(id)) current.delete(id);
     else current.add(id);
-    if (current.size === 0) return; // never persist an empty subset
     // Preserve the order of subsetFrameworks so reordering frameworks
-    // upstream doesn't churn the stored value.
+    // upstream doesn't churn the stored value; append any unknown
+    // (deleted) ids still selected at the end.
     const ordered = (subsetFrameworks ?? [])
       .map((f) => f.value)
       .filter((id2) => current.has(id2));
-    // Include any unknown ids (deleted frameworks) still in `current`
-    // at the end — iterate `current`, not the pre-toggle `subset`,
-    // otherwise an unchecked-then-removed id would be re-added here.
     for (const id2 of current) {
       if (!ordered.includes(id2)) ordered.push(id2);
     }
-    resultField.set(formatRandomSubset(ordered));
+    // Always mirror the selection in the local draft — a zero-length
+    // set stays at zero (an empty subset isn't persistable). Persist
+    // only when at least one framework is selected.
+    setSubsetDraft(ordered);
+    if (ordered.length > 0) resultField.set(formatRandomSubset(ordered));
   }
 
   const dragFocusKey = {
@@ -168,7 +165,35 @@ export function ResultBlock({
   } as const;
 
   return (
-    <div ref={ref} className="relative flex flex-1 flex-col">
+    <div
+      ref={ref}
+      // Drop handlers on the outer wrapper, not the card: the wrapper
+      // still stretches to the full condition-row slot while the card
+      // inside is compact, so the whole slot stays a valid drop target.
+      onDragEnter={(e) => {
+        if (!drag.dragId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (drag.dragId === block.id) return;
+        drag.setTarget(nearTarget(e));
+      }}
+      onDragOver={(e) => {
+        if (!drag.dragId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        if (drag.dragId === block.id) return;
+        drag.setTarget(nearTarget(e));
+      }}
+      onDrop={(e) => {
+        if (!drag.dragId) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (drag.dragId === block.id) return;
+        drag.commit();
+      }}
+      className="relative flex flex-1 flex-col"
+    >
       <DropLine active={targetBefore} side="top" />
       <FieldHighlight
         peers={peers}
@@ -177,30 +202,8 @@ export function ResultBlock({
       >
       <div
         ref={cardRef}
-        onDragEnter={(e) => {
-          if (!drag.dragId) return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (drag.dragId === block.id) return;
-          drag.setTarget(nearTarget(e));
-        }}
-        onDragOver={(e) => {
-          if (!drag.dragId) return;
-          e.preventDefault();
-          e.stopPropagation();
-          e.dataTransfer.dropEffect = "move";
-          if (drag.dragId === block.id) return;
-          drag.setTarget(nearTarget(e));
-        }}
-        onDrop={(e) => {
-          if (!drag.dragId) return;
-          e.preventDefault();
-          e.stopPropagation();
-          if (drag.dragId === block.id) return;
-          drag.commit();
-        }}
         className={cn(
-          "group/resultblock relative flex h-full min-h-full flex-1 items-stretch rounded-md border border-[var(--block-border)] transition-colors",
+          "group/resultblock relative flex items-stretch rounded-md border border-[var(--block-border)] transition-colors",
           isDragging && "opacity-40"
         )}
         style={{ backgroundColor: "var(--block-card)" }}
@@ -221,11 +224,11 @@ export function ResultBlock({
               );
             }
           }}
-          className="flex w-6 shrink-0 cursor-grab items-start justify-center pt-[17px] text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
+          className="flex w-6 shrink-0 cursor-grab items-center justify-center text-muted-foreground/40 transition-opacity opacity-0 group-hover/resultblock:opacity-100"
         >
           <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-2 pl-2">
+        <div className="flex flex-1 flex-col gap-2 py-1.5 pl-2 pr-2">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
               →
@@ -239,7 +242,7 @@ export function ResultBlock({
               }}
             >
               <Select
-                value={isSubset ? SUBSET_PICKER_VALUE : value}
+                value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
                 onChange={(e) => handleSelectChange(e.target.value)}
                 onFocus={resultField.onFocus}
                 onBlur={resultField.onBlur}
@@ -247,6 +250,7 @@ export function ResultBlock({
                 className={cn(
                   "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
                   isEmpty &&
+                    !showSubsetPicker &&
                     "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
                   resultField.status === "error" && "ring-2 ring-destructive"
                 )}
@@ -263,40 +267,38 @@ export function ResultBlock({
                 </option>
               ))}
               {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
-                <option value={SUBSET_PICKER_VALUE}>
-                  {isSubset ? subsetLabel : "Random (custom subset)…"}
-                </option>
+                <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
               ) : null}
               </Select>
             </FieldHighlight>
+            <div className="ml-auto shrink-0">
+              <OverflowMenu
+                items={[
+                  {
+                    label: "Delete Result Block",
+                    intent: "destructive",
+                    icon: <Trash2 size={10} aria-hidden />,
+                    onClick: async () => {
+                      const ok = await confirm({
+                        title: "Delete result block?",
+                        message: "This can't be undone.",
+                        confirmLabel: "Delete",
+                        intent: "destructive",
+                      });
+                      if (ok) onDelete();
+                    },
+                  },
+                ]}
+              />
+            </div>
           </div>
-          {isSubset && subsetFrameworks ? (
-            <SubsetPicker
+          {showSubsetPicker && subsetFrameworks ? (
+            <SubsetPills
               frameworks={subsetFrameworks}
-              selectedIds={subset!}
+              selectedIds={subsetSelected}
               onToggle={toggleSubsetId}
             />
           ) : null}
-        </div>
-        <div className="flex w-6 shrink-0 items-start justify-center pt-[12px]">
-          <OverflowMenu
-            items={[
-              {
-                label: "Delete Result Block",
-                intent: "destructive",
-                icon: <Trash2 size={10} aria-hidden />,
-                onClick: async () => {
-                  const ok = await confirm({
-                    title: "Delete result block?",
-                    message: "This can't be undone.",
-                    confirmLabel: "Delete",
-                    intent: "destructive",
-                  });
-                  if (ok) onDelete();
-                },
-              },
-            ]}
-          />
         </div>
       </div>
       </FieldHighlight>
@@ -349,8 +351,8 @@ export function makeResultBlock(
   // Random options sit at the end. Nation affinity (5-way tiebreak)
   // distinguishes "tied only" from "all". Class affinity (2-way, every
   // tie is the full set) collapses to a single "Random" since the two
-  // would behave identically. Framework_selection offers "Random (any
-  // framework)" — random of all today; custom subset is a followup.
+  // would behave identically. Framework_selection offers "Random (any)"
+  // plus the custom-subset picker (see `subsetEnabled` below).
   const randomOptions: ResultOption[] = (() => {
     if (kind === "nation_affinity_top" || kind === "nation_affinity_bottom") {
       // Set-narrowing: emit one "Remove …" entry per nation alongside
@@ -367,12 +369,9 @@ export function makeResultBlock(
       );
       return [
         ...removeOptions,
-        { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
-        {
-          value: RANDOM_REMAINING_SENTINEL,
-          label: "Random (between remaining)",
-        },
-        { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
+        { value: RANDOM_REMAINING_SENTINEL, label: "Random (remaining)" },
+        { value: RANDOM_TIED_SENTINEL, label: "Random (tied)" },
+        { value: RANDOM_ALL_SENTINEL, label: "Random (all)" },
       ];
     }
     if (kind === "class_affinity_top") {
@@ -383,15 +382,13 @@ export function makeResultBlock(
       ];
     }
     // framework_selection
-    return [
-      { value: RANDOM_ALL_SENTINEL, label: "Random (any framework)" },
-    ];
+    return [{ value: RANDOM_ALL_SENTINEL, label: "Random (any)" }];
   })();
   const options: ResultOption[] = [...baseOptions, ...randomOptions];
 
   // Custom-subset random is only meaningful for framework_selection.
   // The picker reads from `subsetFrameworks`; the dropdown shows
-  // "Random (custom subset)…" only when this flag is on.
+  // "Random (subset)" only when this flag is on.
   const subsetEnabled = kind === "framework_selection";
   const subsetFrameworks: ResultOption[] | undefined = subsetEnabled
     ? frameworks
@@ -422,66 +419,4 @@ export function makeResultBlock(
     Component: ConfiguredResultBlock,
     defaultValue: options[0]?.value ?? null,
   };
-}
-
-function SubsetPicker({
-  frameworks,
-  selectedIds,
-  onToggle,
-}: {
-  frameworks: ResultOption[];
-  selectedIds: string[];
-  onToggle: (id: string) => void;
-}) {
-  const selectedSet = new Set(selectedIds);
-  const known = new Set(frameworks.map((f) => f.value));
-  const missing = selectedIds.filter((id) => !known.has(id));
-  return (
-    <div
-      className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-transparent p-2 sm:grid-cols-2"
-      style={{ backgroundColor: "var(--block-result-bg)" }}
-    >
-      {frameworks.length === 0 ? (
-        <p className="col-span-full text-[11px] italic text-muted-foreground">
-          No frameworks available.
-        </p>
-      ) : null}
-      {frameworks.map((f) => {
-        const checked = selectedSet.has(f.value);
-        const disable = checked && selectedIds.length === 1;
-        return (
-          <label
-            key={f.value}
-            className={cn(
-              "flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-muted/30",
-              disable && "cursor-not-allowed opacity-60"
-            )}
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              disabled={disable}
-              onChange={() => onToggle(f.value)}
-              className="h-3 w-3"
-            />
-            <span className="truncate">{f.label}</span>
-          </label>
-        );
-      })}
-      {missing.map((id) => (
-        <label
-          key={id}
-          className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-warning-foreground hover:bg-warning/10"
-        >
-          <input
-            type="checkbox"
-            checked
-            onChange={() => onToggle(id)}
-            className="h-3 w-3"
-          />
-          <span className="truncate">(missing framework: {id})</span>
-        </label>
-      ))}
-    </div>
-  );
 }
