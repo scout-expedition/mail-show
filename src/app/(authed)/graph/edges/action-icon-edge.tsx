@@ -87,6 +87,11 @@ export type ActionIconEdgeData = {
   /** When the connector represents a reconnectable target end, render it
    *  in the line's color (matches the chip drag affordance). */
   reconnectable?: boolean;
+  /** Draw the terminator circle at the SOURCE end (the report's bottom
+   *  edge) rather than the target. Used for report → next-letter (`sn`)
+   *  edges so the connector sits in a row with the disconnected
+   *  `connect:next` stubs instead of floating at the far letter. */
+  terminatorAtSource?: boolean;
 };
 
 const CHIP_PX = 20;
@@ -270,7 +275,9 @@ function ActionIconEdgeComponent({
             className="nodrag nopan"
             style={{
               position: "absolute",
-              transform: `translate(-50%, -50%) translate(${arrowTargetX}px, ${arrowTargetY}px)`,
+              transform: d.terminatorAtSource
+                ? `translate(-50%, -50%) translate(${adjustedSourceX}px, ${sourceY}px)`
+                : `translate(-50%, -50%) translate(${arrowTargetX}px, ${arrowTargetY}px)`,
               pointerEvents: "none",
               zIndex: 9,
             }}
