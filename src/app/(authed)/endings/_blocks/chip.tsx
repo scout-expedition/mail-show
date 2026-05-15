@@ -163,6 +163,13 @@ export function ChipPill({
   const [optimisticValue, setOptimisticValue] = useState<
     { id: string; text: string } | null
   >(null);
+  // Transient display value for the number_ref input. Lets the field
+  // show an empty / mid-typed string WITHOUT pushing an invalid (all-
+  // null) chip into the mirror — a number chip must always carry a
+  // value (DB check constraint). null = no draft, show the committed
+  // chip.number_value. Cleared on blur so an abandoned empty field
+  // snaps back to the last saved number.
+  const [numberDraft, setNumberDraft] = useState<string | null>(null);
 
   // Presence: while the local user edits this chip's operator or value,
   // broadcast focus so peers see a ring around the pill. The ring color
@@ -374,20 +381,38 @@ export function ChipPill({
         <span className="relative inline-flex flex-1 items-center pl-2 text-white">
           <Input
             type="number"
-            value={chip.number_value == null ? "" : String(chip.number_value)}
+            value={
+              numberDraft !== null
+                ? numberDraft
+                : chip.number_value == null
+                  ? ""
+                  : String(chip.number_value)
+            }
             onChange={(e) => {
               const raw = e.target.value;
-              onChange({ number_value: raw === "" ? null : Number(raw) });
+              setNumberDraft(raw);
+              // Only commit a parseable number — an empty / mid-typed
+              // field stays a local draft and never reaches the mirror.
+              if (raw !== "" && !Number.isNaN(Number(raw))) {
+                onChange({ number_value: Number(raw) });
+              }
             }}
             onFocus={onChipFocus}
-            onBlur={onChipBlur}
+            onBlur={() => {
+              onChipBlur();
+              // Drop the draft so the field reverts to the committed
+              // value — an abandoned empty field snaps back rather
+              // than leaving a divergent local chip.
+              setNumberDraft(null);
+            }}
             className="h-full w-12 min-w-0 flex-1 rounded-none border-0 bg-transparent py-0 pl-0 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           />
           <button
             type="button"
-            onClick={() =>
-              onChange({ number_value: (chip.number_value ?? 0) - 1 })
-            }
+            onClick={() => {
+              setNumberDraft(null);
+              onChange({ number_value: (chip.number_value ?? 0) - 1 });
+            }}
             aria-label="Decrement"
             tabIndex={-1}
             className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/60 opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover/chip:opacity-100"
@@ -396,9 +421,10 @@ export function ChipPill({
           </button>
           <button
             type="button"
-            onClick={() =>
-              onChange({ number_value: (chip.number_value ?? 0) + 1 })
-            }
+            onClick={() => {
+              setNumberDraft(null);
+              onChange({ number_value: (chip.number_value ?? 0) + 1 });
+            }}
             aria-label="Increment"
             tabIndex={-1}
             className="inline-flex h-full w-4 shrink-0 items-center justify-center text-white/60 opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover/chip:opacity-100"
