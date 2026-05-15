@@ -2090,7 +2090,6 @@ export function GraphView({
       // impact badges) so the segment → next-letter follow-up doesn't
       // duplicate the indicator.
       const isLetterSource = c.source.startsWith("letter:");
-      const isLetterTarget = c.target.startsWith("letter:");
       const hasEnding =
         impactFilter.masterEnabled !== false &&
         impactFilter.showEndings &&
@@ -2204,30 +2203,11 @@ export function GraphView({
             c.action.id in optimisticReportByAction,
           onSelect: onChipSelect,
           onContextMenu: onChipContextMenu,
-          // The chip only appears on letter → report segment connections
-          // (and on the letter → stub dangling terminator). Report →
-          // next-letter continuations AND letter → next-letter direct
-          // connections (no report) render as a colored line only — UNLESS
-          // we're in edit mode and the action is missing a report or
-          // next-letter, in which case we surface the chip so the
-          // connection-source circles have something to anchor to.
-          hideChip:
-            (!isLetterSource || isLetterTarget) &&
-            !(
-              editingEnabled &&
-              isLetterSource &&
-              (() => {
-                const effReport =
-                  c.action.id in optimisticReportByAction
-                    ? optimisticReportByAction[c.action.id]
-                    : c.action.report_segment_id;
-                const effNext =
-                  c.action.id in optimisticNextByAction
-                    ? optimisticNextByAction[c.action.id]
-                    : c.action.next_letter_variant;
-                return !effReport || !effNext;
-              })()
-            ),
+          // The chip carries the action's icon. It shows on every edge
+          // kind except `sn` (report → next-letter continuations) — the
+          // chip for those actions already sits on the `ls` leg, so a
+          // second chip there would just duplicate it.
+          hideChip: c.kind === "sn",
           invalid: !!c.invalid,
           editingEnabled,
           reconnectable: !!reconnectable,
