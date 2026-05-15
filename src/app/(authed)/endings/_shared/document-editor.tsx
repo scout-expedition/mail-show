@@ -240,7 +240,7 @@ export function DocumentEditor({
   // and the hook's LWW reducer handles them. Logic docs are anonymous —
   // the hook still mounts (cheap) but its onCommit is a no-op so an
   // accidental call would never reach the server.
-  const { peers, setFocus } = usePresenceContext();
+  const { peers, setFocus, onPostgresChanges } = usePresenceContext();
   const nameField = useInstantField<string>({
     value: initial.name,
     onCommit: async (v) => {
@@ -357,6 +357,179 @@ export function DocumentEditor({
       mergeServer(prev, initial.blockVariables, (a, b) => a.id === b.id)
     );
   }, [initial, dirty]);
+
+  // Postgres echo handler — merges column-level updates from peers into
+  // the local mirror for all four ending tables, scoped to blocks /
+  // rows / chips / headers that belong to THIS document. Document-scope
+  // filtering is done client-side via id-membership in the local
+  // mirror; the channel is shared across the surface so the filter
+  // keeps cross-doc events out without an extra subscription.
+  useEffect(() => {
+    return onPostgresChanges((change) => {
+      if (change.table === "ending_blocks") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.document_id !== document.id) return;
+          setBlockState((prev) =>
+            prev.map((b) =>
+              b.id === n.id
+                ? {
+                    ...b,
+                    parent_block_id: n.parent_block_id,
+                    parent_row_id: n.parent_row_id,
+                    block_type: n.block_type,
+                    text: n.text ?? "",
+                    result_value: n.result_value,
+                    summary: n.summary ?? "",
+                    sort_order: n.sort_order,
+                  }
+                : b
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setBlockState((prev) => prev.filter((b) => b.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.document_id !== document.id) return;
+          setBlockState((prev) => {
+            if (prev.some((b) => b.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                document_id: n.document_id,
+                parent_block_id: n.parent_block_id,
+                parent_row_id: n.parent_row_id,
+                block_type: n.block_type,
+                text: n.text ?? "",
+                result_value: n.result_value,
+                summary: n.summary ?? "",
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_rows") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionRow;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setRowState((prev) =>
+            prev.map((r) =>
+              r.id === n.id
+                ? {
+                    ...r,
+                    condition_block_id: n.condition_block_id,
+                    sort_order: n.sort_order,
+                  }
+                : r
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setRowState((prev) => prev.filter((r) => r.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionRow;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setRowState((prev) => {
+            if (prev.some((r) => r.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                condition_block_id: n.condition_block_id,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_row_chips") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionRowChip;
+          if (!isThisDocRowId(n.row_id, rowState)) return;
+          setChipState((prev) =>
+            prev.map((c) =>
+              c.id === n.id
+                ? {
+                    ...c,
+                    row_id: n.row_id,
+                    variable_id: n.variable_id,
+                    operator: n.operator,
+                    text_value_id: n.text_value_id,
+                    number_value: n.number_value,
+                    aggregate_value: n.aggregate_value,
+                    sort_order: n.sort_order,
+                  }
+                : c
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setChipState((prev) => prev.filter((c) => c.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionRowChip;
+          if (!isThisDocRowId(n.row_id, rowState)) return;
+          setChipState((prev) => {
+            if (prev.some((c) => c.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                row_id: n.row_id,
+                variable_id: n.variable_id,
+                operator: n.operator,
+                text_value_id: n.text_value_id,
+                number_value: n.number_value,
+                aggregate_value: n.aggregate_value,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_block_variables") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionBlockVariable;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setBlockVariableState((prev) =>
+            prev.map((bv) =>
+              bv.id === n.id
+                ? {
+                    ...bv,
+                    condition_block_id: n.condition_block_id,
+                    variable_id: n.variable_id,
+                    sort_order: n.sort_order,
+                  }
+                : bv
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setBlockVariableState((prev) => prev.filter((bv) => bv.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionBlockVariable;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setBlockVariableState((prev) => {
+            if (prev.some((bv) => bv.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                condition_block_id: n.condition_block_id,
+                variable_id: n.variable_id,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+      }
+    });
+  }, [onPostgresChanges, document.id, blockState, rowState]);
 
   // Open chip-picker count — Save is disabled while any picker is mid-pick.
   const [openPickerCount, setOpenPickerCount] = useState(0);
@@ -1112,6 +1285,23 @@ function CollapseModeToggleGroup({
       })}
     </div>
   );
+}
+
+/**
+ * True when the given block id is one of this document's blocks in the
+ * local mirror. Used by the postgres echo handler to scope events to
+ * the active document without an extra round-trip.
+ */
+function isThisDocBlockId(blockId: string, blockState: BlockState[]): boolean {
+  return blockState.some((b) => b.id === blockId);
+}
+
+/**
+ * True when the given row id is one of this document's rows in the
+ * local mirror.
+ */
+function isThisDocRowId(rowId: string, rowState: RowState[]): boolean {
+  return rowState.some((r) => r.id === rowId);
 }
 
 /**
