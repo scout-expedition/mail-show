@@ -97,6 +97,7 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
 import {
   BookOpen,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   MailOpen,
@@ -104,10 +105,13 @@ import {
   Megaphone,
   Milestone,
   MoreVertical,
+  Plus,
   Save,
   Trash2,
 } from "lucide-react";
+import { paletteColor } from "@/lib/endings/color-palette";
 import {
+  IconBolt,
   IconCircleMinus,
   IconDiamond,
   IconHammer,
@@ -177,6 +181,52 @@ type ActionImpacts = {
   impact_spokgrad: number;
   impact_pelico: number;
 };
+
+/** mail-x — used on the "Clear" option of the Next-letter picker. */
+function MailXIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M13.5 19H5c-1.105 0-2-.895-2-2V7c0-1.105.895-2 2-2h14c1.105 0 2 .895 2 2v6" />
+      <path d="M3 7l9 6 9-6" />
+      <path d="M22 22l-5-5" />
+      <path d="M17 22l5-5" />
+    </svg>
+  );
+}
+
+/** speakerphone-x — used on the "Clear" option of the Report picker. */
+function SpeakerphoneXIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M18 8c1.657 0 3 1.343 3 3s-1.343 3-3 3" />
+      <path d="M10 8v11c0 .552-.448 1-1 1h-1c-.552 0-1-.448-1-1v-5" />
+      <path d="M14.506 16.088l-2.506-2.088H4c-.552 0-1-.448-1-1v-4c0-.552.448-1 1-1h8" />
+      <path d="M12 8l4.524-3.77c.382-.318.949-.266 1.268.116.135.162.209.366.208.576v9.724" />
+      <path d="M22 22l-5-5" />
+      <path d="M17 22l5-5" />
+    </svg>
+  );
+}
 
 type EndingAssignmentState = {
   variable_id: string;
@@ -1563,12 +1613,12 @@ function LettersWorkspaceInner({
     });
   }
 
-  function handleAddAction(templateId: string) {
+  function handleAddAction(templateId: string, includePair = true) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
     startRowAction(async () => {
-      await addActionFromTemplate(groupId, selectedId, templateId);
+      await addActionFromTemplate(groupId, selectedId, templateId, includePair);
     });
   }
 
@@ -2517,6 +2567,7 @@ function LettersWorkspaceInner({
               endingVariables={endingVariables}
               endingValues={endingValues}
               rowPending={rowPending}
+              active={view === "actions"}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
               onDeleteAction={handleDeleteAction}
@@ -2923,6 +2974,7 @@ function LetterActionsCard({
   endingVariables,
   endingValues,
   rowPending,
+  active,
   onActionChange,
   onAddAction,
   onDeleteAction,
@@ -2946,8 +2998,11 @@ function LetterActionsCard({
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
   rowPending: boolean;
+  /** True while the actions panel is the visible slide step. Flipping
+   *  this true moves keyboard focus into the panel. */
+  active: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
-  onAddAction: (templateId: string) => void;
+  onAddAction: (templateId: string, includePair?: boolean) => void;
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
@@ -2955,50 +3010,33 @@ function LetterActionsCard({
   openLetterId: string | null;
   onBack: () => void;
 }) {
-  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
-
+  const panelRef = useRef<HTMLDivElement>(null);
+  // When the panel becomes the active slide step, pull focus into it so
+  // the next Tab lands on the panel's first control rather than wherever
+  // focus was on the previous panel.
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    if (active && !wasActiveRef.current) {
+      panelRef.current?.focus();
+    }
+    wasActiveRef.current = active;
+  }, [active]);
   return (
-    <div className="rounded-md border border-border bg-card">
+    <div
+      ref={panelRef}
+      tabIndex={-1}
+      className="rounded-md border border-border bg-card focus:outline-none"
+    >
       <PanelHeader
         title="Letter Actions"
-        icon={<Milestone size={14} aria-hidden className="text-muted-foreground/70" />}
-        showSaved
-        menu={
-          <OverflowMenu
-            items={[
-              {
-                label: "Action",
-                icon: (
-                  <span className="inline-flex items-center gap-1.5">
-                    <span aria-hidden>+</span>
-                    <Milestone size={11} aria-hidden />
-                  </span>
-                ),
-                submenu: pickerEntries(templates).map((entry) => {
-                  const tpl = templates.find((t) => t.id === entry.id);
-                  return {
-                    label: entry.label,
-                    icon: (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden>+</span>
-                        {tpl?.icon_value ? (
-                          <IconDisplay
-                            type={tpl.icon_type}
-                            value={tpl.icon_value}
-                            size={12}
-                          />
-                        ) : (
-                          <Milestone size={11} aria-hidden />
-                        )}
-                      </span>
-                    ),
-                    onClick: () => onAddAction(entry.id),
-                  };
-                }),
-              },
-            ]}
+        icon={
+          <IconBolt
+            size={14}
+            aria-hidden
+            className="text-muted-foreground/70"
           />
         }
+        showSaved
       />
       <div className="p-4">
       <div className="mb-3 flex items-center gap-2">
@@ -3042,37 +3080,13 @@ function LetterActionsCard({
           <p className="text-sm text-muted-foreground">No actions yet.</p>
         ) : null}
         <div className="flex justify-center pt-1">
-          {templatePickerOpen ? (
-            <Select
-              autoFocus
-              value=""
-              onChange={(e) => {
-                const v = e.target.value;
-                if (!v) return;
-                setTemplatePickerOpen(false);
-                onAddAction(v);
-              }}
-              onBlur={() => setTemplatePickerOpen(false)}
-              className="h-8 w-auto"
-              aria-label="Pick action"
-            >
-              <option value="">Pick action…</option>
-              {pickerEntries(templates).map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.label}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setTemplatePickerOpen(true)}
-              disabled={rowPending || templates.length === 0}
-              className={MUTED_ADD_BTN}
-            >
-              + Action
-            </button>
-          )}
+          <AddActionMenu
+            templates={templates}
+            disabled={rowPending || templates.length === 0}
+            onAdd={(templateId, includePair) =>
+              onAddAction(templateId, includePair)
+            }
+          />
         </div>
       </div>
       </div>
@@ -3961,6 +3975,7 @@ function MarkdownTextarea({
         >
           <button
             type="button"
+            tabIndex={-1}
             title="Bold"
             aria-label="Bold"
             onMouseDown={(e) => {
@@ -3973,6 +3988,7 @@ function MarkdownTextarea({
           </button>
           <button
             type="button"
+            tabIndex={-1}
             title="Italic"
             aria-label="Italic"
             onMouseDown={(e) => {
@@ -3985,6 +4001,7 @@ function MarkdownTextarea({
           </button>
           <button
             type="button"
+            tabIndex={-1}
             title="Heading"
             aria-label="Heading"
             onMouseDown={(e) => {
@@ -3998,6 +4015,7 @@ function MarkdownTextarea({
           <span className="mx-0.5 h-3.5 w-px bg-border" aria-hidden />
           <button
             type="button"
+            tabIndex={-1}
             title="Bullet list"
             aria-label="Bullet list"
             onMouseDown={(e) => {
@@ -4010,6 +4028,7 @@ function MarkdownTextarea({
           </button>
           <button
             type="button"
+            tabIndex={-1}
             title="Numbered list"
             aria-label="Numbered list"
             onMouseDown={(e) => {
@@ -4022,6 +4041,7 @@ function MarkdownTextarea({
           </button>
           <button
             type="button"
+            tabIndex={-1}
             title="Quote"
             aria-label="Quote"
             onMouseDown={(e) => {
@@ -4035,6 +4055,7 @@ function MarkdownTextarea({
           <span className="mx-0.5 h-3.5 w-px bg-border" aria-hidden />
           <button
             type="button"
+            tabIndex={-1}
             title="Inline code"
             aria-label="Inline code"
             onMouseDown={(e) => {
@@ -4047,6 +4068,7 @@ function MarkdownTextarea({
           </button>
           <button
             type="button"
+            tabIndex={-1}
             title="Link"
             aria-label="Link"
             onMouseDown={(e) => {
@@ -4518,14 +4540,201 @@ function ActionEditor({
     .sort((a, b) => a.sort_order - b.sort_order)
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
+  const nextLetterMatch =
+    action.next_letter_variant
+      ? nextGroupLetters.find((l) => l.variant === action.next_letter_variant) ?? null
+      : null;
+  const nextLetterSummary =
+    action.next_letter_variant && nextLetterMatch?.summary
+      ? nextLetterMatch.summary
+      : "";
+  const reportSegment = action.report_segment_id
+    ? segments.find((s) => s.id === action.report_segment_id) ?? null
+    : null;
+  const reportSummary = reportSegment?.summary ?? "";
+
+  const nextLetterPill =
+    action.next_letter_variant && storyline ? (
+      nextLetterMatch ? (
+        <InspectionLetterPill
+          storyline={storyline}
+          contentId={nextLetterMatch.content_id}
+        />
+      ) : (
+        // Broken / orphaned ref — the variant the action points at no
+        // longer exists in the next group (likely the target letter was
+        // deleted before delete-cascade cleanup landed). Surface as a
+        // destructive-tinted pill so the user can re-pick or clear it.
+        <span
+          className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-destructive bg-destructive/15 px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-destructive"
+          title="This action's next-letter target no longer exists. Pick a new one or set to (Unset)."
+        >
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          </svg>
+          <span className="whitespace-nowrap">
+            {action.next_letter_variant} (missing)
+          </span>
+        </span>
+      )
+    ) : null;
+
+  const nextLetterItems: PillSelectItem[] = [
+    ...(nextGroup
+      ? nextGroupLetters.map<PillSelectItem>((l) => ({
+          key: l.id,
+          active:
+            !!l.variant && action.next_letter_variant === l.variant,
+          label: (
+            <>
+              <InspectionLetterPill
+                storyline={storyline}
+                contentId={l.content_id}
+              />
+              {l.summary ? (
+                <span className="truncate text-muted-foreground">
+                  {l.summary.slice(0, 24)}
+                </span>
+              ) : null}
+            </>
+          ),
+          onPick: () => {
+            if (l.variant) {
+              onChange({ next_letter_variant: l.variant });
+              return;
+            }
+            // The next letter has no variant (single-letter group).
+            // Promote it to 'a' so the action can reference it stably.
+            startCreateLetter(async () => {
+              const { variant } = await ensureInspectionLetterVariant(l.id);
+              onChange({ next_letter_variant: variant });
+            });
+          },
+        }))
+      : []),
+    nextGroup
+      ? {
+          key: "__new_letter",
+          muted: true,
+          label: (
+            <span className="inline-flex items-center gap-1.5">
+              <MailOpen size={13} aria-hidden />
+              Add Letter
+            </span>
+          ),
+          onPick: () =>
+            startCreateLetter(async () => {
+              const { variant } = await createLetterInNextGroup(groupId);
+              onChange({ next_letter_variant: variant });
+            }),
+        }
+      : {
+          key: "__new_group_and_letter",
+          muted: true,
+          label: (
+            <span className="inline-flex items-center gap-1.5">
+              <Mails size={13} aria-hidden />
+              Add Letter Group + Letter
+            </span>
+          ),
+          onPick: () =>
+            startCreateLetter(async () => {
+              const { variant } =
+                await createNextLetterGroupAndLetter(groupId);
+              onChange({ next_letter_variant: variant });
+            }),
+        },
+    {
+      key: "__unset",
+      divider: true,
+      label: (
+        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+          <MailXIcon size={13} />
+          Clear Next Letter
+        </span>
+      ),
+      active: !action.next_letter_variant,
+      onPick: () => onChange({ next_letter_variant: null }),
+    },
+  ];
+
+  const reportPill = reportSegment ? (
+    <ReportSegmentPill
+      storyline={storyline}
+      reportId={reportSegment.report_id}
+    />
+  ) : null;
+
+  const reportItems: PillSelectItem[] = [
+    ...segments.map<PillSelectItem>((s) => ({
+      key: s.id,
+      active: action.report_segment_id === s.id,
+      label: (
+        <ReportSegmentPill storyline={storyline} reportId={s.report_id} />
+      ),
+      onPick: () => onChange({ report_segment_id: s.id }),
+    })),
+    {
+      key: "__new_segment",
+      muted: true,
+      label: (
+        <span className="inline-flex items-center gap-1.5">
+          <Megaphone size={13} aria-hidden />
+          Add Report Segment
+        </span>
+      ),
+      onPick: () =>
+        startCreateSegment(async () => {
+          if (currentDay && !nextDay) {
+            const { segmentId } = await createNextDayAndReportSegment(
+              groupId,
+              currentDay.number
+            );
+            onChange({ report_segment_id: segmentId });
+          } else {
+            const { segmentId } = await createReportSegmentForGroup(
+              groupId,
+              nextDay?.id ?? null
+            );
+            onChange({ report_segment_id: segmentId });
+          }
+        }),
+    },
+    {
+      key: "__unset",
+      divider: true,
+      label: (
+        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+          <SpeakerphoneXIcon size={13} />
+          Clear Linked Report
+        </span>
+      ),
+      active: !action.report_segment_id,
+      onPick: () => onChange({ report_segment_id: null }),
+    },
+  ];
+
   return (
     <div
-      className="rounded-md border border-border bg-black/20 p-3"
+      className="@container relative rounded-md border border-border bg-black/20 p-3"
       onFocus={handleEnterFocus}
       onBlur={handleLeaveFocus}
     >
-      {/* Header row: icon + name + overflow menu. */}
-      <div className="mb-2 flex items-center gap-2">
+      {/* Header row: icon + name. The kebab is rendered LAST in the card
+          (absolutely positioned top-right) so it is the final tab stop
+          of the row before Tab moves to the next action. `pr-7` keeps
+          the name clear of the absolute kebab. */}
+      <div className="mb-2 flex items-center gap-2 pr-7">
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
           style={{ background: colorHex, color: readableOnHex(colorHex) }}
@@ -4535,6 +4744,70 @@ function ActionEditor({
           ) : null}
         </span>
         <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
+      </div>
+
+      {/* Two-column body: left = Report then Next letter (with summaries),
+          right = impacts + variables. Falls back to a single column on
+          narrow surfaces (e.g. the graph's forceNarrow embed) via the
+          card's @container query. */}
+      <div className="grid grid-cols-1 gap-3 @[360px]:grid-cols-[2fr_3fr]">
+        {/* LEFT column */}
+        <div className="flex min-w-0 flex-col gap-3">
+          <LinkField
+            label="Report"
+            pill={reportPill}
+            pillNavigates={!!action.report_segment_id}
+            navAriaLabel="Open report segment"
+            onPillClick={onOpenSegment}
+            pillActive={segmentOpen}
+            items={reportItems}
+            chevronAriaLabel="Pick report segment"
+            summary={reportSummary}
+            focusKey={segmentFocus}
+            peers={peers}
+            creating={creatingSegment}
+          />
+          <LinkField
+            label="Next letter"
+            pill={nextLetterPill}
+            pillNavigates={
+              !!action.next_letter_variant && !!nextLetterMatch
+            }
+            navAriaLabel="Open next letter"
+            onPillClick={onOpenLetter}
+            pillActive={letterOpen}
+            items={nextLetterItems}
+            chevronAriaLabel="Pick next letter"
+            summary={nextLetterSummary}
+            focusKey={nextLetterFocus}
+            peers={peers}
+            creating={creatingLetter}
+          />
+        </div>
+
+        {/* RIGHT column */}
+        <div className="flex min-w-0 flex-col gap-3">
+          <ImpactBlock
+            action={action}
+            actionId={action.id}
+            orderedNations={orderedNations}
+            onChange={onChange}
+            peers={peers}
+          />
+          <EndingAssignmentsSection
+            actionId={action.id}
+            peers={peers}
+            assignments={action.ending_assignments}
+            variables={endingVariables}
+            values={endingValues}
+            onChange={(next) => onChange({ ending_assignments: next })}
+          />
+        </div>
+      </div>
+
+      {/* Kebab is the card's last DOM child → the last tab stop in the
+          row. Positioned to sit visually in the header's top-right. */}
+      <div className="absolute right-3 top-3">
         <OverflowMenu
           items={[
             {
@@ -4546,348 +4819,276 @@ function ActionEditor({
           ]}
         />
       </div>
+    </div>
+  );
+}
 
-      {/* Links row: Next letter and Report each take half the row; the
-          open-segment arrow sits in the Report half. Both columns share
-          the same row height (h-7) so the pills line up. */}
-      <div className="flex items-stretch gap-2">
-        <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-            Next letter
-          </span>
-          <div className="flex h-7 w-full items-center gap-1">
-            {creatingLetter ? (
-              <CreatingPill />
-            ) : (
-              <FieldHighlight peers={peers} focusKey={nextLetterFocus}>
-              <PillSelect
-                pill={
-                  action.next_letter_variant && storyline ? (
-                    (() => {
-                      const match = nextGroupLetters.find(
-                        (l) => l.variant === action.next_letter_variant
-                      );
-                      // Broken / orphaned ref — the variant the action
-                      // points at no longer exists in the next group
-                      // (likely the target letter was deleted before
-                      // delete-cascade cleanup landed). Surface as a
-                      // destructive-tinted pill so the user can re-pick
-                      // or clear it.
-                      if (!match) {
-                        return (
-                          <span
-                            className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-destructive bg-destructive/15 px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-destructive"
-                            title="This action's next-letter target no longer exists. Pick a new one or set to (Unset)."
-                          >
-                            <svg
-                              width="11"
-                              height="11"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2.2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              aria-hidden
-                            >
-                              <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                            </svg>
-                            <span className="whitespace-nowrap">
-                              {action.next_letter_variant} (missing)
-                            </span>
-                          </span>
-                        );
-                      }
-                      return (
-                        <InspectionLetterPill
-                          storyline={storyline}
-                          contentId={match.content_id}
-                        />
-                      );
-                    })()
-                  ) : null
-                }
-                items={[
-                  {
-                    key: "__unset",
-                    label: <span className="text-muted-foreground">(Unset)</span>,
-                    active: !action.next_letter_variant,
-                    onPick: () => onChange({ next_letter_variant: null }),
-                  },
-                  ...(nextGroup
-                    ? nextGroupLetters.map((l) => ({
-                        key: l.id,
-                        active:
-                          !!l.variant &&
-                          action.next_letter_variant === l.variant,
-                        label: (
-                          <>
-                            <InspectionLetterPill
-                              storyline={storyline}
-                              contentId={l.content_id}
-                            />
-                            {l.summary ? (
-                              <span className="truncate text-muted-foreground">
-                                {l.summary.slice(0, 24)}
-                              </span>
-                            ) : null}
-                          </>
-                        ),
-                        onPick: () => {
-                          if (l.variant) {
-                            onChange({ next_letter_variant: l.variant });
-                            return;
-                          }
-                          // The next letter has no variant (single-letter
-                          // group). Promote it to 'a' so the action can
-                          // reference it stably.
-                          startCreateLetter(async () => {
-                            const { variant } =
-                              await ensureInspectionLetterVariant(l.id);
-                            onChange({ next_letter_variant: variant });
-                          });
-                        },
-                      }))
-                    : []),
-                  nextGroup
-                    ? {
-                        key: "__new_letter",
-                        muted: true,
-                        label: "+ Letter",
-                        onPick: () =>
-                          startCreateLetter(async () => {
-                            const { variant } = await createLetterInNextGroup(
-                              groupId
-                            );
-                            onChange({ next_letter_variant: variant });
-                          }),
-                      }
-                    : {
-                        key: "__new_group_and_letter",
-                        muted: true,
-                        label: "+ Letter Group + Letter",
-                        onPick: () =>
-                          startCreateLetter(async () => {
-                            const { variant } =
-                              await createNextLetterGroupAndLetter(groupId);
-                            onChange({ next_letter_variant: variant });
-                          }),
-                      },
-                ]}
-              />
-              </FieldHighlight>
-            )}
-            {action.next_letter_variant ? (
-              <button
-                type="button"
-                onClick={onOpenLetter}
-                aria-label="Open next letter"
-                title="Open next letter"
-                className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
-                  letterOpen
-                    ? "border-foreground/60 bg-accent text-foreground"
-                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
-                )}
+/** A "Next letter" / "Report" field row inside ActionRow.
+ *
+ *  Visually one dropdown control (matching the styling of the delivery-
+ *  override <DaySelect>): a bordered shell with a chevron on the right.
+ *  Inside the shell are two click regions:
+ *    - Pill area (left, flex-1): navigates to the linked record on click.
+ *    - Chevron area (right): opens the picker dropdown to change the
+ *      selection. Dropdown items are still rendered as pills.
+ *  When `creating` is true, the row collapses to the existing
+ *  <CreatingPill /> placeholder while a server-action runs. */
+function LinkField({
+  label,
+  pill,
+  pillNavigates,
+  navAriaLabel,
+  onPillClick,
+  pillActive,
+  items,
+  chevronAriaLabel,
+  summary,
+  focusKey,
+  peers,
+  creating,
+}: {
+  label: string;
+  pill: React.ReactNode | null;
+  pillNavigates: boolean;
+  navAriaLabel: string;
+  onPillClick: () => void;
+  pillActive: boolean;
+  items: PillSelectItem[];
+  chevronAriaLabel: string;
+  summary: string;
+  focusKey: PresenceFocus;
+  peers: PresencePeer[];
+  creating: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  // Highlighted option index for keyboard navigation. -1 = nothing
+  // highlighted (mouse mode). Arrow keys move it; Enter commits it.
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const ref = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+  // Keep the highlighted option scrolled into view as arrows move it.
+  useEffect(() => {
+    if (!open || activeIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelectorAll("[role='option']")[
+      activeIndex
+    ] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex]);
+
+  function openMenu() {
+    // Highlight the currently-active item (or the first) so Enter has a
+    // sensible target the moment the menu opens.
+    const activeAt = items.findIndex((it) => it.active);
+    setActiveIndex(activeAt >= 0 ? activeAt : 0);
+    setOpen(true);
+  }
+  function commitAt(idx: number) {
+    const item = items[idx];
+    if (!item) return;
+    item.onPick();
+    setOpen(false);
+  }
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!open) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+        e.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % items.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + items.length) % items.length);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setActiveIndex(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setActiveIndex(items.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (activeIndex >= 0) commitAt(activeIndex);
+    }
+  }
+  return (
+    <div className="flex min-w-0 flex-col items-start gap-0.5">
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+        {label}
+      </span>
+      <div className="flex h-8 w-full items-center">
+        {creating ? (
+          <CreatingPill />
+        ) : (
+          <FieldHighlight
+            peers={peers}
+            focusKey={focusKey}
+            className="w-full"
+          >
+            <div ref={ref} className="relative w-full">
+              {/* Outer shell: clicking ANYWHERE except the pill opens
+                   the dropdown. The pill is a nested button (with
+                   stopPropagation) that navigates to the linked record.
+                   Implemented as a <div role="button"> so we can have a
+                   nested <button> for the pill — HTML disallows nested
+                   <button>s. Height + bg match the delivery-override
+                   <DaySelect> on the letter detail panel. The shell is
+                   the single tab stop; menu options are reached with
+                   arrows + Enter, not Tab. */}
+              <div
+                role="button"
+                tabIndex={0}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                aria-label={chevronAriaLabel}
+                onClick={() => (open ? setOpen(false) : openMenu())}
+                onKeyDown={handleKeyDown}
+                className="flex h-8 w-full cursor-pointer items-center overflow-hidden rounded-md bg-black/35 transition-colors hover:bg-black/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-foreground/60"
               >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+                <span className="flex min-w-0 flex-1 items-center pl-3 pr-1.5">
+                  {pill ? (
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (pillNavigates) onPillClick();
+                      }}
+                      aria-label={navAriaLabel}
+                      title={navAriaLabel}
+                      disabled={!pillNavigates}
+                      className={cn(
+                        "inline-flex min-w-0 items-center rounded-md focus:outline-none",
+                        // When the linked record is open in another
+                        // panel, ring the pill itself (not the shell).
+                        pillActive && "ring-2 ring-foreground/60",
+                        pillNavigates && !pillActive
+                          ? "cursor-pointer hover:ring-1 hover:ring-foreground/30"
+                          : pillNavigates
+                            ? "cursor-pointer"
+                            : "cursor-default"
+                      )}
+                    >
+                      {pill}
+                    </button>
+                  ) : (
+                    <span className="font-mono text-sm text-muted-foreground/60">
+                      —
+                    </span>
+                  )}
+                </span>
+                <span
+                  className={cn(
+                    "flex shrink-0 items-center justify-center pl-1 pr-2 transition-colors",
+                    open
+                      ? "text-foreground"
+                      : "text-muted-foreground"
+                  )}
                   aria-hidden
                 >
-                  <path d="M9 6l6 6-6 6" />
-                </svg>
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 min-h-[2lh] text-[10px] italic leading-snug text-muted-foreground/60">
-            {action.next_letter_variant
-              ? nextGroupLetters.find((l) => l.variant === action.next_letter_variant)
-                  ?.summary ?? ""
-              : ""}
-          </p>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col items-start gap-0.5">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-            Report
-          </span>
-          <div className="flex h-7 w-full items-center gap-1">
-            {creatingSegment ? (
-              <CreatingPill />
-            ) : (
-              <FieldHighlight peers={peers} focusKey={segmentFocus}>
-              <PillSelect
-                pill={(() => {
-                  const seg = action.report_segment_id
-                    ? segments.find((s) => s.id === action.report_segment_id)
-                    : null;
-                  return seg ? (
-                    <ReportSegmentPill
-                      storyline={storyline}
-                      reportId={seg.report_id}
-                    />
-                  ) : null;
-                })()}
-                items={[
-                  {
-                    key: "__unset",
-                    label: <span className="text-muted-foreground">(Unset)</span>,
-                    active: !action.report_segment_id,
-                    onPick: () => onChange({ report_segment_id: null }),
-                  },
-                  ...segments.map((s) => ({
-                    key: s.id,
-                    active: action.report_segment_id === s.id,
-                    label: (
-                      <ReportSegmentPill
-                        storyline={storyline}
-                        reportId={s.report_id}
-                      />
-                    ),
-                    onPick: () => onChange({ report_segment_id: s.id }),
-                  })),
-                  {
-                    key: "__new_segment",
-                    muted: true,
-                    label: "+ Report Segment",
-                    onPick: () =>
-                      startCreateSegment(async () => {
-                        if (currentDay && !nextDay) {
-                          const { segmentId } =
-                            await createNextDayAndReportSegment(
-                              groupId,
-                              currentDay.number
-                            );
-                          onChange({ report_segment_id: segmentId });
-                        } else {
-                          const { segmentId } =
-                            await createReportSegmentForGroup(
-                              groupId,
-                              nextDay?.id ?? null
-                            );
-                          onChange({ report_segment_id: segmentId });
-                        }
-                      }),
-                  },
-                ]}
-              />
-              </FieldHighlight>
-            )}
-            {action.report_segment_id ? (
-              <button
-                type="button"
-                onClick={onOpenSegment}
-                aria-label="Open report segment"
-                title="Open report segment"
-                className={cn(
-                  "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition-colors",
-                  segmentOpen
-                    ? "border-foreground/60 bg-accent text-foreground"
-                    : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
-                )}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </span>
+              </div>
+              {open ? (
+                <div
+                  ref={listRef}
+                  role="listbox"
+                  className="absolute left-0 top-full z-20 mt-1 min-w-full max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md"
                 >
-                  <path d="M9 6l6 6-6 6" />
-                </svg>
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 min-h-[2lh] text-[10px] italic leading-snug text-muted-foreground/60">
-            {action.report_segment_id
-              ? segments.find((s) => s.id === action.report_segment_id)?.summary ?? ""
-              : ""}
-          </p>
-        </div>
+                  {items.map((item, idx) => (
+                    <div key={item.key}>
+                      {item.divider ? (
+                        <div className="my-1 border-t border-border" />
+                      ) : null}
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        role="option"
+                        aria-selected={!!item.active}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        onClick={() => {
+                          item.onPick();
+                          setOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs focus:outline-none",
+                          idx === activeIndex && "bg-accent/60",
+                          item.active && idx !== activeIndex && "bg-accent/30",
+                          item.muted && "text-muted-foreground"
+                        )}
+                      >
+                        {item.label}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </FieldHighlight>
+        )}
       </div>
+      <p className="mt-0.5 min-h-[2lh] text-[10px] italic leading-snug text-muted-foreground/60">
+        {summary}
+      </p>
+    </div>
+  );
+}
 
-      {/* Divider between summaries and Impact. */}
-      <div className="mt-3 border-t border-border" />
-
-      {/* Impact label. */}
-      <div className="mt-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+/** Impact tiles, regrouped per Figma: top row holds two sub-boxes —
+ *  world impacts (demerits + world status) on the left and class
+ *  affinities (working + gentry) on the right — and the bottom row is
+ *  the five nation tiles full-width. Tile components and the underlying
+ *  action columns are unchanged; only the wrappers differ from the
+ *  previous layout. */
+function ImpactBlock({
+  action,
+  actionId,
+  orderedNations,
+  onChange,
+  peers,
+}: {
+  action: ActionState;
+  actionId: string;
+  orderedNations: Nation[];
+  onChange: (patch: Partial<ActionState>) => void;
+  peers: PresencePeer[];
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
         Impact
-      </div>
-
-      {/* Three grouped boxes: [class affinities] [nation affinities]
-          [world]. Each box is slightly darker than the card so the
-          groups read as separate without divider lines. */}
-      <div className="mt-1 flex flex-wrap items-start gap-1.5">
-        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-          {CLASS_AFFINITY.map((c) => (
-            <HighlightableImpactTile
-              key={c.key}
-              peers={peers}
-              focusKey={{
-                table: "actions",
-                recordId: action.id,
-                field: c.key,
-              }}
-              value={action[c.key]}
-              onChange={(v) =>
-                onChange({ [c.key]: v } as Partial<ActionState>)
-              }
-            >
-              {(value, handleChange) => (
-                <ImpactTile
-                  label={c.label}
-                  icon={c.icon}
-                  value={value}
-                  onChange={handleChange}
-                />
-              )}
-            </HighlightableImpactTile>
-          ))}
-        </div>
-        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-          {orderedNations.map((n) => {
-            const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
-            return (
-              <HighlightableImpactTile
-                key={n.id}
-                peers={peers}
-                focusKey={{
-                  table: "actions",
-                  recordId: action.id,
-                  field: key,
-                }}
-                value={action[key]}
-                onChange={(v) =>
-                  onChange({ [key]: v } as Partial<ActionState>)
-                }
-              >
-                {(value, handleChange) => (
-                  <NationImpactTile
-                    nation={n}
-                    value={value}
-                    onChange={handleChange}
-                  />
-                )}
-              </HighlightableImpactTile>
-            );
-          })}
-        </div>
+      </span>
+      <div className="grid grid-cols-2 gap-1.5">
         <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
           <HighlightableImpactTile
             peers={peers}
             focusKey={{
               table: "actions",
-              recordId: action.id,
+              recordId: actionId,
               field: "impact_demerits",
             }}
             value={action.impact_demerits}
@@ -4914,7 +5115,7 @@ function ActionEditor({
             peers={peers}
             focusKey={{
               table: "actions",
-              recordId: action.id,
+              recordId: actionId,
               field: "impact_world_status",
             }}
             value={action.impact_world_status}
@@ -4938,16 +5139,61 @@ function ActionEditor({
             )}
           </HighlightableImpactTile>
         </div>
+        <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+          {CLASS_AFFINITY.map((c) => (
+            <HighlightableImpactTile
+              key={c.key}
+              peers={peers}
+              focusKey={{
+                table: "actions",
+                recordId: actionId,
+                field: c.key,
+              }}
+              value={action[c.key]}
+              onChange={(v) =>
+                onChange({ [c.key]: v } as Partial<ActionState>)
+              }
+            >
+              {(value, handleChange) => (
+                <ImpactTile
+                  label={c.label}
+                  icon={c.icon}
+                  value={value}
+                  onChange={handleChange}
+                />
+              )}
+            </HighlightableImpactTile>
+          ))}
+        </div>
       </div>
-
-      <EndingAssignmentsSection
-        actionId={action.id}
-        peers={peers}
-        assignments={action.ending_assignments}
-        variables={endingVariables}
-        values={endingValues}
-        onChange={(next) => onChange({ ending_assignments: next })}
-      />
+      <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+        {orderedNations.map((n) => {
+          const key = NATION_IMPACT_KEYS[n.name.toLowerCase()];
+          return (
+            <HighlightableImpactTile
+              key={n.id}
+              peers={peers}
+              focusKey={{
+                table: "actions",
+                recordId: actionId,
+                field: key,
+              }}
+              value={action[key]}
+              onChange={(v) =>
+                onChange({ [key]: v } as Partial<ActionState>)
+              }
+            >
+              {(value, handleChange) => (
+                <NationImpactTile
+                  nation={n}
+                  value={value}
+                  onChange={handleChange}
+                />
+              )}
+            </HighlightableImpactTile>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -4998,109 +5244,176 @@ function EndingAssignmentsSection({
   );
 
   const variableById = new Map(variables.map((v) => [v.id, v]));
-  const hasAnyRow = assignments.length > 0;
+
+  // Width (in monospace `ch`) of the longest assigned variable name —
+  // every chip's name segment is set to this so the name|value dividers
+  // line up vertically across stacked chips.
+  const nameColCh = assignments.reduce((max, a) => {
+    const n = variableById.get(a.variable_id)?.name.length ?? 0;
+    return Math.max(max, n);
+  }, 1);
 
   return (
-    <>
-      <div className="mt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-        Set Ending Variables
-      </div>
-      <div className="mt-1 flex flex-col gap-1">
-        {!hasAnyRow ? (
-          <p className="text-xs text-muted-foreground">
-            None — this action doesn&apos;t set any ending variable.
-          </p>
-        ) : null}
-        {assignments.map((a, idx) => {
-          const variable = variableById.get(a.variable_id);
-          const valuesForVar = values.filter(
-            (v) => v.variable_id === a.variable_id
-          );
-          const valFocus = {
-            table: "actions",
-            recordId: actionId,
-            field: `ending_val_${idx}`,
-          };
-          return (
-            <div
-              key={`saved-${idx}`}
-              className="grid grid-cols-[1fr_1fr_24px] items-center gap-1.5"
-            >
-              {/* Variable is locked once a row exists — change requires
-                  delete + re-add. Rendered as a read-only chip with the
-                  variable's color accent so it reads as "set" rather than
-                  "editable." */}
-              <span
-                className="inline-flex h-7 items-center gap-1 truncate rounded-md border border-border/40 px-2 font-mono text-xs"
-                style={
-                  variable?.color_hex
-                    ? {
-                        borderColor: variable.color_hex,
-                        color: variable.color_hex,
-                      }
-                    : undefined
-                }
-                title={variable?.name ?? "Unknown variable"}
-              >
-                {variable?.name ?? "Unknown"}
-              </span>
-              <FieldHighlight peers={peers} focusKey={valFocus}>
-                <Select
-                  value={a.value_id ?? ""}
-                  onChange={(e) => {
-                    setValue(idx, e.target.value || null);
-                    e.target.blur();
-                  }}
-                  className="h-7 w-full text-xs"
-                >
-                  <option value="">— value —</option>
-                  {valuesForVar.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.value}
-                    </option>
-                  ))}
-                </Select>
-              </FieldHighlight>
-              <button
-                type="button"
-                aria-label="Remove ending assignment"
-                title="Remove"
-                onClick={() => removeAt(idx)}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-              >
-                <svg
-                  width="10"
-                  height="10"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-          );
-        })}
-        <div className="flex justify-start">
-          <AddEndingVariableMenu
-            variables={availableVariables}
-            onPick={addWithVariable}
-            disabled={variables.length === 0 || availableVariables.length === 0}
-            disabledReason={
-              variables.length === 0
-                ? "Create an ending variable first"
-                : availableVariables.length === 0
-                  ? "All variables are already assigned"
-                  : undefined
-            }
-          />
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+        Variables
+      </span>
+      <div className="flex min-w-0 flex-col gap-1">
+        {/* No overflow-hidden here — it would clip the 2px outset
+            FieldHighlight ring drawn around a focused chip. Each chip
+            already clips its own text via its inner overflow-hidden. */}
+        <div className="flex min-w-0 flex-col items-stretch gap-1">
+          {assignments.map((a, idx) => {
+            const variable = variableById.get(a.variable_id);
+            const valuesForVar = values.filter(
+              (v) => v.variable_id === a.variable_id
+            );
+            return (
+              <ActionVariableChip
+                key={`saved-${idx}`}
+                variable={variable}
+                valuesForVar={valuesForVar}
+                valueId={a.value_id}
+                nameColCh={nameColCh}
+                onValueChange={(v) => setValue(idx, v)}
+                onRemove={() => removeAt(idx)}
+                focusKey={{
+                  table: "actions",
+                  recordId: actionId,
+                  field: `ending_val_${idx}`,
+                }}
+                peers={peers}
+              />
+            );
+          })}
         </div>
+        <AddEndingVariableMenu
+          variables={availableVariables}
+          onPick={addWithVariable}
+          disabled={variables.length === 0 || availableVariables.length === 0}
+          disabledReason={
+            variables.length === 0
+              ? "Create an ending variable first"
+              : availableVariables.length === 0
+                ? "All variables are already assigned"
+                : undefined
+          }
+        />
       </div>
-    </>
+    </div>
+  );
+}
+
+/** Compact pill that mirrors the endings tab's ChipPill look without
+ *  inheriting its operator/multi-kind shape. Left segment: variable name
+ *  on the variable's color (locked — variable can't be swapped, only the
+ *  row can be deleted). Right segment: value + chevron, with an invisible
+ *  native `<select>` overlay that opens on click anywhere in the cell.
+ *  Hovering reveals an "×" to remove the entire assignment. */
+function ActionVariableChip({
+  variable,
+  valuesForVar,
+  valueId,
+  nameColCh,
+  onValueChange,
+  onRemove,
+  focusKey,
+  peers,
+}: {
+  variable: EndingVariable | undefined;
+  valuesForVar: EndingVariableValue[];
+  valueId: string | null;
+  /** Width of the name segment, in monospace `ch`, shared by every chip
+   *  in the section so the name|value dividers align vertically. */
+  nameColCh: number;
+  onValueChange: (id: string | null) => void;
+  onRemove: () => void;
+  focusKey: PresenceFocus;
+  peers: PresencePeer[];
+}) {
+  if (!variable) {
+    // Variable was deleted upstream — render a destructive-tinted
+    // placeholder so the row is still removable.
+    return (
+      <span className="flex h-5 w-full items-center justify-between gap-1 rounded-md border border-destructive bg-destructive/15 px-1.5 font-mono text-[10px] uppercase text-destructive">
+        <span className="truncate">unknown variable</span>
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Remove ending assignment"
+          title="Remove"
+          onClick={onRemove}
+          className="-mr-0.5 inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-sm hover:bg-destructive/30"
+        >
+          ×
+        </button>
+      </span>
+    );
+  }
+  const color = variable.color_hex ?? paletteColor(variable.color_index);
+  const valueLabel =
+    valuesForVar.find((v) => v.id === valueId)?.value ?? "—";
+  return (
+    <FieldHighlight peers={peers} focusKey={focusKey}>
+      <span
+        className="group flex h-5 w-full items-stretch overflow-hidden whitespace-nowrap rounded-md border font-mono text-[10px] uppercase leading-[16px]"
+        style={{ borderColor: color }}
+        title={`${variable.name} = ${valueLabel}`}
+      >
+        {/* Left: variable name, on color (locked). Fixed width (shared
+            across chips) so the name|value divider aligns vertically;
+            the name is right-aligned so it sits against the divider. */}
+        <span
+          className="flex shrink-0 items-center justify-end px-1.5"
+          style={{
+            backgroundColor: color,
+            color: readableOnHex(color),
+            width: `calc(${nameColCh}ch + 0.75rem)`,
+          }}
+        >
+          <span className="truncate text-right">{variable.name}</span>
+        </span>
+        {/* Right: value + chevron + invisible overlay select. Fills the
+            remaining width and truncates when narrow. */}
+        <span className="relative flex min-w-0 flex-1 items-center gap-1 px-1.5 text-white">
+          <span aria-hidden className="min-w-0 flex-1 truncate">
+            {valueLabel}
+          </span>
+          <ChevronDown
+            size={10}
+            aria-hidden
+            className="shrink-0 opacity-60"
+          />
+          <select
+            value={valueId ?? ""}
+            onChange={(e) => {
+              onValueChange(e.target.value || null);
+              e.target.blur();
+            }}
+            aria-label={`${variable.name} value`}
+            className="absolute inset-0 cursor-pointer opacity-0"
+          >
+            <option value="">—</option>
+            {valuesForVar.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.value}
+              </option>
+            ))}
+          </select>
+        </span>
+        {/* Remove (hover-only, mouse-only — not a tab stop). */}
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="Remove ending assignment"
+          title="Remove"
+          onClick={onRemove}
+          className="hidden shrink-0 items-center px-1 text-muted-foreground transition-colors group-hover:inline-flex hover:text-destructive"
+        >
+          ×
+        </button>
+      </span>
+    </FieldHighlight>
   );
 }
 
@@ -5123,7 +5436,11 @@ function AddEndingVariableMenu({
   disabledReason?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // Keyboard-highlighted option; -1 = mouse mode. Menu options are not
+  // tab stops — arrows move this, Enter commits.
+  const [activeIndex, setActiveIndex] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
@@ -5132,40 +5449,106 @@ function AddEndingVariableMenu({
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+  useEffect(() => {
+    if (!open || activeIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelectorAll("[role='option']")[
+      activeIndex
+    ] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex]);
+
+  function openMenu() {
+    if (disabled) return;
+    setActiveIndex(0);
+    setOpen(true);
+  }
+  function commitAt(idx: number) {
+    const v = variables[idx];
+    if (!v) return;
+    onPick(v.id);
+    setOpen(false);
+  }
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (!open) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+        e.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % variables.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex(
+        (i) => (i - 1 + variables.length) % variables.length
+      );
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setActiveIndex(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setActiveIndex(variables.length - 1);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (activeIndex >= 0) commitAt(activeIndex);
+    }
+  }
   return (
     <div ref={ref} className="relative inline-flex">
+      {/* Trigger matches the frameworks "+ block" InsertionZone button. */}
       <button
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => !disabled && setOpen((o) => !o)}
+        aria-label="Add ending variable"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        onKeyDown={handleKeyDown}
         disabled={disabled}
-        title={disabledReason}
-        className={MUTED_ADD_BTN}
+        title={disabledReason ?? "Add ending variable"}
+        className={cn(
+          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed text-muted-foreground transition-colors duration-300 ease-out",
+          disabled
+            ? "border-border/30 text-muted-foreground/40"
+            : "border-border hover:border-solid hover:bg-white/10 hover:text-foreground"
+        )}
       >
-        + Ending
+        <Plus size={12} aria-hidden />
       </button>
       {open && variables.length > 0 ? (
         <div
+          ref={listRef}
           role="listbox"
           className="absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md"
         >
-          {variables.map((v) => (
-            <button
-              key={v.id}
-              type="button"
-              role="option"
-              aria-selected={false}
-              onClick={() => {
-                onPick(v.id);
-                setOpen(false);
-              }}
-              className="flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs hover:bg-accent/40"
-              style={v.color_hex ? { color: v.color_hex } : undefined}
-            >
-              {v.name}
-            </button>
-          ))}
+          {variables.map((v, idx) => {
+            const color = v.color_hex ?? paletteColor(v.color_index);
+            return (
+              <button
+                key={v.id}
+                type="button"
+                tabIndex={-1}
+                role="option"
+                aria-selected={idx === activeIndex}
+                onMouseEnter={() => setActiveIndex(idx)}
+                onClick={() => {
+                  onPick(v.id);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs focus:outline-none",
+                  idx === activeIndex && "bg-accent/60"
+                )}
+                style={{ color }}
+              >
+                {v.name}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -5230,17 +5613,25 @@ function DeleteX({ label, onClick }: { label: string; onClick: () => void }) {
   );
 }
 
+/** One entry in the add-action menu — either a single template or a
+ *  paired set of two. `templates` is ordered by sort_order; the first
+ *  element's id is the canonical id used when adding the whole entry. */
+type ActionPickerEntry = {
+  id: string;
+  label: string;
+  templates: ActionTemplate[];
+};
+
 /**
- * Deduplicate paired templates into single picker entries labeled "A + B".
- * The lower-sort_order template acts as the canonical id for the pair;
- * addActionFromTemplate handles the pair insertion server-side.
+ * Deduplicate paired templates into single picker entries. A paired
+ * entry carries both templates (sort_order order) and is labeled "A + B";
+ * the lower-sort_order template acts as the canonical id for the pair.
+ * `addActionFromTemplate` handles pair insertion server-side.
  */
-function pickerEntries(
-  templates: ActionTemplate[]
-): Array<{ id: string; label: string }> {
+function pickerEntries(templates: ActionTemplate[]): ActionPickerEntry[] {
   const byId = new Map(templates.map((t) => [t.id, t]));
   const seen = new Set<string>();
-  const entries: Array<{ id: string; label: string }> = [];
+  const entries: ActionPickerEntry[] = [];
   for (const t of templates) {
     if (seen.has(t.id)) continue;
     const partner = t.paired_template_id
@@ -5249,15 +5640,191 @@ function pickerEntries(
     if (partner) {
       const [a, b] =
         t.sort_order <= partner.sort_order ? [t, partner] : [partner, t];
-      entries.push({ id: a.id, label: `${a.name} + ${b.name}` });
+      entries.push({
+        id: a.id,
+        label: `${a.name} + ${b.name}`,
+        templates: [a, b],
+      });
       seen.add(a.id);
       seen.add(b.id);
     } else {
-      entries.push({ id: t.id, label: t.name });
+      entries.push({ id: t.id, label: t.name, templates: [t] });
       seen.add(t.id);
     }
   }
   return entries;
+}
+
+/** Small icon swatch used in the add-action menu — a template's icon on
+ *  its own color, falling back to a flag-bolt when the template has no
+ *  icon set. */
+function ActionTemplateSwatch({
+  template,
+  size = 16,
+}: {
+  template: ActionTemplate;
+  size?: number;
+}) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center justify-center rounded"
+      style={{
+        width: size,
+        height: size,
+        background: template.color_hex,
+        color: readableOnHex(template.color_hex),
+      }}
+    >
+      {template.icon_value ? (
+        <IconDisplay
+          type={template.icon_type}
+          value={template.icon_value}
+          size={Math.round(size * 0.62)}
+        />
+      ) : (
+        <IconBolt size={Math.round(size * 0.62)} aria-hidden />
+      )}
+    </span>
+  );
+}
+
+/**
+ * "+" add-action menu. Trigger matches the frameworks "+ block" button.
+ * Each menu row is an ActionPickerEntry: a single template, or a pair.
+ * For a pair, both action icons render before the label, clicking the
+ * row adds BOTH actions, and hovering reveals a flyout submenu listing
+ * each action so the user can add just one.
+ */
+function AddActionMenu({
+  templates,
+  disabled,
+  onAdd,
+}: {
+  templates: ActionTemplate[];
+  disabled?: boolean;
+  /** includePair=false adds just the one template even if it is paired. */
+  onAdd: (templateId: string, includePair: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [hoverPairId, setHoverPairId] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const entries = useMemo(() => pickerEntries(templates), [templates]);
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        setHoverPairId(null);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  function add(templateId: string, includePair: boolean) {
+    onAdd(templateId, includePair);
+    setOpen(false);
+    setHoverPairId(null);
+  }
+
+  return (
+    <div ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Add action"
+        disabled={disabled}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        className={cn(
+          "inline-flex h-6 w-12 items-center justify-center rounded-md border border-dashed text-muted-foreground transition-colors duration-300 ease-out",
+          disabled
+            ? "border-border/30 text-muted-foreground/40"
+            : "border-border hover:border-solid hover:bg-white/10 hover:text-foreground"
+        )}
+      >
+        <Plus size={14} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute bottom-full left-1/2 z-30 mb-1 w-max -translate-x-1/2 overflow-visible rounded-md border border-border bg-popover shadow-md"
+        >
+          {entries.map((entry) => {
+            const isPair = entry.templates.length === 2;
+            return (
+              <div
+                key={entry.id}
+                className="relative"
+                onMouseEnter={() =>
+                  setHoverPairId(isPair ? entry.id : null)
+                }
+                onMouseLeave={() => setHoverPairId(null)}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => add(entry.id, true)}
+                  className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+                >
+                  <span className="flex items-center gap-1">
+                    {entry.templates.map((t) => (
+                      <ActionTemplateSwatch key={t.id} template={t} />
+                    ))}
+                  </span>
+                  <span className="flex-1">{entry.label}</span>
+                  {isPair ? (
+                    <ChevronRight
+                      size={12}
+                      aria-hidden
+                      className="text-muted-foreground"
+                    />
+                  ) : null}
+                </button>
+                {isPair && hoverPairId === entry.id ? (
+                  <div
+                    role="menu"
+                    /* Anchored to the item's bottom so the flyout grows
+                       upward — the menu itself opens upward from a
+                       bottom-of-panel "+", so a downward flyout would be
+                       clipped by the panel-slide's overflow. */
+                    className="absolute bottom-0 left-full z-40 ml-0.5 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => add(entry.id, true)}
+                      className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+                    >
+                      <span className="flex items-center gap-1">
+                        {entry.templates.map((t) => (
+                          <ActionTemplateSwatch key={t.id} template={t} />
+                        ))}
+                      </span>
+                      <span>Add both</span>
+                    </button>
+                    <div className="border-t border-border" />
+                    {entry.templates.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => add(t.id, false)}
+                        className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+                      >
+                        <ActionTemplateSwatch template={t} />
+                        <span>{t.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -5557,83 +6124,10 @@ type PillSelectItem = {
   label: React.ReactNode;
   active?: boolean;
   muted?: boolean;
+  /** When true, a divider line is drawn above this item in the menu. */
+  divider?: boolean;
   onPick: () => void;
 };
-
-/**
- * Dropdown whose trigger renders an arbitrary pill (or nothing when empty).
- * Used so the Action editor's Next-letter / Report fields can display the
- * same standard pill styling as the rest of the app instead of a styled
- * native <select>. The dropdown menu itself falls back to text labels.
- */
-function PillSelect({
-  pill,
-  items,
-  triggerClassName,
-  menuClassName,
-}: {
-  pill: React.ReactNode | null;
-  items: PillSelectItem[];
-  triggerClassName?: string;
-  menuClassName?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-  return (
-    <div ref={ref} className="relative inline-flex">
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "inline-flex h-6 items-center rounded-md",
-          pill ? "" : "min-w-[24px] border border-dashed border-border/40",
-          triggerClassName
-        )}
-      >
-        {pill}
-      </button>
-      {open ? (
-        <div
-          role="listbox"
-          className={cn(
-            "absolute left-0 top-full z-20 mt-1 min-w-[180px] max-h-64 overflow-auto rounded-md border border-border bg-card shadow-md",
-            menuClassName
-          )}
-        >
-          {items.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="option"
-              aria-selected={!!item.active}
-              onClick={() => {
-                item.onPick();
-                setOpen(false);
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 px-2 py-1.5 text-left font-mono text-xs hover:bg-accent/40",
-                item.active && "bg-accent/30",
-                item.muted && "text-muted-foreground"
-              )}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 /** Muted-outlined delete button used across all entity panels. */
 function BreadcrumbLink({

@@ -22,7 +22,6 @@ import {
   IconWorldBolt,
 } from "@tabler/icons-react";
 import { Input } from "@/components/ui/input";
-import { GHOST_FIELD } from "@/components/panel";
 import { IconDisplay } from "@/components/icon-display";
 import type { Nation } from "@/lib/db/types";
 import { cn } from "@/lib/utils";
@@ -50,9 +49,15 @@ export function CounterInput({
           const n = Number(raw);
           if (Number.isFinite(n)) onChange(n);
         }}
+        // Borderless / transparent in every state so the impact tile
+        // reads as one unit — the only focus/presence indicator is the
+        // ring drawn by the outer HighlightableImpactTile wrapper. The
+        // base Input's focus ring is explicitly cancelled here.
         className={cn(
-          "h-6 w-9 px-1 text-center placeholder:text-muted-foreground/70",
-          GHOST_FIELD
+          "h-6 w-9 border-transparent bg-transparent px-1 text-center shadow-none",
+          "placeholder:text-muted-foreground/70",
+          "hover:bg-black/30",
+          "focus-visible:border-transparent focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0"
         )}
       />
       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
@@ -94,6 +99,7 @@ export function ImpactTile({
     <div className="flex flex-col items-center gap-1" title={label}>
       <button
         type="button"
+        tabIndex={-1}
         onClick={() => onChange(0)}
         aria-label={`Reset ${label} to 0`}
         title={`${label} — click to reset`}
@@ -119,6 +125,7 @@ export function NationImpactTile({
     <div className="flex flex-col items-center gap-1" title={nation.name}>
       <button
         type="button"
+        tabIndex={-1}
         onClick={() => onChange(0)}
         aria-label={`Reset ${nation.name} to 0`}
         title={`${nation.name} — click to reset`}

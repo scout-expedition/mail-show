@@ -439,6 +439,7 @@ export function PresenceAvatar({
   const trigger = interactive ? (
     <button
       type="button"
+      tabIndex={-1}
       onClick={onClick}
       className="relative inline-flex cursor-pointer items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       aria-label={`Jump to ${ariaLabel}`}
