@@ -36,6 +36,8 @@ import {
   DocumentEditor,
   type EditorHandle,
 } from "../_shared/document-editor";
+import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 import { makeResultBlock } from "../_blocks/result-block";
 import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
 import { LogicPreviewView } from "./preview-view";
@@ -151,6 +153,62 @@ function isLogicTabId(value: string | null | undefined): value is LogicTabId {
 }
 
 export function LogicEditor({
+  logicDocs,
+  frameworkDocs,
+  blocks,
+  rows,
+  chips,
+  blockVariables,
+  variables,
+  values,
+  nations,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  logicDocs: EndingDocument[];
+  frameworkDocs: EndingDocument[];
+  blocks: EndingBlock[];
+  rows: EndingConditionRow[];
+  chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="endings-logic"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={[
+        "ending_documents",
+        "ending_blocks",
+        "ending_condition_rows",
+        "ending_condition_row_chips",
+        "ending_condition_block_variables",
+      ]}
+    >
+      <LogicEditorInner
+        logicDocs={logicDocs}
+        frameworkDocs={frameworkDocs}
+        blocks={blocks}
+        rows={rows}
+        chips={chips}
+        blockVariables={blockVariables}
+        variables={variables}
+        values={values}
+        nations={nations}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function LogicEditorInner({
   logicDocs,
   frameworkDocs,
   blocks,

@@ -73,9 +73,13 @@ import { BlockList, type LeafComponents } from "../_blocks/block-list";
 import { FallbackBlock } from "../_blocks/fallback-block";
 import {
   deleteFrameworkDocument,
+  patchDocument,
   saveDocument,
   type BlockPayload,
 } from "./document-actions";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import {
   DragCtx,
   isValidDropTarget,
@@ -230,7 +234,31 @@ export function DocumentEditor({
     [initialName, blocks, rows, chips, blockVariables]
   );
 
-  const [name, setName] = useState(initial.name);
+  // Framework name is now autosaved through patchDocument. The
+  // useInstantField hook owns the local typed value + debounce; remote
+  // updates (postgres echo) arrive via the document prop's new identity
+  // and the hook's LWW reducer handles them. Logic docs are anonymous —
+  // the hook still mounts (cheap) but its onCommit is a no-op so an
+  // accidental call would never reach the server.
+  const { peers, setFocus } = usePresenceContext();
+  const nameField = useInstantField<string>({
+    value: initial.name,
+    onCommit: async (v) => {
+      if (!isFramework) return;
+      const trimmed = v.trim();
+      if (!trimmed) return; // server would throw; let the inline ring show the error
+      await patchDocument(document.id, { name: trimmed });
+    },
+    onFocusChange: (focused) => {
+      if (!isFramework) return;
+      setFocus(
+        focused
+          ? { table: "ending_documents", recordId: document.id, field: "name" }
+          : null
+      );
+    },
+  });
+  const name = nameField.value;
   const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
   const [rowState, setRowState] = useState<RowState[]>(initial.rows);
   const [chipState, setChipState] = useState<ChipState[]>(initial.chips);
@@ -305,10 +333,11 @@ export function DocumentEditor({
   );
   const collapseDirty = collapseOverrides.size > 0;
 
-  // Reconcile incoming server state with local edits.
+  // Reconcile incoming server state with local edits. name is reconciled
+  // by the useInstantField hook's own LWW logic (it watches the `value`
+  // prop), so we don't touch it here.
   useEffect(() => {
     if (!dirty) {
-      setName(initial.name);
       setBlockState(initial.blocks);
       setRowState(initial.rows);
       setChipState(initial.chips);
@@ -838,7 +867,8 @@ export function DocumentEditor({
     startSave(doSave);
   }
   function handleRevert() {
-    setName(initial.name);
+    // Name is autosaved per-field — there's nothing to revert. The other
+    // arrays still need the manual revert until their leaves migrate.
     setBlockState(initial.blocks);
     setRowState(initial.rows);
     setChipState(initial.chips);
@@ -912,19 +942,29 @@ export function DocumentEditor({
           <div className="flex items-start gap-2">
             <div className="flex-1">
               <Label className="!text-xs">Framework name</Label>
-              <Input
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setDirty(true);
+              <FieldHighlight
+                peers={peers}
+                focusKey={{
+                  table: "ending_documents",
+                  recordId: document.id,
+                  field: "name",
                 }}
-                placeholder="Framework name"
-                className={cn(
-                  "mt-1 h-9",
-                  GHOST_FIELD,
-                  nameInvalid && "ring-2 ring-destructive"
-                )}
-              />
+                className="mt-1"
+              >
+                <Input
+                  value={nameField.value}
+                  onChange={(e) => nameField.set(e.target.value)}
+                  onFocus={nameField.onFocus}
+                  onBlur={nameField.onBlur}
+                  placeholder="Framework name"
+                  className={cn(
+                    "h-9",
+                    GHOST_FIELD,
+                    nameInvalid && "ring-2 ring-destructive",
+                    nameField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                />
+              </FieldHighlight>
             </div>
             {onDeleted ? (
               <button

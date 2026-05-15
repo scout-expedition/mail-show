@@ -124,6 +124,46 @@ export async function renameDocument(formData: FormData) {
 }
 
 /**
+ * Narrow per-field patch for `ending_documents`. Frameworks accept
+ * `name` (trimmed, non-empty, unique across frameworks) and `sort_order`.
+ * Logic docs are anonymous singletons — only `sort_order` is accepted.
+ * Does NOT call revalidatePath; realtime fans out via postgres_changes.
+ */
+export async function patchDocument(
+  id: string,
+  patch: Partial<{ name: string; sort_order: number }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const kind = await getDocumentKind(supabase, id);
+  if (!kind) throw new Error(`Unknown document ${id}.`);
+
+  const sanitized: typeof patch = { ...patch };
+
+  if (sanitized.name !== undefined) {
+    if (kind !== "framework") {
+      throw new Error("Only framework documents can be renamed.");
+    }
+    const trimmed = sanitized.name.trim();
+    if (!trimmed) throw new Error("Framework name cannot be empty.");
+    const { data: conflict } = await supabase
+      .from("ending_documents")
+      .select("id")
+      .eq("kind", "framework")
+      .ilike("name", trimmed.replace(/[\\%_]/g, "\\$&"))
+      .neq("id", id)
+      .maybeSingle();
+    if (conflict) throw new Error(`Duplicate framework name: ${trimmed}`);
+    sanitized.name = trimmed;
+  }
+
+  const { error } = await supabase
+    .from("ending_documents")
+    .update(sanitized)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+/**
  * Delete a `kind='framework'` document. Logic-kind docs are seeded
  * singletons and this rejects when asked to delete one of them.
  */
@@ -468,6 +508,64 @@ export async function deleteBlock(formData: FormData) {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidateEndings();
+}
+
+/**
+ * Narrow per-field patch for `ending_blocks`. Whitelisted columns:
+ * `text` (text blocks only), `result_value` (result + fallback blocks),
+ * `summary`, and `sort_order`. block_type, parent_block_id, and
+ * parent_row_id are intentionally NOT patchable — moves go through
+ * reorderTree so the result-uniqueness invariant holds. Validates
+ * leaf-vs-kind shape and the result-value against the parent document's
+ * kind. Does NOT call revalidatePath; realtime fans out the change.
+ */
+export async function patchBlock(
+  id: string,
+  patch: Partial<{
+    text: string | null;
+    result_value: string | null;
+    summary: string | null;
+    sort_order: number;
+  }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("ending_blocks")
+    .select("document_id, block_type")
+    .eq("id", id)
+    .maybeSingle();
+  if (!existing) throw new Error(`Unknown block ${id}.`);
+  const blockType = existing.block_type as EndingBlockType;
+
+  const sanitized: typeof patch = { ...patch };
+
+  if (sanitized.text !== undefined) {
+    if (blockType !== "text") {
+      throw new Error("`text` is only patchable on text blocks.");
+    }
+  }
+
+  if (sanitized.result_value !== undefined) {
+    if (blockType !== "result" && blockType !== "fallback") {
+      throw new Error("`result_value` is only patchable on result/fallback blocks.");
+    }
+    if (sanitized.result_value != null && sanitized.result_value !== "") {
+      const kind = await getDocumentKind(
+        supabase,
+        existing.document_id as string
+      );
+      if (!kind) throw new Error(`Unknown document ${existing.document_id}.`);
+      await validateResultValue(supabase, kind, sanitized.result_value);
+    } else if (blockType === "result") {
+      throw new Error("Result blocks require a result_value.");
+    }
+  }
+
+  const { error } = await supabase
+    .from("ending_blocks")
+    .update(sanitized)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
 }
 
 /**
@@ -1066,6 +1164,23 @@ export async function deleteRow(formData: FormData) {
   revalidateEndings();
 }
 
+/**
+ * Narrow per-field patch for `ending_condition_rows`. Only `sort_order`
+ * is patchable — moves between condition blocks go through reorderTree.
+ * Does NOT call revalidatePath; realtime fans out the change.
+ */
+export async function patchRow(
+  id: string,
+  patch: Partial<{ sort_order: number }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("ending_condition_rows")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 // --- Block-variable headers ---------------------------------------------
 
 export async function addBlockVariable(input: {
@@ -1225,6 +1340,28 @@ async function computeDefaultChip(
   return null;
 }
 
+/**
+ * Narrow per-field patch for `ending_condition_block_variables`.
+ * Whitelisted: `variable_id` (swap which variable this header slot is
+ * bound to) and `sort_order`. Does NOT call revalidatePath; realtime
+ * fans out the change.
+ *
+ * NOTE: variable_id swaps don't auto-rewrite chip rows underneath this
+ * header. Callers either delete + re-add the header (existing flow) or
+ * swap deliberately and update affected chips themselves.
+ */
+export async function patchBlockVariable(
+  id: string,
+  patch: Partial<{ variable_id: string; sort_order: number }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("ending_condition_block_variables")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 export async function removeBlockVariable(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
@@ -1331,6 +1468,121 @@ export async function deleteChip(formData: FormData) {
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidateEndings();
+}
+
+/**
+ * Narrow per-field patch for `ending_condition_row_chips`. Whitelisted:
+ * variable_id, operator, text_value_id, number_value, aggregate_value,
+ * sort_order. row_id is NOT patchable — chip moves go through reorderTree.
+ *
+ * Validates that exactly one of {text_value_id, number_value,
+ * aggregate_value} is non-null after applying the patch, and that the
+ * operator matches the (final) variable's kind. Does NOT call
+ * revalidatePath; realtime fans out the change.
+ */
+export async function patchChip(
+  id: string,
+  patch: Partial<{
+    variable_id: string;
+    operator: EndingChipOperator;
+    text_value_id: string | null;
+    number_value: number | null;
+    aggregate_value: string | null;
+    sort_order: number;
+  }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase
+    .from("ending_condition_row_chips")
+    .select(
+      "variable_id, operator, text_value_id, number_value, aggregate_value, row_id"
+    )
+    .eq("id", id)
+    .maybeSingle();
+  if (!existing) throw new Error(`Unknown chip ${id}.`);
+
+  // Compose the post-patch chip shape so the value-slot + operator
+  // invariants are enforced on the merged state, not the partial patch.
+  const merged = {
+    variable_id: patch.variable_id ?? (existing.variable_id as string),
+    operator: patch.operator ?? (existing.operator as EndingChipOperator),
+    text_value_id:
+      patch.text_value_id !== undefined
+        ? patch.text_value_id
+        : (existing.text_value_id as string | null),
+    number_value:
+      patch.number_value !== undefined
+        ? patch.number_value
+        : (existing.number_value as number | null),
+    aggregate_value:
+      patch.aggregate_value !== undefined
+        ? patch.aggregate_value
+        : (existing.aggregate_value as string | null),
+  };
+  const filled = [
+    merged.text_value_id,
+    merged.number_value,
+    merged.aggregate_value,
+  ].filter((v) => v != null).length;
+  if (filled !== 1) {
+    throw new Error(
+      "patchChip: exactly one of text_value_id, number_value, or aggregate_value must be non-null after the patch."
+    );
+  }
+
+  // Operator must match the variable's kind.
+  const { data: variable } = await supabase
+    .from("ending_variables")
+    .select("kind")
+    .eq("id", merged.variable_id)
+    .maybeSingle();
+  if (!variable) {
+    throw new Error(`patchChip: variable ${merged.variable_id} not found.`);
+  }
+  const kind = variable.kind as
+    | "text"
+    | "number_ref"
+    | "aggregate_ref";
+  const validOperators = {
+    text: ["=", "≠"],
+    number_ref: ["=", "≠", "<", "≤", ">", "≥"],
+    aggregate_ref: [
+      "top=",
+      "top≠",
+      "bottom=",
+      "bottom≠",
+      "set_includes",
+      "set_excludes",
+    ],
+  }[kind];
+  if (!validOperators.includes(merged.operator)) {
+    throw new Error(
+      `patchChip: operator '${merged.operator}' is not valid for variable kind '${kind}'.`
+    );
+  }
+
+  const { error } = await supabase
+    .from("ending_condition_row_chips")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  // Phase 6 invariant: if variable_id changed, ensure the new variable
+  // is declared on the parent block's header. Cities/citizens-style
+  // patches are narrow; we do this fixup so the editor never has to.
+  if (patch.variable_id && patch.variable_id !== existing.variable_id) {
+    const { data: row } = await supabase
+      .from("ending_condition_rows")
+      .select("condition_block_id")
+      .eq("id", existing.row_id as string)
+      .maybeSingle();
+    if (row) {
+      await addBlockVariable({
+        block_id: row.condition_block_id as string,
+        variable_id: patch.variable_id,
+      });
+    }
+  }
 }
 
 // --- Inline variable + value creation -----------------------------------
@@ -1597,4 +1849,147 @@ export async function saveDocument(input: {
   ]);
 
   revalidateEndings();
+}
+
+/**
+ * Structural reorder for a single document — bulk-updates sort_order
+ * + parent_block_id + parent_row_id across blocks, rows, chips, and
+ * header variables in a single transaction-shaped pass.
+ *
+ * Per-field patches (patchBlock/patchRow/patchChip/patchBlockVariable)
+ * intentionally don't allow moving between parents — moves go through
+ * this action so the result-uniqueness invariant + the unique
+ * (parent, sort_order) constraints can be enforced atomically.
+ *
+ * Uses the two-step shift trick (bump by 1e6 first, then settle) so
+ * intermediate states don't collide with the unique sort_order index.
+ * Does NOT call revalidatePath; realtime fans out the change.
+ */
+export async function reorderTree(input: {
+  document_id: string;
+  blocks: Array<{
+    id: string;
+    parent_block_id: string | null;
+    parent_row_id: string | null;
+    sort_order: number;
+  }>;
+  rows: Array<{ id: string; condition_block_id: string; sort_order: number }>;
+  chips: Array<{ id: string; row_id: string; sort_order: number }>;
+  header_vars: Array<{ id: string; sort_order: number }>;
+}): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+
+  // Validate result-uniqueness post-reorder by checking the proposed
+  // (parent_block_id, parent_row_id) groupings. We need the block_type
+  // for each input block — fetch in one round-trip.
+  const blockIds = input.blocks.map((b) => b.id);
+  if (blockIds.length > 0) {
+    const { data: existing } = await supabase
+      .from("ending_blocks")
+      .select("id, block_type")
+      .in("id", blockIds);
+    const blockTypes = new Map<string, EndingBlockType>(
+      ((existing ?? []) as Array<{ id: string; block_type: EndingBlockType }>)
+        .map((b) => [b.id, b.block_type])
+    );
+    const groups = new Map<
+      string,
+      Array<{ id: string; block_type: EndingBlockType }>
+    >();
+    for (const b of input.blocks) {
+      const bt = blockTypes.get(b.id);
+      if (!bt || bt === "fallback") continue;
+      const key = `${b.parent_block_id ?? "root"}:${b.parent_row_id ?? "root"}`;
+      const entry = { id: b.id, block_type: bt };
+      const list = groups.get(key);
+      if (list) list.push(entry);
+      else groups.set(key, [entry]);
+    }
+    for (const list of groups.values()) {
+      const hasResult = list.some((b) => b.block_type === "result");
+      if (hasResult && list.length > 1) {
+        throw new Error(
+          "A result block must be the only block in its sibling group."
+        );
+      }
+    }
+  }
+
+  const SHIFT = 1_000_000;
+
+  // Pass 1: bump every row's sort_order by +SHIFT so the final settle
+  // pass can land any permutation without colliding with the (parent,
+  // sort_order) unique constraint mid-update.
+  await Promise.all([
+    ...input.blocks.map(async (b) => {
+      const { error } = await supabase
+        .from("ending_blocks")
+        .update({
+          parent_block_id: b.parent_block_id,
+          parent_row_id: b.parent_row_id,
+          sort_order: b.sort_order + SHIFT,
+        })
+        .eq("id", b.id);
+      if (error) throw new Error(`block ${b.id}: ${error.message}`);
+    }),
+    ...input.rows.map(async (r) => {
+      const { error } = await supabase
+        .from("ending_condition_rows")
+        .update({
+          condition_block_id: r.condition_block_id,
+          sort_order: r.sort_order + SHIFT,
+        })
+        .eq("id", r.id);
+      if (error) throw new Error(`row ${r.id}: ${error.message}`);
+    }),
+    ...input.chips.map(async (c) => {
+      const { error } = await supabase
+        .from("ending_condition_row_chips")
+        .update({
+          row_id: c.row_id,
+          sort_order: c.sort_order + SHIFT,
+        })
+        .eq("id", c.id);
+      if (error) throw new Error(`chip ${c.id}: ${error.message}`);
+    }),
+    ...input.header_vars.map(async (bv) => {
+      const { error } = await supabase
+        .from("ending_condition_block_variables")
+        .update({ sort_order: bv.sort_order + SHIFT })
+        .eq("id", bv.id);
+      if (error) throw new Error(`block_variable ${bv.id}: ${error.message}`);
+    }),
+  ]);
+
+  // Pass 2: settle to the final sort_order.
+  await Promise.all([
+    ...input.blocks.map(async (b) => {
+      const { error } = await supabase
+        .from("ending_blocks")
+        .update({ sort_order: b.sort_order })
+        .eq("id", b.id);
+      if (error) throw new Error(`block ${b.id}: ${error.message}`);
+    }),
+    ...input.rows.map(async (r) => {
+      const { error } = await supabase
+        .from("ending_condition_rows")
+        .update({ sort_order: r.sort_order })
+        .eq("id", r.id);
+      if (error) throw new Error(`row ${r.id}: ${error.message}`);
+    }),
+    ...input.chips.map(async (c) => {
+      const { error } = await supabase
+        .from("ending_condition_row_chips")
+        .update({ sort_order: c.sort_order })
+        .eq("id", c.id);
+      if (error) throw new Error(`chip ${c.id}: ${error.message}`);
+    }),
+    ...input.header_vars.map(async (bv) => {
+      const { error } = await supabase
+        .from("ending_condition_block_variables")
+        .update({ sort_order: bv.sort_order })
+        .eq("id", bv.id);
+      if (error) throw new Error(`block_variable ${bv.id}: ${error.message}`);
+    }),
+  ]);
 }

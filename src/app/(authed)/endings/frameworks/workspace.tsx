@@ -17,8 +17,82 @@ import type {
 import type { EditorHandle } from "../_shared/document-editor";
 import { FrameworkEditor } from "./framework-editor";
 import { FrameworkList } from "./framework-list";
+import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 
 export function FrameworksWorkspace({
+  frameworks,
+  blocks,
+  rows,
+  chips,
+  blockVariables,
+  variables,
+  values,
+  nations,
+  selectedFrameworkId,
+  tiebreakDocsSummary,
+  tiebreakDocsRaw,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  frameworks: EndingDocument[];
+  blocks: EndingBlock[];
+  rows: EndingConditionRow[];
+  chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
+  selectedFrameworkId: string | null;
+  tiebreakDocsSummary: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    { isEmpty: boolean }
+  >;
+  tiebreakDocsRaw: Map<
+    import("@/lib/db/enums").EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >;
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="endings-frameworks"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={[
+        "ending_documents",
+        "ending_blocks",
+        "ending_condition_rows",
+        "ending_condition_row_chips",
+        "ending_condition_block_variables",
+      ]}
+    >
+      <FrameworksWorkspaceInner
+        frameworks={frameworks}
+        blocks={blocks}
+        rows={rows}
+        chips={chips}
+        blockVariables={blockVariables}
+        variables={variables}
+        values={values}
+        nations={nations}
+        selectedFrameworkId={selectedFrameworkId}
+        tiebreakDocsSummary={tiebreakDocsSummary}
+        tiebreakDocsRaw={tiebreakDocsRaw}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function FrameworksWorkspaceInner({
   frameworks,
   blocks,
   rows,
