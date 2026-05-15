@@ -3473,13 +3473,13 @@ export function GraphView({
           n.id.startsWith("reportcluster:") &&
           n.id.endsWith(`:${draggedGroupId}`);
         if (isDragged || isChildOfDragged) {
-          // ReactFlow moves the dragged node (and its children) during the
-          // gesture itself — we only ghost them and lift them above other
-          // cards so the preview reads clearly under the cursor.
+          // ReactFlow's own drag gesture moves the dragged node + its
+          // children — we ONLY fade them. Do not touch position or zIndex:
+          // re-sorting the node by zIndex mid-drag detaches ReactFlow's
+          // pointer capture, which freezes the node and flickers the ghost.
           next = {
             ...next,
             data: { ...next.data, dragGhost: true },
-            zIndex: 1000,
           };
         } else if (isLinkedReport) {
           next = {

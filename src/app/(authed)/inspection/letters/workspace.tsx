@@ -2524,6 +2524,11 @@ function LettersWorkspaceInner({
               openLetterId={
                 selectedGroupId === nextGroup?.id ? selectedId : null
               }
+              highlightedActionId={
+                controlledSelection?.kind === "actions"
+                  ? controlledSelection.actionId ?? null
+                  : null
+              }
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -2946,6 +2951,7 @@ function LetterActionsCard({
   openSegmentId,
   onOpenLetter,
   openLetterId,
+  highlightedActionId,
   onBack,
 }: {
   actions: ActionState[];
@@ -2969,6 +2975,8 @@ function LetterActionsCard({
   openSegmentId: string | null;
   onOpenLetter: (actionIdx: number) => void;
   openLetterId: string | null;
+  /** Action selected in the graph (chip/connector click) — outlined here. */
+  highlightedActionId: string | null;
   onBack: () => void;
 }) {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
@@ -3052,6 +3060,7 @@ function LetterActionsCard({
               (nextGroupLetters.find((l) => l.variant === a.next_letter_variant)
                 ?.id ?? null) === openLetterId
             }
+            highlighted={a.id === highlightedActionId}
           />
         ))}
         {actions.length === 0 ? (
@@ -4586,6 +4595,7 @@ function ActionEditor({
   segmentOpen,
   onOpenLetter,
   letterOpen,
+  highlighted,
 }: {
   action: ActionState;
   templates: ActionTemplate[];
@@ -4605,6 +4615,9 @@ function ActionEditor({
   segmentOpen: boolean;
   onOpenLetter: () => void;
   letterOpen: boolean;
+  /** Outline this editor — the action is the one selected in the graph
+   *  (via a chip / connector-line click) so it's easy to spot here. */
+  highlighted?: boolean;
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
@@ -4660,7 +4673,12 @@ function ActionEditor({
 
   return (
     <div
-      className="rounded-md border border-border bg-black/20 p-3"
+      className={cn(
+        "rounded-md border bg-black/20 p-3 transition-colors",
+        highlighted
+          ? "border-ring ring-1 ring-ring"
+          : "border-border"
+      )}
       onFocus={handleEnterFocus}
       onBlur={handleLeaveFocus}
     >
