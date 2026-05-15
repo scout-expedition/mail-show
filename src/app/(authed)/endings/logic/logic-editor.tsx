@@ -13,9 +13,8 @@
 // Each editor saves itself; switching tabs prompts an unsaved-changes
 // dialog the same way the Frameworks workspace does between frameworks.
 
-import { useCallback, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useUnsavedDialog } from "@/components/panel";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
   ENDING_DOCUMENT_KIND_LABELS,
@@ -32,10 +31,12 @@ import type {
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
+import { DocumentEditor } from "../_shared/document-editor";
 import {
-  DocumentEditor,
-  type EditorHandle,
-} from "../_shared/document-editor";
+  usePresenceContext,
+  WorkspacePresenceProvider,
+} from "@/lib/realtime/presence-context";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 import { makeResultBlock } from "../_blocks/result-block";
 import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
 import { LogicPreviewView } from "./preview-view";
@@ -160,6 +161,62 @@ export function LogicEditor({
   variables,
   values,
   nations,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  logicDocs: EndingDocument[];
+  frameworkDocs: EndingDocument[];
+  blocks: EndingBlock[];
+  rows: EndingConditionRow[];
+  chips: EndingConditionRowChip[];
+  blockVariables: EndingConditionBlockVariable[];
+  variables: EndingVariable[];
+  values: EndingVariableValue[];
+  nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="endings-logic"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={[
+        "ending_documents",
+        "ending_blocks",
+        "ending_condition_rows",
+        "ending_condition_row_chips",
+        "ending_condition_block_variables",
+      ]}
+    >
+      <LogicEditorInner
+        logicDocs={logicDocs}
+        frameworkDocs={frameworkDocs}
+        blocks={blocks}
+        rows={rows}
+        chips={chips}
+        blockVariables={blockVariables}
+        variables={variables}
+        values={values}
+        nations={nations}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+function LogicEditorInner({
+  logicDocs,
+  frameworkDocs,
+  blocks,
+  rows,
+  chips,
+  blockVariables,
+  variables,
+  values,
+  nations,
 }: {
   logicDocs: EndingDocument[];
   frameworkDocs: EndingDocument[];
@@ -173,8 +230,23 @@ export function LogicEditor({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { setSelection, peers } = usePresenceContext();
   const tabParam = searchParams?.get("tab") ?? null;
   const activeTab: LogicTabId = isLogicTabId(tabParam) ? tabParam : DEFAULT_TAB;
+
+  // Broadcast which logic tab the local user is editing. Peers in a
+  // different tab still appear in the global avatar stack; the tab-bar
+  // dots show who's currently on which tab specifically.
+  useEffect(() => {
+    setSelection({
+      storylineId: null,
+      groupId: null,
+      letterId: null,
+      segmentId: null,
+      view: "logic",
+      payload: { endingTabId: activeTab },
+    });
+  }, [activeTab, setSelection]);
 
   // Index logic docs by kind for fast lookup. Each kind is a singleton
   // by partial unique index so the first match is the only match.
@@ -288,41 +360,11 @@ export function LogicEditor({
     return m;
   }, [logicDocs, editorDataByDoc]);
 
-  // Track each visible editor's dirty state + save fn so tab switches
-  // can prompt an unsaved-changes dialog. Keyed by document id.
-  const editorHandlesRef = useRef<Map<string, EditorHandle>>(new Map());
-  const { ask, dialog } = useUnsavedDialog();
-
-  const registerHandleFor = useCallback(
-    (docId: string) => (h: EditorHandle) => {
-      editorHandlesRef.current.set(docId, h);
-    },
-    []
-  );
-
-  async function navigateToTab(nextTabId: LogicTabId) {
+  function navigateToTab(nextTabId: LogicTabId) {
     if (nextTabId === activeTab) return;
-    const dirtyHandles: EditorHandle[] = [];
-    for (const handle of editorHandlesRef.current.values()) {
-      if (handle.dirty) dirtyHandles.push(handle);
-    }
-    if (dirtyHandles.length > 0) {
-      const outcome = await ask(
-        "Unsaved changes",
-        "There are unsaved changes on this tab. Save before switching?"
-      );
-      if (outcome === "cancel") return;
-      if (outcome === "save") {
-        try {
-          for (const h of dirtyHandles) await h.save();
-        } catch (e) {
-          console.error(e);
-          return;
-        }
-      }
-    }
-    // Drop stale handles so the next tab's editors register fresh.
-    editorHandlesRef.current = new Map();
+    // Autosave + blur-flush handles in-flight writes. The 400ms debounce
+    // window may swallow a quick tab switch right after a keystroke; the
+    // saving-gate followup will await idle before navigating.
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
     qs.set("tab", nextTabId);
     router.push(`/endings/logic?${qs.toString()}`);
@@ -339,6 +381,43 @@ export function LogicEditor({
         activeId={activeTab}
         onSelect={(id) => {
           void navigateToTab(id);
+        }}
+        renderTrailing={(tabId) => {
+          const peersOnTab = peers.filter(
+            (p) => p.selection?.payload?.endingTabId === tabId
+          );
+          if (peersOnTab.length === 0) return null;
+          const visible = peersOnTab.slice(0, 3);
+          const overflow = peersOnTab.length - visible.length;
+          return (
+            <span
+              className="inline-flex items-center gap-0.5"
+              aria-label={
+                peersOnTab.length === 1
+                  ? `${peersOnTab[0].email} is on this tab`
+                  : `${peersOnTab.length} others on this tab`
+              }
+            >
+              {visible.map((peer) => (
+                <span
+                  key={peer.userId}
+                  className="rounded-full"
+                  style={{
+                    width: 6,
+                    height: 6,
+                    backgroundColor:
+                      peer.profile?.avatarColorHex ?? peer.color,
+                  }}
+                  title={peer.email}
+                />
+              ))}
+              {overflow > 0 ? (
+                <span className="text-[9px] tabular-nums">
+                  +{overflow}
+                </span>
+              ) : null}
+            </span>
+          );
         }}
       />
 
@@ -374,7 +453,6 @@ export function LogicEditor({
               nations={nations}
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}
-              registerHandle={registerHandleFor(doc.id)}
               fallback={fallback}
               tiebreakDocsSummary={tiebreakDocsSummary}
               renderPreview={(args) => (
@@ -398,7 +476,6 @@ export function LogicEditor({
           );
         })}
       </div>
-      {dialog}
     </div>
   );
 }

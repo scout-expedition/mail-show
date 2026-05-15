@@ -5,14 +5,13 @@
 // from ENDING_LOGIC_RESULT_OPTIONS_BY_KIND for affinity kinds, or from
 // the framework documents list for `framework_selection`.
 //
-// Edits flow through `onChange` like text-block — the shared editor's
-// dirty plumbing observes the in-memory mutation and the UPDATE-only
-// saveDocument flow persists it.
+// result_value autosaves through its own useInstantField + patchBlock —
+// each Select change commits in 400ms (or immediately on blur).
 //
 // Because BlockList's LeafComponents prop pins the component signature
-// to `{ block, onChange, onDelete }`, the doc kind + framework option
-// list are bound in by the `makeResultBlock` factory below — the editor
-// builds one per logic doc.
+// to `{ block, onDelete }`, the doc kind + framework option list are
+// bound in by the `makeResultBlock` factory below — the editor builds
+// one per logic doc.
 
 import { useMemo, useRef, type ComponentType } from "react";
 import { GripVertical, Trash2 } from "lucide-react";
@@ -37,7 +36,11 @@ import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { BlockState } from "@/lib/endings/block-state";
 import type { EndingDocument } from "@/lib/db/types";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
+import { patchBlock } from "../_shared/document-actions";
 import { DropLine } from "./text-block";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 
 export type ResultOption = { value: string; label: string };
 
@@ -53,20 +56,34 @@ export function ResultBlock({
    *  `subsetEnabled` is true; ignored otherwise. */
   subsetFrameworks,
   subsetEnabled,
-  onChange,
   onDelete,
 }: {
   block: BlockState;
   options: ResultOption[];
   subsetFrameworks?: ResultOption[];
   subsetEnabled?: boolean;
-  onChange: (result_value: string) => void;
   onDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
   const { confirm, dialog: confirmDialog } = useConfirm();
+  const { peers, setFocus } = usePresenceContext();
+
+  // result_value autosaves through patchBlock. The Select fires on every
+  // option change, so commit + blur-flush both reach the server cleanly.
+  // Server validates against the doc's kind; on reject, useInstantField
+  // flips to "error" and reverts to the server value.
+  const resultField = useInstantField<string>({
+    value: block.result_value ?? "",
+    onCommit: (v) => patchBlock(block.id, { result_value: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "result_value" }
+          : null
+      ),
+  });
   const isDragging = drag.dragId === block.id;
   const targetBefore =
     drag.target?.kind === "near" &&
@@ -89,7 +106,7 @@ export function ResultBlock({
     };
   }
 
-  const value = block.result_value ?? "";
+  const value = resultField.value;
   const isEmpty = value === "";
   const subset = subsetEnabled ? parseRandomSubset(value) : null;
   const isSubset = subset != null;
@@ -118,10 +135,10 @@ export function ResultBlock({
       // server validation, so we never seed an empty list.
       const defaultIds = (subsetFrameworks ?? []).map((f) => f.value);
       if (defaultIds.length === 0) return; // no frameworks → nothing to pick
-      onChange(formatRandomSubset(defaultIds));
+      resultField.set(formatRandomSubset(defaultIds));
       return;
     }
-    onChange(next);
+    resultField.set(next);
   }
 
   function toggleSubsetId(id: string) {
@@ -141,12 +158,23 @@ export function ResultBlock({
     for (const id2 of current) {
       if (!ordered.includes(id2)) ordered.push(id2);
     }
-    onChange(formatRandomSubset(ordered));
+    resultField.set(formatRandomSubset(ordered));
   }
+
+  const dragFocusKey = {
+    table: "ending_blocks",
+    recordId: block.id,
+    field: "drag",
+  } as const;
 
   return (
     <div ref={ref} className="relative flex flex-1 flex-col">
       <DropLine active={targetBefore} side="top" />
+      <FieldHighlight
+        peers={peers}
+        focusKey={dragFocusKey}
+        className="flex flex-1 flex-col"
+      >
       <div
         ref={cardRef}
         onDragEnter={(e) => {
@@ -202,16 +230,27 @@ export function ResultBlock({
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
               →
             </span>
-            <Select
-              value={isSubset ? SUBSET_PICKER_VALUE : value}
-              onChange={(e) => handleSelectChange(e.target.value)}
-              style={{ backgroundColor: "var(--block-result-bg)" }}
-              className={cn(
-                "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
-                isEmpty &&
-                  "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
-              )}
+            <FieldHighlight
+              peers={peers}
+              focusKey={{
+                table: "ending_blocks",
+                recordId: block.id,
+                field: "result_value",
+              }}
             >
+              <Select
+                value={isSubset ? SUBSET_PICKER_VALUE : value}
+                onChange={(e) => handleSelectChange(e.target.value)}
+                onFocus={resultField.onFocus}
+                onBlur={resultField.onBlur}
+                style={{ backgroundColor: "var(--block-result-bg)" }}
+                className={cn(
+                  "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                  isEmpty &&
+                    "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                  resultField.status === "error" && "ring-2 ring-destructive"
+                )}
+              >
               {isEmpty ? (
                 <option value="">— pick a result —</option>
               ) : null}
@@ -228,7 +267,8 @@ export function ResultBlock({
                   {isSubset ? subsetLabel : "Random (custom subset)…"}
                 </option>
               ) : null}
-            </Select>
+              </Select>
+            </FieldHighlight>
           </div>
           {isSubset && subsetFrameworks ? (
             <SubsetPicker
@@ -259,6 +299,7 @@ export function ResultBlock({
           />
         </div>
       </div>
+      </FieldHighlight>
       <DropLine active={targetAfter} side="bottom" />
       {confirmDialog}
     </div>
@@ -284,7 +325,6 @@ export function makeResultBlock(
 ): {
   Component: ComponentType<{
     block: BlockState;
-    onChange: (result_value: string) => void;
     onDelete: () => void;
   }>;
   defaultValue: string | null;
@@ -361,7 +401,6 @@ export function makeResultBlock(
 
   function ConfiguredResultBlock(props: {
     block: BlockState;
-    onChange: (result_value: string) => void;
     onDelete: () => void;
   }) {
     // Memoize the option list per render to keep stable references for

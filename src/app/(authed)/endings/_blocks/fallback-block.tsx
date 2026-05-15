@@ -10,6 +10,10 @@ import {
   RANDOM_SUBSET_SENTINEL_PREFIX,
 } from "@/lib/db/enums";
 import type { BlockState } from "@/lib/endings/block-state";
+import { patchBlock } from "../_shared/document-actions";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 
 export type FallbackOption = { value: string; label: string };
 
@@ -45,7 +49,6 @@ export function FallbackBlock({
   helperText,
   emptyLabel,
   title,
-  onChange,
 }: {
   block: BlockState;
   options: FallbackOption[];
@@ -57,9 +60,22 @@ export function FallbackBlock({
   emptyLabel: string;
   /** Header label on the panel. Defaults to "Fallback ending". */
   title?: string;
-  onChange: (result_value: string | null) => void;
 }) {
-  const value = block.result_value ?? "";
+  const { peers, setFocus } = usePresenceContext();
+  // Fallback result_value autosaves through patchBlock. Empty-string is
+  // stored as null so the column reflects "no fallback set".
+  const resultField = useInstantField<string>({
+    value: block.result_value ?? "",
+    onCommit: (v) =>
+      patchBlock(block.id, { result_value: v === "" ? null : v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "result_value" }
+          : null
+      ),
+  });
+  const value = resultField.value;
   const isEmpty = value === "";
   const subset = subsetEnabled ? parseRandomSubset(value) : null;
   const isSubset = subset != null;
@@ -78,10 +94,10 @@ export function FallbackBlock({
     if (next === SUBSET_PICKER_VALUE) {
       const defaultIds = (subsetFrameworks ?? []).map((f) => f.value);
       if (defaultIds.length === 0) return;
-      onChange(formatRandomSubset(defaultIds));
+      resultField.set(formatRandomSubset(defaultIds));
       return;
     }
-    onChange(next || null);
+    resultField.set(next);
   }
 
   function toggleSubsetId(id: string) {
@@ -96,7 +112,7 @@ export function FallbackBlock({
     for (const id2 of current) {
       if (!ordered.includes(id2)) ordered.push(id2);
     }
-    onChange(formatRandomSubset(ordered));
+    resultField.set(formatRandomSubset(ordered));
   }
 
   return (
@@ -122,31 +138,43 @@ export function FallbackBlock({
             >
               →
             </span>
-            <Select
-              value={isSubset ? SUBSET_PICKER_VALUE : value}
-              onChange={(e) => handleSelectChange(e.target.value)}
-              style={{ backgroundColor: "var(--block-result-bg)" }}
-              className={cn(
-                "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
-                isEmpty &&
-                  "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
-              )}
+            <FieldHighlight
+              peers={peers}
+              focusKey={{
+                table: "ending_blocks",
+                recordId: block.id,
+                field: "result_value",
+              }}
             >
-              {isEmpty ? <option value="">{emptyLabel}</option> : null}
-              {!isEmpty && !valueKnown ? (
-                <option value={value}>(unknown: {value})</option>
-              ) : null}
-              {options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-              {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
-                <option value={SUBSET_PICKER_VALUE}>
-                  {isSubset ? subsetLabel : "Random (custom subset)…"}
-                </option>
-              ) : null}
-            </Select>
+              <Select
+                value={isSubset ? SUBSET_PICKER_VALUE : value}
+                onChange={(e) => handleSelectChange(e.target.value)}
+                onFocus={resultField.onFocus}
+                onBlur={resultField.onBlur}
+                style={{ backgroundColor: "var(--block-result-bg)" }}
+                className={cn(
+                  "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                  isEmpty &&
+                    "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                  resultField.status === "error" && "ring-2 ring-destructive"
+                )}
+              >
+                {isEmpty ? <option value="">{emptyLabel}</option> : null}
+                {!isEmpty && !valueKnown ? (
+                  <option value={value}>(unknown: {value})</option>
+                ) : null}
+                {options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
+                  <option value={SUBSET_PICKER_VALUE}>
+                    {isSubset ? subsetLabel : "Random (custom subset)…"}
+                  </option>
+                ) : null}
+              </Select>
+            </FieldHighlight>
           </div>
           {isSubset && subsetFrameworks ? (
             <FallbackSubsetPicker

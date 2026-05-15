@@ -6,11 +6,19 @@
 // keeps working unchanged.
 
 import { LexicalComposer } from "@lexical/react/LexicalComposer";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
 import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { OnChangePlugin } from "@lexical/react/LexicalOnChangePlugin";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
-import { useCallback, useMemo, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type MutableRefObject,
+} from "react";
 import type { VariableState } from "@/lib/endings/block-state";
 import { cn } from "@/lib/utils";
 import { MentionArrowPlugin } from "./mention-arrow-plugin";
@@ -25,6 +33,12 @@ import { buildInitialEditorState, lexicalStateToText } from "./serialize";
 export interface LexicalTextBlockEditorProps {
   value: string;
   onChange: (value: string) => void;
+  /** Fires when the contentEditable gains focus. Used by useInstantField
+   *  to broadcast presence focus. */
+  onFocus?: () => void;
+  /** Fires when the contentEditable loses focus. Used by useInstantField
+   *  to flush pending commits before the focus ring leaves. */
+  onBlur?: () => void;
   variables: VariableState[];
   placeholder?: string;
   className?: string;
@@ -34,6 +48,8 @@ export interface LexicalTextBlockEditorProps {
 export function LexicalTextBlockEditor({
   value,
   onChange,
+  onFocus,
+  onBlur,
   variables,
   placeholder = "Paragraph text…",
   className,
@@ -44,20 +60,26 @@ export function LexicalTextBlockEditor({
   // hook runs BEFORE OnChangePlugin subscribes, so this parse does NOT
   // trigger a spurious onChange.
   //
-  // If the parent's `value` prop later diverges from the editor's own
-  // state (e.g. a hard reset), that's currently NOT reflected — the
-  // editor owns its state post-mount. The dirty-flag flow in
-  // DocumentEditor calls onChange on every edit, so the parent stays
-  // in sync via the down-flow we drive; the parent doesn't push value
-  // back into the editor.
+  // For live collaboration we ALSO need to push remote `value` updates
+  // back into the editor when a peer edits the same block. The
+  // ValueSyncPlugin below watches `value` and rebuilds the editor state
+  // ONLY when the prop diverges from what we last serialized out —
+  // round-trips from our own onChange don't trigger a rebuild.
   const initialEditorState = useMemo(
     () => buildInitialEditorState(value),
-    // Only depend on first-mount value. Intentionally don't react to
-    // `value` changes — Lexical owns the editable state and rebuilding
-    // it on every prop change would obliterate undo + caret.
+    // Only depend on first-mount value. Subsequent prop changes are
+    // routed through ValueSyncPlugin so undo + caret survive when the
+    // editor itself is driving the change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
+
+  // Tracks the last text we serialized OUT (either from initial mount
+  // or from a previous onChange). ValueSyncPlugin compares incoming
+  // `value` against this ref to decide whether to rebuild. Initialised
+  // to the first-mount `value` so the immediate post-mount render
+  // doesn't trigger a redundant rebuild.
+  const lastEmittedRef = useRef<string>(value);
 
   const initialConfig = useMemo(
     () => ({
@@ -79,7 +101,9 @@ export function LexicalTextBlockEditor({
 
   const handleChange = useCallback(
     (editorState: import("lexical").EditorState) => {
-      onChange(lexicalStateToText(editorState));
+      const text = lexicalStateToText(editorState);
+      lastEmittedRef.current = text;
+      onChange(text);
     },
     [onChange]
   );
@@ -92,6 +116,8 @@ export function LexicalTextBlockEditor({
             contentEditable={
               <ContentEditable
                 aria-label="Text block body"
+                onFocus={onFocus}
+                onBlur={onBlur}
                 className={cn(
                   // Match the textarea's chrome so the swap is visually
                   // invisible at the card level. The ContentEditable
@@ -115,6 +141,7 @@ export function LexicalTextBlockEditor({
             ignoreSelectionChange
             ignoreHistoryMergeTagChange
           />
+          <ValueSyncPlugin value={value} lastEmittedRef={lastEmittedRef} />
           <MentionArrowPlugin />
           <MentionPastePlugin />
           <MentionTriggerPlugin variables={variables} />
@@ -122,4 +149,34 @@ export function LexicalTextBlockEditor({
       </div>
     </MentionVariablesProvider>
   );
+}
+
+/**
+ * Push remote `value` updates into the Lexical editor when they diverge
+ * from what the local editor last emitted. Without this, peer edits
+ * via the postgres echo arrive in the parent prop but never make it
+ * into the editor (Lexical owns its editable state post-mount).
+ *
+ * The lastEmittedRef guards against an infinite update loop: our own
+ * onChange writes to the ref before propagating, so the next render's
+ * `value` prop matches lastEmittedRef and we skip the rebuild.
+ */
+function ValueSyncPlugin({
+  value,
+  lastEmittedRef,
+}: {
+  value: string;
+  lastEmittedRef: MutableRefObject<string>;
+}) {
+  const [editor] = useLexicalComposerContext();
+  useEffect(() => {
+    if (value === lastEmittedRef.current) return;
+    // Update ref BEFORE the editor.update so that the resulting
+    // onChange round-trip (Lexical fires its own OnChangePlugin after
+    // any state mutation) lands on a matching ref and is treated as
+    // an idempotent no-op rather than a fresh edit.
+    lastEmittedRef.current = value;
+    editor.update(buildInitialEditorState(value));
+  }, [value, editor, lastEmittedRef]);
+  return null;
 }

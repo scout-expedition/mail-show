@@ -27,11 +27,8 @@ import { ChevronsDownUp, ChevronsUpDown, Eye, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
-import {
-  GHOST_FIELD,
-  PanelHeader,
-  SaveRevert,
-} from "@/components/panel";
+import { useToast } from "@/components/toast";
+import { GHOST_FIELD, PanelHeader } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type {
   EndingBlock,
@@ -73,9 +70,14 @@ import { BlockList, type LeafComponents } from "../_blocks/block-list";
 import { FallbackBlock } from "../_blocks/fallback-block";
 import {
   deleteFrameworkDocument,
-  saveDocument,
-  type BlockPayload,
+  patchBlock,
+  patchChip,
+  patchDocument,
+  reorderTree,
 } from "./document-actions";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import {
   DragCtx,
   isValidDropTarget,
@@ -83,7 +85,6 @@ import {
   type DragContext,
   type DragTarget,
 } from "./lib/drag";
-import { PickerCtx, type PickerContext } from "./lib/picker";
 import {
   AnalysisCtx,
   indexOverlap,
@@ -96,6 +97,13 @@ import {
   type CollapseMode,
 } from "./lib/total-collapse";
 
+/**
+ * @deprecated Retained as a typed shape for the legacy
+ * frameworks/logic parent wrappers until they drop the prop entirely.
+ * After autosave migration, dirty is always false and save() is a
+ * no-op — the parent's "wait for in-flight saves before navigating"
+ * concern is handled by useInstantField's blur-flush + 400ms debounce.
+ */
 export type EditorHandle = {
   dirty: boolean;
   save: () => Promise<void>;
@@ -130,7 +138,10 @@ export interface DocumentEditorProps {
   /** Called after a successful framework deletion. Logic docs are
    *  seed-immortal; pass undefined to hide the delete button. */
   onDeleted?: () => void;
-  registerHandle: (h: EditorHandle) => void;
+  /** @deprecated Kept for backwards compatibility while the framework /
+   *  logic workspace parents drop their tab-switch dialog. The editor
+   *  always reports dirty:false now; in-flight commits flush on blur. */
+  registerHandle?: (h: EditorHandle) => void;
   /** Override the panel title. Defaults to the document's name when
    *  framework, or the kind label when logic. */
   panelTitle?: string;
@@ -230,16 +241,40 @@ export function DocumentEditor({
     [initialName, blocks, rows, chips, blockVariables]
   );
 
-  const [name, setName] = useState(initial.name);
+  // Framework name is now autosaved through patchDocument. The
+  // useInstantField hook owns the local typed value + debounce; remote
+  // updates (postgres echo) arrive via the document prop's new identity
+  // and the hook's LWW reducer handles them. Logic docs are anonymous —
+  // the hook still mounts (cheap) but its onCommit is a no-op so an
+  // accidental call would never reach the server.
+  const { peers, setFocus, onPostgresChanges } = usePresenceContext();
+  const nameField = useInstantField<string>({
+    value: initial.name,
+    onCommit: async (v) => {
+      if (!isFramework) return;
+      const trimmed = v.trim();
+      if (!trimmed) return; // server would throw; let the inline ring show the error
+      await patchDocument(document.id, { name: trimmed });
+    },
+    onFocusChange: (focused) => {
+      if (!isFramework) return;
+      setFocus(
+        focused
+          ? { table: "ending_documents", recordId: document.id, field: "name" }
+          : null
+      );
+    },
+  });
+  const name = nameField.value;
   const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
   const [rowState, setRowState] = useState<RowState[]>(initial.rows);
   const [chipState, setChipState] = useState<ChipState[]>(initial.chips);
   const [blockVariableState, setBlockVariableState] = useState<
     BlockVariableState[]
   >(initial.blockVariables);
-  const [dirty, setDirty] = useState(false);
-  const [pending, startSave] = useTransition();
+  const [pending, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const { toast, toaster } = useToast();
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragHeight, setDragHeight] = useState<number | null>(null);
@@ -305,16 +340,32 @@ export function DocumentEditor({
   );
   const collapseDirty = collapseOverrides.size > 0;
 
-  // Reconcile incoming server state with local edits.
+  // Broadcast presence focus while a block is being dragged. Peers
+  // watching this document see a ring around the dragged block in the
+  // dragger's avatar color via FieldHighlight on each leaf's card.
+  // Cleared on drag end (commit / cancel / dragend listener — all of
+  // those set dragId back to null).
   useEffect(() => {
-    if (!dirty) {
-      setName(initial.name);
-      setBlockState(initial.blocks);
-      setRowState(initial.rows);
-      setChipState(initial.chips);
-      setBlockVariableState(initial.blockVariables);
-      return;
+    if (dragId) {
+      setFocus({
+        table: "ending_blocks",
+        recordId: dragId,
+        field: "drag",
+      });
+    } else {
+      setFocus(null);
     }
+  }, [dragId, setFocus]);
+
+  // Reconcile incoming server state with local edits.
+  //
+  // Two sources push into the local mirror: (1) server-prop changes
+  // after a structural revalidate (add/delete/duplicate), and (2)
+  // postgres echo for column-level updates from peers. The merge here
+  // handles case 1 — keep typed-but-uncommitted state for known ids,
+  // append new ids from the server, drop ids that vanished. Per-leaf
+  // useInstantField hooks own typed text and reconcile their own LWW.
+  useEffect(() => {
     setBlockState((prev) =>
       mergeServer(prev, initial.blocks, (a, b) => a.id === b.id)
     );
@@ -327,18 +378,180 @@ export function DocumentEditor({
     setBlockVariableState((prev) =>
       mergeServer(prev, initial.blockVariables, (a, b) => a.id === b.id)
     );
-  }, [initial, dirty]);
+  }, [initial]);
 
-  // Open chip-picker count — Save is disabled while any picker is mid-pick.
-  const [openPickerCount, setOpenPickerCount] = useState(0);
-  const pickerCtx: PickerContext = useMemo(
-    () => ({
-      openCount: openPickerCount,
-      register: () => setOpenPickerCount((n) => n + 1),
-      unregister: () => setOpenPickerCount((n) => Math.max(0, n - 1)),
-    }),
-    [openPickerCount]
-  );
+  // Postgres echo handler — merges column-level updates from peers into
+  // the local mirror for all four ending tables, scoped to blocks /
+  // rows / chips / headers that belong to THIS document. Document-scope
+  // filtering is done client-side via id-membership in the local
+  // mirror; the channel is shared across the surface so the filter
+  // keeps cross-doc events out without an extra subscription.
+  useEffect(() => {
+    return onPostgresChanges((change) => {
+      if (change.table === "ending_blocks") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.document_id !== document.id) return;
+          setBlockState((prev) =>
+            prev.map((b) =>
+              b.id === n.id
+                ? {
+                    ...b,
+                    parent_block_id: n.parent_block_id,
+                    parent_row_id: n.parent_row_id,
+                    block_type: n.block_type,
+                    text: n.text ?? "",
+                    result_value: n.result_value,
+                    summary: n.summary ?? "",
+                    sort_order: n.sort_order,
+                  }
+                : b
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setBlockState((prev) => prev.filter((b) => b.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.document_id !== document.id) return;
+          setBlockState((prev) => {
+            if (prev.some((b) => b.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                document_id: n.document_id,
+                parent_block_id: n.parent_block_id,
+                parent_row_id: n.parent_row_id,
+                block_type: n.block_type,
+                text: n.text ?? "",
+                result_value: n.result_value,
+                summary: n.summary ?? "",
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_rows") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionRow;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setRowState((prev) =>
+            prev.map((r) =>
+              r.id === n.id
+                ? {
+                    ...r,
+                    condition_block_id: n.condition_block_id,
+                    sort_order: n.sort_order,
+                  }
+                : r
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setRowState((prev) => prev.filter((r) => r.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionRow;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setRowState((prev) => {
+            if (prev.some((r) => r.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                condition_block_id: n.condition_block_id,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_row_chips") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionRowChip;
+          if (!isThisDocRowId(n.row_id, rowState)) return;
+          setChipState((prev) =>
+            prev.map((c) =>
+              c.id === n.id
+                ? {
+                    ...c,
+                    row_id: n.row_id,
+                    variable_id: n.variable_id,
+                    operator: n.operator,
+                    text_value_id: n.text_value_id,
+                    number_value: n.number_value,
+                    aggregate_value: n.aggregate_value,
+                    sort_order: n.sort_order,
+                  }
+                : c
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setChipState((prev) => prev.filter((c) => c.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionRowChip;
+          if (!isThisDocRowId(n.row_id, rowState)) return;
+          setChipState((prev) => {
+            if (prev.some((c) => c.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                row_id: n.row_id,
+                variable_id: n.variable_id,
+                operator: n.operator,
+                text_value_id: n.text_value_id,
+                number_value: n.number_value,
+                aggregate_value: n.aggregate_value,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+        return;
+      }
+      if (change.table === "ending_condition_block_variables") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingConditionBlockVariable;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setBlockVariableState((prev) =>
+            prev.map((bv) =>
+              bv.id === n.id
+                ? {
+                    ...bv,
+                    condition_block_id: n.condition_block_id,
+                    variable_id: n.variable_id,
+                    sort_order: n.sort_order,
+                  }
+                : bv
+            )
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setBlockVariableState((prev) => prev.filter((bv) => bv.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingConditionBlockVariable;
+          if (!isThisDocBlockId(n.condition_block_id, blockState)) return;
+          setBlockVariableState((prev) => {
+            if (prev.some((bv) => bv.id === n.id)) return prev;
+            return [
+              ...prev,
+              {
+                id: n.id,
+                condition_block_id: n.condition_block_id,
+                variable_id: n.variable_id,
+                sort_order: n.sort_order,
+              },
+            ];
+          });
+        }
+      }
+    });
+  }, [onPostgresChanges, document.id, blockState, rowState]);
 
   const nationColorByName = useMemo(() => {
     const m = new Map<string, string>();
@@ -564,76 +777,158 @@ export function DocumentEditor({
   }, [referencedVariables]);
 
   // Local edits ----------------------------------------------------------
+  // Block + chip edits flow through these wrappers. Each one applies an
+  // optimistic local mutation so the UI updates instantly, then fires
+  // the matching patchX action. Postgres echo eventually overwrites with
+  // the server value (idempotent for happy-path edits; reverts on the
+  // error path). Block text + summary + result_value migrated to their
+  // own per-leaf useInstantField, so `updateBlock` is only used by drag-
+  // reorder + the chip-add path's auto-declare flow today. Chip pickers
+  // call this through `onChangeChip` from each click; no debounce
+  // needed (clicks produce final values).
   function updateBlock(id: string, patch: Partial<BlockState>) {
     setBlockState((prev) =>
       prev.map((b) => (b.id === id ? { ...b, ...patch } : b))
     );
-    setDirty(true);
+    // Only structural edits flow through this path now (drag reorder,
+    // result-uniqueness fixups in the chip-add flow). Defer the patch to
+    // the structural-save path so we don't double-write text/result.
   }
   function updateChip(id: string, patch: Partial<ChipState>) {
+    // Snapshot the pre-patch chip so we can roll back the optimistic
+    // mirror if the server rejects (silent failure mode bit us before).
+    const previousChip = chipState.find((c) => c.id === id);
     setChipState((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
     );
-    setDirty(true);
+    if (!previousChip) return;
+
+    // The DB requires exactly one value slot. While the user is mid-
+    // edit (e.g. a half-cleared number field) the merged chip can be
+    // transiently invalid — keep the optimistic local state but DON'T
+    // commit it. The next valid edit commits the resolved chip; a
+    // refresh would restore the server value if they navigate away.
+    const merged = { ...previousChip, ...patch };
+    const filledSlots = [
+      merged.text_value_id,
+      merged.number_value,
+      merged.aggregate_value,
+    ].filter((v) => v != null).length;
+    if (filledSlots !== 1) return;
+
+    void patchChip(id, patch).catch((err) => {
+      const message = err instanceof Error ? err.message : "Save failed.";
+      toast({ message, intent: "destructive" });
+      setChipState((prev) =>
+        prev.map((c) => (c.id === id ? previousChip : c))
+      );
+    });
   }
 
   // Drag context --------------------------------------------------------
+  // Keep blockState in a ref so doCommit can compute the new structural
+  // layout from the current mirror without going through setState's
+  // updater-callback (where firing an async server action would risk
+  // duplicates under StrictMode).
+  const blockStateRef = useRef<BlockState[]>(blockState);
+  blockStateRef.current = blockState;
   const doCommit = useCallback(
     (dragIdNow: string, targetNow: DragTarget) => {
+      const prev = blockStateRef.current;
       const beforeId =
         targetNow.kind === "near"
           ? targetNow.position === "before"
             ? targetNow.targetId
             : null
           : null;
-      setBlockState((prev) => {
-        let next: BlockState[];
-        if (targetNow.kind === "near" && targetNow.position === "after") {
-          const dragged = prev.find((b) => b.id === dragIdNow);
-          if (!dragged) return prev;
-          const movedBefore = moveBlock(
-            prev,
-            dragIdNow,
-            {
-              parent_block_id: targetNow.parent_block_id,
-              parent_row_id: targetNow.parent_row_id,
-            },
-            targetNow.targetId
-          );
-          if (movedBefore === prev) return prev;
-          const draggedIdx = movedBefore.findIndex((b) => b.id === dragIdNow);
-          const targetIdx = movedBefore.findIndex(
-            (b) => b.id === targetNow.targetId
-          );
-          if (draggedIdx < 0 || targetIdx < 0) {
-            next = movedBefore;
-          } else if (draggedIdx === targetIdx + 1) {
-            next = movedBefore;
-          } else {
-            const out = [...movedBefore];
-            const [m] = out.splice(draggedIdx, 1);
-            out.splice(targetIdx + (draggedIdx > targetIdx ? 1 : 0), 0, m);
-            next = out;
-          }
-        } else {
-          next = moveBlock(
-            prev,
-            dragIdNow,
-            {
-              parent_block_id: targetNow.parent_block_id,
-              parent_row_id: targetNow.parent_row_id,
-            },
-            beforeId
-          );
+      let next: BlockState[];
+      if (targetNow.kind === "near" && targetNow.position === "after") {
+        const dragged = prev.find((b) => b.id === dragIdNow);
+        if (!dragged) {
+          setDragId(null);
+          setDragHeight(null);
+          setTargetState(null);
+          return;
         }
-        return renumberSortOrders(next);
-      });
-      setDirty(true);
+        const movedBefore = moveBlock(
+          prev,
+          dragIdNow,
+          {
+            parent_block_id: targetNow.parent_block_id,
+            parent_row_id: targetNow.parent_row_id,
+          },
+          targetNow.targetId
+        );
+        if (movedBefore === prev) {
+          setDragId(null);
+          setDragHeight(null);
+          setTargetState(null);
+          return;
+        }
+        const draggedIdx = movedBefore.findIndex((b) => b.id === dragIdNow);
+        const targetIdx = movedBefore.findIndex(
+          (b) => b.id === targetNow.targetId
+        );
+        if (draggedIdx < 0 || targetIdx < 0) {
+          next = movedBefore;
+        } else if (draggedIdx === targetIdx + 1) {
+          next = movedBefore;
+        } else {
+          const out = [...movedBefore];
+          const [m] = out.splice(draggedIdx, 1);
+          out.splice(targetIdx + (draggedIdx > targetIdx ? 1 : 0), 0, m);
+          next = out;
+        }
+      } else {
+        next = moveBlock(
+          prev,
+          dragIdNow,
+          {
+            parent_block_id: targetNow.parent_block_id,
+            parent_row_id: targetNow.parent_row_id,
+          },
+          beforeId
+        );
+      }
+      next = renumberSortOrders(next);
+      setBlockState(next);
       setDragId(null);
       setDragHeight(null);
       setTargetState(null);
+
+      // Fire reorderTree with only the blocks that actually changed
+      // (parent / sort_order delta) — minimises round-trip churn and
+      // keeps the patch list short for postgres echo back to peers.
+      const changedBlocks = next
+        .filter((b) => {
+          const before = prev.find((p) => p.id === b.id);
+          if (!before) return true;
+          return (
+            before.parent_block_id !== b.parent_block_id ||
+            before.parent_row_id !== b.parent_row_id ||
+            before.sort_order !== b.sort_order
+          );
+        })
+        .map((b) => ({
+          id: b.id,
+          parent_block_id: b.parent_block_id,
+          parent_row_id: b.parent_row_id,
+          sort_order: b.sort_order,
+        }));
+      if (changedBlocks.length === 0) return;
+      void reorderTree({
+        document_id: document.id,
+        blocks: changedBlocks,
+        rows: [],
+        chips: [],
+        header_vars: [],
+      }).catch(() => {
+        // Server rejected (e.g. result-uniqueness across the proposed
+        // grouping). Postgres echo with the prior state will roll back
+        // the mirror on next tick.
+      });
     },
-    []
+    [document.id]
   );
 
   const dragCtx: DragContext = useMemo(
@@ -695,8 +990,32 @@ export function DocumentEditor({
     [dragId, dragHeight, target, doCommit, blockState]
   );
 
-  // Layered drop / dragend listeners. See lib/drag.ts header for why.
+  // Layered drop / dragend listeners + a stuck-drag watchdog.
+  //
+  // The watchdog cancels a drag that goes 3s with NO dragover events —
+  // that only happens when the browser drops the drop/dragend events
+  // (window lost focus, OS-level drag glitch). It must CANCEL, never
+  // commit: an earlier version committed on timeout, which moved the
+  // block out from under a user who was simply holding the drag while
+  // deciding where to drop. Every dragover (the browser fires these
+  // continuously during an active drag, even with the pointer held
+  // still) kicks the watchdog forward, so a live drag never trips it.
   const safetyTimerRef = useRef<number | null>(null);
+  const clearDragWatchdog = useCallback(() => {
+    if (safetyTimerRef.current != null) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = null;
+    }
+  }, []);
+  const kickDragWatchdog = useCallback(() => {
+    if (safetyTimerRef.current != null) clearTimeout(safetyTimerRef.current);
+    safetyTimerRef.current = window.setTimeout(() => {
+      safetyTimerRef.current = null;
+      setDragId(null);
+      setDragHeight(null);
+      setTargetState(null);
+    }, 3000);
+  }, []);
   useEffect(() => {
     function finish() {
       const d = dragIdRef.current;
@@ -708,13 +1027,15 @@ export function DocumentEditor({
         setDragHeight(null);
         setTargetState(null);
       }
-      if (safetyTimerRef.current != null) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
-      }
+      clearDragWatchdog();
     }
     function onDocDragOver(e: DragEvent) {
-      if (dragIdRef.current) e.preventDefault();
+      if (dragIdRef.current) {
+        e.preventDefault();
+        // Live drag — push the watchdog out. A held-but-active drag
+        // keeps firing dragover, so it never auto-cancels.
+        kickDragWatchdog();
+      }
     }
     function onDrop(e: DragEvent) {
       e.preventDefault();
@@ -731,128 +1052,28 @@ export function DocumentEditor({
       window.removeEventListener("drop", onDrop);
       window.removeEventListener("dragend", onEnd);
     };
-  }, [doCommit]);
+  }, [doCommit, clearDragWatchdog, kickDragWatchdog]);
 
+  // Arm the watchdog when a drag begins; clear it when the drag ends.
   useEffect(() => {
-    if (!dragId) return;
-    if (safetyTimerRef.current != null) clearTimeout(safetyTimerRef.current);
-    safetyTimerRef.current = window.setTimeout(() => {
-      const d = dragIdRef.current;
-      const t = targetRef.current;
-      if (d && t) doCommit(d, t);
-      else if (d || t) {
-        setDragId(null);
-        setDragHeight(null);
-        setTargetState(null);
-      }
-    }, 3000);
-    return () => {
-      if (safetyTimerRef.current != null) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
-      }
-    };
-  }, [dragId, doCommit]);
-
-  // Save ----------------------------------------------------------------
-  async function doSave() {
-    if (isFramework) {
-      const trimmedName = name.trim();
-      if (!trimmedName) return;
+    if (!dragId) {
+      clearDragWatchdog();
+      return;
     }
-    const blockPayload: BlockPayload[] = [];
-    function walk(parentBlockId: string | null, parentRowId: string | null) {
-      const list =
-        byParent.get(`${parentBlockId ?? "root"}:${parentRowId ?? "root"}`) ??
-        [];
-      list.forEach((b, i) => {
-        blockPayload.push({
-          id: b.id,
-          parent_block_id: parentBlockId,
-          parent_row_id: parentRowId,
-          block_type: b.block_type,
-          text: b.text,
-          result_value: b.result_value,
-          summary: b.summary === "" ? null : b.summary,
-          sort_order: i,
-        });
-        if (b.block_type === "condition") {
-          for (const r of rowsByConditionBlock.get(b.id) ?? []) {
-            walk(b.id, r.id);
-          }
-        }
-      });
-    }
-    walk(null, null);
+    kickDragWatchdog();
+    return clearDragWatchdog;
+  }, [dragId, clearDragWatchdog, kickDragWatchdog]);
 
-    // Fallback block lives outside the byParent walk (it's pinned at the
-    // bottom and not part of the recursive tree); append it explicitly so
-    // saveDocument writes its result_value.
-    if (fallbackBlock) {
-      blockPayload.push({
-        id: fallbackBlock.id,
-        parent_block_id: null,
-        parent_row_id: null,
-        block_type: fallbackBlock.block_type,
-        text: null,
-        result_value: fallbackBlock.result_value,
-        summary: null,
-        sort_order: 999999,
-      });
-    }
-
-    const rowPayload = rowState.map((r, i) => ({
-      id: r.id,
-      condition_block_id: r.condition_block_id,
-      sort_order: i,
-    }));
-
-    const chipPayload = chipState.map((c, i) => ({
-      id: c.id,
-      row_id: c.row_id,
-      variable_id: c.variable_id,
-      operator: c.operator,
-      text_value_id: c.text_value_id,
-      number_value: c.number_value,
-      aggregate_value: c.aggregate_value,
-      sort_order: i,
-    }));
-
-    const headerPayload = blockVariableState.map((bv, i) => ({
-      id: bv.id,
-      sort_order: i,
-    }));
-
-    await saveDocument({
-      document_id: document.id,
-      name: isFramework ? name.trim() : null,
-      blocks: blockPayload,
-      rows: rowPayload,
-      chips: chipPayload,
-      header_vars: headerPayload,
-    });
-    setDirty(false);
-  }
-
-  function handleSave() {
-    startSave(doSave);
-  }
-  function handleRevert() {
-    setName(initial.name);
-    setBlockState(initial.blocks);
-    setRowState(initial.rows);
-    setChipState(initial.chips);
-    setBlockVariableState(initial.blockVariables);
-    setDirty(false);
-  }
-
-  const doSaveRef = useRef(doSave);
+  // The legacy bulk-save path is gone. Every editable field (document
+  // name, block text/summary/result_value, chips, header variables) now
+  // commits through its own patchX action; drag-reorders fire
+  // reorderTree directly. The parent's `registerHandle` callback is
+  // notified once at mount with dirty:false so the workspace's
+  // unsaved-changes dialog never prompts. We keep the handle interface
+  // until the parents drop it (next commit).
   useEffect(() => {
-    doSaveRef.current = doSave;
-  });
-  useEffect(() => {
-    registerHandle({ dirty, save: () => doSaveRef.current() });
-  }, [dirty, registerHandle]);
+    registerHandle?.({ dirty: false, save: async () => {} });
+  }, [registerHandle]);
 
   async function handleDelete() {
     if (!onDeleted) return;
@@ -865,23 +1086,13 @@ export function DocumentEditor({
     if (!ok) return;
     const fd = new FormData();
     fd.set("id", document.id);
-    startSave(async () => {
+    startDeleteTransition(async () => {
       await deleteFrameworkDocument(fd);
       onDeleted();
     });
   }
 
   const nameInvalid = isFramework && !name.trim();
-
-  useEffect(() => {
-    if (!dirty) return;
-    function onBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
 
   let body: ReactNode;
   if (previewOn && renderPreview) {
@@ -912,19 +1123,29 @@ export function DocumentEditor({
           <div className="flex items-start gap-2">
             <div className="flex-1">
               <Label className="!text-xs">Framework name</Label>
-              <Input
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setDirty(true);
+              <FieldHighlight
+                peers={peers}
+                focusKey={{
+                  table: "ending_documents",
+                  recordId: document.id,
+                  field: "name",
                 }}
-                placeholder="Framework name"
-                className={cn(
-                  "mt-1 h-9",
-                  GHOST_FIELD,
-                  nameInvalid && "ring-2 ring-destructive"
-                )}
-              />
+                className="mt-1"
+              >
+                <Input
+                  value={nameField.value}
+                  onChange={(e) => nameField.set(e.target.value)}
+                  onFocus={nameField.onFocus}
+                  onBlur={nameField.onBlur}
+                  placeholder="Framework name"
+                  className={cn(
+                    "h-9",
+                    GHOST_FIELD,
+                    nameInvalid && "ring-2 ring-destructive",
+                    nameField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                />
+              </FieldHighlight>
             </div>
             {onDeleted ? (
               <button
@@ -941,46 +1162,40 @@ export function DocumentEditor({
         ) : null}
 
         <DragCtx.Provider value={dragCtx}>
-          <PickerCtx.Provider value={pickerCtx}>
-            <AnalysisCtx.Provider value={analysisCtx}>
-              <TotalCollapseCtx.Provider value={collapseCtx}>
-                <BlockList
-                  parent={{ parent_block_id: null, parent_row_id: null }}
-                  byParent={byParent}
-                  rowsByConditionBlock={rowsByConditionBlock}
-                  chipsByRow={chipsByRow}
-                  declaredByBlock={declaredByBlock}
-                  variableIndex={variableIndex}
-                  variables={authoringVariableState}
-                  values={values}
-                  document_id={document.id}
-                  leaves={leaves}
-                  onUpdateBlock={updateBlock}
-                  onChangeChip={updateChip}
+          <AnalysisCtx.Provider value={analysisCtx}>
+            <TotalCollapseCtx.Provider value={collapseCtx}>
+              <BlockList
+                parent={{ parent_block_id: null, parent_row_id: null }}
+                byParent={byParent}
+                rowsByConditionBlock={rowsByConditionBlock}
+                chipsByRow={chipsByRow}
+                declaredByBlock={declaredByBlock}
+                variableIndex={variableIndex}
+                variables={authoringVariableState}
+                values={values}
+                document_id={document.id}
+                leaves={leaves}
+                onUpdateBlock={updateBlock}
+                onChangeChip={updateChip}
+              />
+              {fallback && fallbackBlock ? (
+                <FallbackBlock
+                  block={fallbackBlock}
+                  options={fallback.options}
+                  subsetFrameworks={fallback.subsetFrameworks}
+                  subsetEnabled={fallback.subsetEnabled}
+                  helperText={fallback.helperText}
+                  emptyLabel={fallback.emptyLabel}
+                  title={fallback.title}
                 />
-                {fallback && fallbackBlock ? (
-                  <FallbackBlock
-                    block={fallbackBlock}
-                    options={fallback.options}
-                    subsetFrameworks={fallback.subsetFrameworks}
-                    subsetEnabled={fallback.subsetEnabled}
-                    helperText={fallback.helperText}
-                    emptyLabel={fallback.emptyLabel}
-                    title={fallback.title}
-                    onChange={(result_value) =>
-                      updateBlock(fallbackBlock.id, { result_value })
-                    }
-                  />
-                ) : null}
-              </TotalCollapseCtx.Provider>
-            </AnalysisCtx.Provider>
-          </PickerCtx.Provider>
+              ) : null}
+            </TotalCollapseCtx.Provider>
+          </AnalysisCtx.Provider>
         </DragCtx.Provider>
       </div>
     );
   }
 
-  const saveDisabled = openPickerCount > 0;
   const headerTitle =
     panelTitle ?? (isFramework ? document.name ?? "(unnamed)" : document.kind);
 
@@ -988,16 +1203,6 @@ export function DocumentEditor({
     <section className="overflow-hidden rounded-md border border-border bg-card">
       <PanelHeader
         title={headerTitle}
-        dirty={dirty}
-        showSaved
-        saveRevert={
-          <SaveRevert
-            dirty={dirty && !nameInvalid && !saveDisabled}
-            pending={pending}
-            onSave={handleSave}
-            onRevert={handleRevert}
-          />
-        }
         menu={
           <div className="flex items-center gap-1">
             <CollapseModeToggleGroup
@@ -1026,6 +1231,7 @@ export function DocumentEditor({
       />
       {body}
       {confirmDialogEl}
+      {toaster}
     </section>
   );
 }
@@ -1072,6 +1278,23 @@ function CollapseModeToggleGroup({
       })}
     </div>
   );
+}
+
+/**
+ * True when the given block id is one of this document's blocks in the
+ * local mirror. Used by the postgres echo handler to scope events to
+ * the active document without an extra round-trip.
+ */
+function isThisDocBlockId(blockId: string, blockState: BlockState[]): boolean {
+  return blockState.some((b) => b.id === blockId);
+}
+
+/**
+ * True when the given row id is one of this document's rows in the
+ * local mirror.
+ */
+function isThisDocRowId(rowId: string, rowState: RowState[]): boolean {
+  return rowState.some((r) => r.id === rowId);
 }
 
 /**
