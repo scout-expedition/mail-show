@@ -5,14 +5,13 @@
 // from ENDING_LOGIC_RESULT_OPTIONS_BY_KIND for affinity kinds, or from
 // the framework documents list for `framework_selection`.
 //
-// Edits flow through `onChange` like text-block — the shared editor's
-// dirty plumbing observes the in-memory mutation and the UPDATE-only
-// saveDocument flow persists it.
+// result_value autosaves through its own useInstantField + patchBlock —
+// each Select change commits in 400ms (or immediately on blur).
 //
 // Because BlockList's LeafComponents prop pins the component signature
-// to `{ block, onChange, onDelete }`, the doc kind + framework option
-// list are bound in by the `makeResultBlock` factory below — the editor
-// builds one per logic doc.
+// to `{ block, onDelete }`, the doc kind + framework option list are
+// bound in by the `makeResultBlock` factory below — the editor builds
+// one per logic doc.
 
 import { useMemo, useRef, type ComponentType } from "react";
 import { GripVertical, Trash2 } from "lucide-react";

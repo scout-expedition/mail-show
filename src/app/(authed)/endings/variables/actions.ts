@@ -296,67 +296,6 @@ export async function patchEndingVariableValue(
   if (error) throw new Error(error.message);
 }
 
-type VariablePayload = {
-  id: string;
-  name: string;
-  default_value_id: string | null;
-  sort_order: number;
-  color_hex: string | null;
-  values: Array<{ id: string; value: string; sort_order: number }>;
-};
-
-export async function updateAllEndingVariables(payload: VariablePayload[]) {
-  const supabase = await createSupabaseServerClient();
-
-  // Name uniqueness guard across the submitted rows.
-  const seenNames = new Set<string>();
-  for (const v of payload) {
-    const n = v.name.trim();
-    if (!n) throw new Error("Variable name cannot be empty.");
-    const k = n.toLowerCase();
-    if (seenNames.has(k)) throw new Error(`Duplicate variable name: ${n}`);
-    seenNames.add(k);
-  }
-
-  for (const v of payload) {
-    // Value-text uniqueness guard per variable.
-    const seenValues = new Set<string>();
-    for (const val of v.values) {
-      const t = val.value.trim();
-      if (!t) throw new Error(`Value for "${v.name}" cannot be empty.`);
-      const k = t.toLowerCase();
-      if (seenValues.has(k))
-        throw new Error(`Duplicate value "${t}" in variable "${v.name}".`);
-      seenValues.add(k);
-    }
-
-    // Update values first so default_value_id has something to point at.
-    for (const val of v.values) {
-      const { error } = await supabase
-        .from("ending_variable_values")
-        .update({ value: val.value.trim(), sort_order: val.sort_order })
-        .eq("id", val.id);
-      if (error) throw new Error(error.message);
-    }
-
-    const trimmedHex = v.color_hex?.trim() ?? null;
-    if (trimmedHex && !/^#[0-9a-fA-F]{6}$/.test(trimmedHex)) {
-      throw new Error(`Invalid color "${trimmedHex}" — expected #RRGGBB.`);
-    }
-    const { error: varErr } = await supabase
-      .from("ending_variables")
-      .update({
-        name: v.name.trim(),
-        default_value_id: v.default_value_id,
-        sort_order: v.sort_order,
-        color_hex: trimmedHex,
-      })
-      .eq("id", v.id);
-    if (varErr) throw new Error(varErr.message);
-  }
-  revalidateEndings();
-}
-
 export async function deleteEndingVariable(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");

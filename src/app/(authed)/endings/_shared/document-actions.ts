@@ -1699,6 +1699,12 @@ export type BlockVariablePayload = {
 };
 
 /**
+ * @deprecated Bulk-save path used by the legacy editor. The new editor
+ * commits each field through patchBlock / patchChip / patchRow /
+ * patchBlockVariable / patchDocument, and structural reorders through
+ * reorderTree. Kept exported only for the integration test suite until
+ * those tests migrate.
+ *
  * Persist a document's tree. UPDATE-only — same invariant as the
  * pre-rebuild `saveFramework`. Inserts/deletes happen via the dedicated
  * add/delete actions. For framework documents `name` is required (and
