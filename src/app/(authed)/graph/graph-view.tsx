@@ -3469,11 +3469,12 @@ export function GraphView({
     const hasDragPositions = Object.keys(dragPositions).length > 0;
     if (!hoveredGroupId && !dragPreview && !hasDragPositions) return nodes;
 
-    // Drag preview: ghost the dragged node + its children, and shadow-
-    // shift the items that move relative to it. For a letter-group drag
-    // that means the group's relative-dated reports (no absolute
-    // override) and their cluster boxes follow the group by the same
-    // vertical delta — reports pinned to an absolute day stay put.
+    // Drag preview: shadow-shift the items that move relative to the
+    // dragged node. For a letter-group drag that's the group's relative-
+    // dated reports (no absolute override) and their cluster boxes,
+    // following the group by the same vertical delta — reports pinned to
+    // an absolute day stay put. Updates here are POSITION-ONLY: churning
+    // a node's `data` every frame re-renders its component and flickers.
     let draggedGroupId: string | null = null;
     const linkedReportNodeIds = new Set<string>();
     if (dragPreview && dragPreview.nodeId.startsWith("group:")) {
@@ -3499,35 +3500,16 @@ export function GraphView({
       if (dragPos) {
         next = { ...next, position: dragPos };
       }
-      if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
-        next = { ...next, data: { ...next.data, hovered: true } };
-      }
-      if (dragPreview) {
-        const isDragged = n.id === dragPreview.nodeId;
-        const isChildOfDragged = n.parentId === dragPreview.nodeId;
+      if (dragPreview && !dragPos) {
+        // The dragged node's children ride along via parentId, so they
+        // need no entry here. Relative-linked reports + their cluster box
+        // shadow-shift by the drag's vertical delta — position only.
         const isLinkedReport = linkedReportNodeIds.has(n.id);
         const isLinkedCluster =
           draggedGroupId != null &&
           n.id.startsWith("reportcluster:") &&
           n.id.endsWith(`:${draggedGroupId}`);
-        if (isDragged || isChildOfDragged) {
-          // Fade the dragged node + its children. Their position comes
-          // from onNodesChange (above) for the dragged node; children
-          // ride along via their parentId offset.
-          next = {
-            ...next,
-            data: { ...next.data, dragGhost: true },
-          };
-        } else if (isLinkedReport) {
-          next = {
-            ...next,
-            position: {
-              ...next.position,
-              y: next.position.y + dragPreview.dy,
-            },
-            data: { ...next.data, dragGhost: true },
-          };
-        } else if (isLinkedCluster) {
+        if (isLinkedReport || isLinkedCluster) {
           next = {
             ...next,
             position: {
@@ -3536,6 +3518,9 @@ export function GraphView({
             },
           };
         }
+      }
+      if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
+        next = { ...next, data: { ...next.data, hovered: true } };
       }
       return next;
     });
