@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
@@ -20,6 +20,7 @@ import {
   WorkspacePresenceProvider,
 } from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
+import type { PostgresChange } from "@/lib/realtime/channel";
 
 export function FrameworksWorkspace({
   frameworks,
@@ -94,7 +95,7 @@ export function FrameworksWorkspace({
 }
 
 function FrameworksWorkspaceInner({
-  frameworks,
+  frameworks: initialFrameworks,
   blocks,
   rows,
   chips,
@@ -130,7 +131,50 @@ function FrameworksWorkspaceInner({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { setSelection } = usePresenceContext();
+  const { setSelection, onPostgresChanges } = usePresenceContext();
+
+  // Local mirror of the framework list so name/sort_order changes echo
+  // into the sidebar without a refresh. The server prop seeds initial
+  // state; postgres_changes for ending_documents (framework kind only)
+  // merges peer + self edits, and INSERT triggers a router.refresh()
+  // so the next server render re-derives downstream tiebreak data.
+  const [frameworks, setFrameworks] =
+    useState<EndingDocument[]>(initialFrameworks);
+  useEffect(() => {
+    setFrameworks((prev) => {
+      const prevById = new Map(prev.map((f) => [f.id, f]));
+      const serverIds = new Set(initialFrameworks.map((f) => f.id));
+      const kept = prev.filter((f) => serverIds.has(f.id));
+      const additions = initialFrameworks.filter((f) => !prevById.has(f.id));
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }, [initialFrameworks]);
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      if (change.table !== "ending_documents") return;
+      if (change.eventType === "UPDATE" && change.new) {
+        const updated = change.new as unknown as EndingDocument;
+        if (updated.kind !== "framework") return;
+        setFrameworks((prev) =>
+          prev.map((f) => (f.id === updated.id ? { ...f, ...updated } : f))
+        );
+      } else if (change.eventType === "DELETE" && change.old) {
+        const deleted = change.old as unknown as { id: string };
+        setFrameworks((prev) => prev.filter((f) => f.id !== deleted.id));
+      } else if (change.eventType === "INSERT" && change.new) {
+        const inserted = change.new as unknown as EndingDocument;
+        if (inserted.kind !== "framework") return;
+        setFrameworks((prev) =>
+          prev.some((f) => f.id === inserted.id) ? prev : [...prev, inserted]
+        );
+        // Trigger a re-fetch so the new framework's empty editor data
+        // (blocks/rows/chips/header_vars) appears in the prop tree.
+        startTransition(() => router.refresh());
+      }
+    });
+  }, [onPostgresChanges, router]);
+
   const effectiveId =
     (selectedFrameworkId &&
       frameworks.find((f) => f.id === selectedFrameworkId)?.id) ??
