@@ -2355,21 +2355,31 @@ export function GraphView({
   );
 
   // Phase 6 — drag-pointer feedback:
-  //   hoveredRowId  → tints the day-row band currently under the pointer.
-  //   hoveredGroupId → rings the letter-group a letter is being dragged onto.
-  //   isDragging     → forces grabbing cursor on the whole canvas.
+  //   hoveredRowId    → the day-row currently under the pointer.
+  //   hoveredColumnId → the dragged node's storyline column; together with
+  //                     hoveredRowId this scopes the drop highlight to a
+  //                     single (column × day) cell rather than the whole row.
+  //   hoveredGroupId  → rings the letter-group a letter is being dragged onto.
+  //   isDragging      → forces grabbing cursor on the whole canvas.
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const [hoveredColumnId, setHoveredColumnId] = useState<string | null>(null);
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  // Live drag preview: the node being dragged + the vertical delta from
-  // its layout position. decoratedNodes reads this to ghost the dragged
-  // node and shadow-shift items that move relative to it (e.g. a letter
-  // group's relative-dated reports follow the group as it's dragged).
+  // Live drag preview: the node being dragged + the delta from its layout
+  // position. The graph's ReactFlow has no `onNodesChange`, so a drag never
+  // moves the node itself — decoratedNodes applies this delta so the dragged
+  // node (and its children) actually follow the cursor, and shadow-shifts
+  // items that move relative to it (a letter group's relative-dated reports).
   const [dragPreview, setDragPreview] = useState<{
     nodeId: string;
+    dx: number;
     dy: number;
   } | null>(null);
-  const dragOriginRef = useRef<{ nodeId: string; y: number } | null>(null);
+  const dragOriginRef = useRef<{
+    nodeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   // Escape pressed mid-drag flips this; onNodeDragStop reads it and skips
   // the server-side move so the layout snaps back to the original
   // positions on the next render. Cleared on drag start.
@@ -2732,12 +2742,37 @@ export function GraphView({
     (_event: React.MouseEvent, node: Node) => {
       setIsDragging(true);
       setHoveredRowId(null);
+      setHoveredColumnId(null);
       setHoveredGroupId(null);
       dragCanceledRef.current = false;
-      dragOriginRef.current = { nodeId: node.id, y: node.position.y };
-      setDragPreview({ nodeId: node.id, dy: 0 });
+      dragOriginRef.current = {
+        nodeId: node.id,
+        x: node.position.x,
+        y: node.position.y,
+      };
+      setDragPreview({ nodeId: node.id, dx: 0, dy: 0 });
     },
     []
+  );
+
+  // The dragged node's own storyline column — a drag only ever changes the
+  // day (row), never the storyline, so the drop highlight is scoped to this
+  // fixed column. Resolved once per drag from the node id.
+  const storylineOfDraggedNode = useCallback(
+    (nodeId: string): string | null => {
+      if (nodeId.startsWith("report:")) {
+        const sid = nodeId.slice("report:".length);
+        return segments.find((s) => s.id === sid)?.storyline_id ?? null;
+      }
+      const gid = nodeId.startsWith("group:")
+        ? parseGroupNodeId(nodeId)?.groupId
+        : nodeId.startsWith("letter:")
+          ? parseLetterNodeId(nodeId)?.groupId
+          : null;
+      if (!gid) return null;
+      return groupMeta.find((g) => g.gid === gid)?.storylineId ?? null;
+    },
+    [groupMeta, segments]
   );
 
   // Update hovered row + (for letter drags) hovered target group on every
@@ -2753,15 +2788,17 @@ export function GraphView({
         y: (event as MouseEvent).clientY,
       });
       setHoveredRowId(rowAtFlowY(flowPt.y));
-      // Track the drag delta so decoratedNodes can shadow-shift the
-      // items that move relative to the dragged node.
+      setHoveredColumnId(storylineOfDraggedNode(node.id));
+      // Track the drag delta so decoratedNodes can move the dragged node
+      // under the cursor and shadow-shift items relative to it.
       const origin = dragOriginRef.current;
       if (origin && origin.nodeId === node.id) {
+        const dx = node.position.x - origin.x;
         const dy = node.position.y - origin.y;
         setDragPreview((prev) =>
-          prev && prev.nodeId === node.id && prev.dy === dy
+          prev && prev.nodeId === node.id && prev.dx === dx && prev.dy === dy
             ? prev
-            : { nodeId: node.id, dy }
+            : { nodeId: node.id, dx, dy }
         );
       }
       if (node.id.startsWith("letter:")) {
@@ -2793,7 +2830,7 @@ export function GraphView({
       }
       setHoveredGroupId(null);
     },
-    [groupMeta]
+    [groupMeta, storylineOfDraggedNode]
   );
 
   const onNodeDragStop = useCallback(
@@ -2804,6 +2841,7 @@ export function GraphView({
     ) => {
       setIsDragging(false);
       setHoveredRowId(null);
+      setHoveredColumnId(null);
       setHoveredGroupId(null);
       setDragPreview(null);
       dragOriginRef.current = null;
@@ -3401,10 +3439,23 @@ export function GraphView({
       }
     }
 
+    // Scope the drop-target highlight to a single (column × day) cell —
+    // the dragged node's own storyline column intersected with the row
+    // under the pointer — instead of tinting the whole row band.
+    const hoveredCol = hoveredColumnId
+      ? labelCols.find((c) => c.id === hoveredColumnId)
+      : undefined;
+    const hoveredCell = hoveredCol
+      ? { x: hoveredCol.baseX, width: hoveredCol.width }
+      : null;
+
     return nodes.map((n) => {
       let next = n;
       if (hoveredRowId && n.id === `band:${hoveredRowId}`) {
-        next = { ...next, data: { ...next.data, hovered: true } };
+        next = {
+          ...next,
+          data: { ...next.data, hovered: true, hoveredCell },
+        };
       }
       if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
         next = { ...next, data: { ...next.data, hovered: true } };
@@ -3417,10 +3468,27 @@ export function GraphView({
           draggedGroupId != null &&
           n.id.startsWith("reportcluster:") &&
           n.id.endsWith(`:${draggedGroupId}`);
-        if (isDragged || isChildOfDragged) {
-          // ReactFlow already moves these (the dragged node + its
-          // children); we just ghost them.
-          next = { ...next, data: { ...next.data, dragGhost: true } };
+        if (isDragged) {
+          // This ReactFlow has no `onNodesChange`, so a drag never moves the
+          // node itself — apply the delta here so the dragged ghost tracks
+          // the cursor. Elevated zIndex keeps it above other cards.
+          next = {
+            ...next,
+            position: {
+              x: next.position.x + dragPreview.dx,
+              y: next.position.y + dragPreview.dy,
+            },
+            data: { ...next.data, dragGhost: true },
+            zIndex: 1000,
+          };
+        } else if (isChildOfDragged) {
+          // Children are positioned relative to the dragged parent, so they
+          // follow its shifted position automatically — just ghost them.
+          next = {
+            ...next,
+            data: { ...next.data, dragGhost: true },
+            zIndex: 1000,
+          };
         } else if (isLinkedReport) {
           next = {
             ...next,
@@ -3442,7 +3510,15 @@ export function GraphView({
       }
       return next;
     });
-  }, [nodes, hoveredRowId, hoveredGroupId, dragPreview, segments]);
+  }, [
+    nodes,
+    hoveredRowId,
+    hoveredColumnId,
+    hoveredGroupId,
+    dragPreview,
+    segments,
+    labelCols,
+  ]);
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use
@@ -4330,7 +4406,11 @@ export function GraphView({
           rf.setCenter(cx, cy, { zoom: 1, duration: 350 });
         }}
       />
-      <StickyDayGutter rows={labelRows} viewport={vp} />
+      <StickyDayGutter
+        rows={labelRows}
+        viewport={vp}
+        hoveredRowId={hoveredRowId}
+      />
       <GraphContextMenu
         anchor={contextMenu?.anchor ?? null}
         items={contextMenu?.items ?? []}
@@ -4346,6 +4426,7 @@ type Viewport = { x: number; y: number; zoom: number };
 function StickyDayGutter({
   rows,
   viewport,
+  hoveredRowId,
 }: {
   rows: {
     rowId: string;
@@ -4357,6 +4438,9 @@ function StickyDayGutter({
     pendingAdd: boolean;
   }[];
   viewport: Viewport;
+  /** Day-row currently under the drag pointer — its label highlights so the
+   *  user can see which day the dragged item will move to. */
+  hoveredRowId: string | null;
 }) {
   return (
     <div
@@ -4369,11 +4453,15 @@ function StickyDayGutter({
       {rows.map((r) => {
         const top = r.baseY * viewport.zoom + viewport.y;
         const height = Math.max(0, r.height * viewport.zoom - 6);
+        const hovered = r.rowId === hoveredRowId;
         return (
           <div
             key={r.rowId}
             className={
-              "absolute flex flex-col items-center justify-center gap-0.5 rounded-r-md border-y border-r border-border bg-card/80 px-0.5" +
+              "absolute flex flex-col items-center justify-center gap-0.5 rounded-r-md border-y border-r px-0.5 transition-colors" +
+              (hovered
+                ? " border-ring bg-[color-mix(in_srgb,var(--ring)_22%,var(--card))]"
+                : " border-border bg-card/80") +
               // Ghost day (server create in flight) reads as muted + pulsing.
               (r.pendingAdd ? " animate-pulse opacity-50" : "")
             }
