@@ -2030,11 +2030,10 @@ export function GraphView({
           // chain through the report card.
           let nextX = p.chipX - 6;
           let nextY = p.chipY + CONNECT_BELOW_GAP - 6;
-          // Anchor the "next" pickup directly on the report segment's
-          // bottom edge — the exact point where a connected sn-edge's
-          // terminator circle is drawn (sourceY). Centering the 12px node
-          // there (TL = edge − 6) keeps connected and disconnected
-          // next-letter connectors in the same vertical position.
+          // Anchor the "next" pickup so the 12px circle tucks against the
+          // report segment's bottom edge — its lower rim flush with the
+          // card edge (TL = edge − 12) so the disconnected pickup reads as
+          // attached to the report it would depart from.
           if (hasReport) {
             const reportPos = segmentAbsPos.get(
               `report:${effectiveReportIdForA}`
@@ -2043,7 +2042,7 @@ export function GraphView({
               const lsOffset =
                 targetOffsetByEdgeId.get(`a:${a.id}:ls`) ?? 0;
               nextX = reportPos.x + CARD_W / 2 + lsOffset - 6;
-              nextY = reportPos.y + reportPos.h - 6;
+              nextY = reportPos.y + reportPos.h - 12;
             }
           }
           n.push({
