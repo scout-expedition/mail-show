@@ -166,16 +166,13 @@ function ActionIconEdgeComponent({
   // arrowhead closer to vertical instead of cutting in at a shallow
   // angle.
   const CURVATURE = 0.5;
-  // Stop the path a couple px short of the actual target Y so the
-  // arrowhead's back edge lines up centered on the line. Without this,
-  // SVG's marker is placed with its TIP at the path endpoint and the
-  // line appears to enter the arrow off-center.
-  const ARROW_PULLBACK = 3;
-  // In edit mode the terminator is a circle (no SVG arrowhead), so the
-  // line + circle land right on the target box's top edge instead of
-  // pulled back — keeps the connector reading as attached to the
-  // letter/report it points at.
-  const arrowTargetY = d.editingEnabled ? targetY : targetY - ARROW_PULLBACK;
+  // In edit mode the terminator is a 12px circle (no SVG arrowhead);
+  // tuck it inside the target box's top edge so it reads as attached to
+  // the letter/report it points at. In locked mode the SVG arrowhead's
+  // tip lands right on the box edge — no pullback — so the line meets
+  // the arrowhead's back cleanly with no floating gap.
+  const CONNECTOR_TUCK = 8;
+  const arrowTargetY = d.editingEnabled ? targetY + CONNECTOR_TUCK : targetY;
   // Spread converging arrowheads across the target's top edge.
   const arrowTargetX = targetX + (d.targetXOffset ?? 0);
   // Mirror spread on the source side (used for `sn` exits from a report).
@@ -276,7 +273,9 @@ function ActionIconEdgeComponent({
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${arrowTargetX}px, ${arrowTargetY}px)`,
               pointerEvents: "none",
-              zIndex: 9,
+              // Keep connector terminus circles on the top layer so they
+              // sit over letter-group / report-cluster outline boxes.
+              zIndex: 1000,
             }}
             aria-hidden
           >

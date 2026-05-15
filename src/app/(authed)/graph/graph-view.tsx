@@ -1867,9 +1867,9 @@ export function GraphView({
           draggable: false,
           selectable: false,
           focusable: false,
-          // Above letter/report nodes so the hit zone wins pointer events
-          // when it overlaps the card's top edge.
-          zIndex: 12,
+          // Top layer so the hit zone wins pointer events even over
+          // letter-group / report-cluster outline boxes.
+          zIndex: 1000,
         });
       }
     }
@@ -2000,7 +2000,7 @@ export function GraphView({
             draggable: false,
             selectable: false,
             focusable: false,
-            zIndex: 11,
+            zIndex: 1000,
           });
           continue;
         }
@@ -2018,7 +2018,7 @@ export function GraphView({
             draggable: false,
             selectable: false,
             focusable: false,
-            zIndex: 11,
+            zIndex: 1000,
           });
         }
         if (!hasNext) {
@@ -2056,7 +2056,7 @@ export function GraphView({
             draggable: false,
             selectable: false,
             focusable: false,
-            zIndex: 11,
+            zIndex: 1000,
           });
         }
       }
