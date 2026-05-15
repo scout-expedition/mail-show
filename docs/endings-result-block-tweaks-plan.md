@@ -173,3 +173,22 @@ so it can't be persisted empty. Use a local draft flag in both
    - **Text block**: `Paragraph text…` placeholder visibly more muted.
 3. Re-pick existing saved subset / random values — only labels changed,
    sentinel values untouched, autosave still commits.
+
+## Known behaviour & limitations
+
+The subset picker keeps its selection in a **local draft** (`subsetDraft`,
+`string[] | null` in `result-block.tsx` / `fallback-block.tsx`) so it can sit
+at an empty selection — an empty subset cannot be persisted
+(`parseRandomSubset([])` returns `null`). Consequences, all **intended**:
+
+- Choosing "Random (subset)" opens the picker empty and persists **nothing**
+  until the first framework pill is toggled on. Navigating away first leaves
+  the block on its previous saved value.
+- Deselecting every pill keeps the picker open with an amber "select at least
+  one framework" warning; the persisted value stays at the last valid subset
+  until a pill is re-selected. The empty state is in-memory only — it does not
+  survive a page reload.
+- While a draft is active it is not reconciled with upstream `result_value`
+  changes (collaborator edit / `useInstantField` revert) — the draft masks
+  them until the next pill toggle. Low-impact collab edge case, tracked in
+  [#52](https://github.com/scout-expedition/mail-show/issues/52).
