@@ -14,7 +14,6 @@ import {
   Flag,
   Inbox,
   Menu,
-  Milestone,
   Network,
   Ruler,
   Package,
@@ -23,7 +22,7 @@ import {
   Settings,
   Variable,
 } from "lucide-react";
-import { IconMailOpened } from "@tabler/icons-react";
+import { IconBolt, IconMailOpened } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
@@ -42,7 +41,7 @@ const NAV_ITEMS: Array<{
   { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
   { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
   { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
-  { href: "/inspection/actions", label: "Actions", icon: Milestone, section: "Inspection" },
+  { href: "/inspection/actions", label: "Actions", icon: IconBolt, section: "Inspection" },
   { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
   { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
   { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },

@@ -1,15 +1,15 @@
 "use client";
 
-// Autocomplete popup for the @[Variable Name] tag flow + the pure
-// helpers (trigger detection, filtering) the Lexical editor plugin
-// uses. The textarea-based driver from Phase 2 was retired in Phase 3
-// when the text-block body switched to a Lexical contenteditable —
-// only the popup + helpers remain.
+// The @[Variable Name] tag flow's mention-specific pieces: the `@`
+// trigger scan and the caret-anchored popup wrapper. The kind-grouped
+// filter and the rendered option rows live in the shared
+// `variable-picker` module (filterVariables / VariableOptionList).
+// The textarea-based driver from Phase 2 was retired in Phase 3 when
+// the text-block body switched to a Lexical contenteditable.
 
-import { Fragment, useEffect, useRef, type CSSProperties } from "react";
-import { cn } from "@/lib/utils";
+import { type CSSProperties } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
-import { paletteColor } from "@/lib/endings/color-palette";
+import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 
 // ---------------------------------------------------------------------
 // Trigger detection
@@ -45,58 +45,6 @@ export function detectMentionTrigger(
 }
 
 // ---------------------------------------------------------------------
-// Filter + sort
-// ---------------------------------------------------------------------
-
-/**
- * Case-insensitive filter, grouped by variable kind. Output order is
- * text → number_ref → aggregate_ref, matching the popup's section
- * order. Within each group: prefix matches sort first (alphabetical
- * within), then substring matches (alphabetical within).
- *
- * Result is a flat array so keyboard nav stays simple; the popup
- * inserts dividers wherever consecutive items differ in kind.
- */
-const KIND_ORDER: VariableState["kind"][] = [
-  "text",
-  "number_ref",
-  "aggregate_ref",
-];
-
-export function filterVariablesForMention(
-  variables: VariableState[],
-  query: string
-): VariableState[] {
-  const q = query.trim().toLowerCase();
-  const out: VariableState[] = [];
-  for (const kind of KIND_ORDER) {
-    const group = variables.filter((v) => v.kind === kind);
-    if (group.length === 0) continue;
-    if (!q) {
-      out.push(...group.sort((a, b) => a.name.localeCompare(b.name)));
-      continue;
-    }
-    const prefix: VariableState[] = [];
-    const substring: VariableState[] = [];
-    for (const v of group) {
-      const n = v.name.toLowerCase();
-      if (n.startsWith(q)) prefix.push(v);
-      else if (n.includes(q)) substring.push(v);
-    }
-    prefix.sort((a, b) => a.name.localeCompare(b.name));
-    substring.sort((a, b) => a.name.localeCompare(b.name));
-    out.push(...prefix, ...substring);
-  }
-  return out;
-}
-
-const KIND_LABEL: Record<VariableState["kind"], string> = {
-  text: "text",
-  number_ref: "number",
-  aggregate_ref: "aggregate",
-};
-
-// ---------------------------------------------------------------------
 // Popup
 // ---------------------------------------------------------------------
 
@@ -106,8 +54,7 @@ export interface MentionAutocompletePopupProps {
   onChangeActiveIndex: (i: number) => void;
   onCommit: (variable: VariableState) => void;
   /** Pixel coordinates for absolute positioning. Caller computes from
-   *  the caret's bounding rect (Lexical) or the textarea's wrapper
-   *  position. */
+   *  the caret's bounding rect. */
   position: { top: number; left: number };
 }
 
@@ -118,18 +65,9 @@ export function MentionAutocompletePopup({
   onCommit,
   position,
 }: MentionAutocompletePopupProps) {
-  const itemRefs = useRef<Array<HTMLLIElement | null>>([]);
-  itemRefs.current.length = filtered.length;
-  useEffect(() => {
-    const el = itemRefs.current[activeIndex];
-    if (el) el.scrollIntoView({ block: "nearest" });
-  }, [activeIndex]);
-
-  // Both render branches share these positioning styles so the
-  // empty-state fallback and the populated list anchor at the same
-  // caret coordinates. `position: fixed` so the caller-supplied coords
-  // (which come from `getBoundingClientRect()`, i.e. viewport-relative)
-  // work directly without needing the popup's parent to be positioned.
+  // `position: fixed` so the caller-supplied coords (which come from
+  // `getBoundingClientRect()`, i.e. viewport-relative) work directly
+  // without needing the popup's parent to be positioned.
   const positionStyle: CSSProperties = {
     position: "fixed",
     top: position.top,
@@ -149,56 +87,14 @@ export function MentionAutocompletePopup({
   }
 
   return (
-    <ul
+    <VariableOptionList
+      filtered={filtered}
+      activeIndex={activeIndex}
+      onChangeActiveIndex={onChangeActiveIndex}
+      onCommit={onCommit}
+      ariaLabel="Variable autocomplete"
       style={positionStyle}
-      role="listbox"
-      aria-label="Variable autocomplete"
-      className="max-h-56 w-64 overflow-y-auto rounded-md border border-border bg-popover py-1 text-xs shadow-lg"
-    >
-      {filtered.map((v, i) => {
-        const isActive = i === activeIndex;
-        const color = v.color_hex ?? paletteColor(v.color_index);
-        const showDivider = i > 0 && filtered[i - 1].kind !== v.kind;
-        return (
-          <Fragment key={v.id}>
-            {showDivider ? (
-              <li
-                role="separator"
-                aria-hidden
-                className="my-1 border-t border-border/60"
-              />
-            ) : null}
-            <li
-              ref={(el) => {
-                itemRefs.current[i] = el;
-              }}
-              role="option"
-              aria-selected={isActive}
-              // mousedown (not click) so the editor's blur doesn't fire
-              // before commit.
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onCommit(v);
-              }}
-              onMouseEnter={() => onChangeActiveIndex(i)}
-              className={cn(
-                "flex cursor-pointer items-center gap-2 px-2 py-1",
-                isActive && "bg-accent/60"
-              )}
-            >
-              <span
-                aria-hidden
-                className="h-2 w-2 shrink-0 rounded-sm"
-                style={{ backgroundColor: color }}
-              />
-              <span className="flex-1 truncate text-foreground">{v.name}</span>
-              <span className="text-[10px] uppercase tracking-widest text-muted-foreground/70">
-                {KIND_LABEL[v.kind]}
-              </span>
-            </li>
-          </Fragment>
-        );
-      })}
-    </ul>
+      className="w-64 rounded-md border border-border bg-popover shadow-lg"
+    />
   );
 }
