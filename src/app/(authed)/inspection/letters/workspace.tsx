@@ -5685,6 +5685,11 @@ function AddEndingVariableMenu({
                   setActiveIndex(0);
                 }}
                 onKeyDown={handleInputKeyDown}
+                // The input is the popup's only focusable element, so
+                // any blur (Tab, click-away) means focus left the picker
+                // — close it rather than orphan an open menu. Row clicks
+                // commit via mousedown+preventDefault, so they don't blur.
+                onBlur={() => closeMenu(false)}
                 placeholder="Search variables…"
                 aria-label="Search ending variables"
                 className="border-b border-border bg-transparent px-2 py-1.5 focus:outline-none"
