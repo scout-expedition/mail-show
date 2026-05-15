@@ -76,6 +76,7 @@ import {
   patchBlock,
   patchChip,
   patchDocument,
+  reorderTree,
   saveDocument,
   type BlockPayload,
 } from "./document-actions";
@@ -802,62 +803,109 @@ export function DocumentEditor({
   }
 
   // Drag context --------------------------------------------------------
+  // Keep blockState in a ref so doCommit can compute the new structural
+  // layout from the current mirror without going through setState's
+  // updater-callback (where firing an async server action would risk
+  // duplicates under StrictMode).
+  const blockStateRef = useRef<BlockState[]>(blockState);
+  blockStateRef.current = blockState;
   const doCommit = useCallback(
     (dragIdNow: string, targetNow: DragTarget) => {
+      const prev = blockStateRef.current;
       const beforeId =
         targetNow.kind === "near"
           ? targetNow.position === "before"
             ? targetNow.targetId
             : null
           : null;
-      setBlockState((prev) => {
-        let next: BlockState[];
-        if (targetNow.kind === "near" && targetNow.position === "after") {
-          const dragged = prev.find((b) => b.id === dragIdNow);
-          if (!dragged) return prev;
-          const movedBefore = moveBlock(
-            prev,
-            dragIdNow,
-            {
-              parent_block_id: targetNow.parent_block_id,
-              parent_row_id: targetNow.parent_row_id,
-            },
-            targetNow.targetId
-          );
-          if (movedBefore === prev) return prev;
-          const draggedIdx = movedBefore.findIndex((b) => b.id === dragIdNow);
-          const targetIdx = movedBefore.findIndex(
-            (b) => b.id === targetNow.targetId
-          );
-          if (draggedIdx < 0 || targetIdx < 0) {
-            next = movedBefore;
-          } else if (draggedIdx === targetIdx + 1) {
-            next = movedBefore;
-          } else {
-            const out = [...movedBefore];
-            const [m] = out.splice(draggedIdx, 1);
-            out.splice(targetIdx + (draggedIdx > targetIdx ? 1 : 0), 0, m);
-            next = out;
-          }
-        } else {
-          next = moveBlock(
-            prev,
-            dragIdNow,
-            {
-              parent_block_id: targetNow.parent_block_id,
-              parent_row_id: targetNow.parent_row_id,
-            },
-            beforeId
-          );
+      let next: BlockState[];
+      if (targetNow.kind === "near" && targetNow.position === "after") {
+        const dragged = prev.find((b) => b.id === dragIdNow);
+        if (!dragged) {
+          setDragId(null);
+          setDragHeight(null);
+          setTargetState(null);
+          return;
         }
-        return renumberSortOrders(next);
-      });
-      setDirty(true);
+        const movedBefore = moveBlock(
+          prev,
+          dragIdNow,
+          {
+            parent_block_id: targetNow.parent_block_id,
+            parent_row_id: targetNow.parent_row_id,
+          },
+          targetNow.targetId
+        );
+        if (movedBefore === prev) {
+          setDragId(null);
+          setDragHeight(null);
+          setTargetState(null);
+          return;
+        }
+        const draggedIdx = movedBefore.findIndex((b) => b.id === dragIdNow);
+        const targetIdx = movedBefore.findIndex(
+          (b) => b.id === targetNow.targetId
+        );
+        if (draggedIdx < 0 || targetIdx < 0) {
+          next = movedBefore;
+        } else if (draggedIdx === targetIdx + 1) {
+          next = movedBefore;
+        } else {
+          const out = [...movedBefore];
+          const [m] = out.splice(draggedIdx, 1);
+          out.splice(targetIdx + (draggedIdx > targetIdx ? 1 : 0), 0, m);
+          next = out;
+        }
+      } else {
+        next = moveBlock(
+          prev,
+          dragIdNow,
+          {
+            parent_block_id: targetNow.parent_block_id,
+            parent_row_id: targetNow.parent_row_id,
+          },
+          beforeId
+        );
+      }
+      next = renumberSortOrders(next);
+      setBlockState(next);
       setDragId(null);
       setDragHeight(null);
       setTargetState(null);
+
+      // Fire reorderTree with only the blocks that actually changed
+      // (parent / sort_order delta) — minimises round-trip churn and
+      // keeps the patch list short for postgres echo back to peers.
+      const changedBlocks = next
+        .filter((b) => {
+          const before = prev.find((p) => p.id === b.id);
+          if (!before) return true;
+          return (
+            before.parent_block_id !== b.parent_block_id ||
+            before.parent_row_id !== b.parent_row_id ||
+            before.sort_order !== b.sort_order
+          );
+        })
+        .map((b) => ({
+          id: b.id,
+          parent_block_id: b.parent_block_id,
+          parent_row_id: b.parent_row_id,
+          sort_order: b.sort_order,
+        }));
+      if (changedBlocks.length === 0) return;
+      void reorderTree({
+        document_id: document.id,
+        blocks: changedBlocks,
+        rows: [],
+        chips: [],
+        header_vars: [],
+      }).catch(() => {
+        // Server rejected (e.g. result-uniqueness across the proposed
+        // grouping). Postgres echo with the prior state will roll back
+        // the mirror on next tick.
+      });
     },
-    []
+    [document.id]
   );
 
   const dragCtx: DragContext = useMemo(
