@@ -62,6 +62,7 @@ import {
   setActionNextLetterByLetterId,
   setActionReportSegment,
 } from "../inspection/letters/actions";
+import { useLocalStorage } from "@/lib/use-local-storage";
 import { ActionIconEdge, type ActionIconEdgeData } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
 import ConnectionSourceNode from "./nodes/connection-source";
@@ -2200,6 +2201,13 @@ export function GraphView({
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const rfRef = useRef<ReactFlowInstance | null>(null);
+  // Per-user preference: auto-pan/zoom the canvas onto the selected
+  // entity when the selection changes. Toggled from the zoom-to-
+  // selection button (double-click or click-and-hold). Default on.
+  const [autozoomEnabled, setAutozoomEnabled] = useLocalStorage(
+    "graph:autozoom",
+    true
+  );
 
   // Phase 6 — drag-pointer feedback:
   //   hoveredRowId  → tints the day-row band currently under the pointer.
@@ -2390,115 +2398,100 @@ export function GraphView({
         }
       })();
     };
-    const showCreateMenu = (anchorGroup: LetterGroup | null) => {
-      const makeCreator = (n: number) => () => {
-        if (!anchorGroup) return;
-        // Optimistic ghosts: one per requested segment. Variants i/ii/iii
-        // are picked to follow the existing ones in this report group so
-        // the layout's roman-numeral sort places them at the tail.
-        const sameGroupSegs = segments.filter(
-          (s) => s.letter_group_id === anchorGroup.id
-        );
-        const existingMax = Math.max(
-          0,
-          ...sameGroupSegs.map((s) => romanToInt(s.variant))
-        );
-        const storyline = storylines.find(
-          (s) => s.id === anchorGroup.storyline_id
-        );
-        const ghostTempIds: string[] = [];
-        const ghosts: PendingAdd<ReportSegmentView>[] = [];
-        for (let i = 1; i <= n; i++) {
-          const tempId = makeGhostId("seg");
-          ghostTempIds.push(tempId);
-          const variant = toRoman(existingMax + i);
-          ghosts.push({
-            tempId,
-            ghost: {
-              id: tempId,
-              report_group_id: "",
-              variant,
-              summary: null,
-              content: null,
-              delivery_day_override_id: null,
-              delivery_day_offset: null,
-              sort_order: existingMax + i,
-              updated_at: new Date(0).toISOString(),
-              updated_by: null,
-              letter_group_id: anchorGroup.id,
-              storyline_id: anchorGroup.storyline_id,
-              storyline_abbreviation:
-                storyline?.abbreviation ?? "",
-              group_sequence: anchorGroup.sequence,
-              report_id: "R-?",
-              effective_day_id: targetDayId,
-            },
-            resolvedRealId: null,
+    // Create N report segments anchored to a specific letter group,
+    // with optimistic ghosts (one per requested segment, variants
+    // i/ii/iii picked to follow the existing ones so the layout's
+    // roman-numeral sort places them at the tail).
+    const makeCreator = (n: number, group: LetterGroup) => () => {
+      const sameGroupSegs = segments.filter(
+        (s) => s.letter_group_id === group.id
+      );
+      const existingMax = Math.max(
+        0,
+        ...sameGroupSegs.map((s) => romanToInt(s.variant))
+      );
+      const storyline = storylines.find((s) => s.id === group.storyline_id);
+      const ghostTempIds: string[] = [];
+      const ghosts: PendingAdd<ReportSegmentView>[] = [];
+      for (let i = 1; i <= n; i++) {
+        const tempId = makeGhostId("seg");
+        ghostTempIds.push(tempId);
+        ghosts.push({
+          tempId,
+          ghost: {
+            id: tempId,
+            report_group_id: "",
+            variant: toRoman(existingMax + i),
+            summary: null,
+            content: null,
+            delivery_day_override_id: null,
+            delivery_day_offset: null,
+            sort_order: existingMax + i,
+            updated_at: new Date(0).toISOString(),
+            updated_by: null,
+            letter_group_id: group.id,
+            storyline_id: group.storyline_id,
+            storyline_abbreviation: storyline?.abbreviation ?? "",
+            group_sequence: group.sequence,
+            report_id: "R-?",
+            effective_day_id: targetDayId,
+          },
+          resolvedRealId: null,
+        });
+      }
+      setPendingAdds((prev) => ({
+        ...prev,
+        segments: [...prev.segments, ...ghosts],
+      }));
+      void (async () => {
+        try {
+          const { segmentIds } = await createReportSegmentsForGroupAtDay(
+            group.id,
+            n,
+            targetDayId
+          );
+          ghostTempIds.forEach((tempId, idx) => {
+            const realId = segmentIds[idx];
+            if (realId) resolvePendingSegment(tempId, realId);
+            else removePendingSegment(tempId);
           });
-        }
-        setPendingAdds((prev) => ({
-          ...prev,
-          segments: [...prev.segments, ...ghosts],
-        }));
-        void (async () => {
-          try {
-            const { segmentIds } = await createReportSegmentsForGroupAtDay(
-              anchorGroup.id,
-              n,
-              targetDayId
-            );
-            ghostTempIds.forEach((tempId, idx) => {
-              const realId = segmentIds[idx];
-              if (realId) resolvePendingSegment(tempId, realId);
-              else removePendingSegment(tempId);
-            });
-            if (segmentIds[0]) {
-              queueFocus({ kind: "segment", segmentId: segmentIds[0] });
-            }
-          } catch (err) {
-            ghostTempIds.forEach(removePendingSegment);
-            throw err;
+          if (segmentIds[0]) {
+            queueFocus({ kind: "segment", segmentId: segmentIds[0] });
           }
-        })();
-      };
-      setContextMenu({
-        anchor,
-        items: [
-          {
-            label: "Letter Group",
-            icon: groupIcon,
-            onClick: createLetterGroupHere,
-          },
-          { divider: true },
-          {
-            label: "Report Segment",
-            icon: reportIcon,
-            disabled: !anchorGroup,
-            onClick: makeCreator(1),
-          },
-          {
-            label: "2 Report Segments",
-            icon: reportIcon,
-            disabled: !anchorGroup,
-            onClick: makeCreator(2),
-          },
-          {
-            label: "3 Report Segments",
-            icon: reportIcon,
-            disabled: !anchorGroup,
-            onClick: makeCreator(3),
-          },
-        ],
-      });
+        } catch (err) {
+          ghostTempIds.forEach(removePendingSegment);
+          throw err;
+        }
+      })();
     };
 
-    if (candidates.length <= 1) {
-      showCreateMenu(candidates[0] ?? null);
-      return;
-    }
-    // Ambiguous: the Letter Group option doesn't need an anchor, so it
-    // ships immediately; the Report Segment paths need the user to pick
-    // which group should anchor them.
+    // Display name for a candidate group, e.g. "W2 — Group name".
+    const storylineAbbr =
+      storylines.find((s) => s.id === storylineId)?.abbreviation ?? "";
+    const groupLabel = (g: LetterGroup) =>
+      `${storylineAbbr}${g.sequence}${g.name ? ` — ${g.name}` : ""}`;
+
+    // One report-segment menu row. With a single candidate group it's a
+    // direct click; with several, it fans out to a submenu so the user
+    // picks which letter group the segments anchor to.
+    const reportItem = (n: number, label: string): GraphContextMenuItem => {
+      if (candidates.length === 0) {
+        return { label, icon: reportIcon, disabled: true, onClick: () => {} };
+      }
+      if (candidates.length === 1) {
+        return { label, icon: reportIcon, onClick: makeCreator(n, candidates[0]) };
+      }
+      return {
+        label,
+        icon: reportIcon,
+        trailing: <ChevronRight size={12} aria-hidden />,
+        submenu: candidates.map((g) => ({
+          label: `in Letter Group ${groupLabel(g)}`,
+          onClick: makeCreator(n, g),
+        })),
+      };
+    };
+
     setContextMenu({
       anchor,
       items: [
@@ -2508,10 +2501,9 @@ export function GraphView({
           onClick: createLetterGroupHere,
         },
         { divider: true },
-        ...candidates.map((g) => ({
-          label: `Reports for Group ${g.sequence}${g.name ? ` — ${g.name}` : ""}`,
-          onClick: () => showCreateMenu(g),
-        })),
+        reportItem(1, "Report Segment"),
+        reportItem(2, "2 Report Segments"),
+        reportItem(3, "3 Report Segments"),
       ],
     });
   }
@@ -3132,10 +3124,15 @@ export function GraphView({
           ? `segment:${selection.segmentId}`
           : "other"
     : null;
+  const autozoomEnabledRef = useRef(autozoomEnabled);
+  autozoomEnabledRef.current = autozoomEnabled;
   useEffect(() => {
     const rf = rfRef.current;
     if (!rf) return;
     if (!selectionKey) return;
+    // Gated on the per-user auto-zoom preference. The button below
+    // still recenters on demand even when this is off.
+    if (!autozoomEnabledRef.current) return;
     const c = selectionCenterRef.current(selection);
     if (!c) return;
     let raf2 = 0;
@@ -3278,6 +3275,37 @@ export function GraphView({
     },
     [reconnectActive]
   );
+
+  // Zoom-to-selection button gestures. A quick tap recenters on the
+  // selection; a press-and-hold (≥450ms) or a double-click toggles the
+  // per-user auto-zoom preference. holdHandledRef swallows the click
+  // that follows a hold so it doesn't also recenter.
+  const zoomHoldTimerRef = useRef<number | null>(null);
+  const zoomHoldHandledRef = useRef(false);
+  const cancelZoomHold = useCallback(() => {
+    if (zoomHoldTimerRef.current) {
+      clearTimeout(zoomHoldTimerRef.current);
+      zoomHoldTimerRef.current = null;
+    }
+  }, []);
+  const onZoomBtnPointerDown = useCallback(() => {
+    zoomHoldHandledRef.current = false;
+    cancelZoomHold();
+    zoomHoldTimerRef.current = window.setTimeout(() => {
+      zoomHoldHandledRef.current = true;
+      setAutozoomEnabled((v) => !v);
+    }, 450);
+  }, [cancelZoomHold, setAutozoomEnabled]);
+  const onZoomBtnClick = useCallback(() => {
+    if (zoomHoldHandledRef.current) {
+      zoomHoldHandledRef.current = false;
+      return;
+    }
+    const rf = rfRef.current;
+    const c = selectionCenter(selection);
+    if (!rf || !c) return;
+    rf.setCenter(c.x, c.y, { zoom: 1, duration: 350 });
+  }, [selectionCenter, selection]);
 
   return (
     <div
@@ -3701,6 +3729,7 @@ export function GraphView({
           event.preventDefault();
           openPaneMenu(event as unknown as MouseEvent);
         }}
+        onPaneClick={() => select(null)}
         onNodeDragStart={onNodeDragStart}
         onNodeDrag={onNodeDrag}
         onNodeDragStop={onNodeDragStop}
@@ -3725,15 +3754,23 @@ export function GraphView({
               <button
                 type="button"
                 aria-label="Zoom to selection"
-                title="Zoom to selection"
-                disabled={!selectionCenter(selection)}
-                className="flex h-8 w-8 items-center justify-center text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-30"
-                onClick={() => {
-                  const rf = rfRef.current;
-                  const c = selectionCenter(selection);
-                  if (!rf || !c) return;
-                  rf.setCenter(c.x, c.y, { zoom: 1, duration: 350 });
-                }}
+                aria-pressed={autozoomEnabled}
+                title={
+                  autozoomEnabled
+                    ? "Zoom to selection · auto-zoom ON — double-click or hold to turn off"
+                    : "Zoom to selection · auto-zoom OFF — double-click or hold to turn on"
+                }
+                className={
+                  "flex h-8 w-8 items-center justify-center " +
+                  (autozoomEnabled
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "text-foreground hover:bg-accent")
+                }
+                onPointerDown={onZoomBtnPointerDown}
+                onPointerUp={cancelZoomHold}
+                onPointerLeave={cancelZoomHold}
+                onClick={onZoomBtnClick}
+                onDoubleClick={() => setAutozoomEnabled((v) => !v)}
               >
                 <IconZoomScan size={16} stroke={2.4} />
               </button>
