@@ -109,6 +109,16 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
     });
   });
 
+  it("returns the same state when a remote repeats the already-stashed value", () => {
+    const stashed = instantFieldReducer(saving("local"), {
+      type: "remote",
+      value: "peer",
+    });
+    expect(
+      instantFieldReducer(stashed, { type: "remote", value: "peer" })
+    ).toBe(stashed);
+  });
+
   it("applies remote update when in error state (field already reverted)", () => {
     expect(
       instantFieldReducer(errored("a"), { type: "remote", value: "b" })
