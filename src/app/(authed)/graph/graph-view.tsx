@@ -416,14 +416,106 @@ export function GraphView({
     [onSelectionChange]
   );
 
-  // Optimistic next-letter overrides for in-flight edge reconnects. The
-  // layout useMemo reads from this map first, so the dragged edge snaps
-  // to the new target the instant the user drops — no flash of the old
-  // edge between drop and server revalidation. Each entry is cleared in
-  // a finally{} after its server action completes.
+  // Optimistic overrides for in-flight edge reconnects. The layout
+  // useMemo reads from these maps first, so the dragged edge snaps to
+  // the new target the instant the user drops — no flash of the old
+  // edge between drop and server revalidation.
+  //
+  // Entries are NOT cleared in the server-action's finally{} (that
+  // races the RSC re-render and produces a brief flash to the old
+  // state). Instead, the useEffect below watches `actions` and drops
+  // each entry once server state matches the optimistic value.
+  // Server-error paths clear immediately so the UI reverts to truth.
   const [optimisticNextByAction, setOptimisticNextByAction] = useState<
     Record<string, string | null>
   >({});
+  const [optimisticReportByAction, setOptimisticReportByAction] = useState<
+    Record<string, string | null>
+  >({});
+
+  // Drop optimistic entries once the server-side actions list has caught
+  // up. Looking at one `actions` snapshot at a time means we never strand
+  // a stale optimistic value visually past the revalidation.
+  useEffect(() => {
+    setOptimisticNextByAction((prev) => {
+      let changed = false;
+      const next: Record<string, string | null> = {};
+      for (const [aid, opt] of Object.entries(prev)) {
+        const action = actions.find((a) => a.id === aid);
+        if (action && (action.next_letter_variant ?? null) === opt) {
+          changed = true;
+        } else {
+          next[aid] = opt;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setOptimisticReportByAction((prev) => {
+      let changed = false;
+      const next: Record<string, string | null> = {};
+      for (const [aid, opt] of Object.entries(prev)) {
+        const action = actions.find((a) => a.id === aid);
+        if (action && (action.report_segment_id ?? null) === opt) {
+          changed = true;
+        } else {
+          next[aid] = opt;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [actions]);
+
+  // Wrap the next-letter / report-segment server calls in an optimistic
+  // overlay + error-recovery clear. On success, the overlay sticks until
+  // the actions effect above lands the matching server state. On error,
+  // we drop the overlay immediately so the UI reverts to truth.
+  const dispatchNextLetter = useCallback(
+    async (
+      actionId: string,
+      letterId: string | null,
+      optimisticVariant: string | null
+    ): Promise<void> => {
+      setOptimisticNextByAction((prev) => ({
+        ...prev,
+        [actionId]: optimisticVariant,
+      }));
+      try {
+        await setActionNextLetterByLetterId(actionId, letterId);
+      } catch (err) {
+        setOptimisticNextByAction((prev) => {
+          if (!(actionId in prev)) return prev;
+          const n = { ...prev };
+          delete n[actionId];
+          return n;
+        });
+        throw err;
+      }
+    },
+    []
+  );
+  const dispatchReportSegment = useCallback(
+    async (
+      actionId: string,
+      segmentId: string | null
+    ): Promise<void> => {
+      setOptimisticReportByAction((prev) => ({
+        ...prev,
+        [actionId]: segmentId,
+      }));
+      try {
+        await setActionReportSegment(actionId, segmentId);
+      } catch (err) {
+        setOptimisticReportByAction((prev) => {
+          if (!(actionId in prev)) return prev;
+          const n = { ...prev };
+          delete n[actionId];
+          return n;
+        });
+        throw err;
+      }
+    },
+    []
+  );
   const {
     nodes,
     edges,
@@ -1043,15 +1135,19 @@ export function GraphView({
       if (!src) continue;
       const sourceId = makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
 
-      const segmentNodeId = a.report_segment_id
-        ? `report:${a.report_segment_id}`
+      // Optimistic overrides win over server state during in-flight
+      // reconnects so the edge follows the drop without round-tripping.
+      const effectiveReportId =
+        a.id in optimisticReportByAction
+          ? optimisticReportByAction[a.id]
+          : a.report_segment_id;
+      const segmentNodeId = effectiveReportId
+        ? `report:${effectiveReportId}`
         : null;
       const segmentExists = segmentNodeId
         ? segmentAbsPos.has(segmentNodeId)
         : false;
 
-      // Optimistic overrides win over server state during in-flight
-      // reconnects so the edge follows the drop without round-tripping.
       const effectiveNextVariant =
         a.id in optimisticNextByAction
           ? optimisticNextByAction[a.id]
@@ -1509,8 +1605,18 @@ export function GraphView({
         if (!p.candidate.source.startsWith("letter:")) continue;
         const a = p.candidate.action;
         const resolved = resolveAction(a);
-        const hasReport = !!a.report_segment_id;
-        const hasNext = !!a.next_letter_variant;
+        // Use the optimistic-overlaid values so connector positioning
+        // matches the visible edge state during in-flight reconnects.
+        const effectiveReportIdForA =
+          a.id in optimisticReportByAction
+            ? optimisticReportByAction[a.id]
+            : a.report_segment_id;
+        const effectiveNextForA =
+          a.id in optimisticNextByAction
+            ? optimisticNextByAction[a.id]
+            : a.next_letter_variant;
+        const hasReport = !!effectiveReportIdForA;
+        const hasNext = !!effectiveNextForA;
         if (!hasReport && !hasNext) {
           // Single combined connector: drag-anywhere. The kind is "any"
           // and the drop handler resolves to report or next based on the
@@ -1558,7 +1664,7 @@ export function GraphView({
           let nextY = p.chipY + CONNECT_BELOW_GAP - 6;
           if (hasReport && p.candidate.kind === "ls") {
             const reportPos = segmentAbsPos.get(
-              `report:${a.report_segment_id}`
+              `report:${effectiveReportIdForA}`
             );
             if (reportPos) {
               const lsOffset =
@@ -1726,7 +1832,17 @@ export function GraphView({
             !(
               editingEnabled &&
               isLetterSource &&
-              (!c.action.report_segment_id || !c.action.next_letter_variant)
+              (() => {
+                const effReport =
+                  c.action.id in optimisticReportByAction
+                    ? optimisticReportByAction[c.action.id]
+                    : c.action.report_segment_id;
+                const effNext =
+                  c.action.id in optimisticNextByAction
+                    ? optimisticNextByAction[c.action.id]
+                    : c.action.next_letter_variant;
+                return !effReport || !effNext;
+              })()
             ),
           invalid: !!c.invalid,
           editingEnabled,
@@ -1849,6 +1965,7 @@ export function GraphView({
     selection,
     select,
     optimisticNextByAction,
+    optimisticReportByAction,
     editingEnabled,
     selfRingColor,
     peerGroups,
@@ -2365,25 +2482,6 @@ export function GraphView({
       const hadReport = !!action?.report_segment_id;
       const hadNext = !!action?.next_letter_variant;
 
-      // Helper: optimistically clear next_letter for an action AND fire
-      // the server-side clear. Wrapped so we can call from multiple
-      // branches without duplicating the optimistic-tracking dance.
-      const clearNextLetter = () => {
-        setOptimisticNextByAction((prev) => ({ ...prev, [actionId]: null }));
-        void (async () => {
-          try {
-            await setActionNextLetterByLetterId(actionId, null);
-          } finally {
-            setOptimisticNextByAction((prev) => {
-              if (!(actionId in prev)) return prev;
-              const next = { ...prev };
-              delete next[actionId];
-              return next;
-            });
-          }
-        })();
-      };
-
       // -----------------------------------------------------------------
       // Drop on a REPORT card.
       // -----------------------------------------------------------------
@@ -2402,13 +2500,13 @@ export function GraphView({
           actionId,
           previousReportSegmentId: action?.report_segment_id ?? null,
         });
-        void setActionReportSegment(actionId, segmentId);
+        void dispatchReportSegment(actionId, segmentId);
         // Dropping any non-sn edge on a report retargets the report. If
         // the action ALSO had a next letter (either via ln retarget or
         // ls retarget on a complete chain), clear it: the chain is now
         // visually broken and the user picked the new report as the
         // chain's terminus.
-        if (hadNext) clearNextLetter();
+        if (hadNext) void dispatchNextLetter(actionId, null, null);
         return;
       }
 
@@ -2446,22 +2544,7 @@ export function GraphView({
         previousLetterId,
       });
       const optimisticVariant = tgtLetter.variant ?? "";
-      setOptimisticNextByAction((prev) => ({
-        ...prev,
-        [actionId]: optimisticVariant,
-      }));
-      void (async () => {
-        try {
-          await setActionNextLetterByLetterId(actionId, tgtLetter.id);
-        } finally {
-          setOptimisticNextByAction((prev) => {
-            if (!(actionId in prev)) return prev;
-            const next = { ...prev };
-            delete next[actionId];
-            return next;
-          });
-        }
-      })();
+      void dispatchNextLetter(actionId, tgtLetter.id, optimisticVariant);
 
       // ls (letter → report) dragged to a letter: the user dropped the
       // report-end onto a letter, converting the action from
@@ -2475,10 +2558,18 @@ export function GraphView({
           actionId,
           previousReportSegmentId: action?.report_segment_id ?? null,
         });
-        void setActionReportSegment(actionId, null);
+        void dispatchReportSegment(actionId, null);
       }
     },
-    [letters, letterGroups, actions, recordUndo, resolveCurrentNextLetterId]
+    [
+      letters,
+      letterGroups,
+      actions,
+      recordUndo,
+      resolveCurrentNextLetterId,
+      dispatchNextLetter,
+      dispatchReportSegment,
+    ]
   );
 
   const onReconnectEnd = useCallback(
@@ -2503,7 +2594,7 @@ export function GraphView({
               actionId,
               previousReportSegmentId: action?.report_segment_id ?? null,
             });
-            void setActionReportSegment(actionId, null);
+            void dispatchReportSegment(actionId, null);
           } else {
             const previousLetterId = resolveCurrentNextLetterId(actionId);
             recordUndo?.({
@@ -2511,28 +2602,19 @@ export function GraphView({
               actionId,
               previousLetterId,
             });
-            setOptimisticNextByAction((prev) => ({
-              ...prev,
-              [actionId]: null,
-            }));
-            void (async () => {
-              try {
-                await setActionNextLetterByLetterId(actionId, null);
-              } finally {
-                setOptimisticNextByAction((prev) => {
-                  if (!(actionId in prev)) return prev;
-                  const next = { ...prev };
-                  delete next[actionId];
-                  return next;
-                });
-              }
-            })();
+            void dispatchNextLetter(actionId, null, null);
           }
         }
       }
       edgeReconnectSuccessful.current = true;
     },
-    [actions, recordUndo, resolveCurrentNextLetterId]
+    [
+      actions,
+      recordUndo,
+      resolveCurrentNextLetterId,
+      dispatchNextLetter,
+      dispatchReportSegment,
+    ]
   );
 
   // Live drop-target validation. Three reconnect/connect flows share
@@ -2596,7 +2678,7 @@ export function GraphView({
           actionId,
           previousReportSegmentId: action?.report_segment_id ?? null,
         });
-        void setActionReportSegment(actionId, segmentId);
+        void dispatchReportSegment(actionId, segmentId);
         return;
       }
       // kind === "next"
@@ -2629,24 +2711,17 @@ export function GraphView({
         previousLetterId,
       });
       const optimisticVariant = tgtLetter.variant ?? "";
-      setOptimisticNextByAction((prev) => ({
-        ...prev,
-        [actionId]: optimisticVariant,
-      }));
-      void (async () => {
-        try {
-          await setActionNextLetterByLetterId(actionId, tgtLetter.id);
-        } finally {
-          setOptimisticNextByAction((prev) => {
-            if (!(actionId in prev)) return prev;
-            const next = { ...prev };
-            delete next[actionId];
-            return next;
-          });
-        }
-      })();
+      void dispatchNextLetter(actionId, tgtLetter.id, optimisticVariant);
     },
-    [letters, letterGroups, actions, recordUndo, resolveCurrentNextLetterId]
+    [
+      letters,
+      letterGroups,
+      actions,
+      recordUndo,
+      resolveCurrentNextLetterId,
+      dispatchNextLetter,
+      dispatchReportSegment,
+    ]
   );
 
   // Decorate the static layout with the current drag-pointer feedback
