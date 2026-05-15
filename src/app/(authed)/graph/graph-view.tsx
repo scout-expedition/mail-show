@@ -200,7 +200,7 @@ const PILL_W = 110;
 
 const GROUP_PAD_LEADING = 56; // horizontal padding inside the group outline
 const GROUP_PAD_TRAILING = 56;
-const GROUP_PAD_TOP = 14; // vertical padding inside the group outline
+const GROUP_PAD_TOP = 20; // vertical padding inside the group outline
 const GROUP_PAD_BOTTOM = 14;
 const VARIANT_GAP = 60; // horizontal gap between sibling variants in a group — wide enough that impact-overlay badges between adjacent variants don't collide
 
@@ -1256,19 +1256,21 @@ export function GraphView({
         // row reads at a uniform height.
         // Padding around the report run, matched to the letter-group box's
         // vertical inset (GROUP_PAD_TOP/BOTTOM) so the two outline boxes read
-        // with the same breathing room.
-        const REPORT_CLUSTER_PAD = 14;
+        // with the same breathing room. Top inset runs a touch larger than
+        // the others so the report cards aren't cramped against the edge.
+        const REPORT_CLUSTER_PAD = 14; // horizontal + bottom inset
+        const REPORT_CLUSTER_PAD_TOP = 20; // extra top breathing room
         for (const cl of reportClusters) {
           n.push({
             id: `reportcluster:${rowId}:${cl.groupId}`,
             type: "reportCluster",
             position: {
               x: cl.minX - REPORT_CLUSTER_PAD,
-              y: topY - REPORT_CLUSTER_PAD,
+              y: topY - REPORT_CLUSTER_PAD_TOP,
             },
             data: {
               width: cl.maxX - cl.minX + REPORT_CLUSTER_PAD * 2,
-              height: rowTopH + REPORT_CLUSTER_PAD * 2,
+              height: rowTopH + REPORT_CLUSTER_PAD_TOP + REPORT_CLUSTER_PAD,
             },
             draggable: false,
             selectable: false,
@@ -2032,11 +2034,11 @@ export function GraphView({
           // chain through the report card.
           let nextX = p.chipX - 6;
           let nextY = p.chipY + CONNECT_BELOW_GAP - 6;
-          // Anchor the "next" pickup directly below the report segment
-          // whenever the action has a report — not only on the `ls`
-          // placement, so it lands at the report's bottom edge (the same
-          // height as a sibling action's stub) instead of dropping down
-          // to the chip row.
+          // Anchor the "next" pickup directly on the report segment's
+          // bottom edge — the exact point where a connected sn-edge's
+          // terminator circle is drawn (sourceY). Centering the 12px node
+          // there (TL = edge − 6) keeps connected and disconnected
+          // next-letter connectors in the same vertical position.
           if (hasReport) {
             const reportPos = segmentAbsPos.get(
               `report:${effectiveReportIdForA}`
@@ -2045,7 +2047,7 @@ export function GraphView({
               const lsOffset =
                 targetOffsetByEdgeId.get(`a:${a.id}:ls`) ?? 0;
               nextX = reportPos.x + CARD_W / 2 + lsOffset - 6;
-              nextY = reportPos.y + reportPos.h + 6 - 6;
+              nextY = reportPos.y + reportPos.h - 6;
             }
           }
           n.push({
