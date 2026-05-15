@@ -17,6 +17,9 @@ export type LetterNodeData = {
    *  group). Fades the card and animates a soft pulse so the user sees
    *  the optimistic deletion in progress. */
   pendingDelete?: boolean;
+  /** True while this letter is an optimistic ghost (server create in
+   *  flight). Rendered with the same pulse/greyout as pendingDelete. */
+  pendingAdd?: boolean;
   /** True while this card is part of an in-progress drag preview —
    *  rendered semi-transparent so the move reads as provisional. */
   dragGhost?: boolean;
@@ -50,7 +53,7 @@ function LetterNode({ data }: NodeProps) {
     <div
       className={
         "relative transition-opacity" +
-        (d.pendingDelete
+        (d.pendingDelete || d.pendingAdd
           ? " animate-pulse opacity-40"
           : d.dragGhost
             ? " opacity-50"

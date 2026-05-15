@@ -481,7 +481,9 @@ export function GraphView({
   const [pendingAdds, setPendingAdds] = useState<{
     groups: PendingAdd<LetterGroup>[];
     segments: PendingAdd<ReportSegmentView>[];
-  }>({ groups: [], segments: [] });
+    letters: PendingAdd<InspectionLetterView>[];
+    days: PendingAdd<Day>[];
+  }>({ groups: [], segments: [], letters: [], days: [] });
   const nextGhostIdRef = useRef(0);
   const makeGhostId = useCallback((prefix: string) => {
     const n = ++nextGhostIdRef.current;
@@ -521,27 +523,72 @@ export function GraphView({
     },
     []
   );
+  const removePendingLetter = useCallback((tempId: string) => {
+    setPendingAdds((prev) => ({
+      ...prev,
+      letters: prev.letters.filter((p) => p.tempId !== tempId),
+    }));
+  }, []);
+  const resolvePendingLetter = useCallback(
+    (tempId: string, realId: string) => {
+      setPendingAdds((prev) => ({
+        ...prev,
+        letters: prev.letters.map((p) =>
+          p.tempId === tempId ? { ...p, resolvedRealId: realId } : p
+        ),
+      }));
+    },
+    []
+  );
+  const removePendingDay = useCallback((tempId: string) => {
+    setPendingAdds((prev) => ({
+      ...prev,
+      days: prev.days.filter((p) => p.tempId !== tempId),
+    }));
+  }, []);
+  const resolvePendingDay = useCallback((tempId: string, realId: string) => {
+    setPendingAdds((prev) => ({
+      ...prev,
+      days: prev.days.map((p) =>
+        p.tempId === tempId ? { ...p, resolvedRealId: realId } : p
+      ),
+    }));
+  }, []);
 
   // Drop resolved ghosts once the matching real entity has landed.
   useEffect(() => {
     setPendingAdds((prev) => {
       const realGroupIds = new Set(letterGroups.map((g) => g.id));
       const realSegIds = new Set(segments.map((s) => s.id));
-      const stayedGroup = (p: PendingAdd<LetterGroup>) =>
-        p.resolvedRealId == null || !realGroupIds.has(p.resolvedRealId);
-      const stayedSeg = (p: PendingAdd<ReportSegmentView>) =>
-        p.resolvedRealId == null || !realSegIds.has(p.resolvedRealId);
-      const nextGroups = prev.groups.filter(stayedGroup);
-      const nextSegments = prev.segments.filter(stayedSeg);
+      const realLetterIds = new Set(letters.map((l) => l.id));
+      const realDayIds = new Set(days.map((d) => d.id));
+      const stayed = <T extends { id: string }>(real: Set<string>) =>
+        (p: PendingAdd<T>) =>
+          p.resolvedRealId == null || !real.has(p.resolvedRealId);
+      const nextGroups = prev.groups.filter(stayed<LetterGroup>(realGroupIds));
+      const nextSegments = prev.segments.filter(
+        stayed<ReportSegmentView>(realSegIds)
+      );
+      const nextLetters = prev.letters.filter(
+        stayed<InspectionLetterView>(realLetterIds)
+      );
+      const nextDays = prev.days.filter(stayed<Day>(realDayIds));
       if (
         nextGroups.length === prev.groups.length &&
-        nextSegments.length === prev.segments.length
+        nextSegments.length === prev.segments.length &&
+        nextLetters.length === prev.letters.length &&
+        nextDays.length === prev.days.length
       ) {
         return prev;
       }
-      return { groups: nextGroups, segments: nextSegments };
+      return {
+        groups: nextGroups,
+        segments: nextSegments,
+        letters: nextLetters,
+        days: nextDays,
+      };
     });
-  }, [letterGroups, segments]);
+  }, [letterGroups, segments, letters, days]);
 
   // Optimistic delete tracking. When the user confirms a delete on a
   // letter / report / group / action, we add its id to the matching
@@ -735,12 +782,29 @@ export function GraphView({
       augmentedSegments.push(p.ghost);
       ghostSegmentIdSet.add(p.ghost.id);
     }
+    const realLetterIds = new Set(letters.map((l) => l.id));
+    const realDayIds = new Set(days.map((d) => d.id));
+    const ghostLetterIdSet = new Set<string>();
+    const ghostDayIdSet = new Set<string>();
+    const augmentedLetters: InspectionLetterView[] = letters.slice();
+    for (const p of pendingAdds.letters) {
+      if (p.resolvedRealId && realLetterIds.has(p.resolvedRealId)) continue;
+      augmentedLetters.push(p.ghost);
+      ghostLetterIdSet.add(p.ghost.id);
+    }
+    const augmentedDays: Day[] = days.slice();
+    for (const p of pendingAdds.days) {
+      if (p.resolvedRealId && realDayIds.has(p.resolvedRealId)) continue;
+      augmentedDays.push(p.ghost);
+      ghostDayIdSet.add(p.ghost.id);
+    }
+    augmentedDays.sort((a, b) => a.number - b.number);
 
     // -------------------------------------------------------------
     // Rows (days + unscheduled bucket) — flow top→down
     // -------------------------------------------------------------
-    const rowIds: string[] = [...days.map((d) => d.id), "unscheduled"];
-    const dayById = new Map(days.map((d) => [d.id, d]));
+    const rowIds: string[] = [...augmentedDays.map((d) => d.id), "unscheduled"];
+    const dayById = new Map(augmentedDays.map((d) => [d.id, d]));
     const rowIndex = new Map<string, number>();
     rowIds.forEach((id, i) => rowIndex.set(id, i));
 
@@ -781,7 +845,7 @@ export function GraphView({
     // For each (group, variant), the primary letter is the lowest-piece one.
     // Summary shown in the card comes from this primary letter.
     const primaryLetterByGroupVariant = new Map<string, InspectionLetterView>();
-    for (const l of letters) {
+    for (const l of augmentedLetters) {
       const key = `${l.letter_group_id}:${variantKey(l.variant)}`;
       const existing = primaryLetterByGroupVariant.get(key);
       if (!existing || (l.piece ?? 0) < (existing.piece ?? 0)) {
@@ -800,7 +864,9 @@ export function GraphView({
     for (const g of augmentedLetterGroups) {
       const storyline = storylineById.get(g.storyline_id);
       if (!storyline) continue;
-      const groupLetters = letters.filter((l) => l.letter_group_id === g.id);
+      const groupLetters = augmentedLetters.filter(
+        (l) => l.letter_group_id === g.id
+      );
       const gDayKey = g.delivery_day_id ?? "unscheduled";
 
       // Partition variants by their effective day. A variant can have
@@ -1298,6 +1364,7 @@ export function GraphView({
                   if (lid && pendingDeletes.letters[lid] === true) return true;
                   return pendingDeletes.groups[gid] === true;
                 })(),
+                pendingAdd: !!primary && ghostLetterIdSet.has(primary.id),
                 pinned: primary?.delivery_day_override_id != null,
                 offsetText:
                   primary?.delivery_day_offset != null
@@ -2167,6 +2234,7 @@ export function GraphView({
         identifier: day?.identifier ?? null,
         label: day?.name ?? null,
         isUnscheduled: rowId === "unscheduled",
+        pendingAdd: ghostDayIdSet.has(rowId),
       };
     });
     const labelCols = orderedStorylines.map((s) => ({
@@ -2338,6 +2406,44 @@ export function GraphView({
     pendingFocusRef.current = sel;
   }, []);
 
+  // Add the next day, with an optimistic muted ghost row. The ghost's
+  // identifier (`D{n}`) is synthetic — the real one is DB-generated — so
+  // the ghost is dropped the moment the real day lands in server data.
+  const createNextDayWithGhost = useCallback(() => {
+    const number = days.reduce((m, d) => Math.max(m, d.number), 0) + 1;
+    const tempId = makeGhostId("day");
+    const ghost: Day = {
+      id: tempId,
+      number,
+      identifier: `D${number}`,
+      name: null,
+      notes: null,
+      until_qup: null,
+      month: null,
+      day_of_month: null,
+      year: null,
+      day_of_week: null,
+      sort_phase_length_seconds: null,
+      inspection_phase_length_seconds: null,
+      base_report: null,
+      report_sign_off: null,
+      end_of_day_sign_off: null,
+    };
+    setPendingAdds((prev) => ({
+      ...prev,
+      days: [...prev.days, { tempId, ghost, resolvedRealId: null }],
+    }));
+    void (async () => {
+      try {
+        const { newDayId } = await createNextDay();
+        resolvePendingDay(tempId, newDayId);
+      } catch (err) {
+        removePendingDay(tempId);
+        throw err;
+      }
+    })();
+  }, [days, makeGhostId, resolvePendingDay, removePendingDay]);
+
   // Create N report segments under a letter group, with optimistic
   // ghosts. Reports created on the graph carry NO delivery override —
   // their day is computed from the letter group (group day + 1) until
@@ -2472,7 +2578,7 @@ export function GraphView({
           {
             label: "Add Day",
             icon: <CalendarPlus size={12} aria-hidden />,
-            onClick: () => void createNextDay(),
+            onClick: () => createNextDayWithGhost(),
           },
         ],
       });
@@ -3957,38 +4063,78 @@ export function GraphView({
               </span>
             );
             const makeAddLetters = (n: number) => () => {
+              // Optimistic ghosts: synthesize fully-shaped letters so the new
+              // cards appear in the group instantly (pulsing + greyed via the
+              // pendingAdd flag). Variants are picked to sort past the
+              // existing letters — the server reassigns them on insert, and
+              // the ghost is dropped once the real letter lands.
+              const storyline = group
+                ? storylines.find((s) => s.id === group.storyline_id)
+                : undefined;
+              const groupLetters = letters.filter(
+                (l) => l.letter_group_id === gid
+              );
+              let maxCode = 96; // 'a' - 1
+              for (const l of groupLetters) {
+                const c = (l.variant ?? "a").charCodeAt(0);
+                if (c > maxCode) maxCode = c;
+              }
+              const baseSort = groupLetters.reduce(
+                (m, l) => Math.max(m, l.sort_order),
+                0
+              );
+              const ghostTempIds: string[] = [];
+              const ghosts: PendingAdd<InspectionLetterView>[] = [];
+              for (let i = 1; i <= n; i++) {
+                const tempId = makeGhostId("letter");
+                const variant = String.fromCharCode(maxCode + i);
+                ghostTempIds.push(tempId);
+                ghosts.push({
+                  tempId,
+                  ghost: {
+                    id: tempId,
+                    letter_group_id: gid,
+                    variant,
+                    piece: null,
+                    sort_order: baseSort + i,
+                    delivery_day_override_id: null,
+                    delivery_day_offset: null,
+                    summary: null,
+                    content: null,
+                    sender_citizen_id: null,
+                    receiver_citizen_id: null,
+                    notes: null,
+                    updated_at: new Date(0).toISOString(),
+                    updated_by: null,
+                    effective_day_id: group?.delivery_day_id ?? null,
+                    storyline_abbreviation: storyline?.abbreviation ?? "",
+                    group_sequence: group?.sequence ?? 0,
+                    storyline_id: group?.storyline_id ?? "",
+                    content_id: letterDisplayId(
+                      storyline?.abbreviation ?? "?",
+                      group?.sequence ?? 0,
+                      variant,
+                      false
+                    ),
+                  },
+                  resolvedRealId: null,
+                });
+              }
+              setPendingAdds((prev) => ({
+                ...prev,
+                letters: [...prev.letters, ...ghosts],
+              }));
               void (async () => {
-                const ids = await createInspectionLettersInGroup(gid, n);
-                // Server reassigns variants after insert; find the new
-                // letters by id once they appear in `letters` to derive
-                // a variantKey for selection.
-                if (ids[0]) {
-                  // Use a one-time watcher: enqueue a focus that resolves
-                  // when the letter shows up.
-                  const newId = ids[0];
-                  // Quick check against current state first.
-                  const existing = letters.find((l) => l.id === newId);
-                  if (existing) {
-                    queueFocus({
-                      kind: "letter",
-                      groupId: gid,
-                      variantKey: variantKey(existing.variant),
-                    });
-                  } else {
-                    // Best-effort: enqueue a checker that watches for the
-                    // id. We can piggyback by stashing into a small state
-                    // re-evaluated next render via pendingFocusRef sweep.
-                    setTimeout(() => {
-                      const found = letters.find((l) => l.id === newId);
-                      if (found) {
-                        queueFocus({
-                          kind: "letter",
-                          groupId: gid,
-                          variantKey: variantKey(found.variant),
-                        });
-                      }
-                    }, 600);
-                  }
+                try {
+                  const ids = await createInspectionLettersInGroup(gid, n);
+                  ghostTempIds.forEach((tempId, idx) => {
+                    const realId = ids[idx];
+                    if (realId) resolvePendingLetter(tempId, realId);
+                    else removePendingLetter(tempId);
+                  });
+                } catch (err) {
+                  ghostTempIds.forEach(removePendingLetter);
+                  throw err;
                 }
               })();
             };
@@ -4208,6 +4354,7 @@ function StickyDayGutter({
     identifier: string | null;
     label: string | null;
     isUnscheduled: boolean;
+    pendingAdd: boolean;
   }[];
   viewport: Viewport;
 }) {
@@ -4225,7 +4372,11 @@ function StickyDayGutter({
         return (
           <div
             key={r.rowId}
-            className="absolute flex flex-col items-center justify-center gap-0.5 rounded-r-md border-y border-r border-border bg-card/80 px-0.5"
+            className={
+              "absolute flex flex-col items-center justify-center gap-0.5 rounded-r-md border-y border-r border-border bg-card/80 px-0.5" +
+              // Ghost day (server create in flight) reads as muted + pulsing.
+              (r.pendingAdd ? " animate-pulse opacity-50" : "")
+            }
             style={{ top: top + 3, left: 0, right: 2, height }}
           >
             <span className="font-mono text-[11px] font-semibold tracking-widest text-foreground">
