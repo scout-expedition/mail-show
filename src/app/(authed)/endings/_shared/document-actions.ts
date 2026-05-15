@@ -1519,20 +1519,20 @@ export async function patchChip(
         ? patch.aggregate_value
         : (existing.aggregate_value as string | null),
   };
-  // Reject only when MULTIPLE value slots are set — that's an
-  // internally inconsistent chip the evaluator can't reason about. A
-  // chip with all slots null is legal (it's a freshly-cleared "—"
-  // pick) and the evaluator treats it as no-match. The legacy bulk
-  // save accepted this state; rejecting it broke peer echo for users
-  // who picked "—" in the value dropdown.
+  // The DB CHECK constraint `ending_condition_row_chips_value_shape`
+  // requires EXACTLY one value slot non-null — a chip always compares
+  // against something. Reject here so the caller gets a clean message
+  // instead of a raw Postgres constraint-violation string. The editor
+  // also skips the commit for transient invalid states (a half-cleared
+  // number field), so this path is the last line of defense.
   const filled = [
     merged.text_value_id,
     merged.number_value,
     merged.aggregate_value,
   ].filter((v) => v != null).length;
-  if (filled > 1) {
+  if (filled !== 1) {
     throw new Error(
-      "patchChip: at most one of text_value_id, number_value, or aggregate_value may be non-null."
+      "A chip must compare against exactly one value. Remove the chip instead of clearing its value."
     );
   }
 

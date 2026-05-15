@@ -18,6 +18,7 @@ import {
 import type { ChipState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { PickerCtx } from "../_shared/lib/picker";
 import {
   CREATE_VALUE_SENTINEL,
@@ -163,6 +164,31 @@ export function ChipPill({
     { id: string; text: string } | null
   >(null);
 
+  // Presence: while the local user edits this chip's operator or value,
+  // broadcast focus so peers see a ring around the pill. The ring color
+  // (self or peer) is resolved below from the shared focus + peer list.
+  const { focus: localFocus, peers, selfColor, setFocus } =
+    usePresenceContext();
+  const onChipFocus = () =>
+    setFocus({
+      table: "ending_condition_row_chips",
+      recordId: chip.id,
+      field: "chip",
+    });
+  const onChipBlur = () => setFocus(null);
+  const chipMatches = (f: typeof localFocus) =>
+    !!f &&
+    f.table === "ending_condition_row_chips" &&
+    f.recordId === chip.id &&
+    f.field === "chip";
+  let ringColor: string | undefined;
+  if (chipMatches(localFocus) && selfColor) {
+    ringColor = selfColor;
+  } else {
+    const peer = peers.find((p) => chipMatches(p.focus));
+    ringColor = peer?.profile?.avatarColorHex ?? peer?.color;
+  }
+
   if (!variable) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive">
@@ -237,10 +263,13 @@ export function ChipPill({
       </button>
     <span
       className={cn(
-        "flex h-5 flex-1 items-stretch overflow-clip text-[10px] font-mono uppercase leading-[16px]",
+        "flex h-5 flex-1 items-stretch overflow-clip text-[10px] font-mono uppercase leading-[16px] transition-shadow",
         closeRight ? "rounded-md border" : "rounded-l-md border-y border-l"
       )}
-      style={{ borderColor: color }}
+      style={{
+        borderColor: color,
+        ...(ringColor ? { boxShadow: `0 0 0 2px ${ringColor}` } : {}),
+      }}
     >
       {/* Operator segment — colored background, knockout text. Both
           segments use leading-[16px] (matching the chip height) on
@@ -278,6 +307,8 @@ export function ChipPill({
             onChange={(e) =>
               onChange({ operator: e.target.value as EndingChipOperator })
             }
+            onFocus={onChipFocus}
+            onBlur={onChipBlur}
             aria-label="Operator"
             className="absolute inset-0 cursor-pointer opacity-0"
           >
@@ -308,12 +339,21 @@ export function ChipPill({
                 setCreatingValue(true);
                 return;
               }
-              onChange({ text_value_id: next || null });
+              if (!next) return; // "—" is display-only; can't clear to null
+              onChange({ text_value_id: next });
             }}
+            onFocus={onChipFocus}
+            onBlur={onChipBlur}
             aria-label="Value"
             className="absolute inset-0 cursor-pointer opacity-0"
           >
-            <option value="">—</option>
+            {/* Display-only fallback for a chip whose value is somehow
+                unset — disabled so the user can't pick it. A chip must
+                always compare against a value (DB check constraint);
+                to drop the comparison, remove the chip. */}
+            <option value="" disabled>
+              —
+            </option>
             {values
               .filter((v) => v.variable_id === variable.id)
               .map((v) => (
@@ -339,6 +379,8 @@ export function ChipPill({
               const raw = e.target.value;
               onChange({ number_value: raw === "" ? null : Number(raw) });
             }}
+            onFocus={onChipFocus}
+            onBlur={onChipBlur}
             className="h-full w-12 min-w-0 flex-1 rounded-none border-0 bg-transparent py-0 pl-0 pr-0 font-mono text-[10px] leading-[16px] uppercase tracking-[0.025em] text-white shadow-none focus:!ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           />
           <button
@@ -374,13 +416,19 @@ export function ChipPill({
           </span>
           <select
             value={chip.aggregate_value ?? ""}
-            onChange={(e) =>
-              onChange({ aggregate_value: e.target.value || null })
-            }
+            onChange={(e) => {
+              const next = e.target.value;
+              if (!next) return; // "—" display-only; can't clear to null
+              onChange({ aggregate_value: next });
+            }}
+            onFocus={onChipFocus}
+            onBlur={onChipBlur}
             aria-label="Value"
             className="absolute inset-0 cursor-pointer opacity-0"
           >
-            <option value="">—</option>
+            <option value="" disabled>
+              —
+            </option>
             {aggregateOptions.map((col) => (
               <option key={col} value={col}>
                 {aggregateOptionLabel(col)}

@@ -801,14 +801,27 @@ export function DocumentEditor({
     setChipState((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
     );
+    if (!previousChip) return;
+
+    // The DB requires exactly one value slot. While the user is mid-
+    // edit (e.g. a half-cleared number field) the merged chip can be
+    // transiently invalid — keep the optimistic local state but DON'T
+    // commit it. The next valid edit commits the resolved chip; a
+    // refresh would restore the server value if they navigate away.
+    const merged = { ...previousChip, ...patch };
+    const filledSlots = [
+      merged.text_value_id,
+      merged.number_value,
+      merged.aggregate_value,
+    ].filter((v) => v != null).length;
+    if (filledSlots !== 1) return;
+
     void patchChip(id, patch).catch((err) => {
       const message = err instanceof Error ? err.message : "Save failed.";
       toast({ message, intent: "destructive" });
-      if (previousChip) {
-        setChipState((prev) =>
-          prev.map((c) => (c.id === id ? previousChip : c))
-        );
-      }
+      setChipState((prev) =>
+        prev.map((c) => (c.id === id ? previousChip : c))
+      );
     });
   }
 
@@ -977,8 +990,32 @@ export function DocumentEditor({
     [dragId, dragHeight, target, doCommit, blockState]
   );
 
-  // Layered drop / dragend listeners. See lib/drag.ts header for why.
+  // Layered drop / dragend listeners + a stuck-drag watchdog.
+  //
+  // The watchdog cancels a drag that goes 3s with NO dragover events —
+  // that only happens when the browser drops the drop/dragend events
+  // (window lost focus, OS-level drag glitch). It must CANCEL, never
+  // commit: an earlier version committed on timeout, which moved the
+  // block out from under a user who was simply holding the drag while
+  // deciding where to drop. Every dragover (the browser fires these
+  // continuously during an active drag, even with the pointer held
+  // still) kicks the watchdog forward, so a live drag never trips it.
   const safetyTimerRef = useRef<number | null>(null);
+  const clearDragWatchdog = useCallback(() => {
+    if (safetyTimerRef.current != null) {
+      clearTimeout(safetyTimerRef.current);
+      safetyTimerRef.current = null;
+    }
+  }, []);
+  const kickDragWatchdog = useCallback(() => {
+    if (safetyTimerRef.current != null) clearTimeout(safetyTimerRef.current);
+    safetyTimerRef.current = window.setTimeout(() => {
+      safetyTimerRef.current = null;
+      setDragId(null);
+      setDragHeight(null);
+      setTargetState(null);
+    }, 3000);
+  }, []);
   useEffect(() => {
     function finish() {
       const d = dragIdRef.current;
@@ -990,13 +1027,15 @@ export function DocumentEditor({
         setDragHeight(null);
         setTargetState(null);
       }
-      if (safetyTimerRef.current != null) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
-      }
+      clearDragWatchdog();
     }
     function onDocDragOver(e: DragEvent) {
-      if (dragIdRef.current) e.preventDefault();
+      if (dragIdRef.current) {
+        e.preventDefault();
+        // Live drag — push the watchdog out. A held-but-active drag
+        // keeps firing dragover, so it never auto-cancels.
+        kickDragWatchdog();
+      }
     }
     function onDrop(e: DragEvent) {
       e.preventDefault();
@@ -1013,28 +1052,17 @@ export function DocumentEditor({
       window.removeEventListener("drop", onDrop);
       window.removeEventListener("dragend", onEnd);
     };
-  }, [doCommit]);
+  }, [doCommit, clearDragWatchdog, kickDragWatchdog]);
 
+  // Arm the watchdog when a drag begins; clear it when the drag ends.
   useEffect(() => {
-    if (!dragId) return;
-    if (safetyTimerRef.current != null) clearTimeout(safetyTimerRef.current);
-    safetyTimerRef.current = window.setTimeout(() => {
-      const d = dragIdRef.current;
-      const t = targetRef.current;
-      if (d && t) doCommit(d, t);
-      else if (d || t) {
-        setDragId(null);
-        setDragHeight(null);
-        setTargetState(null);
-      }
-    }, 3000);
-    return () => {
-      if (safetyTimerRef.current != null) {
-        clearTimeout(safetyTimerRef.current);
-        safetyTimerRef.current = null;
-      }
-    };
-  }, [dragId, doCommit]);
+    if (!dragId) {
+      clearDragWatchdog();
+      return;
+    }
+    kickDragWatchdog();
+    return clearDragWatchdog;
+  }, [dragId, clearDragWatchdog, kickDragWatchdog]);
 
   // The legacy bulk-save path is gone. Every editable field (document
   // name, block text/summary/result_value, chips, header variables) now
