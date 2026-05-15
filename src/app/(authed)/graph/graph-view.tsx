@@ -2372,21 +2372,16 @@ export function GraphView({
   const [hoveredColumnId, setHoveredColumnId] = useState<string | null>(null);
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  // Live drag preview: the node being dragged + the delta from its layout
-  // position. The graph's ReactFlow has no `onNodesChange`, so a drag never
-  // moves the node itself — decoratedNodes applies this delta so the dragged
-  // node (and its children) actually follow the cursor, and shadow-shifts
-  // items that move relative to it (a letter group's relative-dated reports).
+  // Live drag preview: the node being dragged + the vertical delta from its
+  // layout position. ReactFlow moves the dragged node (and its children)
+  // itself during the gesture; decoratedNodes reads this delta only to
+  // shadow-shift items that move RELATIVE to it — a letter group's
+  // relative-dated reports follow the group as it's dragged between days.
   const [dragPreview, setDragPreview] = useState<{
     nodeId: string;
-    dx: number;
     dy: number;
   } | null>(null);
-  const dragOriginRef = useRef<{
-    nodeId: string;
-    x: number;
-    y: number;
-  } | null>(null);
+  const dragOriginRef = useRef<{ nodeId: string; y: number } | null>(null);
   // Escape pressed mid-drag flips this; onNodeDragStop reads it and skips
   // the server-side move so the layout snaps back to the original
   // positions on the next render. Cleared on drag start.
@@ -2408,8 +2403,12 @@ export function GraphView({
       // Best-effort: end ReactFlow's drag gesture now so the pointer is
       // released. Its XYDrag listens on the window — dispatch both pointer
       // and mouse up since the listener set depends on the input type.
-      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
-      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      window.dispatchEvent(
+        new PointerEvent("pointerup", { bubbles: true, view: window })
+      );
+      window.dispatchEvent(
+        new MouseEvent("mouseup", { bubbles: true, view: window })
+      );
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -2760,12 +2759,8 @@ export function GraphView({
       setHoveredColumnId(null);
       setHoveredGroupId(null);
       dragCanceledRef.current = false;
-      dragOriginRef.current = {
-        nodeId: node.id,
-        x: node.position.x,
-        y: node.position.y,
-      };
-      setDragPreview({ nodeId: node.id, dx: 0, dy: 0 });
+      dragOriginRef.current = { nodeId: node.id, y: node.position.y };
+      setDragPreview({ nodeId: node.id, dy: 0 });
     },
     []
   );
@@ -2807,16 +2802,15 @@ export function GraphView({
       });
       setHoveredRowId(rowAtFlowY(flowPt.y));
       setHoveredColumnId(storylineOfDraggedNode(node.id));
-      // Track the drag delta so decoratedNodes can move the dragged node
-      // under the cursor and shadow-shift items relative to it.
+      // Track the vertical drag delta so decoratedNodes can shadow-shift the
+      // items that move relative to the dragged node.
       const origin = dragOriginRef.current;
       if (origin && origin.nodeId === node.id) {
-        const dx = node.position.x - origin.x;
         const dy = node.position.y - origin.y;
         setDragPreview((prev) =>
-          prev && prev.nodeId === node.id && prev.dx === dx && prev.dy === dy
+          prev && prev.nodeId === node.id && prev.dy === dy
             ? prev
-            : { nodeId: node.id, dx, dy }
+            : { nodeId: node.id, dy }
         );
       }
       if (node.id.startsWith("letter:")) {
@@ -3470,22 +3464,10 @@ export function GraphView({
           draggedGroupId != null &&
           n.id.startsWith("reportcluster:") &&
           n.id.endsWith(`:${draggedGroupId}`);
-        if (isDragged) {
-          // This ReactFlow has no `onNodesChange`, so a drag never moves the
-          // node itself — apply the delta here so the dragged ghost tracks
-          // the cursor. Elevated zIndex keeps it above other cards.
-          next = {
-            ...next,
-            position: {
-              x: next.position.x + dragPreview.dx,
-              y: next.position.y + dragPreview.dy,
-            },
-            data: { ...next.data, dragGhost: true },
-            zIndex: 1000,
-          };
-        } else if (isChildOfDragged) {
-          // Children are positioned relative to the dragged parent, so they
-          // follow its shifted position automatically — just ghost them.
+        if (isDragged || isChildOfDragged) {
+          // ReactFlow moves the dragged node (and its children) during the
+          // gesture itself — we only ghost them and lift them above other
+          // cards so the preview reads clearly under the cursor.
           next = {
             ...next,
             data: { ...next.data, dragGhost: true },
