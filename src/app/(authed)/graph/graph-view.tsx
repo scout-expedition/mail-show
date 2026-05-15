@@ -1850,10 +1850,6 @@ export function GraphView({
     if (editingEnabled) {
       for (const p of placements) {
         if (p.candidate.terminator !== "arrow") continue;
-        // `sn` (report → next-letter) edges draw their connector circle at
-        // the SOURCE (report's bottom edge) instead of the far letter, so
-        // they need no target-side endpoint node — see terminatorAtSource.
-        if (p.candidate.kind === "sn") continue;
         const targetId = p.candidate.target;
         const tgtPos =
           letterAbsPos.get(targetId) ?? segmentAbsPos.get(targetId);
@@ -2191,9 +2187,6 @@ export function GraphView({
           chipX: p.chipX,
           chipY: p.chipY,
           terminator: c.terminator,
-          // `sn` continuations anchor their connector circle at the
-          // report's bottom edge (departure point), not the far letter.
-          terminatorAtSource: c.kind === "sn",
           impacts: p.impacts,
           badgeSide: p.badgeSide,
           targetXOffset,
