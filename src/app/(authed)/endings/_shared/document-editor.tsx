@@ -73,6 +73,8 @@ import { BlockList, type LeafComponents } from "../_blocks/block-list";
 import { FallbackBlock } from "../_blocks/fallback-block";
 import {
   deleteFrameworkDocument,
+  patchBlock,
+  patchChip,
   patchDocument,
   saveDocument,
   type BlockPayload,
@@ -766,17 +768,37 @@ export function DocumentEditor({
   }, [referencedVariables]);
 
   // Local edits ----------------------------------------------------------
+  // Block + chip edits flow through these wrappers. Each one applies an
+  // optimistic local mutation so the UI updates instantly, then fires
+  // the matching patchX action. Postgres echo eventually overwrites with
+  // the server value (idempotent for happy-path edits; reverts on the
+  // error path). Block text + summary + result_value migrated to their
+  // own per-leaf useInstantField, so `updateBlock` is only used by drag-
+  // reorder + the chip-add path's auto-declare flow today. Chip pickers
+  // call this through `onChangeChip` from each click; no debounce
+  // needed (clicks produce final values).
   function updateBlock(id: string, patch: Partial<BlockState>) {
     setBlockState((prev) =>
       prev.map((b) => (b.id === id ? { ...b, ...patch } : b))
     );
-    setDirty(true);
+    // Only structural edits flow through this path now (drag reorder,
+    // result-uniqueness fixups in the chip-add flow). Defer the patch to
+    // the structural-save path so we don't double-write text/result.
   }
   function updateChip(id: string, patch: Partial<ChipState>) {
     setChipState((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
     );
-    setDirty(true);
+    // Fire and forget — postgres echo will reconcile the mirror with the
+    // committed server value. Errors flip to the console and a toast in
+    // a followup; today, the bulk Save path acts as the safety net.
+    void patchChip(id, patch).catch(() => {
+      // Server rejected (e.g. invalid operator/value-slot combo). The
+      // optimistic mutation above stays in the mirror until either the
+      // user fixes it (next picker click commits again) or postgres
+      // echo of an unrelated change refreshes the chip. The bulk Save
+      // button is still wired and would catch this on next press.
+    });
   }
 
   // Drag context --------------------------------------------------------
