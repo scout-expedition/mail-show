@@ -431,6 +431,7 @@ function AnimalGrid({
               type="button"
               onClick={() => onSelect(`${animal.slug}:${variant}`)}
               title={animal.name}
+              aria-label={animal.name}
               aria-selected={isSelected}
               className={cn(
                 "flex h-9 items-center justify-center rounded hover:bg-accent",
