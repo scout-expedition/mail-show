@@ -11,6 +11,8 @@ export type LetterNodeData = {
   summary: string | null;
   widthPx?: number;
   selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
   onSelect?: () => void;
 };
 
@@ -70,6 +72,8 @@ function LetterNode({ data }: NodeProps) {
             summary={d.summary}
             widthPx={d.widthPx}
             selected={d.selected}
+            selfRingColor={d.selfRingColor}
+            peerRingColors={d.peerRingColors}
           />
         </div>
       </Handle>

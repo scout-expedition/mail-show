@@ -140,6 +140,29 @@ type Props = {
   recordUndo?: (entry: UndoEntry) => void;
   selection?: GraphSelection | null;
   onSelectionChange?: (sel: GraphSelection | null) => void;
+  /**
+   * Avatar color of the current user. When set, the selection ring on
+   * any graph node the user has selected renders in this color instead
+   * of the generic `var(--ring)`.
+   */
+  selfRingColor?: string | null;
+  /**
+   * Peer co-selection colors, bucketed by node type. Each entry is the
+   * avatar color of a peer currently selecting that node — multiple
+   * peers stack as concentric outer rings.
+   *   • groups: keyed by groupId
+   *   • letters: keyed by `${groupId}:${variantKey}` (matches GraphSelection.letter)
+   *   • segments: keyed by segmentId
+   *   • actions: keyed by actionId
+   */
+  peerRings?: PeerRingMap;
+};
+
+export type PeerRingMap = {
+  groups: Map<string, string[]>;
+  letters: Map<string, string[]>;
+  segments: Map<string, string[]>;
+  actions: Map<string, string[]>;
 };
 
 // ------------------------------------------------------------------
@@ -378,7 +401,15 @@ export function GraphView({
   recordUndo,
   selection = null,
   onSelectionChange,
+  selfRingColor = null,
+  peerRings,
 }: Props) {
+  // Fallback empty maps so call sites don't crash when presence is
+  // disabled or when no peers are co-selecting any nodes.
+  const peerGroups = peerRings?.groups;
+  const peerLetters = peerRings?.letters;
+  const peerSegments = peerRings?.segments;
+  const peerActions = peerRings?.actions;
   const select = useCallback(
     (sel: GraphSelection | null) => onSelectionChange?.(sel),
     [onSelectionChange]
@@ -794,6 +825,8 @@ export function GraphView({
               summary: seg.summary,
               widthPx: PILL_W,
               selected: segSelected,
+              selfRingColor: segSelected ? selfRingColor ?? undefined : undefined,
+              peerRingColors: peerSegments?.get(sid),
               onSelect: () => select({ kind: "segment", segmentId: sid }),
             },
             // Per-node `draggable` overrides ReactFlow's global
@@ -829,6 +862,8 @@ export function GraphView({
               name: gi.group.name,
               color: gi.storyline.color_hex,
               selected: groupSelected,
+              selfRingColor: groupSelected ? selfRingColor ?? undefined : undefined,
+              peerRingColors: peerGroups?.get(gid),
               onSelect: () => select({ kind: "group", groupId: gid }),
             },
             draggable: editingEnabled,
@@ -880,6 +915,10 @@ export function GraphView({
                 summary,
                 widthPx: PILL_W,
                 selected: letterSelected,
+                selfRingColor: letterSelected
+                  ? selfRingColor ?? undefined
+                  : undefined,
+                peerRingColors: peerLetters?.get(`${gid}:${vk}`),
                 onSelect: () =>
                   select({ kind: "letter", groupId: gid, variantKey: vk }),
               },
@@ -1670,6 +1709,8 @@ export function GraphView({
           sourceXOffset: sourceXOffsetByEdgeId.get(c.id) ?? 0,
           hasEnding,
           selected: chipSelected,
+          selfRingColor: chipSelected ? selfRingColor ?? undefined : undefined,
+          peerRingColors: peerActions?.get(c.action.id),
           onSelect: onChipSelect,
           onContextMenu: onChipContextMenu,
           // The chip only appears on letter → report segment connections
@@ -1808,6 +1849,11 @@ export function GraphView({
     select,
     optimisticNextByAction,
     editingEnabled,
+    selfRingColor,
+    peerGroups,
+    peerLetters,
+    peerSegments,
+    peerActions,
   ]);
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });

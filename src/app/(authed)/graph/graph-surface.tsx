@@ -49,7 +49,12 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
-import { GraphView, type GraphSelection, type UndoEntry } from "./graph-view";
+import {
+  GraphView,
+  type GraphSelection,
+  type PeerRingMap,
+  type UndoEntry,
+} from "./graph-view";
 import { ImpactOverlayPanel } from "./impact-overlay-panel";
 import {
   LettersWorkspace,
@@ -144,7 +149,7 @@ function GraphSurfaceInner({
   currentProfile,
 }: GraphSurfaceProps) {
   const router = useRouter();
-  const { peers, selfPeer, onPostgresChanges } = usePresenceContext();
+  const { peers, selfPeer, selfColor, onPostgresChanges } = usePresenceContext();
   // Workspace-stack peers are owned by /graph; AppPresence (othersOnly in
   // PageHeader) filters these userIds so they don't double-render.
   useClaimWorkspacePeers(peers.map((p) => p.userId));
@@ -295,6 +300,44 @@ function GraphSurfaceInner({
     if (!inspectorOpen || !selection) return null;
     return graphSelectionToPresence(selection, letters);
   }, [inspectorOpen, selection, letters]);
+
+  // Bucket every peer's avatar color by what they have selected, so the
+  // graph can render a peer-colored outer ring on the matching node.
+  // PresenceSelection doesn't carry actionId — peers on the "actions"
+  // panel ring the parent letter (their action focus isn't broadcast
+  // separately).
+  const peerRings = useMemo<PeerRingMap>(() => {
+    const groups = new Map<string, string[]>();
+    const lettersMap = new Map<string, string[]>();
+    const segmentsMap = new Map<string, string[]>();
+    const actionsMap = new Map<string, string[]>();
+    for (const peer of peers) {
+      if (!peer.selection) continue;
+      const sel = presenceSelectionToGraph(peer.selection, letters);
+      if (!sel) continue;
+      const peerColor = peer.profile?.avatarColorHex ?? peer.color;
+      if (sel.kind === "segment") {
+        const list = segmentsMap.get(sel.segmentId) ?? [];
+        list.push(peerColor);
+        segmentsMap.set(sel.segmentId, list);
+      } else if (sel.kind === "letter" || sel.kind === "actions") {
+        const key = `${sel.groupId}:${sel.variantKey}`;
+        const list = lettersMap.get(key) ?? [];
+        list.push(peerColor);
+        lettersMap.set(key, list);
+      } else if (sel.kind === "group") {
+        const list = groups.get(sel.groupId) ?? [];
+        list.push(peerColor);
+        groups.set(sel.groupId, list);
+      }
+    }
+    return {
+      groups,
+      letters: lettersMap,
+      segments: segmentsMap,
+      actions: actionsMap,
+    };
+  }, [peers, letters]);
 
   // Click a peer's avatar → open the inspector and load their panel.
   const jumpToPeer = useCallback(
@@ -465,6 +508,8 @@ function GraphSurfaceInner({
               recordUndo={recordUndo}
               selection={inspectorOpen ? selection : null}
               onSelectionChange={handleSelectionChange}
+              selfRingColor={selfColor}
+              peerRings={peerRings}
             />
           </div>
           {overlayOpen ? (

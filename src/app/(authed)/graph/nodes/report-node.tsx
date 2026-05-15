@@ -11,6 +11,8 @@ export type ReportNodeData = {
   summary: string | null;
   widthPx?: number;
   selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
   onSelect?: () => void;
 };
 
@@ -64,6 +66,8 @@ function ReportNode({ data }: NodeProps) {
             summary={d.summary}
             widthPx={d.widthPx}
             selected={d.selected}
+            selfRingColor={d.selfRingColor}
+            peerRingColors={d.peerRingColors}
           />
         </div>
       </Handle>

@@ -14,6 +14,10 @@ export type LetterGroupData = {
   selected?: boolean;
   /** Phase 6: ring this group while a letter is being dragged over it. */
   hovered?: boolean;
+  /** Avatar color of the current user — used as the self-selection ring. */
+  selfRingColor?: string;
+  /** Avatar colors of peers who currently have this group selected. */
+  peerRingColors?: string[];
   onSelect?: () => void;
 };
 
@@ -40,6 +44,8 @@ function LetterGroupNode({ data }: NodeProps) {
           storyline={{ abbreviation: d.abbr, color_hex: d.color }}
           sequence={d.sequence}
           selected={d.selected}
+          selfRingColor={d.selfRingColor}
+          peerRingColors={d.peerRingColors}
         />
         {d.name ? (
           <div

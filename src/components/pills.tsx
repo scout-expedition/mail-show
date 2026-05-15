@@ -62,6 +62,36 @@ export function StorylinePill({
   );
 }
 
+/**
+ * Composes an inline `box-shadow` describing concentric selection rings:
+ *   • self ring (when `selected`): 1px background gap + 2px ring in
+ *     `selfRingColor` (defaults to `var(--ring)` to preserve callers that
+ *     don't customize the color).
+ *   • peer rings: 2px rings in each peer's avatar color, stacked outward.
+ *
+ * Returns `undefined` when no rings are needed so the wrapper inherits
+ * whatever shadow other classes set (typically none).
+ */
+function composeSelectionShadow(opts: {
+  selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
+}): string | undefined {
+  const parts: string[] = [];
+  if (opts.selected) {
+    // ring-offset-1 (1px background-colored gap) + ring-2 (2px ring at 1–3px).
+    parts.push(`0 0 0 1px var(--background)`);
+    parts.push(`0 0 0 3px ${opts.selfRingColor ?? "var(--ring)"}`);
+  }
+  if (opts.peerRingColors?.length) {
+    const baseRadius = opts.selected ? 3 : 0;
+    opts.peerRingColors.forEach((c, i) => {
+      parts.push(`0 0 0 ${baseRadius + (i + 1) * 2}px ${c}`);
+    });
+  }
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
+
 /** [Mails][abbr+sequence] pill with a storyline-color border on a card fill. */
 export function LetterGroupPill({
   storyline,
@@ -69,23 +99,33 @@ export function LetterGroupPill({
   className,
   style,
   selected,
+  selfRingColor,
+  peerRingColors,
 }: {
   storyline: Pick<Storyline, "abbreviation" | "color_hex"> | undefined;
   sequence: number;
   className?: string;
   style?: React.CSSProperties;
   selected?: boolean;
+  /** Override the default `var(--ring)` color for the self-selection ring. */
+  selfRingColor?: string;
+  /** Stacked outer rings, one per peer co-selecting this pill. */
+  peerRingColors?: string[];
 }) {
   const abbr = storyline?.abbreviation ?? "?";
   const color = storyline?.color_hex ?? "#888888";
+  const boxShadow = composeSelectionShadow({
+    selected,
+    selfRingColor,
+    peerRingColors,
+  });
   return (
     <span
       className={cn(
         "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border-[1.5px] bg-card px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-white",
-        selected ? "ring-2 ring-ring ring-offset-1 ring-offset-background" : null,
         className
       )}
-      style={{ borderColor: color, ...style }}
+      style={{ borderColor: color, boxShadow, ...style }}
     >
       <Mails size={11} aria-hidden className="shrink-0" />
       <span className="whitespace-nowrap">
@@ -182,6 +222,8 @@ function PillCard({
   widthPx,
   className,
   selected,
+  selfRingColor,
+  peerRingColors,
 }: {
   borderColor: string;
   children: React.ReactNode;
@@ -189,15 +231,18 @@ function PillCard({
   widthPx?: number;
   className?: string;
   selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
 }) {
   const trimmed = summary?.trim();
+  const boxShadow = composeSelectionShadow({
+    selected,
+    selfRingColor,
+    peerRingColors,
+  });
   return (
     <div
-      className={cn(
-        "flex flex-col overflow-hidden rounded-md border-[1.5px]",
-        selected ? "ring-2 ring-ring ring-offset-1 ring-offset-background" : null,
-        className
-      )}
+      className={cn("flex flex-col overflow-hidden rounded-md border-[1.5px]", className)}
       style={{
         borderColor,
         // Match the card fill to the border color so any subpixel sliver
@@ -205,6 +250,7 @@ function PillCard({
         // same color instead of letting bg-card peek through at zoom.
         backgroundColor: borderColor,
         width: widthPx ? widthPx + PILL_CARD_EXTRA : undefined,
+        boxShadow,
       }}
     >
       {children}
@@ -228,6 +274,8 @@ export function InspectionLetterCard({
   widthPx,
   className,
   selected,
+  selfRingColor,
+  peerRingColors,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   contentId: string;
@@ -235,6 +283,8 @@ export function InspectionLetterCard({
   widthPx?: number;
   className?: string;
   selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
 }) {
   const color = storyline?.color_hex ?? "#888888";
   return (
@@ -244,6 +294,8 @@ export function InspectionLetterCard({
       widthPx={widthPx}
       className={className}
       selected={selected}
+      selfRingColor={selfRingColor}
+      peerRingColors={peerRingColors}
     >
       <InspectionLetterPill
         storyline={storyline}
@@ -266,6 +318,8 @@ export function ReportSegmentCard({
   widthPx,
   className,
   selected,
+  selfRingColor,
+  peerRingColors,
 }: {
   storyline: Pick<Storyline, "color_hex"> | undefined;
   reportId: string;
@@ -273,6 +327,8 @@ export function ReportSegmentCard({
   widthPx?: number;
   className?: string;
   selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
 }) {
   const color = storyline?.color_hex ?? "#888888";
   // The report pill is a 40% mix of storyline + card; the card border matches
@@ -285,6 +341,8 @@ export function ReportSegmentCard({
       widthPx={widthPx}
       className={className}
       selected={selected}
+      selfRingColor={selfRingColor}
+      peerRingColors={peerRingColors}
     >
       <ReportSegmentPill
         storyline={storyline}

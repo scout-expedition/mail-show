@@ -53,6 +53,10 @@ export type ActionIconEdgeData = {
   hasEnding?: boolean;
   /** True when this chip is the active inspector selection. */
   selected?: boolean;
+  /** Avatar color used for the self-selection ring. Falls back to var(--ring). */
+  selfRingColor?: string;
+  /** Avatar colors of peers co-selecting this chip — stacked outer rings. */
+  peerRingColors?: string[];
   /** Click handler that opens the inspector panel for this action. */
   onSelect?: () => void;
   /** Right-click handler attached to the chip — used to surface a small
@@ -80,6 +84,30 @@ export type ActionIconEdgeData = {
 
 const CHIP_PX = 20;
 const CHIP_TO_BADGES_GAP_PX = 3;
+
+/**
+ * Mirror of `composeSelectionShadow` in pills.tsx, scoped to the chip
+ * button. Self ring sits inside (1px bg gap + 2px ring), peer rings stack
+ * outward in 2px slabs.
+ */
+function composeChipShadow(opts: {
+  selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
+}): string | undefined {
+  const parts: string[] = [];
+  if (opts.selected) {
+    parts.push(`0 0 0 1px var(--background)`);
+    parts.push(`0 0 0 3px ${opts.selfRingColor ?? "var(--ring)"}`);
+  }
+  if (opts.peerRingColors?.length) {
+    const baseRadius = opts.selected ? 3 : 0;
+    opts.peerRingColors.forEach((c, i) => {
+      parts.push(`0 0 0 ${baseRadius + (i + 1) * 2}px ${c}`);
+    });
+  }
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
 
 function ActionIconEdgeComponent({
   id,
@@ -239,12 +267,7 @@ function ActionIconEdgeComponent({
             onClick={d.onSelect}
             onContextMenu={d.onContextMenu}
             onPointerDown={(e) => e.stopPropagation()}
-            className={
-              "relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0" +
-              (d.selected
-                ? " ring-2 ring-ring ring-offset-1 ring-offset-background"
-                : "")
-            }
+            className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
             style={{
               background: invalid
                 ? color
@@ -254,6 +277,11 @@ function ActionIconEdgeComponent({
               ),
               pointerEvents: "auto",
               cursor: d.onSelect ? "pointer" : "default",
+              boxShadow: composeChipShadow({
+                selected: d.selected,
+                selfRingColor: d.selfRingColor,
+                peerRingColors: d.peerRingColors,
+              }),
             }}
           >
             {d.iconValue ? (
