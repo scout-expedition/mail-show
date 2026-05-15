@@ -82,7 +82,7 @@ function surfaceSegments(pathname: string): string[] {
     return ["Inspection", "Storylines"];
   if (pathname.startsWith("/inspection/actions"))
     return ["Inspection", "Actions"];
-  if (pathname.startsWith("/graph")) return ["Map View"];
+  if (pathname.startsWith("/graph")) return ["Graph View"];
   if (pathname.startsWith("/sorting/letters")) return ["Sorting", "Letters"];
   if (pathname.startsWith("/sorting/rules")) return ["Sorting", "Rules"];
   if (pathname.startsWith("/endings/frameworks"))

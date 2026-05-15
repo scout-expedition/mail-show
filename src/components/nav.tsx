@@ -37,7 +37,7 @@ const NAV_ITEMS: Array<{
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
-  { href: "/graph", label: "Map View", icon: MapIcon, section: "Game" },
+  { href: "/graph", label: "Graph View", icon: MapIcon, section: "Game" },
   { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
   { href: "/sorting/letters", label: "Letters", icon: Mail, section: "Sorting" },
   { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
