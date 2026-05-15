@@ -4,7 +4,6 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  EdgeLabelRenderer,
   MarkerType,
   PanOnScrollMode,
   Panel,
@@ -24,7 +23,7 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { ChevronRight, Copy, MailOpen, Mails, Megaphone, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Trash2 } from "lucide-react";
 import { readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -2454,6 +2453,11 @@ export function GraphView({
   type ReconnectVisual = {
     chipX: number;
     chipY: number;
+    /** Horizontal nudge applied to the path's source-side endpoint so
+     *  the letter→chip half lines up identically to the static edge
+     *  (it emerges directly under its chip even when the letter has
+     *  multiple outgoing actions). */
+    sourceXOffset: number;
     color: string;
     path2Color: string;
     chipColor: string;
@@ -2481,6 +2485,7 @@ export function GraphView({
       reconnectVisualRef.current = {
         chipX: data.chipX,
         chipY: data.chipY,
+        sourceXOffset: data.sourceXOffset ?? 0,
         color: data.color,
         path2Color: data.path2Color ?? data.color,
         chipColor: data.chipColor ?? data.color,
@@ -2881,8 +2886,13 @@ export function GraphView({
         );
       }
       const CURVATURE = 0.5;
+      // Apply the same source-X nudge the static edge uses so the
+      // letter→chip half stays pixel-identical when the user grabs
+      // the endpoint — it emerges right under the chip rather than
+      // from the letter's bottom-center.
+      const adjustedSourceX = props.fromX + v.sourceXOffset;
       const [path1] = getBezierPath({
-        sourceX: props.fromX,
+        sourceX: adjustedSourceX,
         sourceY: props.fromY,
         targetX: v.chipX,
         targetY: v.chipY,
@@ -2899,6 +2909,7 @@ export function GraphView({
         targetPosition: Position.Top,
         curvature: CURVATURE,
       });
+      const chipPx = 20;
       return (
         <>
           <path
@@ -2913,44 +2924,41 @@ export function GraphView({
             stroke={v.path2Color}
             strokeWidth={1.75}
           />
-          {/* Chip overlay: kept visible during the drag so the user
-              sees the action's identity even though ReactFlow has
-              hidden the real edge. EdgeLabelRenderer portals out of
-              the SVG layer so we can render the icon button just
-              like the live edge does. */}
+          {/* Chip overlay rendered AFTER the paths (SVG paints later
+              children on top) and inside a foreignObject so the HTML
+              chip is part of the connection-line SVG layer — which
+              means it survives ReactFlow hiding the original edge.
+              foreignObject keeps it positioned in graph space along
+              with the path. */}
           {!v.hideChip ? (
-            <EdgeLabelRenderer>
+            <foreignObject
+              x={v.chipX - chipPx / 2}
+              y={v.chipY - chipPx / 2}
+              width={chipPx}
+              height={chipPx}
+              style={{ overflow: "visible", pointerEvents: "none" }}
+            >
               <div
-                className="nodrag nopan"
-                style={{
-                  position: "absolute",
-                  transform: `translate(-50%, -50%) translate(${v.chipX}px, ${v.chipY}px)`,
-                  pointerEvents: "none",
-                  zIndex: 10,
-                }}
                 title={v.actionName}
+                className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
+                style={{
+                  background: v.chipColor,
+                  color: readableOnHex(v.chipColor),
+                }}
               >
-                <div
-                  className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
-                  style={{
-                    background: v.chipColor,
-                    color: readableOnHex(v.chipColor),
-                  }}
-                >
-                  {v.iconValue ? (
-                    <IconDisplay
-                      type={v.iconType}
-                      value={v.iconValue}
-                      size={12}
-                    />
-                  ) : (
-                    <span className="text-[10px] font-mono font-semibold">
-                      {v.actionName.slice(0, 1).toUpperCase()}
-                    </span>
-                  )}
-                </div>
+                {v.iconValue ? (
+                  <IconDisplay
+                    type={v.iconType}
+                    value={v.iconValue}
+                    size={12}
+                  />
+                ) : (
+                  <span className="text-[10px] font-mono font-semibold">
+                    {v.actionName.slice(0, 1).toUpperCase()}
+                  </span>
+                )}
               </div>
-            </EdgeLabelRenderer>
+            </foreignObject>
           ) : null}
         </>
       );
@@ -3065,11 +3073,10 @@ export function GraphView({
             if (!hasActions && templateEntries.length > 0) {
               items.push({
                 label: "Add Actions",
-                icon: <Plus size={12} aria-hidden />,
+                icon: <Milestone size={12} aria-hidden />,
                 trailing: <ChevronRight size={12} aria-hidden />,
                 submenu: templateEntries.map((entry) => ({
                   label: entry.label,
-                  icon: <Plus size={12} aria-hidden />,
                   onClick: () =>
                     void (async () => {
                       await addActionFromTemplate(
