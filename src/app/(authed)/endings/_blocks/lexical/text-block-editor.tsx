@@ -25,6 +25,12 @@ import { buildInitialEditorState, lexicalStateToText } from "./serialize";
 export interface LexicalTextBlockEditorProps {
   value: string;
   onChange: (value: string) => void;
+  /** Fires when the contentEditable gains focus. Used by useInstantField
+   *  to broadcast presence focus. */
+  onFocus?: () => void;
+  /** Fires when the contentEditable loses focus. Used by useInstantField
+   *  to flush pending commits before the focus ring leaves. */
+  onBlur?: () => void;
   variables: VariableState[];
   placeholder?: string;
   className?: string;
@@ -34,6 +40,8 @@ export interface LexicalTextBlockEditorProps {
 export function LexicalTextBlockEditor({
   value,
   onChange,
+  onFocus,
+  onBlur,
   variables,
   placeholder = "Paragraph text…",
   className,
@@ -92,6 +100,8 @@ export function LexicalTextBlockEditor({
             contentEditable={
               <ContentEditable
                 aria-label="Text block body"
+                onFocus={onFocus}
+                onBlur={onBlur}
                 className={cn(
                   // Match the textarea's chrome so the swap is visually
                   // invisible at the card level. The ContentEditable

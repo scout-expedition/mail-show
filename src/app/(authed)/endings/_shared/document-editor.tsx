@@ -1180,9 +1180,6 @@ export function DocumentEditor({
                     helperText={fallback.helperText}
                     emptyLabel={fallback.emptyLabel}
                     title={fallback.title}
-                    onChange={(result_value) =>
-                      updateBlock(fallbackBlock.id, { result_value })
-                    }
                   />
                 ) : null}
               </TotalCollapseCtx.Provider>

@@ -14,23 +14,48 @@ import { cn } from "@/lib/utils";
 import type { BlockState, VariableState } from "@/lib/endings/block-state";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
-import { duplicateBlock } from "../_shared/document-actions";
+import { duplicateBlock, patchBlock } from "../_shared/document-actions";
 import { useConfirm } from "@/components/confirm-dialog";
 import { LexicalTextBlockEditor } from "./lexical/text-block-editor";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 
 export function TextBlock({
   block,
-  onChange,
-  onChangeSummary,
   onDelete,
   variables,
 }: {
   block: BlockState;
-  onChange: (text: string) => void;
-  onChangeSummary: (summary: string) => void;
   onDelete: () => void;
   variables: VariableState[];
 }) {
+  const { peers, setFocus } = usePresenceContext();
+
+  // text + summary commit independently — each owns its own debounce.
+  // The hook's value prop comes from the parent mirror (block.text /
+  // block.summary), which postgres echo keeps in sync. LWW protects
+  // local typing from being clobbered by remote updates mid-edit.
+  const textField = useInstantField<string>({
+    value: block.text,
+    onCommit: (v) => patchBlock(block.id, { text: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "text" }
+          : null
+      ),
+  });
+  const summaryField = useInstantField<string>({
+    value: block.summary,
+    onCommit: (v) => patchBlock(block.id, { summary: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "summary" }
+          : null
+      ),
+  });
   const [, startTransition] = useTransition();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const ref = useRef<HTMLDivElement>(null);
@@ -140,14 +165,26 @@ export function TextBlock({
               className="text-muted-foreground/70"
             />
           </div>
-          <input
-            type="text"
-            value={block.summary}
-            onChange={(e) => onChangeSummary(e.target.value)}
-            placeholder="Summary…"
-            aria-label="Block summary"
-            className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={{
+              table: "ending_blocks",
+              recordId: block.id,
+              field: "summary",
+            }}
+            className="flex-1 min-w-0"
+          >
+            <input
+              type="text"
+              value={summaryField.value}
+              onChange={(e) => summaryField.set(e.target.value)}
+              onFocus={summaryField.onFocus}
+              onBlur={summaryField.onBlur}
+              placeholder="Summary…"
+              aria-label="Block summary"
+              className="w-full min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
+            />
+          </FieldHighlight>
           <div className="flex shrink-0 items-center gap-2">
             <OverflowMenu
               items={[
@@ -179,12 +216,23 @@ export function TextBlock({
           </div>
         </div>
         {collapsed ? null : (
-          <LexicalTextBlockEditor
-            value={block.text}
-            onChange={onChange}
-            variables={variables}
-            placeholder="Paragraph text…"
-          />
+          <FieldHighlight
+            peers={peers}
+            focusKey={{
+              table: "ending_blocks",
+              recordId: block.id,
+              field: "text",
+            }}
+          >
+            <LexicalTextBlockEditor
+              value={textField.value}
+              onChange={textField.set}
+              onFocus={textField.onFocus}
+              onBlur={textField.onBlur}
+              variables={variables}
+              placeholder="Paragraph text…"
+            />
+          </FieldHighlight>
         )}
       </div>
       <DropLine active={targetAfter} side="bottom" />

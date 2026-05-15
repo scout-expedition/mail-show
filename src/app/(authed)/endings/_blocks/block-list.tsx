@@ -21,8 +21,6 @@ type BlockKind = "text" | "result" | "condition";
 
 export type TextBlockComponent = ComponentType<{
   block: BlockState;
-  onChange: (text: string) => void;
-  onChangeSummary: (summary: string) => void;
   onDelete: () => void;
   /** Authoring variable list, fed into the `@[Name]` autocomplete
    *  popup. Same array DocumentEditor passes to BlockList. */
@@ -31,7 +29,6 @@ export type TextBlockComponent = ComponentType<{
 
 export type ResultBlockComponent = ComponentType<{
   block: BlockState;
-  onChange: (result_value: string) => void;
   onDelete: () => void;
 }>;
 
@@ -246,8 +243,6 @@ export function BlockList({
             TextLeaf ? (
               <TextLeaf
                 block={b}
-                onChange={(text) => onUpdateBlock(b.id, { text })}
-                onChangeSummary={(summary) => onUpdateBlock(b.id, { summary })}
                 onDelete={() => handleDeleteBlock(b.id)}
                 variables={variables}
               />
@@ -262,9 +257,6 @@ export function BlockList({
             ResultLeaf ? (
               <ResultLeaf
                 block={b}
-                onChange={(result_value) =>
-                  onUpdateBlock(b.id, { result_value })
-                }
                 onDelete={() => handleDeleteBlock(b.id)}
               />
             ) : (
