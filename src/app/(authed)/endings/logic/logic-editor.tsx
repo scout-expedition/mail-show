@@ -82,7 +82,7 @@ function buildFallbackProp(
     return {
       options: [
         ...frameworkOptions,
-        { value: RANDOM_ALL_SENTINEL, label: "Random (any framework)" },
+        { value: RANDOM_ALL_SENTINEL, label: "Random (any)" },
       ],
       subsetFrameworks: frameworkOptions,
       subsetEnabled: true,
@@ -119,12 +119,9 @@ function buildFallbackProp(
           value: v,
           label: (VARIABLE_LABELS as Record<string, string>)[v] ?? v,
         })),
-        { value: RANDOM_TIED_SENTINEL, label: "Random (between tied)" },
-        {
-          value: RANDOM_REMAINING_SENTINEL,
-          label: "Random (between remaining)",
-        },
-        { value: RANDOM_ALL_SENTINEL, label: "Random (between all)" },
+        { value: RANDOM_REMAINING_SENTINEL, label: "Random (remaining)" },
+        { value: RANDOM_TIED_SENTINEL, label: "Random (tied)" },
+        { value: RANDOM_ALL_SENTINEL, label: "Random (all)" },
       ],
       helperText:
         "If nothing above resolves a tied nation, return this winner.",
