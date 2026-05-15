@@ -103,8 +103,10 @@ export function Nav() {
         className={cn(
           "flex h-full w-56 shrink-0 flex-col gap-4 border-r border-border bg-card px-3 py-4",
           // On narrow screens the nav is a fixed overlay that slides in
-          // from the left; at lg+ it sits inline in the flex row.
-          "fixed inset-y-0 left-0 z-30 shadow-xl transition-transform duration-200 lg:static lg:translate-x-0 lg:shadow-none",
+          // from the left; at lg+ it sits inline in the flex row. It is
+          // rendered AFTER page content in the DOM (so Tab reaches the
+          // page first) and pulled back to the left visually here.
+          "fixed inset-y-0 left-0 z-30 shadow-xl transition-transform duration-200 lg:static lg:order-1 lg:translate-x-0 lg:shadow-none",
           open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
         aria-hidden={!open ? undefined : false}
@@ -129,7 +131,10 @@ export function Nav() {
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                      // Inset focus ring — the scrolling section list
+                      // (overflow-y-auto) would clip an outset ring/
+                      // outline on links near its edges.
+                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                       active
                         ? "bg-accent text-accent-foreground"
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"

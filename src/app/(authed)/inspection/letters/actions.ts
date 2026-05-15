@@ -863,7 +863,11 @@ export async function patchReportSegment(
 export async function addActionFromTemplate(
   groupId: string,
   letterId: string,
-  templateId: string
+  templateId: string,
+  /** When false, only the picked template is inserted even if it has a
+   *  paired template — used by the "add just one of a pair" menu path.
+   *  Defaults true so the legacy "add the pair" behavior is preserved. */
+  includePair = true
 ) {
   const supabase = await createSupabaseServerClient();
   const { data: tpl, error: tErr } = await supabase
@@ -877,7 +881,7 @@ export async function addActionFromTemplate(
   const templatesToInsert: Array<{ id: string; tpl: typeof tpl }> = [
     { id: tpl.id, tpl },
   ];
-  if (tpl.paired_template_id) {
+  if (includePair && tpl.paired_template_id) {
     const { data: partner } = await supabase
       .from("action_templates")
       .select("*")
