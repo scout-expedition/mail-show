@@ -4621,7 +4621,7 @@ function ActionEditor({
 }) {
   const [creatingLetter, startCreateLetter] = useTransition();
   const [creatingSegment, startCreateSegment] = useTransition();
-  const { peers, setFocus } = usePresenceContext();
+  const { peers, setFocus, selfColor } = usePresenceContext();
   const nextLetterFocus: PresenceFocus = {
     table: "actions",
     recordId: action.id,
@@ -4671,14 +4671,23 @@ function ActionEditor({
     .sort((a, b) => a.sort_order - b.sort_order)
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
+  // Selected-action outline uses the current user's avatar color so it
+  // matches the highlighted chip / connector line in the graph.
+  const highlightColor = selfColor ?? "var(--ring)";
   return (
     <div
       className={cn(
         "rounded-md border bg-black/20 p-3 transition-colors",
-        highlighted
-          ? "border-ring ring-1 ring-ring"
-          : "border-border"
+        highlighted ? "" : "border-border"
       )}
+      style={
+        highlighted
+          ? {
+              borderColor: highlightColor,
+              boxShadow: `0 0 0 1px ${highlightColor}`,
+            }
+          : undefined
+      }
       onFocus={handleEnterFocus}
       onBlur={handleLeaveFocus}
     >

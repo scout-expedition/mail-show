@@ -16,6 +16,7 @@ import {
   type Edge,
   type FinalConnectionState,
   type Node,
+  type NodeChange,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
@@ -2390,6 +2391,15 @@ export function GraphView({
     dy: number;
   } | null>(null);
   const dragOriginRef = useRef<{ nodeId: string; y: number } | null>(null);
+  // ReactFlow's `nodes` prop is controlled; without an `onNodesChange`
+  // handler a drag never sticks — every re-render the prop re-adopts the
+  // node at its static layout position, fighting ReactFlow's own drag and
+  // flickering it. `onNodesChange` records the live drag position here per
+  // node id and decoratedNodes applies it, so there's a single source of
+  // truth and the dragged node tracks the cursor cleanly.
+  const [dragPositions, setDragPositions] = useState<
+    Record<string, { x: number; y: number }>
+  >({});
   // Escape pressed mid-drag flips this; onNodeDragStop reads it and skips
   // the server-side move so the layout snaps back to the original
   // positions on the next render. Cleared on drag start.
@@ -2404,6 +2414,7 @@ export function GraphView({
       // bails on further pointer moves. This makes Escape effective even
       // if the synthetic release below doesn't end ReactFlow's gesture.
       setDragPreview(null);
+      setDragPositions({});
       setHoveredRowId(null);
       setHoveredColumnId(null);
       setHoveredGroupId(null);
@@ -2760,12 +2771,30 @@ export function GraphView({
     });
   }
 
+  // Record live drag positions emitted by ReactFlow's drag. Only position
+  // changes matter here; dimension/select changes are left to ReactFlow's
+  // internal store. Bails once Escape has cancelled the drag.
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    if (dragCanceledRef.current) return;
+    setDragPositions((prev) => {
+      let next = prev;
+      for (const ch of changes) {
+        if (ch.type === "position" && ch.position) {
+          if (next === prev) next = { ...prev };
+          next[ch.id] = ch.position;
+        }
+      }
+      return next;
+    });
+  }, []);
+
   const onNodeDragStart = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       setIsDragging(true);
       setHoveredRowId(null);
       setHoveredColumnId(null);
       setHoveredGroupId(null);
+      setDragPositions({});
       dragCanceledRef.current = false;
       dragOriginRef.current = { nodeId: node.id, y: node.position.y };
       setDragPreview({ nodeId: node.id, dy: 0 });
@@ -2864,6 +2893,7 @@ export function GraphView({
       setHoveredColumnId(null);
       setHoveredGroupId(null);
       setDragPreview(null);
+      setDragPositions({});
       dragOriginRef.current = null;
       const rf = rfRef.current;
       if (!rf) return;
@@ -3436,7 +3466,8 @@ export function GraphView({
   // outside the layout useMemo so per-frame hover updates don't trigger
   // the heavy O(nodes+edges) recompute.
   const decoratedNodes = useMemo<Node[]>(() => {
-    if (!hoveredGroupId && !dragPreview) return nodes;
+    const hasDragPositions = Object.keys(dragPositions).length > 0;
+    if (!hoveredGroupId && !dragPreview && !hasDragPositions) return nodes;
 
     // Drag preview: ghost the dragged node + its children, and shadow-
     // shift the items that move relative to it. For a letter-group drag
@@ -3461,6 +3492,13 @@ export function GraphView({
 
     return nodes.map((n) => {
       let next = n;
+      // Apply the live drag position recorded from onNodesChange. This is
+      // the single source of truth for the dragged node's position while a
+      // drag runs, so the controlled `nodes` prop no longer fights it.
+      const dragPos = dragPositions[n.id];
+      if (dragPos) {
+        next = { ...next, position: dragPos };
+      }
       if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
         next = { ...next, data: { ...next.data, hovered: true } };
       }
@@ -3473,10 +3511,9 @@ export function GraphView({
           n.id.startsWith("reportcluster:") &&
           n.id.endsWith(`:${draggedGroupId}`);
         if (isDragged || isChildOfDragged) {
-          // ReactFlow's own drag gesture moves the dragged node + its
-          // children — we ONLY fade them. Do not touch position or zIndex:
-          // re-sorting the node by zIndex mid-drag detaches ReactFlow's
-          // pointer capture, which freezes the node and flickers the ghost.
+          // Fade the dragged node + its children. Their position comes
+          // from onNodesChange (above) for the dragged node; children
+          // ride along via their parentId offset.
           next = {
             ...next,
             data: { ...next.data, dragGhost: true },
@@ -3502,7 +3539,7 @@ export function GraphView({
       }
       return next;
     });
-  }, [nodes, hoveredGroupId, dragPreview, segments]);
+  }, [nodes, hoveredGroupId, dragPreview, dragPositions, segments]);
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use
@@ -3735,6 +3772,11 @@ export function GraphView({
     >
       <ReactFlow
         nodes={decoratedNodes}
+        // Required so a node drag actually moves the node: ReactFlow's
+        // `nodes` prop is controlled, and without this the prop re-render
+        // resets the dragged node every frame. onNodesChange feeds the
+        // live position into dragPositions (see decoratedNodes).
+        onNodesChange={onNodesChange}
         // Action chips/connectors are laid out from static node positions,
         // so they can't follow a node mid-drag — hide every edge while a
         // drag is in progress and let them re-draw on drop.
