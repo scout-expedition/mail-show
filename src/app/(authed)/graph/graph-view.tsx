@@ -7,8 +7,11 @@ import {
   MarkerType,
   PanOnScrollMode,
   Panel,
+  Position,
   ReactFlow,
+  getBezierPath,
   type Connection,
+  type ConnectionLineComponentProps,
   type Edge,
   type FinalConnectionState,
   type Node,
@@ -57,7 +60,7 @@ import {
   setActionNextLetterByLetterId,
   setActionReportSegment,
 } from "../inspection/letters/actions";
-import { ActionIconEdge } from "./edges/action-icon-edge";
+import { ActionIconEdge, type ActionIconEdgeData } from "./edges/action-icon-edge";
 import ColumnBandNode from "./nodes/column-band";
 import ConnectionSourceNode from "./nodes/connection-source";
 import {
@@ -2439,9 +2442,55 @@ export function GraphView({
   // -----------------------------------------------------------------
   const edgeReconnectSuccessful = useRef(true);
 
-  const onReconnectStart = useCallback(() => {
-    edgeReconnectSuccessful.current = false;
-  }, []);
+  // During an `ln` (letter→next-letter direct) reconnect the original
+  // edge is hidden by ReactFlow while the user drags. To preserve the
+  // letter→chip half of the path visually, we capture the in-flight
+  // edge's chip + color metadata here, and the custom connectionLine
+  // component below reads from it to redraw the static half plus a
+  // live chip→cursor segment. Same trick for `ls` (letter→report) and
+  // `stub` (dangling letter) so retargeting feels consistent.
+  type ReconnectVisual = {
+    chipX: number;
+    chipY: number;
+    color: string;
+    path2Color: string;
+    chipColor: string;
+    iconType: import("@/lib/db/enums").IconType;
+    iconValue: string | null;
+    actionName: string;
+    hideChip: boolean;
+  };
+  const reconnectVisualRef = useRef<ReconnectVisual | null>(null);
+  // Forces the connection-line component to re-render when the ref
+  // flips on/off — the line's `toX`/`toY` updates cover cursor moves,
+  // but the initial chip-overlay paint needs an explicit nudge.
+  const [reconnectActive, setReconnectActive] = useState(false);
+
+  const onReconnectStart = useCallback(
+    (_event: React.MouseEvent, edge: Edge) => {
+      edgeReconnectSuccessful.current = false;
+      const m = edge.id.match(/^a:[^:]+:(ls|sn|ln|stub)$/);
+      if (!m) return;
+      const edgeKind = m[1];
+      // sn source is a report, not a letter — no chip to preserve.
+      if (edgeKind === "sn") return;
+      const data = edge.data as ActionIconEdgeData | undefined;
+      if (!data || data.hideChip) return;
+      reconnectVisualRef.current = {
+        chipX: data.chipX,
+        chipY: data.chipY,
+        color: data.color,
+        path2Color: data.path2Color ?? data.color,
+        chipColor: data.chipColor ?? data.color,
+        iconType: data.iconType,
+        iconValue: data.iconValue,
+        actionName: data.actionName,
+        hideChip: false,
+      };
+      setReconnectActive(true);
+    },
+    []
+  );
 
   // Resolve the current letter id an action's next_letter_variant points
   // at, walking through the source action's storyline/group_sequence to
@@ -2608,6 +2657,8 @@ export function GraphView({
         }
       }
       edgeReconnectSuccessful.current = true;
+      reconnectVisualRef.current = null;
+      setReconnectActive(false);
     },
     [
       actions,
@@ -2806,6 +2857,66 @@ export function GraphView({
     }
   }, [letters, segments, letterGroups, select]);
 
+  // Custom connection line for in-flight edge reconnects. Default
+  // behavior draws a single line from source to cursor, which erases
+  // the letter→chip half of an ln/ls/stub edge mid-drag. By reading
+  // the captured chip position from the ref, we redraw that static
+  // half plus a live chip→cursor segment so the chain reads as
+  // continuous while the user retargets.
+  const ConnectionLine = useCallback(
+    (props: ConnectionLineComponentProps) => {
+      const v = reconnectVisualRef.current;
+      // Fallback for non-captured drags (e.g. sn or fresh
+      // connection-source drags): plain straight line.
+      if (!v || !reconnectActive) {
+        return (
+          <path
+            d={`M${props.fromX},${props.fromY} L${props.toX},${props.toY}`}
+            fill="none"
+            stroke="#9ca3af"
+            strokeWidth={1.75}
+          />
+        );
+      }
+      const CURVATURE = 0.5;
+      const [path1] = getBezierPath({
+        sourceX: props.fromX,
+        sourceY: props.fromY,
+        targetX: v.chipX,
+        targetY: v.chipY,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        curvature: CURVATURE,
+      });
+      const [path2] = getBezierPath({
+        sourceX: v.chipX,
+        sourceY: v.chipY,
+        targetX: props.toX,
+        targetY: props.toY,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        curvature: CURVATURE,
+      });
+      return (
+        <>
+          <path
+            d={path1}
+            fill="none"
+            stroke={v.color}
+            strokeWidth={1.75}
+          />
+          <path
+            d={path2}
+            fill="none"
+            stroke={v.path2Color}
+            strokeWidth={1.75}
+          />
+        </>
+      );
+    },
+    [reconnectActive]
+  );
+
   return (
     <div
       className={
@@ -2850,6 +2961,7 @@ export function GraphView({
         onReconnectStart={editingEnabled ? onReconnectStart : undefined}
         onReconnect={editingEnabled ? onReconnect : undefined}
         onReconnectEnd={editingEnabled ? onReconnectEnd : undefined}
+        connectionLineComponent={ConnectionLine}
         panOnScroll
         panOnScrollMode={PanOnScrollMode.Free}
         zoomOnScroll
