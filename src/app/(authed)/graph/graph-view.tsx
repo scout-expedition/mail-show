@@ -2307,6 +2307,93 @@ export function GraphView({
     pendingFocusRef.current = sel;
   }, []);
 
+  // Create N report segments under a letter group, with optimistic
+  // ghosts. Reports created on the graph carry NO delivery override —
+  // their day is computed from the letter group (group day + 1) until
+  // a triggering letter is wired up. Shared by the pane right-click
+  // menu and the report-cluster right-click menu.
+  const createReportsForGroup = useCallback(
+    (group: LetterGroup, n: number) => {
+      const sameGroupSegs = segments.filter(
+        (s) => s.letter_group_id === group.id
+      );
+      const existingMax = Math.max(
+        0,
+        ...sameGroupSegs.map((s) => romanToInt(s.variant))
+      );
+      const storyline = storylines.find((s) => s.id === group.storyline_id);
+      // A fresh report with no triggers delivers on (group day + 1).
+      const groupDay = days.find((d) => d.id === group.delivery_day_id);
+      const reportDay =
+        groupDay != null
+          ? days.find((d) => d.number === groupDay.number + 1) ?? null
+          : null;
+      const ghostTempIds: string[] = [];
+      const ghosts: PendingAdd<ReportSegmentView>[] = [];
+      for (let i = 1; i <= n; i++) {
+        const tempId = makeGhostId("seg");
+        ghostTempIds.push(tempId);
+        ghosts.push({
+          tempId,
+          ghost: {
+            id: tempId,
+            report_group_id: "",
+            variant: toRoman(existingMax + i),
+            summary: null,
+            content: null,
+            delivery_day_override_id: null,
+            delivery_day_offset: null,
+            sort_order: existingMax + i,
+            updated_at: new Date(0).toISOString(),
+            updated_by: null,
+            letter_group_id: group.id,
+            storyline_id: group.storyline_id,
+            storyline_abbreviation: storyline?.abbreviation ?? "",
+            group_sequence: group.sequence,
+            report_id: "R-?",
+            effective_day_id: reportDay?.id ?? null,
+          },
+          resolvedRealId: null,
+        });
+      }
+      setPendingAdds((prev) => ({
+        ...prev,
+        segments: [...prev.segments, ...ghosts],
+      }));
+      void (async () => {
+        try {
+          // null day → no delivery override; the report computes its
+          // day relative to the letter group.
+          const { segmentIds } = await createReportSegmentsForGroupAtDay(
+            group.id,
+            n,
+            null
+          );
+          ghostTempIds.forEach((tempId, idx) => {
+            const realId = segmentIds[idx];
+            if (realId) resolvePendingSegment(tempId, realId);
+            else removePendingSegment(tempId);
+          });
+          if (segmentIds[0]) {
+            queueFocus({ kind: "segment", segmentId: segmentIds[0] });
+          }
+        } catch (err) {
+          ghostTempIds.forEach(removePendingSegment);
+          throw err;
+        }
+      })();
+    },
+    [
+      segments,
+      storylines,
+      days,
+      makeGhostId,
+      resolvePendingSegment,
+      removePendingSegment,
+      queueFocus,
+    ]
+  );
+
   // Custom overlay confirm() used by every destructive context-menu item.
   const { confirm, dialog: confirmDialog } = useConfirm();
 
@@ -2455,72 +2542,8 @@ export function GraphView({
         }
       })();
     };
-    // Create N report segments anchored to a specific letter group,
-    // with optimistic ghosts (one per requested segment, variants
-    // i/ii/iii picked to follow the existing ones so the layout's
-    // roman-numeral sort places them at the tail).
-    const makeCreator = (n: number, group: LetterGroup) => () => {
-      const sameGroupSegs = segments.filter(
-        (s) => s.letter_group_id === group.id
-      );
-      const existingMax = Math.max(
-        0,
-        ...sameGroupSegs.map((s) => romanToInt(s.variant))
-      );
-      const storyline = storylines.find((s) => s.id === group.storyline_id);
-      const ghostTempIds: string[] = [];
-      const ghosts: PendingAdd<ReportSegmentView>[] = [];
-      for (let i = 1; i <= n; i++) {
-        const tempId = makeGhostId("seg");
-        ghostTempIds.push(tempId);
-        ghosts.push({
-          tempId,
-          ghost: {
-            id: tempId,
-            report_group_id: "",
-            variant: toRoman(existingMax + i),
-            summary: null,
-            content: null,
-            delivery_day_override_id: null,
-            delivery_day_offset: null,
-            sort_order: existingMax + i,
-            updated_at: new Date(0).toISOString(),
-            updated_by: null,
-            letter_group_id: group.id,
-            storyline_id: group.storyline_id,
-            storyline_abbreviation: storyline?.abbreviation ?? "",
-            group_sequence: group.sequence,
-            report_id: "R-?",
-            effective_day_id: targetDayId,
-          },
-          resolvedRealId: null,
-        });
-      }
-      setPendingAdds((prev) => ({
-        ...prev,
-        segments: [...prev.segments, ...ghosts],
-      }));
-      void (async () => {
-        try {
-          const { segmentIds } = await createReportSegmentsForGroupAtDay(
-            group.id,
-            n,
-            targetDayId
-          );
-          ghostTempIds.forEach((tempId, idx) => {
-            const realId = segmentIds[idx];
-            if (realId) resolvePendingSegment(tempId, realId);
-            else removePendingSegment(tempId);
-          });
-          if (segmentIds[0]) {
-            queueFocus({ kind: "segment", segmentId: segmentIds[0] });
-          }
-        } catch (err) {
-          ghostTempIds.forEach(removePendingSegment);
-          throw err;
-        }
-      })();
-    };
+    const makeCreator = (n: number, group: LetterGroup) => () =>
+      createReportsForGroup(group, n);
 
     // Group display id, e.g. "W2" (storyline abbreviation + sequence).
     const storylineAbbr =
@@ -2545,7 +2568,7 @@ export function GraphView({
         icon: reportIcon,
         trailing: <ChevronRight size={12} aria-hidden />,
         submenu: candidates.map((g) => ({
-          label: g.name ? `${groupLabel(g)}: ${g.name}` : groupLabel(g),
+          label: g.name ? `${groupLabel(g)} - ${g.name}` : groupLabel(g),
           icon: groupRowIcon,
           onClick: makeCreator(n, g),
         })),
@@ -3786,6 +3809,42 @@ export function GraphView({
                         select(null);
                       }
                     })(),
+                },
+              ],
+            });
+            return;
+          }
+          // Report-cluster box → add report segment(s) directly to this
+          // cluster's letter group. No group-picker submenu: the cluster
+          // already belongs to exactly one letter group.
+          if (node.id.startsWith("reportcluster:")) {
+            const parts = node.id.split(":");
+            const clusterGroupId = parts[2];
+            const group = letterGroups.find((g) => g.id === clusterGroupId);
+            if (!group) return;
+            const reportIcon = (
+              <span className="inline-flex items-center gap-1.5">
+                <span aria-hidden>+</span>
+                <Megaphone size={11} aria-hidden />
+              </span>
+            );
+            setContextMenu({
+              anchor,
+              items: [
+                {
+                  label: "Report Segment",
+                  icon: reportIcon,
+                  onClick: () => createReportsForGroup(group, 1),
+                },
+                {
+                  label: "2 Report Segments",
+                  icon: reportIcon,
+                  onClick: () => createReportsForGroup(group, 2),
+                },
+                {
+                  label: "3 Report Segments",
+                  icon: reportIcon,
+                  onClick: () => createReportsForGroup(group, 3),
                 },
               ],
             });
