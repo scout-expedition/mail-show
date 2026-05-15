@@ -2290,10 +2290,10 @@ export function GraphView({
     const targetDayId = rowId === "unscheduled" ? null : rowId;
     const anchor = { x: e.clientX, y: e.clientY };
     // Resolve the candidate letter group(s) to anchor new segments to:
-    //   1. If something is currently selected and it belongs to a group in
-    //      this storyline, prefer that group.
-    //   2. Otherwise walk back to the closest preceding day in the
-    //      storyline; every group on that day is a candidate.
+    // always the group(s) in the closest preceding day of this
+    // storyline. The current selection is intentionally NOT consulted —
+    // report-create is purely positional. When that preceding day holds
+    // more than one group, the report rows fan out to a submenu.
     const clickedDayNumber =
       rowId === "unscheduled"
         ? null
@@ -2303,22 +2303,8 @@ export function GraphView({
       .sort((a, b) => a.sequence - b.sequence);
     const dayNumberById = new Map(days.map((d) => [d.id, d.number]));
 
-    let selectionGroupId: string | null = null;
-    if (selection?.kind === "group") selectionGroupId = selection.groupId;
-    else if (selection?.kind === "letter" || selection?.kind === "actions")
-      selectionGroupId = selection.groupId;
-    else if (selection?.kind === "segment") {
-      const seg = segments.find((s) => s.id === selection.segmentId);
-      selectionGroupId = seg?.letter_group_id ?? null;
-    }
-    const selectedInStoryline = selectionGroupId
-      ? storylineGroups.find((g) => g.id === selectionGroupId) ?? null
-      : null;
-
     let candidates: LetterGroup[];
-    if (selectedInStoryline) {
-      candidates = [selectedInStoryline];
-    } else if (clickedDayNumber == null) {
+    if (clickedDayNumber == null) {
       candidates = storylineGroups;
     } else {
       // Closest preceding day that has any group.
@@ -2465,15 +2451,18 @@ export function GraphView({
       })();
     };
 
-    // Display name for a candidate group, e.g. "W2 — Group name".
+    // Group display id, e.g. "W2" (storyline abbreviation + sequence).
     const storylineAbbr =
       storylines.find((s) => s.id === storylineId)?.abbreviation ?? "";
     const groupLabel = (g: LetterGroup) =>
-      `${storylineAbbr}${g.sequence}${g.name ? ` — ${g.name}` : ""}`;
+      `${storylineAbbr}${g.sequence}`;
+    // Plain letter-group icon for submenu rows (no leading "+").
+    const groupRowIcon = <Mails size={12} aria-hidden />;
 
     // One report-segment menu row. With a single candidate group it's a
     // direct click; with several, it fans out to a submenu so the user
-    // picks which letter group the segments anchor to.
+    // picks which letter group the segments anchor to — and the parent
+    // label gets a trailing "…" to signal the continuation.
     const reportItem = (n: number, label: string): GraphContextMenuItem => {
       if (candidates.length === 0) {
         return { label, icon: reportIcon, disabled: true, onClick: () => {} };
@@ -2482,11 +2471,12 @@ export function GraphView({
         return { label, icon: reportIcon, onClick: makeCreator(n, candidates[0]) };
       }
       return {
-        label,
+        label: `${label}…`,
         icon: reportIcon,
         trailing: <ChevronRight size={12} aria-hidden />,
         submenu: candidates.map((g) => ({
-          label: `in Letter Group ${groupLabel(g)}`,
+          label: `…in Group ${groupLabel(g)}`,
+          icon: groupRowIcon,
           onClick: makeCreator(n, g),
         })),
       };
@@ -3301,11 +3291,18 @@ export function GraphView({
       zoomHoldHandledRef.current = false;
       return;
     }
+    // When auto-zoom is on, a plain click turns it off — the canvas is
+    // already following the selection, so the click reads as "stop
+    // following". When off, a click does a one-shot recenter.
+    if (autozoomEnabled) {
+      setAutozoomEnabled(false);
+      return;
+    }
     const rf = rfRef.current;
     const c = selectionCenter(selection);
     if (!rf || !c) return;
     rf.setCenter(c.x, c.y, { zoom: 1, duration: 350 });
-  }, [selectionCenter, selection]);
+  }, [autozoomEnabled, setAutozoomEnabled, selectionCenter, selection]);
 
   return (
     <div
@@ -3358,6 +3355,13 @@ export function GraphView({
         zoomActivationKeyCode="Meta"
         panOnDrag={true}
         onNodeClick={(_, node) => {
+          // Column bands cover the canvas and are purely visual day-row
+          // separators — a click on one reads as a click on blank
+          // background, so it deselects.
+          if (node.type === "columnBand") {
+            select(null);
+            return;
+          }
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
         }}
