@@ -4,6 +4,7 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  EdgeLabelRenderer,
   MarkerType,
   PanOnScrollMode,
   Panel,
@@ -2909,7 +2910,6 @@ export function GraphView({
         targetPosition: Position.Top,
         curvature: CURVATURE,
       });
-      const chipPx = 20;
       return (
         <>
           <path
@@ -2924,41 +2924,46 @@ export function GraphView({
             stroke={v.path2Color}
             strokeWidth={1.75}
           />
-          {/* Chip overlay rendered AFTER the paths (SVG paints later
-              children on top) and inside a foreignObject so the HTML
-              chip is part of the connection-line SVG layer — which
-              means it survives ReactFlow hiding the original edge.
-              foreignObject keeps it positioned in graph space along
-              with the path. */}
+          {/* Chip portaled into ReactFlow's edge-label-renderer
+              container — same DOM tree as live-edge chips, so we
+              avoid the sub-pixel jitter that comes from re-rendering
+              a foreignObject every time the path's d-attribute
+              updates. The connection-line SVG has z-index 1001 in
+              the xyflow base CSS, so the chip's z-index is bumped
+              above that to keep it on top. */}
           {!v.hideChip ? (
-            <foreignObject
-              x={v.chipX - chipPx / 2}
-              y={v.chipY - chipPx / 2}
-              width={chipPx}
-              height={chipPx}
-              style={{ overflow: "visible", pointerEvents: "none" }}
-            >
+            <EdgeLabelRenderer>
               <div
-                title={v.actionName}
-                className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
+                className="nodrag nopan"
                 style={{
-                  background: v.chipColor,
-                  color: readableOnHex(v.chipColor),
+                  position: "absolute",
+                  transform: `translate(-50%, -50%) translate(${v.chipX}px, ${v.chipY}px)`,
+                  pointerEvents: "none",
+                  zIndex: 1002,
                 }}
+                title={v.actionName}
               >
-                {v.iconValue ? (
-                  <IconDisplay
-                    type={v.iconType}
-                    value={v.iconValue}
-                    size={12}
-                  />
-                ) : (
-                  <span className="text-[10px] font-mono font-semibold">
-                    {v.actionName.slice(0, 1).toUpperCase()}
-                  </span>
-                )}
+                <div
+                  className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
+                  style={{
+                    background: v.chipColor,
+                    color: readableOnHex(v.chipColor),
+                  }}
+                >
+                  {v.iconValue ? (
+                    <IconDisplay
+                      type={v.iconType}
+                      value={v.iconValue}
+                      size={12}
+                    />
+                  ) : (
+                    <span className="text-[10px] font-mono font-semibold">
+                      {v.actionName.slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                </div>
               </div>
-            </foreignObject>
+            </EdgeLabelRenderer>
           ) : null}
         </>
       );
