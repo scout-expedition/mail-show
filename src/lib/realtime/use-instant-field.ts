@@ -7,6 +7,10 @@ export type InstantFieldStatus = "idle" | "dirty" | "saving" | "error";
 export type InstantFieldState<T> = {
   localValue: T;
   status: InstantFieldStatus;
+  /** Most recent remote value dropped while the field was dirty/saving.
+   *  Replayed on the saving→idle transition so a peer write that landed
+   *  inside the save window isn't lost. `null` when nothing is queued. */
+  pendingRemote: { value: T } | null;
 };
 
 export type InstantFieldAction<T> =
@@ -20,18 +24,22 @@ export type InstantFieldAction<T> =
  * Pure state machine for a single instant-save field. Exported so the
  * LWW merge rule + status transitions can be unit-tested without React.
  *
- * - `set`     → user typed. localValue := value, status := "dirty".
- *               No-op if `equals(value, localValue)`.
+ * - `set`     → user typed. localValue := value, status := "dirty",
+ *               pendingRemote cleared. No-op if `equals(value, localValue)`.
  * - `remote`  → server pushed a new value via postgres_changes. APPLIED
  *               when status is "idle" or "error" (caller would have already
- *               filtered if the row is otherwise stale). DROPPED when
- *               "dirty" or "saving" — local typing wins.
+ *               filtered if the row is otherwise stale). When "dirty" or
+ *               "saving" local typing wins, so the value is STASHED in
+ *               pendingRemote (not dropped) and replayed when the save settles.
  * - `saveStart`   → commit in flight. status := "saving".
  * - `saveSuccess` → commit returned. Only transitions to "idle" if the user
  *                   didn't keep typing during the save (localValue still
- *                   matches the value that was committed).
- * - `saveError`   → commit threw. Revert localValue to the server value and
- *                   surface "error" (inline glyph, no toast — caller styles it).
+ *                   matches the value that was committed). On that transition
+ *                   a stashed pendingRemote that differs from localValue is
+ *                   applied so a peer write during the save window converges.
+ * - `saveError`   → commit threw. Revert localValue to the stashed remote if
+ *                   one exists (freshest server truth), else the server value,
+ *                   and surface "error" (inline glyph, no toast — caller styles it).
  */
 export function instantFieldReducer<T>(
   state: InstantFieldState<T>,
@@ -41,11 +49,19 @@ export function instantFieldReducer<T>(
   switch (action.type) {
     case "set":
       if (equals(action.value, state.localValue)) return state;
-      return { localValue: action.value, status: "dirty" };
+      return { localValue: action.value, status: "dirty", pendingRemote: null };
     case "remote":
-      if (state.status === "dirty" || state.status === "saving") return state;
+      if (state.status === "dirty" || state.status === "saving") {
+        // Local typing wins for now — stash the latest remote instead of
+        // dropping it, so it can be replayed once the save settles.
+        return { ...state, pendingRemote: { value: action.value } };
+      }
       if (equals(action.value, state.localValue)) return state;
-      return { localValue: action.value, status: state.status };
+      return {
+        localValue: action.value,
+        status: state.status,
+        pendingRemote: null,
+      };
     case "saveStart":
       return { ...state, status: "saving" };
     case "saveSuccess":
@@ -53,11 +69,30 @@ export function instantFieldReducer<T>(
         state.status === "saving" &&
         equals(state.localValue, action.pendingValue)
       ) {
-        return { ...state, status: "idle" };
+        if (
+          state.pendingRemote !== null &&
+          !equals(state.pendingRemote.value, state.localValue)
+        ) {
+          // A peer write landed during the save window — replay it now
+          // that local typing has settled.
+          return {
+            localValue: state.pendingRemote.value,
+            status: "idle",
+            pendingRemote: null,
+          };
+        }
+        return { ...state, status: "idle", pendingRemote: null };
       }
       return state;
     case "saveError":
-      return { localValue: action.serverValue, status: "error" };
+      return {
+        localValue:
+          state.pendingRemote !== null
+            ? state.pendingRemote.value
+            : action.serverValue,
+        status: "error",
+        pendingRemote: null,
+      };
     default:
       return state;
   }
@@ -121,6 +156,7 @@ export function useInstantField<T>(
   const [state, setState] = useState<InstantFieldState<T>>({
     localValue: value,
     status: "idle",
+    pendingRemote: null,
   });
 
   // Refs so the debounce callback always reads the latest closures.

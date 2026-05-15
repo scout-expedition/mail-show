@@ -4,8 +4,14 @@
 // covered by the editor-interaction tests in `text-block-editor.test.tsx`
 // where it runs against a real editor.
 
+import { createEditor } from "lexical";
 import { describe, expect, it } from "vitest";
-import { parseTextToParagraphs } from "./serialize";
+import { MentionNode } from "./mention-node";
+import {
+  buildInitialEditorStateJSON,
+  lexicalStateToText,
+  parseTextToParagraphs,
+} from "./serialize";
 
 describe("parseTextToParagraphs", () => {
   it("returns a single empty paragraph for empty input", () => {
@@ -135,5 +141,39 @@ describe("parseTextToParagraphs", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("buildInitialEditorStateJSON", () => {
+  // Parse the JSON string back through a headless editor and serialize it
+  // to text — the same path LexicalComposer takes when given a string
+  // `editorState`. The text must survive the round trip unchanged.
+  const roundTrip = (text: string): string => {
+    const json = buildInitialEditorStateJSON(text);
+    const editor = createEditor({ nodes: [MentionNode], onError: () => {} });
+    return lexicalStateToText(editor.parseEditorState(json));
+  };
+
+  it("returns a parseable JSON string", () => {
+    const json = buildInitialEditorStateJSON("Hello world.");
+    expect(typeof json).toBe("string");
+    expect(() => JSON.parse(json)).not.toThrow();
+  });
+
+  it("round-trips plain text", () => {
+    expect(roundTrip("Hello world.")).toBe("Hello world.");
+  });
+
+  it("round-trips a mid-sentence mention", () => {
+    expect(roundTrip("Hi @[Bob], welcome!")).toBe("Hi @[Bob], welcome!");
+  });
+
+  it("round-trips multiple paragraphs incl. a blank line", () => {
+    const text = "Intro.\nHello @[Bob].\n\nFinal @[Score] line.";
+    expect(roundTrip(text)).toBe(text);
+  });
+
+  it("round-trips empty input to an empty string", () => {
+    expect(roundTrip("")).toBe("");
   });
 });

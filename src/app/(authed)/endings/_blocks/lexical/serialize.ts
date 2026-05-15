@@ -16,6 +16,7 @@ import {
   $createParagraphNode,
   $createTextNode,
   $getRoot,
+  createEditor,
   type EditorState,
   type LexicalEditor,
 } from "lexical";
@@ -98,6 +99,22 @@ export function buildInitialEditorState(text: string) {
       root.append($createParagraphNode());
     }
   };
+}
+
+/**
+ * Serialized editor state for `LexicalComposer`'s `editorState` config.
+ *
+ * Handing `LexicalComposer` a JSON string (rather than the update
+ * function from `buildInitialEditorState`) lets Lexical hydrate the
+ * editor synchronously on mount: the content is present on the very
+ * first paint, so the placeholder never flashes through the empty
+ * editor for a frame. The state is built once via a throwaway headless
+ * editor — no DOM is needed for serialization.
+ */
+export function buildInitialEditorStateJSON(text: string): string {
+  const editor = createEditor({ nodes: [MentionNode], onError: () => {} });
+  editor.update(buildInitialEditorState(text), { discrete: true });
+  return JSON.stringify(editor.getEditorState().toJSON());
 }
 
 // ---------------------------------------------------------------------

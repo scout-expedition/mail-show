@@ -28,7 +28,11 @@ import {
   MentionNode,
   MentionVariablesProvider,
 } from "./mention-node";
-import { buildInitialEditorState, lexicalStateToText } from "./serialize";
+import {
+  buildInitialEditorState,
+  buildInitialEditorStateJSON,
+  lexicalStateToText,
+} from "./serialize";
 
 export interface LexicalTextBlockEditorProps {
   value: string;
@@ -56,9 +60,12 @@ export function LexicalTextBlockEditor({
   style,
 }: LexicalTextBlockEditorProps) {
   // The initial editor state is built from `value` exactly once, when
-  // LexicalComposer mounts. LexicalComposer's `editorState` config
-  // hook runs BEFORE OnChangePlugin subscribes, so this parse does NOT
-  // trigger a spurious onChange.
+  // LexicalComposer mounts. It is handed to LexicalComposer as a
+  // serialized JSON string (not an update function) so Lexical hydrates
+  // the content synchronously on mount — without this the editor paints
+  // one empty frame and the placeholder flashes through. The init runs
+  // BEFORE OnChangePlugin subscribes, so it does NOT trigger a spurious
+  // onChange.
   //
   // For live collaboration we ALSO need to push remote `value` updates
   // back into the editor when a peer edits the same block. The
@@ -66,7 +73,7 @@ export function LexicalTextBlockEditor({
   // ONLY when the prop diverges from what we last serialized out —
   // round-trips from our own onChange don't trigger a rebuild.
   const initialEditorState = useMemo(
-    () => buildInitialEditorState(value),
+    () => buildInitialEditorStateJSON(value),
     // Only depend on first-mount value. Subsequent prop changes are
     // routed through ValueSyncPlugin so undo + caret survive when the
     // editor itself is driving the change.
