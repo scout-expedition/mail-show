@@ -2271,6 +2271,15 @@ export function GraphView({
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [hoveredGroupId, setHoveredGroupId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  // Live drag preview: the node being dragged + the vertical delta from
+  // its layout position. decoratedNodes reads this to ghost the dragged
+  // node and shadow-shift items that move relative to it (e.g. a letter
+  // group's relative-dated reports follow the group as it's dragged).
+  const [dragPreview, setDragPreview] = useState<{
+    nodeId: string;
+    dy: number;
+  } | null>(null);
+  const dragOriginRef = useRef<{ nodeId: string; y: number } | null>(null);
   // Escape pressed mid-drag flips this; onNodeDragStop reads it and skips
   // the server-side move so the layout snaps back to the original
   // positions on the next render. Cleared on drag start.
@@ -2591,12 +2600,17 @@ export function GraphView({
     });
   }
 
-  const onNodeDragStart = useCallback(() => {
-    setIsDragging(true);
-    setHoveredRowId(null);
-    setHoveredGroupId(null);
-    dragCanceledRef.current = false;
-  }, []);
+  const onNodeDragStart = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      setIsDragging(true);
+      setHoveredRowId(null);
+      setHoveredGroupId(null);
+      dragCanceledRef.current = false;
+      dragOriginRef.current = { nodeId: node.id, y: node.position.y };
+      setDragPreview({ nodeId: node.id, dy: 0 });
+    },
+    []
+  );
 
   // Update hovered row + (for letter drags) hovered target group on every
   // pointer move during drag. Both lookups are cheap closures over rowMeta
@@ -2611,6 +2625,17 @@ export function GraphView({
         y: (event as MouseEvent).clientY,
       });
       setHoveredRowId(rowAtFlowY(flowPt.y));
+      // Track the drag delta so decoratedNodes can shadow-shift the
+      // items that move relative to the dragged node.
+      const origin = dragOriginRef.current;
+      if (origin && origin.nodeId === node.id) {
+        const dy = node.position.y - origin.y;
+        setDragPreview((prev) =>
+          prev && prev.nodeId === node.id && prev.dy === dy
+            ? prev
+            : { nodeId: node.id, dy }
+        );
+      }
       if (node.id.startsWith("letter:")) {
         const parsed = parseLetterNodeId(node.id);
         if (parsed) {
@@ -2652,6 +2677,8 @@ export function GraphView({
       setIsDragging(false);
       setHoveredRowId(null);
       setHoveredGroupId(null);
+      setDragPreview(null);
+      dragOriginRef.current = null;
       const rf = rfRef.current;
       if (!rf) return;
       // Escape-cancel: skip the server-side move and snap nodes back to
@@ -3172,17 +3199,71 @@ export function GraphView({
   // outside the layout useMemo so per-frame hover updates don't trigger
   // the heavy O(nodes+edges) recompute.
   const decoratedNodes = useMemo<Node[]>(() => {
-    if (!hoveredRowId && !hoveredGroupId) return nodes;
+    if (!hoveredRowId && !hoveredGroupId && !dragPreview) return nodes;
+
+    // Drag preview: ghost the dragged node + its children, and shadow-
+    // shift the items that move relative to it. For a letter-group drag
+    // that means the group's relative-dated reports (no absolute
+    // override) and their cluster boxes follow the group by the same
+    // vertical delta — reports pinned to an absolute day stay put.
+    let draggedGroupId: string | null = null;
+    const linkedReportNodeIds = new Set<string>();
+    if (dragPreview && dragPreview.nodeId.startsWith("group:")) {
+      draggedGroupId = parseGroupNodeId(dragPreview.nodeId)?.groupId ?? null;
+      if (draggedGroupId) {
+        for (const s of segments) {
+          if (
+            s.letter_group_id === draggedGroupId &&
+            s.delivery_day_override_id == null
+          ) {
+            linkedReportNodeIds.add(`report:${s.id}`);
+          }
+        }
+      }
+    }
+
     return nodes.map((n) => {
+      let next = n;
       if (hoveredRowId && n.id === `band:${hoveredRowId}`) {
-        return { ...n, data: { ...n.data, hovered: true } };
+        next = { ...next, data: { ...next.data, hovered: true } };
       }
       if (hoveredGroupId && n.id === `group:${hoveredGroupId}`) {
-        return { ...n, data: { ...n.data, hovered: true } };
+        next = { ...next, data: { ...next.data, hovered: true } };
       }
-      return n;
+      if (dragPreview) {
+        const isDragged = n.id === dragPreview.nodeId;
+        const isChildOfDragged = n.parentId === dragPreview.nodeId;
+        const isLinkedReport = linkedReportNodeIds.has(n.id);
+        const isLinkedCluster =
+          draggedGroupId != null &&
+          n.id.startsWith("reportcluster:") &&
+          n.id.endsWith(`:${draggedGroupId}`);
+        if (isDragged || isChildOfDragged) {
+          // ReactFlow already moves these (the dragged node + its
+          // children); we just ghost them.
+          next = { ...next, data: { ...next.data, dragGhost: true } };
+        } else if (isLinkedReport) {
+          next = {
+            ...next,
+            position: {
+              ...next.position,
+              y: next.position.y + dragPreview.dy,
+            },
+            data: { ...next.data, dragGhost: true },
+          };
+        } else if (isLinkedCluster) {
+          next = {
+            ...next,
+            position: {
+              ...next.position,
+              y: next.position.y + dragPreview.dy,
+            },
+          };
+        }
+      }
+      return next;
     });
-  }, [nodes, hoveredRowId, hoveredGroupId]);
+  }, [nodes, hoveredRowId, hoveredGroupId, dragPreview, segments]);
 
   // Auto-pan to the selected entity so it's visible after a click on the
   // panel's storylines list moves the selection somewhere off-screen. Use

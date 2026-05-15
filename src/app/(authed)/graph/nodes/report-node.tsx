@@ -15,6 +15,8 @@ export type ReportNodeData = {
   peerRingColors?: string[];
   pendingDelete?: boolean;
   pendingAdd?: boolean;
+  /** Part of an in-progress drag preview — rendered semi-transparent. */
+  dragGhost?: boolean;
   onSelect?: () => void;
 };
 
@@ -37,7 +39,11 @@ function ReportNode({ data }: NodeProps) {
     <div
       className={
         "relative transition-opacity" +
-        (d.pendingDelete || d.pendingAdd ? " animate-pulse opacity-40" : "")
+        (d.pendingDelete || d.pendingAdd
+          ? " animate-pulse opacity-40"
+          : d.dragGhost
+            ? " opacity-50"
+            : "")
       }
     >
       {/*
