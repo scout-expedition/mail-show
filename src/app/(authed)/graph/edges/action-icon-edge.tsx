@@ -171,7 +171,11 @@ function ActionIconEdgeComponent({
   // SVG's marker is placed with its TIP at the path endpoint and the
   // line appears to enter the arrow off-center.
   const ARROW_PULLBACK = 3;
-  const arrowTargetY = targetY - ARROW_PULLBACK;
+  // In edit mode the terminator is a circle (no SVG arrowhead), so the
+  // line + circle land right on the target box's top edge instead of
+  // pulled back — keeps the connector reading as attached to the
+  // letter/report it points at.
+  const arrowTargetY = d.editingEnabled ? targetY : targetY - ARROW_PULLBACK;
   // Spread converging arrowheads across the target's top edge.
   const arrowTargetX = targetX + (d.targetXOffset ?? 0);
   // Mirror spread on the source side (used for `sn` exits from a report).
