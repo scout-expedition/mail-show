@@ -15,6 +15,14 @@ type StorylinePatchFields = {
   color_hex: string;
 };
 
+function assertAbbreviationAllowed(abbreviation: string) {
+  if (abbreviation.toUpperCase() === "D") {
+    throw new Error(
+      'Abbreviation "D" is reserved — it collides with day identifiers (D1, D2…).'
+    );
+  }
+}
+
 /**
  * Narrow per-field patch used by instant-save hooks on the storyline inspector
  * and standalone editor. Does NOT call revalidatePath — realtime fans out
@@ -25,6 +33,9 @@ export async function patchStoryline(
   id: string,
   patch: Partial<StorylinePatchFields>
 ) {
+  if (patch.abbreviation !== undefined) {
+    assertAbbreviationAllowed(patch.abbreviation);
+  }
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.from("storylines").update(patch).eq("id", id);
   if (error) throw new Error(error.message);
@@ -49,10 +60,12 @@ export async function createStorylineWithFields(data: {
   color_hex: string;
 }): Promise<{ id: string }> {
   const supabase = await createSupabaseServerClient();
+  const normalizedAbbr =
+    data.abbreviation.trim().toUpperCase().charAt(0) || "X";
+  assertAbbreviationAllowed(normalizedAbbr);
   const payload = {
     name: data.name.trim() || "New storyline",
-    abbreviation:
-      data.abbreviation.trim().toUpperCase().charAt(0) || "X",
+    abbreviation: normalizedAbbr,
     description: data.description?.trim() || null,
     icon_type: data.icon_type,
     icon_value: data.icon_value?.trim() || null,
@@ -81,6 +94,7 @@ export async function createStoryline() {
   let abbr = "X";
   for (let c = 65; c <= 90; c++) {
     const letter = String.fromCharCode(c);
+    if (letter === "D") continue;
     if (!used.has(letter)) {
       abbr = letter;
       break;
@@ -116,10 +130,12 @@ export async function updateStorylineFields(data: {
   color_hex: string;
 }) {
   const supabase = await createSupabaseServerClient();
+  const normalizedAbbr =
+    data.abbreviation.trim().toUpperCase().charAt(0) || "X";
+  assertAbbreviationAllowed(normalizedAbbr);
   const payload = {
     name: data.name.trim(),
-    abbreviation:
-      data.abbreviation.trim().toUpperCase().charAt(0) || "X",
+    abbreviation: normalizedAbbr,
     description: data.description?.trim() || null,
     icon_type: data.icon_type,
     icon_value: data.icon_value?.trim() || null,
@@ -139,12 +155,14 @@ export async function updateStoryline(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
+  const normalizedAbbr = String(formData.get("abbreviation") ?? "")
+    .trim()
+    .toUpperCase()
+    .charAt(0);
+  assertAbbreviationAllowed(normalizedAbbr);
   const payload = {
     name: String(formData.get("name") ?? "").trim(),
-    abbreviation: String(formData.get("abbreviation") ?? "")
-      .trim()
-      .toUpperCase()
-      .charAt(0),
+    abbreviation: normalizedAbbr,
     description: nilStr(formData.get("description")),
     icon_type: String(formData.get("icon_type") ?? "lucide") as IconType,
     icon_value: nilStr(formData.get("icon_value")),
@@ -199,10 +217,12 @@ export async function updateAllStorylines(formData: FormData) {
     if (!id) continue;
     const name = (names[i] ?? "").trim();
     if (!name) continue;
+    const normalizedAbbr =
+      (abbrs[i] ?? "").trim().toUpperCase().charAt(0) || "X";
+    assertAbbreviationAllowed(normalizedAbbr);
     const payload = {
       name,
-      abbreviation:
-        (abbrs[i] ?? "").trim().toUpperCase().charAt(0) || "X",
+      abbreviation: normalizedAbbr,
       description: (descriptions[i] ?? "").trim() || null,
       icon_type: ((iconTypes[i] as IconType) ?? "lucide") as IconType,
       icon_value: (iconValues[i] ?? "").trim() || null,

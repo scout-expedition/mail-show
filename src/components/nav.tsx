@@ -11,6 +11,7 @@ import {
   Users,
   Map as MapIcon,
   MapPin,
+  Megaphone,
   Flag,
   Inbox,
   Menu,
@@ -31,7 +32,14 @@ const NAV_ITEMS: Array<{
   href: string;
   label: string;
   icon: NavIcon;
-  section: "Game" | "Sorting" | "Inspection" | "Endings" | "Data" | "Run";
+  section:
+    | "Game"
+    | "Sorting"
+    | "Inspection"
+    | "Top of Day"
+    | "Endings"
+    | "Data"
+    | "Run";
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
@@ -42,6 +50,7 @@ const NAV_ITEMS: Array<{
   { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
   { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
   { href: "/inspection/actions", label: "Actions", icon: IconBolt, section: "Inspection" },
+  { href: "/top-of-day/morning-reports", label: "Morning Reports", icon: Megaphone, section: "Top of Day" },
   { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
   { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
   { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
@@ -56,6 +65,7 @@ export function Nav() {
   const pathname = usePathname();
   const sections = [
     "Game",
+    "Top of Day",
     "Sorting",
     "Inspection",
     "Endings",
