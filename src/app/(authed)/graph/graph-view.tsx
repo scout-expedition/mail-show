@@ -2027,7 +2027,12 @@ export function GraphView({
           // chain through the report card.
           let nextX = p.chipX - 6;
           let nextY = p.chipY + CONNECT_BELOW_GAP - 6;
-          if (hasReport && p.candidate.kind === "ls") {
+          // Anchor the "next" pickup directly below the report segment
+          // whenever the action has a report — not only on the `ls`
+          // placement, so it lands at the report's bottom edge (the same
+          // height as a sibling action's stub) instead of dropping down
+          // to the chip row.
+          if (hasReport) {
             const reportPos = segmentAbsPos.get(
               `report:${effectiveReportIdForA}`
             );
@@ -2042,7 +2047,10 @@ export function GraphView({
             id: `connect:${a.id}:next`,
             type: "connectionSource",
             position: { x: nextX, y: nextY },
-            data: { kind: "next", color: "#9ca3af" },
+            // Match the connected next-letter terminator's grey
+            // (path2Color for letter→next edges) so a disconnected stub
+            // and a connected circle read as the same colour.
+            data: { kind: "next", color: "#5e5e5e" },
             draggable: false,
             selectable: false,
             focusable: false,
