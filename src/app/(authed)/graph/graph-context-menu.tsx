@@ -9,7 +9,13 @@ export type GraphContextMenuItem =
       icon?: React.ReactNode;
       /** Optional trailing decoration (e.g. ChevronRight for "opens submenu"). */
       trailing?: React.ReactNode;
-      onClick: () => void;
+      /** Click handler. Optional when `submenu` is set — hover opens the
+       *  submenu, and a bare click on the parent item is a no-op. */
+      onClick?: () => void;
+      /** Nested entries shown in a cascading submenu on hover. The
+       *  submenu closes when the pointer enters a different parent
+       *  item; click outside or Escape closes the whole stack. */
+      submenu?: GraphContextMenuItem[];
       disabled?: boolean;
       intent?: "default" | "destructive";
     }
@@ -19,7 +25,7 @@ export type GraphContextMenuItem =
  * Lightweight floating context menu anchored at a (clientX, clientY)
  * coordinate, used for right-click on graph nodes and the pane. Closes on
  * outside-click or escape; flips upward when there isn't room below the
- * anchor.
+ * anchor. Supports one level of cascading submenus that open on hover.
  */
 export function GraphContextMenu({
   anchor,
@@ -32,6 +38,16 @@ export function GraphContextMenu({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  // Which parent item the pointer is currently inside (or last entered
+  // before moving into its submenu). Drives cascade rendering — when the
+  // pointer enters a *different* parent item, the previous submenu
+  // unmounts and the new one (if any) takes its place.
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [submenuAnchor, setSubmenuAnchor] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   useLayoutEffect(() => {
     if (!anchor || !ref.current) {
@@ -81,6 +97,32 @@ export function GraphContextMenu({
     };
   }, [anchor, onClose]);
 
+  const handleHover = (i: number, item: GraphContextMenuItem) => {
+    setHoveredIdx(i);
+    if ("divider" in item) {
+      setSubmenuAnchor(null);
+      return;
+    }
+    if (!item.submenu) {
+      setSubmenuAnchor(null);
+      return;
+    }
+    const btn = itemRefs.current[i];
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    // Anchor the submenu's top-left at the parent item's top-right
+    // (a 2px overlap keeps the cursor from dropping into a gap when
+    // tracking from item → submenu).
+    setSubmenuAnchor({ x: rect.right - 2, y: rect.top });
+  };
+
+  const submenuItem =
+    hoveredIdx !== null && items[hoveredIdx] && !("divider" in items[hoveredIdx])
+      ? items[hoveredIdx]
+      : null;
+  const submenuItems =
+    submenuItem && !("divider" in submenuItem) ? submenuItem.submenu : null;
+
   if (!anchor) return null;
   return (
     <div
@@ -103,24 +145,35 @@ export function GraphContextMenu({
             />
           );
         }
+        const hasSubmenu = !!item.submenu && item.submenu.length > 0;
         return (
           <button
             key={i}
+            ref={(el) => {
+              itemRefs.current[i] = el;
+            }}
             type="button"
             role="menuitem"
             disabled={item.disabled}
+            onMouseEnter={() => handleHover(i, item)}
             onClick={() => {
               if (item.disabled) return;
-              item.onClick();
-              // Items with a trailing decoration (e.g. submenu indicator)
-              // keep the menu open so the click can re-anchor it.
+              // Items with a submenu are hover-only — a click is a
+              // no-op so the user can mouse into the submenu without
+              // accidentally re-anchoring the menu.
+              if (hasSubmenu) return;
+              item.onClick?.();
               if (!item.trailing) onClose();
             }}
             className={cn(
               "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-[11px] tracking-tight transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-              item.intent === "destructive"
-                ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                : "text-foreground hover:bg-accent hover:text-accent-foreground"
+              hoveredIdx === i
+                ? item.intent === "destructive"
+                  ? "bg-destructive text-destructive-foreground"
+                  : "bg-accent text-accent-foreground"
+                : item.intent === "destructive"
+                  ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                  : "text-foreground hover:bg-accent hover:text-accent-foreground"
             )}
           >
             {item.icon}
@@ -129,6 +182,13 @@ export function GraphContextMenu({
           </button>
         );
       })}
+      {submenuItems && submenuAnchor ? (
+        <GraphContextMenu
+          anchor={submenuAnchor}
+          items={submenuItems}
+          onClose={onClose}
+        />
+      ) : null}
     </div>
   );
 }

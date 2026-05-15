@@ -4,6 +4,7 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  EdgeLabelRenderer,
   MarkerType,
   PanOnScrollMode,
   Panel,
@@ -24,7 +25,8 @@ import {
   IconZoomScan,
 } from "@tabler/icons-react";
 import { ChevronRight, Copy, MailOpen, Mails, Megaphone, Plus, Trash2 } from "lucide-react";
-import { StorylinePill } from "@/components/pills";
+import { readableOnHex, StorylinePill } from "@/components/pills";
+import { IconDisplay } from "@/components/icon-display";
 import { useConfirm } from "@/components/confirm-dialog";
 import type {
   ActionRow,
@@ -2911,6 +2913,45 @@ export function GraphView({
             stroke={v.path2Color}
             strokeWidth={1.75}
           />
+          {/* Chip overlay: kept visible during the drag so the user
+              sees the action's identity even though ReactFlow has
+              hidden the real edge. EdgeLabelRenderer portals out of
+              the SVG layer so we can render the icon button just
+              like the live edge does. */}
+          {!v.hideChip ? (
+            <EdgeLabelRenderer>
+              <div
+                className="nodrag nopan"
+                style={{
+                  position: "absolute",
+                  transform: `translate(-50%, -50%) translate(${v.chipX}px, ${v.chipY}px)`,
+                  pointerEvents: "none",
+                  zIndex: 10,
+                }}
+                title={v.actionName}
+              >
+                <div
+                  className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
+                  style={{
+                    background: v.chipColor,
+                    color: readableOnHex(v.chipColor),
+                  }}
+                >
+                  {v.iconValue ? (
+                    <IconDisplay
+                      type={v.iconType}
+                      value={v.iconValue}
+                      size={12}
+                    />
+                  ) : (
+                    <span className="text-[10px] font-mono font-semibold">
+                      {v.actionName.slice(0, 1).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </EdgeLabelRenderer>
+          ) : null}
         </>
       );
     },
@@ -3020,10 +3061,13 @@ export function GraphView({
                 seenTemplateIds.add(t.id);
               }
             }
-            const openTemplatePicker = () => {
-              setContextMenu({
-                anchor,
-                items: templateEntries.map((entry) => ({
+            const items: GraphContextMenuItem[] = [];
+            if (!hasActions && templateEntries.length > 0) {
+              items.push({
+                label: "Add Actions",
+                icon: <Plus size={12} aria-hidden />,
+                trailing: <ChevronRight size={12} aria-hidden />,
+                submenu: templateEntries.map((entry) => ({
                   label: entry.label,
                   icon: <Plus size={12} aria-hidden />,
                   onClick: () =>
@@ -3035,15 +3079,6 @@ export function GraphView({
                       );
                     })(),
                 })),
-              });
-            };
-            const items: GraphContextMenuItem[] = [];
-            if (!hasActions && templateEntries.length > 0) {
-              items.push({
-                label: "Add Actions",
-                icon: <Plus size={12} aria-hidden />,
-                trailing: <ChevronRight size={12} aria-hidden />,
-                onClick: openTemplatePicker,
               });
               items.push({ divider: true });
             }
