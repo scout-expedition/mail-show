@@ -137,7 +137,7 @@ export function LexicalTextBlockEditor({
               />
             }
             placeholder={
-              <div className="pointer-events-none absolute left-3 top-2 font-mono !text-sm text-muted-foreground">
+              <div className="pointer-events-none absolute left-3 top-2 font-mono !text-sm text-muted-foreground/40">
                 {placeholder}
               </div>
             }
