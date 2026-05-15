@@ -37,8 +37,12 @@ import {
   deleteRow,
   duplicateBlock,
   duplicateRow,
+  patchBlock,
   removeBlockVariable,
 } from "../_shared/document-actions";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
@@ -63,7 +67,6 @@ export function ConditionBlock({
   values,
   onDeleteBlock,
   onChangeChip,
-  onChangeSummary,
   renderRowContent,
   getRowBlockCount,
 }: {
@@ -76,7 +79,6 @@ export function ConditionBlock({
   values: EndingVariableValue[];
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
-  onChangeSummary: (summary: string) => void;
   /** Render the recursive child-block list for a given row. */
   renderRowContent: (row: RowState) => React.ReactNode;
   /** Number of blocks under each row's children area. Used to close
@@ -84,6 +86,17 @@ export function ConditionBlock({
    *  no child blocks. */
   getRowBlockCount?: (rowId: string) => number;
 }) {
+  const { peers, setFocus } = usePresenceContext();
+  const summaryField = useInstantField<string>({
+    value: block.summary,
+    onCommit: (v) => patchBlock(block.id, { summary: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "summary" }
+          : null
+      ),
+  });
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
@@ -210,14 +223,26 @@ export function ConditionBlock({
             confirm={confirm}
           />
         </div>
-        <input
-          type="text"
-          value={block.summary}
-          onChange={(e) => onChangeSummary(e.target.value)}
-          placeholder="Summary…"
-          aria-label="Block summary"
-          className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
-        />
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: "ending_blocks",
+            recordId: block.id,
+            field: "summary",
+          }}
+          className="flex-1 min-w-0"
+        >
+          <input
+            type="text"
+            value={summaryField.value}
+            onChange={(e) => summaryField.set(e.target.value)}
+            onFocus={summaryField.onFocus}
+            onBlur={summaryField.onBlur}
+            placeholder="Summary…"
+            aria-label="Block summary"
+            className="w-full min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
+          />
+        </FieldHighlight>
         <div className="flex shrink-0 items-center gap-2">
           {blockAnalysis ? (
             <BlockAnalysisBadge

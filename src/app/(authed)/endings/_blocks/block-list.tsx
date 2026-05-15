@@ -277,7 +277,6 @@ export function BlockList({
               values={values}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
-              onChangeSummary={(summary) => onUpdateBlock(b.id, { summary })}
               getRowBlockCount={(rowId) =>
                 (byParent.get(parentKey(b.id, rowId)) ?? []).length
               }
