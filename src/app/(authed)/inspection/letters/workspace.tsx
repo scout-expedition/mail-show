@@ -106,7 +106,6 @@ import {
   MailOpen,
   Mails,
   Megaphone,
-  Milestone,
   MoreVertical,
   Plus,
   Save,
@@ -119,6 +118,7 @@ import {
   IconDiamond,
   IconHammer,
   IconMailOpened,
+  IconUserX,
   IconWorldBolt,
 } from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
@@ -1992,7 +1992,7 @@ function LettersWorkspaceInner({
               onClick={() => goToBreadcrumb("actions")}
               active={view === "actions"}
               color="#ffffff"
-              icon={<Milestone size={12} aria-hidden />}
+              icon={<IconBolt size={12} aria-hidden />}
             >
               Actions
             </BreadcrumbLink>
@@ -2839,7 +2839,7 @@ function LetterFieldsCard({
                 : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
-            <Milestone size={14} aria-hidden />
+            <IconBolt size={14} aria-hidden />
             <svg
               width="12"
               height="12"
@@ -3016,11 +3016,14 @@ function LetterActionsCard({
   const panelRef = useRef<HTMLDivElement>(null);
   // When the panel becomes the active slide step, pull focus into it so
   // the next Tab lands on the panel's first control rather than wherever
-  // focus was on the previous panel.
+  // focus was on the previous panel. `preventScroll` is essential: the
+  // panel sits inside the `overflow-hidden` slide track and is moved into
+  // view by a CSS transform — a default `focus()` would also scroll the
+  // track to the panel's untransformed layout box, double-offsetting it.
   const wasActiveRef = useRef(active);
   useEffect(() => {
     if (active && !wasActiveRef.current) {
-      panelRef.current?.focus();
+      panelRef.current?.focus({ preventScroll: true });
     }
     wasActiveRef.current = active;
   }, [active]);
@@ -3433,6 +3436,10 @@ function AddressLine({
   );
 }
 
+type HeroOption =
+  | { kind: "citizen"; citizen: Citizen }
+  | { kind: "create" };
+
 function HeroSearch({
   value,
   heroes,
@@ -3452,132 +3459,238 @@ function HeroSearch({
 }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  // While a citizen is committed, `editing` true means the user opened
+  // a search over it — the value is held until they commit a new one,
+  // so Escape / blur reverts to it.
+  const [editing, setEditing] = useState(false);
+  // Highlighted dropdown row; -1 = nothing highlighted.
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const selected = heroes.find((h) => h.id === value) ?? null;
+  // Display mode: a citizen is committed and we're not mid-search.
+  const showCitizen = !!selected && !editing;
 
-  const matches = useMemo(() => {
+  // Citizen matches plus the "add new citizen" row, combined into one
+  // keyboard-navigable list. The create row leads when the field is
+  // empty and trails once the user has typed something.
+  const options = useMemo<HeroOption[]>(() => {
     const q = query.trim().toLowerCase();
-    const list = !q
-      ? heroes
-      : heroes.filter((h) => h.name.toLowerCase().includes(q));
-    return list.slice(0, 8);
+    const citizenOpts: HeroOption[] = (
+      q ? heroes.filter((h) => h.name.toLowerCase().includes(q)) : heroes
+    )
+      .slice(0, 50)
+      .map((c) => ({ kind: "citizen", citizen: c }));
+    const createOpt: HeroOption = { kind: "create" };
+    return q ? [...citizenOpts, createOpt] : [createOpt, ...citizenOpts];
   }, [heroes, query]);
 
+  // Keep the highlighted row scrolled into view.
   useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (!containerRef.current) return;
-      if (!containerRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+    if (!open || activeIndex < 0 || !listRef.current) return;
+    const el = listRef.current.querySelectorAll("[role='option']")[
+      activeIndex
+    ] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex]);
 
-  if (selected) {
-    const parts = addressParts(selected, cities, nations);
-    return (
-      <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1">
-        <div className="flex h-5 items-center justify-between gap-2">
-          <span className="truncate text-[10px]">{selected.name}</span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onEdit(selected)}
-              aria-label="Edit citizen"
-              title="Edit citizen"
-              className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M12 20h9" />
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange(null)}
-              aria-label="Clear selection"
-              title="Clear"
-              className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <AddressLine parts={parts} compact />
-      </div>
-    );
+  function commitOption(opt: HeroOption) {
+    if (opt.kind === "create") onCreate();
+    else onChange(opt.citizen.id);
+    setEditing(false);
+    setQuery("");
+    setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  // Leave search mode without touching the committed citizen — Escape
+  // and blur use this so an uncommitted edit reverts to the previous
+  // value.
+  function revert() {
+    setEditing(false);
+    setQuery("");
+    setActiveIndex(-1);
+    setOpen(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    // A citizen is committed and on display: Delete clears it outright;
+    // ArrowDown opens a search that keeps the value until something new
+    // is committed (Escape / blur reverts to it).
+    if (showCitizen) {
+      if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        onChange(null);
+        revert();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setEditing(true);
+        setQuery("");
+        setActiveIndex(-1);
+        setOpen(true);
+      }
+      return;
+    }
+    // Search mode (empty field, or editing an existing citizen).
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setOpen(true);
+      setActiveIndex((i) => (i < 0 ? 0 : Math.min(i + 1, options.length - 1)));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i <= 0 ? 0 : i - 1));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const opt = options[activeIndex];
+      if (opt) commitOption(opt);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      revert();
+    }
   }
 
   return (
-    <div ref={containerRef} className="relative">
-      {/* Same chrome as the selected state — input on the top row, an
-          empty address row below — so selecting/clearing a citizen
-          doesn't change the field's height. */}
-      <div className="group flex flex-col rounded-md bg-black/35 px-3 py-1 transition-colors focus-within:bg-black/50 hover:bg-black/50">
+    <div className="relative">
+      {/* Same chrome whether or not a citizen is set — input on the top
+          row, address row below — so selecting/clearing doesn't change
+          the field's height. Clicking anywhere in the field (padding,
+          address line) focuses the input; only direct hits on the input
+          or the hover buttons are left to their own handlers. */}
+      <div
+        onMouseDown={(e) => {
+          const target = e.target as HTMLElement;
+          if (target === inputRef.current) return;
+          if (target.closest("button")) return;
+          e.preventDefault();
+          inputRef.current?.focus();
+        }}
+        className="group flex flex-col rounded-md bg-black/35 px-3 py-1 transition-colors focus-within:bg-black/50 hover:bg-black/50"
+      >
         <div className="flex h-5 items-center gap-1">
           <input
+            ref={inputRef}
             type="text"
-            value={query}
+            // While a citizen is on display the input just shows the
+            // name and is read-only; searching starts via Delete /
+            // ArrowDown.
+            value={selected && !editing ? selected.name : query}
+            readOnly={showCitizen}
             onChange={(e) => {
               setQuery(e.target.value);
               setOpen(true);
+              setActiveIndex(0);
             }}
-            onFocus={() => setOpen(true)}
-            className="h-5 min-w-0 flex-1 bg-transparent text-[10px] leading-5 focus:outline-none"
+            onFocus={() => {
+              if (!showCitizen) setOpen(true);
+            }}
+            onBlur={revert}
+            onKeyDown={handleKeyDown}
+            aria-label="Search citizen"
+            className="h-5 min-w-0 flex-1 bg-transparent !text-[10px] leading-5 focus:outline-none"
           />
-          <button
-            type="button"
-            onClick={onCreate}
-            aria-label="Create new hero"
-            title="Create new hero"
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            +
-          </button>
+          {selected && !editing ? (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => onEdit(selected)}
+                aria-label="Edit citizen"
+                title="Edit citizen"
+                className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+              >
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => onChange(null)}
+                aria-label="Clear citizen"
+                title="Clear"
+                className="inline-flex h-5 w-5 items-center justify-center text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+              >
+                <IconUserX size={13} aria-hidden />
+              </button>
+            </div>
+          ) : null}
         </div>
         <AddressLine
-          parts={{ citizenId: null, cityName: null, nation: null }}
+          parts={
+            selected && !editing
+              ? addressParts(selected, cities, nations)
+              : { citizenId: null, cityName: null, nation: null }
+          }
           compact
         />
       </div>
-      {open && matches.length > 0 ? (
-        <div className="absolute left-0 right-0 top-full z-10 mt-1 overflow-hidden rounded-md border border-border bg-card shadow-md">
-          {matches.map((h) => {
-            const parts = addressParts(h, cities, nations);
+      {open && !showCitizen ? (
+        <div
+          ref={listRef}
+          role="listbox"
+          // tabIndex -1 so the scrollable container isn't itself a tab
+          // stop (Chrome makes overflowing scrollers keyboard-focusable).
+          tabIndex={-1}
+          className="absolute left-0 right-0 top-full z-10 mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-card shadow-md"
+        >
+          {options.map((opt, i) => {
+            const active = i === activeIndex;
+            if (opt.kind === "create") {
+              return (
+                <button
+                  key="create"
+                  type="button"
+                  tabIndex={-1}
+                  role="option"
+                  aria-selected={active}
+                  onMouseEnter={() => setActiveIndex(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    commitOption(opt);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[10px]",
+                    active
+                      ? "bg-accent/40 text-foreground"
+                      : "text-muted-foreground hover:bg-accent/40"
+                  )}
+                >
+                  <Plus size={12} aria-hidden />
+                  <span>Add new citizen</span>
+                </button>
+              );
+            }
+            const parts = addressParts(opt.citizen, cities, nations);
             return (
               <button
-                key={h.id}
+                key={opt.citizen.id}
                 type="button"
-                onClick={() => {
-                  onChange(h.id);
-                  setQuery("");
-                  setOpen(false);
+                tabIndex={-1}
+                role="option"
+                aria-selected={active}
+                onMouseEnter={() => setActiveIndex(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commitOption(opt);
                 }}
-                className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-accent/40"
+                className={cn(
+                  "flex w-full flex-col items-start px-3 py-1.5 text-left",
+                  active ? "bg-accent/40" : "hover:bg-accent/40"
+                )}
               >
-                <span className="text-[10px]">{h.name}</span>
+                <span className="text-[10px]">{opt.citizen.name}</span>
                 <AddressLine parts={parts} compact wrap />
               </button>
             );
@@ -3676,6 +3789,9 @@ function CitizenDialog({
     <div
       className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onCancel}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCancel();
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={title}

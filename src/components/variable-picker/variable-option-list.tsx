@@ -57,6 +57,9 @@ export function VariableOptionList<T extends VariableLike>({
       style={style}
       role="listbox"
       aria-label={ariaLabel}
+      // tabIndex -1 so the scrollable list isn't itself a tab stop
+      // (Chrome makes overflowing scrollers keyboard-focusable).
+      tabIndex={-1}
       className={cn("max-h-56 overflow-y-auto py-1 text-xs", className)}
     >
       {filtered.map((v, i) => {
