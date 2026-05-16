@@ -11,6 +11,12 @@ importers:
       '@hookform/resolvers':
         specifier: ^5.2.2
         version: 5.2.2(react-hook-form@7.72.1(react@19.2.4))
+      '@lexical/list':
+        specifier: ^0.44.0
+        version: 0.44.0
+      '@lexical/markdown':
+        specifier: ^0.44.0
+        version: 0.44.0
       '@lexical/react':
         specifier: ^0.44.0
         version: 0.44.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(yjs@13.6.30)
