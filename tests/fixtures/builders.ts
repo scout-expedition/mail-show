@@ -30,7 +30,7 @@ export function makeAction(overrides: Partial<ActionRow> = {}): ActionRow {
     icon_value: null,
     color_hex: "#000000",
     report_segment_id: null,
-    next_letter_variant: null,
+    next_letter_id: null,
     impact_world_status: 0,
     impact_demerits: 0,
     impact_proletariat: 0,

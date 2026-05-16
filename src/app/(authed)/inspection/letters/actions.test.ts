@@ -25,9 +25,11 @@ vi.mock("@/lib/supabase/server", async () => {
 
 // Imports of the action MUST come after the mocks above.
 import {
+  deleteInspectionLetter,
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
+  setActionNextLetterByLetterId,
 } from "./actions";
 
 describe("moveLetterGroupToDay", () => {
@@ -184,37 +186,119 @@ describe("moveLetterToGroup", () => {
     ).rejects.toThrow(/cross-storyline/);
   });
 
-  it("should clear dangling next_letter_variant refs on remaining source-group letters", async () => {
-    // Source group: letters a, b, c. An action on letter `a` points at
-    // variant 'b'. Moving letter `b` should null that ref because
-    // re-slotting will reassign variants in source.
-    const seed = await seedStoryline(sb, { suffix: "dangling", days: 1 });
-    const [letterA, letterB] = await addLetters(sb, {
-      groupId: seed.groupId,
-      count: 3,
-    });
+  it("preserves the next-letter link when the target letter moves groups", async () => {
+    // The link is an FK to a letter id, so moving that letter between
+    // groups leaves the ref intact (unlike the old variant model).
+    const seed = await seedStoryline(sb, { suffix: "nl-move", days: 2 });
+    const [letterA] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
     const actionId = await addAction(sb, { letterId: letterA });
-    await sb
-      .from("actions")
-      .update({ next_letter_variant: "b" })
-      .eq("id", actionId);
-
-    const { groupId: targetGroup } = await addGroup(sb, {
+    const { groupId: group2 } = await addGroup(sb, {
       storylineId: seed.storylineId,
       sequence: 2,
-      suffix: "dangling",
-      deliveryDayId: seed.dayIds[0],
+      suffix: "nl-move-2",
+      deliveryDayId: seed.dayIds[1],
     });
+    const [letterB] = await addLetters(sb, { groupId: group2, count: 1 });
+    await setActionNextLetterByLetterId(actionId, letterB);
 
-    await moveLetterToGroup(letterB, targetGroup);
+    const { groupId: group3 } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 3,
+      suffix: "nl-move-3",
+      deliveryDayId: seed.dayIds[1],
+    });
+    await moveLetterToGroup(letterB, group3);
 
     const { data: action } = await sb
       .from("actions")
-      .select("next_letter_variant")
+      .select("next_letter_id")
       .eq("id", actionId)
       .single();
+    expect(action?.next_letter_id).toBe(letterB);
+  });
+});
 
-    expect(action?.next_letter_variant).toBeNull();
+describe("setActionNextLetterByLetterId", () => {
+  const sb = makeTestClient();
+
+  beforeAll(async () => {
+    await cleanupTestData(sb);
+  });
+
+  beforeEach(() => {
+    vi.mocked(revalidatePath).mockClear();
+  });
+
+  afterEach(async () => {
+    await cleanupTestData(sb);
+  });
+
+  it("stores the id for a same-storyline, later-day target", async () => {
+    const seed = await seedStoryline(sb, { suffix: "nl-set", days: 2 });
+    const [letterA] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
+    const actionId = await addAction(sb, { letterId: letterA });
+    const { groupId: group2 } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 2,
+      suffix: "nl-set",
+      deliveryDayId: seed.dayIds[1],
+    });
+    const [letterB] = await addLetters(sb, { groupId: group2, count: 1 });
+
+    await setActionNextLetterByLetterId(actionId, letterB);
+
+    const { data } = await sb
+      .from("actions")
+      .select("next_letter_id")
+      .eq("id", actionId)
+      .single();
+    expect(data?.next_letter_id).toBe(letterB);
+  });
+
+  it("rejects a target that is not on a later day", async () => {
+    const seed = await seedStoryline(sb, { suffix: "nl-reject", days: 2 });
+    const [letterA] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
+    const actionId = await addAction(sb, { letterId: letterA });
+    // A second group on the SAME day as the source letter.
+    const { groupId: group2 } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 2,
+      suffix: "nl-reject",
+      deliveryDayId: seed.dayIds[0],
+    });
+    const [letterB] = await addLetters(sb, { groupId: group2, count: 1 });
+
+    await setActionNextLetterByLetterId(actionId, letterB);
+
+    const { data } = await sb
+      .from("actions")
+      .select("next_letter_id")
+      .eq("id", actionId)
+      .single();
+    expect(data?.next_letter_id).toBeNull();
+  });
+
+  it("nulls next_letter_id when the target letter is deleted", async () => {
+    const seed = await seedStoryline(sb, { suffix: "nl-del", days: 2 });
+    const [letterA] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
+    const actionId = await addAction(sb, { letterId: letterA });
+    const { groupId: group2 } = await addGroup(sb, {
+      storylineId: seed.storylineId,
+      sequence: 2,
+      suffix: "nl-del",
+      deliveryDayId: seed.dayIds[1],
+    });
+    const [letterB] = await addLetters(sb, { groupId: group2, count: 1 });
+    await setActionNextLetterByLetterId(actionId, letterB);
+
+    await deleteInspectionLetter(group2, letterB);
+
+    const { data } = await sb
+      .from("actions")
+      .select("next_letter_id")
+      .eq("id", actionId)
+      .single();
+    expect(data?.next_letter_id).toBeNull();
   });
 });
 

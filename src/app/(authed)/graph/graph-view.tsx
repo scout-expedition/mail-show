@@ -680,7 +680,7 @@ export function GraphView({
       const next: Record<string, string | null> = {};
       for (const [aid, opt] of Object.entries(prev)) {
         const action = actions.find((a) => a.id === aid);
-        if (action && (action.next_letter_variant ?? null) === opt) {
+        if (action && (action.next_letter_id ?? null) === opt) {
           changed = true;
         } else {
           next[aid] = opt;
@@ -710,12 +710,11 @@ export function GraphView({
   const dispatchNextLetter = useCallback(
     async (
       actionId: string,
-      letterId: string | null,
-      optimisticVariant: string | null
+      letterId: string | null
     ): Promise<void> => {
       setOptimisticNextByAction((prev) => ({
         ...prev,
-        [actionId]: optimisticVariant,
+        [actionId]: letterId,
       }));
       try {
         await setActionNextLetterByLetterId(actionId, letterId);
@@ -1430,27 +1429,6 @@ export function GraphView({
       }
     }
 
-    // Index: (storyline_id, sequence) → group id
-    const groupByStorySeq = new Map<string, string>();
-    for (const g of letterGroups) {
-      groupByStorySeq.set(`${g.storyline_id}:${g.sequence}`, g.id);
-    }
-
-    // Variant keys that exist in each group (across every instance) for
-    // next-letter validation, plus a (groupId, variantKey) → letter map so
-    // edges can route to the right instance node when the target letter
-    // has been moved to a different day.
-    const variantsInGroup = new Map<string, Set<string>>();
-    const letterByGroupVariant = new Map<string, InspectionLetterView>();
-    for (const l of letters) {
-      const vk = variantKey(l.variant);
-      const set =
-        variantsInGroup.get(l.letter_group_id) ?? new Set<string>();
-      set.add(vk);
-      variantsInGroup.set(l.letter_group_id, set);
-      letterByGroupVariant.set(`${l.letter_group_id}:${vk}`, l);
-    }
-
     // Build the effective (post-template-override) display fields for
     // actions so template edits (color, icon) flow through live.
     const templateById = new Map(actionTemplates.map((t) => [t.id, t]));
@@ -1516,37 +1494,23 @@ export function GraphView({
         ? segmentAbsPos.has(segmentNodeId)
         : false;
 
-      const effectiveNextVariant =
+      // Optimistic override wins over server state during in-flight
+      // reconnects. The link is a direct letter id (`next_letter_id`);
+      // letterIndex already carries the instance's group/variant/dayKey
+      // so the edge terminates at the right card on the canvas.
+      const effectiveNextLetterId =
         a.id in optimisticNextByAction
           ? optimisticNextByAction[a.id]
-          : a.next_letter_variant;
+          : a.next_letter_id;
       let nextLetterId: string | null = null;
-      if (effectiveNextVariant !== null && effectiveNextVariant !== undefined) {
-        const nextGroupId = groupByStorySeq.get(
-          `${src.storylineId}:${src.groupSequence + 1}`
-        );
-        if (nextGroupId) {
-          const vset = variantsInGroup.get(nextGroupId);
-          if (vset?.has(effectiveNextVariant)) {
-            // Target letter may sit in a non-primary instance if it carries
-            // its own override; look it up so the edge terminates at the
-            // right card on the canvas.
-            const targetLetter = letterByGroupVariant.get(
-              `${nextGroupId}:${effectiveNextVariant}`
-            );
-            const targetGroupHome =
-              letterGroups.find((g) => g.id === nextGroupId)?.delivery_day_id ??
-              "unscheduled";
-            const targetEffective =
-              targetLetter?.effective_day_id ?? "unscheduled";
-            const targetDayKey =
-              targetEffective === targetGroupHome ? null : targetEffective;
-            nextLetterId = makeLetterNodeId(
-              nextGroupId,
-              effectiveNextVariant,
-              targetDayKey
-            );
-          }
+      if (effectiveNextLetterId) {
+        const tgt = letterIndex.get(effectiveNextLetterId);
+        if (tgt) {
+          nextLetterId = makeLetterNodeId(
+            tgt.groupId,
+            tgt.variantKey,
+            tgt.dayKey
+          );
         }
       }
 
@@ -1982,7 +1946,7 @@ export function GraphView({
         const effectiveNextForA =
           a.id in optimisticNextByAction
             ? optimisticNextByAction[a.id]
-            : a.next_letter_variant;
+            : a.next_letter_id;
         const hasReport = !!effectiveReportIdForA;
         const hasNext = !!effectiveNextForA;
         if (!hasReport && !hasNext) {
@@ -2148,8 +2112,8 @@ export function GraphView({
       // empty space to clear it. When the graph is locked (read-only),
       // no edge accepts reconnect drags.
       //   - "ls" (letter → report)    → retargets `report_segment_id`
-      //   - "sn" (report → next letter) → retargets `next_letter_variant`
-      //   - "ln" (letter → next letter direct) → retargets `next_letter_variant`
+      //   - "sn" (report → next letter) → retargets `next_letter_id`
+      //   - "ln" (letter → next letter direct) → retargets `next_letter_id`
       //   - "stub" (dangling)         → attaches the first missing link
       const reconnectable: boolean | "target" = editingEnabled
         ? "target"
@@ -3150,33 +3114,14 @@ export function GraphView({
     []
   );
 
-  // Resolve the current letter id an action's next_letter_variant points
-  // at, walking through the source action's storyline/group_sequence to
-  // find the adjacent group. Returns null when the action has no next
-  // letter linked or the variant doesn't resolve cleanly. Used to
-  // capture undo entries before mutating the link.
+  // The letter id an action's next-letter link points at, or null. Used
+  // to capture undo entries before mutating the link.
   const resolveCurrentNextLetterId = useCallback(
     (actionId: string): string | null => {
       const action = actions.find((a) => a.id === actionId);
-      if (!action || !action.next_letter_variant) return null;
-      const srcLetter = letters.find(
-        (l) => l.id === action.inspection_letter_id
-      );
-      if (!srcLetter) return null;
-      const adjacentGroup = letterGroups.find(
-        (g) =>
-          g.storyline_id === srcLetter.storyline_id &&
-          g.sequence === srcLetter.group_sequence + 1
-      );
-      if (!adjacentGroup) return null;
-      const prev = letters.find(
-        (l) =>
-          l.letter_group_id === adjacentGroup.id &&
-          l.variant === action.next_letter_variant
-      );
-      return prev?.id ?? null;
+      return action?.next_letter_id ?? null;
     },
-    [actions, letters, letterGroups]
+    [actions]
   );
 
   const onReconnect = useCallback(
@@ -3188,7 +3133,7 @@ export function GraphView({
       if (!target) return;
       const action = actions.find((a) => a.id === actionId);
       const hadReport = !!action?.report_segment_id;
-      const hadNext = !!action?.next_letter_variant;
+      const hadNext = !!action?.next_letter_id;
 
       // -----------------------------------------------------------------
       // Drop on a REPORT card.
@@ -3214,7 +3159,7 @@ export function GraphView({
         // ls retarget on a complete chain), clear it: the chain is now
         // visually broken and the user picked the new report as the
         // chain's terminus.
-        if (hadNext) void dispatchNextLetter(actionId, null, null);
+        if (hadNext) void dispatchNextLetter(actionId, null);
         return;
       }
 
@@ -3232,17 +3177,22 @@ export function GraphView({
           (l.variant ?? "") === targetVariantKey
       );
       if (!tgtLetter) return;
-      // Mirror the server-side same-storyline + adjacent-group check so
-      // we don't paint an optimistic edge for drops the server will
-      // silently reject.
-      const tgtGroup = letterGroups.find((g) => g.id === targetGid);
+      // Mirror the server rule so we don't paint an optimistic edge for a
+      // drop the server will reject: same storyline + strictly later
+      // effective day. A letter with no effective day is never valid.
       const srcLetter = action
         ? letters.find((l) => l.id === action.inspection_letter_id)
         : null;
-      if (!tgtGroup || !srcLetter) return;
-      if (tgtGroup.storyline_id !== srcLetter.storyline_id) return;
-      if (Number(tgtGroup.sequence) !== Number(srcLetter.group_sequence) + 1)
-        return;
+      if (!srcLetter) return;
+      if (tgtLetter.storyline_id !== srcLetter.storyline_id) return;
+      const srcDay = srcLetter.effective_day_id
+        ? days.find((d) => d.id === srcLetter.effective_day_id)
+        : null;
+      const tgtDay = tgtLetter.effective_day_id
+        ? days.find((d) => d.id === tgtLetter.effective_day_id)
+        : null;
+      if (!srcDay || !tgtDay) return;
+      if (Number(tgtDay.number) <= Number(srcDay.number)) return;
 
       edgeReconnectSuccessful.current = true;
       const previousLetterId = resolveCurrentNextLetterId(actionId);
@@ -3251,8 +3201,7 @@ export function GraphView({
         actionId,
         previousLetterId,
       });
-      const optimisticVariant = tgtLetter.variant ?? "";
-      void dispatchNextLetter(actionId, tgtLetter.id, optimisticVariant);
+      void dispatchNextLetter(actionId, tgtLetter.id);
 
       // ls (letter → report) dragged to a letter: the user dropped the
       // report-end onto a letter, converting the action from
@@ -3271,7 +3220,7 @@ export function GraphView({
     },
     [
       letters,
-      letterGroups,
+      days,
       actions,
       recordUndo,
       resolveCurrentNextLetterId,
@@ -3294,7 +3243,7 @@ export function GraphView({
           const edgeKind = m[2];
           // Drop on empty space: clear the underlying link.
           //   - ls → clear `report_segment_id`
-          //   - sn/ln/stub → clear `next_letter_variant`
+          //   - sn/ln/stub → clear `next_letter_id`
           if (edgeKind === "ls") {
             const action = actions.find((a) => a.id === actionId);
             recordUndo?.({
@@ -3310,7 +3259,7 @@ export function GraphView({
               actionId,
               previousLetterId,
             });
-            void dispatchNextLetter(actionId, null, null);
+            void dispatchNextLetter(actionId, null);
           }
         }
       }
@@ -3403,29 +3352,34 @@ export function GraphView({
           (l.variant ?? "") === targetVariantKey
       );
       if (!tgtLetter) return;
-      // Same client-side adjacency guard as onReconnect so we paint an
-      // optimistic edge only for moves the server will accept.
-      const tgtGroup = letterGroups.find((g) => g.id === targetGid);
+      // Same client-side guard as onReconnect so we paint an optimistic
+      // edge only for links the server will accept: same storyline +
+      // strictly later effective day.
       const action = actions.find((a) => a.id === actionId);
       const srcLetter = action
         ? letters.find((l) => l.id === action.inspection_letter_id)
         : null;
-      if (!tgtGroup || !srcLetter) return;
-      if (tgtGroup.storyline_id !== srcLetter.storyline_id) return;
-      if (Number(tgtGroup.sequence) !== Number(srcLetter.group_sequence) + 1)
-        return;
+      if (!srcLetter) return;
+      if (tgtLetter.storyline_id !== srcLetter.storyline_id) return;
+      const srcDay = srcLetter.effective_day_id
+        ? days.find((d) => d.id === srcLetter.effective_day_id)
+        : null;
+      const tgtDay = tgtLetter.effective_day_id
+        ? days.find((d) => d.id === tgtLetter.effective_day_id)
+        : null;
+      if (!srcDay || !tgtDay) return;
+      if (Number(tgtDay.number) <= Number(srcDay.number)) return;
       const previousLetterId = resolveCurrentNextLetterId(actionId);
       recordUndo?.({
         kind: "setNextLetter",
         actionId,
         previousLetterId,
       });
-      const optimisticVariant = tgtLetter.variant ?? "";
-      void dispatchNextLetter(actionId, tgtLetter.id, optimisticVariant);
+      void dispatchNextLetter(actionId, tgtLetter.id);
     },
     [
       letters,
-      letterGroups,
+      days,
       actions,
       recordUndo,
       resolveCurrentNextLetterId,
@@ -3844,7 +3798,7 @@ export function GraphView({
                         actionId,
                         previousLetterId,
                       });
-                      await dispatchNextLetter(actionId, null, null);
+                      await dispatchNextLetter(actionId, null);
                     }
                   })(),
               },

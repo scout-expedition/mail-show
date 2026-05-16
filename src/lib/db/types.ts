@@ -136,7 +136,7 @@ export interface ActionRow {
   icon_value: string | null;
   color_hex: string;
   report_segment_id: string | null;
-  next_letter_variant: string | null;
+  next_letter_id: string | null;
   impact_world_status: number;
   impact_demerits: number;
   impact_proletariat: number;
