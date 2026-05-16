@@ -13,6 +13,7 @@ import type {
   ReportGroup,
 } from "@/lib/db/types";
 import { cn } from "@/lib/utils";
+import { RichTextReadonly } from "@/components/rich-text/rich-text-readonly";
 import { normalizeDayIdentifier } from "@/lib/db/days";
 import { updateDay } from "../../actions";
 
@@ -226,13 +227,15 @@ export default async function TopOfDayTab({
                             <Badge variant="success">chosen</Badge>
                           ) : null}
                         </div>
-                        <pre className="mt-2 whitespace-pre-wrap font-sans text-sm">
-                          {s.content ?? (
+                        <RichTextReadonly
+                          value={s.content}
+                          className="mt-2 font-sans text-sm"
+                          emptyFallback={
                             <span className="text-muted-foreground italic">
                               (empty)
                             </span>
-                          )}
-                        </pre>
+                          }
+                        />
                       </div>
                     );
                   })}

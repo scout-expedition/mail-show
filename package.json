@@ -17,6 +17,8 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@lexical/list": "^0.44.0",
+    "@lexical/markdown": "^0.44.0",
     "@lexical/react": "^0.44.0",
     "@lexical/utils": "^0.44.0",
     "@supabase/ssr": "^0.10.2",
