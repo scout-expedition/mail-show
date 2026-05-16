@@ -184,6 +184,35 @@ export async function saveRuleAll(data: {
   revalidatePath("/sorting/rules");
 }
 
+/**
+ * Narrow per-field patch for instant-save. Does NOT call revalidatePath —
+ * realtime fans out the change to all subscribed clients.
+ */
+export async function patchSortingRule(
+  id: string,
+  patch: Partial<{
+    letter: string;
+    storage_location: string | null;
+    summary: string | null;
+    day_implemented_id: string | null;
+    destination_slot: number | null;
+    match_mode: RuleMatchMode;
+  }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("sorting_rules")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Replace all conditions for a rule in one shot (structural mutation).
+ * Keeps revalidatePath so peer INSERTs/DELETEs on conditions trigger a
+ * UI refresh. Conditions are always re-written as a set, not patched
+ * individually.
+ */
 export async function saveConditions(
   ruleId: string,
   conditions: Array<{
@@ -196,7 +225,6 @@ export async function saveConditions(
   }>,
   matchMode?: RuleMatchMode
 ) {
-  "use server";
   const supabase = await createSupabaseServerClient();
   const { error: delErr } = await supabase
     .from("sorting_rule_conditions")

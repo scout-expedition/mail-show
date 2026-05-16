@@ -21,6 +21,11 @@ async function siteOrigin(): Promise<string> {
   return `${protocol}://${host}`;
 }
 
+function confirmUrl(origin: string, next: string): string {
+  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+  return `${origin}/auth/confirm?next=${encodeURIComponent(safeNext)}`;
+}
+
 export async function signInWithMagicLink(formData: FormData) {
   const next = String(formData.get("next") ?? "/dashboard");
   const emailCheck = validateEmail(formData.get("email"));
@@ -34,7 +39,7 @@ export async function signInWithMagicLink(formData: FormData) {
     email: emailCheck.email,
     options: {
       shouldCreateUser: false,
-      emailRedirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}`,
+      emailRedirectTo: confirmUrl(origin, next),
     },
   });
 
@@ -79,9 +84,7 @@ export async function requestPasswordReset(formData: FormData) {
     const supabase = await createSupabaseServerClient();
     const origin = await siteOrigin();
     await supabase.auth.resetPasswordForEmail(emailCheck.email, {
-      redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(
-        "/auth/set-password"
-      )}`,
+      redirectTo: confirmUrl(origin, "/auth/set-password"),
     });
   }
 

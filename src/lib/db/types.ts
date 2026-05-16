@@ -3,6 +3,7 @@ import type {
   CitizenType,
   ContentRefType,
   DayOfWeek,
+  DayReportBlockKind,
   EndingBlockType,
   EndingChipOperator,
   EndingDocumentKind,
@@ -171,6 +172,25 @@ export interface ReportSegmentView extends ReportSegment {
   effective_day_id: string | null;
 }
 
+export interface DayReportBlock {
+  id: string;
+  day_id: string;
+  kind: DayReportBlockKind;
+  letter_group_id: string | null;
+  variant: string | null;
+  content: string | null;
+  summary: string | null;
+  sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+export interface DayReportBlockView extends DayReportBlock {
+  day_number: number;
+  /** R-D{day number}/{variant} for generic blocks; null for letter_group anchors. */
+  report_id: string | null;
+}
+
 export interface SortingLetter {
   id: string;
   day_id: string;
@@ -309,6 +329,7 @@ export interface EndingBlock {
   block_type: EndingBlockType;
   text: string | null;
   result_value: string | null;
+  summary: string | null;
   sort_order: number;
 }
 

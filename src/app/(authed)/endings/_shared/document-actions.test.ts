@@ -28,6 +28,8 @@ import {
   deleteChip,
   deleteFrameworkDocument,
   deleteRow,
+  duplicateBlock,
+  duplicateRow,
   removeBlockVariable,
   renameDocument,
   saveDocument,
@@ -704,6 +706,7 @@ describe("shared document actions", () => {
             block_type: "text",
             text: "updated",
             result_value: null,
+            summary: null,
             sort_order: 0,
           },
           {
@@ -713,6 +716,7 @@ describe("shared document actions", () => {
             block_type: "condition",
             text: "",
             result_value: null,
+            summary: null,
             sort_order: 1,
           },
         ],
@@ -778,6 +782,96 @@ describe("shared document actions", () => {
       ).rejects.toThrow(/cannot be empty/i);
     });
 
+    it("persists block.summary on text and condition blocks", async () => {
+      const fwId = await seedFrameworkDoc();
+      const { id: textId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "text",
+      });
+      const { id: condId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "condition",
+      });
+
+      await saveDocument({
+        document_id: fwId,
+        name: `${TEST_PREFIX}summary`,
+        blocks: [
+          {
+            id: textId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "text",
+            text: "",
+            result_value: null,
+            summary: "scene-opens-on-rain",
+            sort_order: 0,
+          },
+          {
+            id: condId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "condition",
+            text: "",
+            result_value: null,
+            summary: "branch-on-class",
+            sort_order: 1,
+          },
+        ],
+        rows: [],
+        chips: [],
+      });
+
+      const { data: rows } = await sb
+        .from("ending_blocks")
+        .select("id, summary")
+        .in("id", [textId, condId]);
+      const byId = new Map((rows ?? []).map((r) => [r.id, r.summary]));
+      expect(byId.get(textId)).toBe("scene-opens-on-rain");
+      expect(byId.get(condId)).toBe("branch-on-class");
+
+      // Clearing back to empty string round-trips as NULL.
+      await saveDocument({
+        document_id: fwId,
+        name: `${TEST_PREFIX}summary`,
+        blocks: [
+          {
+            id: textId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "text",
+            text: "",
+            result_value: null,
+            summary: null,
+            sort_order: 0,
+          },
+          {
+            id: condId,
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "condition",
+            text: "",
+            result_value: null,
+            summary: null,
+            sort_order: 1,
+          },
+        ],
+        rows: [],
+        chips: [],
+      });
+      const { data: cleared } = await sb
+        .from("ending_blocks")
+        .select("id, summary")
+        .in("id", [textId, condId]);
+      for (const r of cleared ?? []) {
+        expect(r.summary).toBeNull();
+      }
+    });
+
     it("rejects a result block payload on a framework doc", async () => {
       const fwId = await seedFrameworkDoc();
       const { id: blockId } = await addBlock({
@@ -798,6 +892,7 @@ describe("shared document actions", () => {
               block_type: "result",
               text: "",
               result_value: "proletariat",
+              summary: null,
               sort_order: 0,
             },
           ],
@@ -830,6 +925,7 @@ describe("shared document actions", () => {
               block_type: "text",
               text: "should not stick",
               result_value: null,
+              summary: null,
               sort_order: 0,
             },
           ],
@@ -841,6 +937,111 @@ describe("shared document actions", () => {
       const fd = new FormData();
       fd.set("id", id);
       await deleteBlock(fd);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // duplicateBlock + duplicateRow — topological insert (rows before
+  // descendant blocks) so the parent_row_id FK is satisfied.
+  // -------------------------------------------------------------------
+
+  describe("duplicateBlock", () => {
+    it("clones a condition block with a nested condition block underneath", async () => {
+      // The pre-fix bug: descendant blocks were inserted before the new
+      // rows they pointed at, tripping ending_blocks_parent_row_fk.
+      const fwId = await seedFrameworkDoc();
+      const { id: outerId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "condition",
+      });
+      const { id: outerRow } = await addRow({ block_id: outerId });
+      const { id: innerId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: outerId,
+        parent_row_id: outerRow,
+        block_type: "condition",
+      });
+      await addRow({ block_id: innerId });
+
+      const { id: cloneId } = await duplicateBlock({ id: outerId });
+
+      // Clone exists at the same parent level as the original.
+      const { data: clone } = await sb
+        .from("ending_blocks")
+        .select("id, parent_block_id, parent_row_id, block_type")
+        .eq("id", cloneId)
+        .single();
+      expect(clone?.block_type).toBe("condition");
+      expect(clone?.parent_block_id).toBeNull();
+      expect(clone?.parent_row_id).toBeNull();
+
+      // Clone has a single row of its own, and a nested condition block
+      // under that row with its own row.
+      const { data: cloneRows } = await sb
+        .from("ending_condition_rows")
+        .select("id")
+        .eq("condition_block_id", cloneId);
+      expect(cloneRows?.length).toBe(1);
+      const { data: cloneChildren } = await sb
+        .from("ending_blocks")
+        .select("id, block_type, parent_row_id")
+        .eq("parent_block_id", cloneId);
+      expect(cloneChildren?.length).toBe(1);
+      expect(cloneChildren?.[0].block_type).toBe("condition");
+      expect(cloneChildren?.[0].parent_row_id).toBe(cloneRows?.[0].id);
+      const { data: grandchildRows } = await sb
+        .from("ending_condition_rows")
+        .select("id")
+        .eq("condition_block_id", cloneChildren?.[0].id);
+      expect(grandchildRows?.length).toBe(1);
+    });
+  });
+
+  describe("duplicateRow", () => {
+    it("clones a row with a nested condition block underneath", async () => {
+      const fwId = await seedFrameworkDoc();
+      const { id: outerId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "condition",
+      });
+      const { id: outerRow } = await addRow({ block_id: outerId });
+      const { id: innerId } = await addBlock({
+        document_id: fwId,
+        parent_block_id: outerId,
+        parent_row_id: outerRow,
+        block_type: "condition",
+      });
+      await addRow({ block_id: innerId });
+
+      const { id: cloneRowId } = await duplicateRow({ id: outerRow });
+
+      // Cloned row sits under the same condition block as the original.
+      const { data: cloneRow } = await sb
+        .from("ending_condition_rows")
+        .select("id, condition_block_id")
+        .eq("id", cloneRowId)
+        .single();
+      expect(cloneRow?.condition_block_id).toBe(outerId);
+
+      // The nested condition block under the cloned row exists and has
+      // its own row — proving descendant blocks landed AFTER their
+      // parent row was inserted.
+      const { data: clonedChildren } = await sb
+        .from("ending_blocks")
+        .select("id, block_type, parent_block_id")
+        .eq("parent_row_id", cloneRowId);
+      expect(clonedChildren?.length).toBe(1);
+      expect(clonedChildren?.[0].block_type).toBe("condition");
+      expect(clonedChildren?.[0].parent_block_id).toBe(outerId);
+      const { data: grandchildRows } = await sb
+        .from("ending_condition_rows")
+        .select("id")
+        .eq("condition_block_id", clonedChildren?.[0].id);
+      expect(grandchildRows?.length).toBe(1);
     });
   });
 });

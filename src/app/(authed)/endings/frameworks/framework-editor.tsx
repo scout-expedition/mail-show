@@ -25,13 +25,8 @@ import {
   type EvalVariable,
 } from "@/lib/endings/evaluator";
 import { TextBlock } from "../_blocks/text-block";
-import {
-  DocumentEditor,
-  type EditorHandle,
-} from "../_shared/document-editor";
+import { DocumentEditor } from "../_shared/document-editor";
 import { PreviewView } from "./preview-view";
-
-export type { EditorHandle };
 
 export function FrameworkEditor({
   framework,
@@ -45,7 +40,6 @@ export function FrameworkEditor({
   tiebreakDocsSummary,
   tiebreakDocsRaw,
   onDeleted,
-  registerHandle,
 }: {
   framework: EndingDocument;
   blocks: EndingBlock[];
@@ -65,7 +59,6 @@ export function FrameworkEditor({
     }
   >;
   onDeleted: () => void;
-  registerHandle: (h: EditorHandle) => void;
 }) {
   // Build per-logic-kind EvalInputs once for the preview. The preview
   // threads these into selections.tiebreak_docs so aggregate chips
@@ -76,6 +69,7 @@ export function FrameworkEditor({
     if (!tiebreakDocsRaw) return undefined;
     const evalVariables: EvalVariable[] = variables.map((v) => ({
       id: v.id,
+      name: v.name,
       kind: v.kind,
       aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
     }));
@@ -122,12 +116,12 @@ export function FrameworkEditor({
           selections={args.selections}
           onChangeText={args.onChangeText}
           onChangeNumber={args.onChangeNumber}
+          flashColors={args.flashColors}
           tiebreakInputs={tiebreakInputs}
           nations={nations}
         />
       )}
       onDeleted={onDeleted}
-      registerHandle={registerHandle}
     />
   );
 }
