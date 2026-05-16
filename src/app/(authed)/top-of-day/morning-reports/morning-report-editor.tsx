@@ -4,12 +4,23 @@
 // reorderable middle section interleaving letter-group blocks and generic
 // report blocks, and a pinned sign-off block. Toggles to a preview.
 
-import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { ChevronsDownUp, ChevronsUpDown, Eye, ListCollapse } from "lucide-react";
 import { PanelHeader, OverflowMenu } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { useSharedViewState } from "@/lib/realtime/use-shared-view-state";
+import { useFlash } from "@/lib/realtime/use-flash";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import type {
   ActionRow,
   ActionTemplate,
@@ -38,6 +49,16 @@ import {
   renumberGenericReportBlocks,
   reorderDayReportBlocks,
 } from "./actions";
+
+/** Preview state shared live across everyone viewing a day — the preview
+ *  toggle plus the per-letter-group simulation picks. Collapse state is
+ *  deliberately NOT synced; it's a personal per-user choice. */
+type MorningViewState = {
+  previewOn: boolean;
+  /** Per-letter-group simulation picks: groupId → letterId / actionId. */
+  selectedLetter: Record<string, string>;
+  selectedAction: Record<string, string>;
+};
 
 const WATCHED_TABLES = [
   "day_report_blocks",
@@ -83,7 +104,6 @@ export function MorningReportEditor({
 }) {
   const router = useRouter();
   const { onPostgresChanges } = usePresenceContext();
-  const [previewOn, setPreviewOn] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   // Coalesce postgres_changes echoes into a single debounced refresh so
@@ -101,7 +121,7 @@ export function MorningReportEditor({
     };
   }, [onPostgresChanges, router]);
 
-  // --- collapse ----------------------------------------------------------
+  // --- collapse (personal — not synced across users) ---------------------
   const [collapseMode, setCollapseMode] =
     useState<MorningCollapseMode>("expanded");
   const [overrides, setOverrides] = useState<Map<string, boolean>>(
@@ -124,6 +144,67 @@ export function MorningReportEditor({
     setCollapseMode(mode);
     setOverrides(new Map());
   }
+
+  // --- shared view state: preview ----------------------------------------
+  // The preview toggle and the per-letter-group simulation picks (which
+  // letter was delivered + which action was taken) are synced live to
+  // everyone else viewing this day, so collaborators run the same
+  // simulation together. A peer's change flashes the affected control.
+  const [previewOn, setPreviewOn] = useState(false);
+  const [selectedLetter, setSelectedLetter] = useState<Record<string, string>>(
+    {}
+  );
+  const [selectedAction, setSelectedAction] = useState<Record<string, string>>(
+    {}
+  );
+  const { flashes, flash } = useFlash();
+
+  const { broadcast: broadcastView } = useSharedViewState<MorningViewState>({
+    channelName: `morning-reports-view:${day.id}`,
+    initialState: { previewOn: false, selectedLetter: {}, selectedAction: {} },
+    onRemote: ({ prev, next, actorColor, kind }) => {
+      setPreviewOn(next.previewOn);
+      setSelectedLetter(next.selectedLetter);
+      setSelectedAction(next.selectedAction);
+      // Only a live peer change flashes — a join catch-up adopts silently.
+      if (kind !== "patch") return;
+      // Flash whatever the peer just changed, in their avatar color.
+      const keys: string[] = [];
+      if (prev.previewOn !== next.previewOn) keys.push("preview-toggle");
+      for (const g of new Set([
+        ...Object.keys(prev.selectedLetter),
+        ...Object.keys(next.selectedLetter),
+      ])) {
+        if (prev.selectedLetter[g] !== next.selectedLetter[g]) {
+          keys.push(`letter:${g}`);
+        }
+      }
+      for (const g of new Set([
+        ...Object.keys(prev.selectedAction),
+        ...Object.keys(next.selectedAction),
+      ])) {
+        if (prev.selectedAction[g] !== next.selectedAction[g]) {
+          keys.push(`action:${g}`);
+        }
+      }
+      flash(keys, actorColor);
+    },
+  });
+
+  // Apply a local preview change to React state, then broadcast the patch.
+  const updateView = useCallback(
+    (patch: Partial<MorningViewState>) => {
+      if (patch.previewOn !== undefined) setPreviewOn(patch.previewOn);
+      if (patch.selectedLetter !== undefined) {
+        setSelectedLetter(patch.selectedLetter);
+      }
+      if (patch.selectedAction !== undefined) {
+        setSelectedAction(patch.selectedAction);
+      }
+      broadcastView(patch);
+    },
+    [broadcastView]
+  );
 
   // --- lookups -----------------------------------------------------------
   const storylinesById = useMemo(
@@ -440,21 +521,23 @@ export function MorningReportEditor({
                 );
               })}
             </div>
-            <button
-              type="button"
-              onClick={() => setPreviewOn((p) => !p)}
-              aria-label="Toggle preview"
-              aria-pressed={previewOn}
-              title="Preview morning report"
-              className={cn(
-                "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-                previewOn
-                  ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
-              )}
-            >
-              <Eye size={14} aria-hidden />
-            </button>
+            <FlashRing color={flashes["preview-toggle"]}>
+              <button
+                type="button"
+                onClick={() => updateView({ previewOn: !previewOn })}
+                aria-label="Toggle preview"
+                aria-pressed={previewOn}
+                title="Preview morning report"
+                className={cn(
+                  "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                  previewOn
+                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                )}
+              >
+                <Eye size={14} aria-hidden />
+              </button>
+            </FlashRing>
             <OverflowMenu
               items={[
                 {
@@ -475,6 +558,10 @@ export function MorningReportEditor({
           letters={letters}
           actions={actions}
           templates={templates}
+          selectedLetter={selectedLetter}
+          selectedAction={selectedAction}
+          onSelectionChange={updateView}
+          flashes={flashes}
         />
       ) : (
         <MorningCollapseCtx.Provider value={collapseCtx}>

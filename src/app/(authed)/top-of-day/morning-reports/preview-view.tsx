@@ -5,8 +5,9 @@
 // actions resolve to report segments and the panel renders the resulting
 // morning report. Pure local state — no writes.
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { cn } from "@/lib/utils";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import {
   ActionPill,
   InspectionLetterPill,
@@ -28,6 +29,10 @@ export function PreviewView({
   letters,
   actions,
   templates,
+  selectedLetter,
+  selectedAction,
+  onSelectionChange,
+  flashes,
 }: {
   day: Day;
   previousDay: Day | null;
@@ -35,6 +40,16 @@ export function PreviewView({
   letters: InspectionLetterView[];
   actions: ActionRow[];
   templates: ActionTemplate[];
+  /** Per-letter-group simulation picks, owned + synced by the editor. */
+  selectedLetter: Record<string, string>;
+  selectedAction: Record<string, string>;
+  onSelectionChange: (patch: {
+    selectedLetter?: Record<string, string>;
+    selectedAction?: Record<string, string>;
+  }) => void;
+  /** Transient peer-change highlights, keyed `letter:<groupId>` /
+   *  `action:<groupId>`. From the editor's useFlash. */
+  flashes: Record<string, string>;
 }) {
   const templatesById = useMemo(
     () => new Map(templates.map((t) => [t.id, t])),
@@ -81,58 +96,49 @@ export function PreviewView({
   }, [actions]);
 
   // Per letter group: the one delivered letter + the one chosen action.
-  const [selectedLetter, setSelectedLetter] = useState<Record<string, string>>(
-    {}
-  );
-  const [selectedAction, setSelectedAction] = useState<Record<string, string>>(
-    {}
-  );
-
+  // State lives in the editor (so it can be synced across users); this view
+  // reads it from props and reports changes via onSelectionChange.
   function selectLetter(groupId: string, letterId: string) {
     if (selectedLetter[groupId] === letterId) {
       // Clicking the selected letter deselects it (and its action).
-      setSelectedLetter((prev) => {
-        const next = { ...prev };
-        delete next[groupId];
-        return next;
-      });
-      setSelectedAction((prev) => {
-        const next = { ...prev };
-        delete next[groupId];
-        return next;
+      const nextLetter = { ...selectedLetter };
+      const nextAction = { ...selectedAction };
+      delete nextLetter[groupId];
+      delete nextAction[groupId];
+      onSelectionChange({
+        selectedLetter: nextLetter,
+        selectedAction: nextAction,
       });
       return;
     }
     // Switching letters — carry the chosen action over if the new letter
     // has an equivalent one (same template, else same name); else clear.
-    const prevActionId = selectedAction[groupId];
-    const prevAction = prevActionId
-      ? actions.find((a) => a.id === prevActionId)
+    const prevAction = selectedAction[groupId]
+      ? actions.find((a) => a.id === selectedAction[groupId])
       : undefined;
-    setSelectedLetter((prev) => ({ ...prev, [groupId]: letterId }));
-    setSelectedAction((prev) => {
-      const next = { ...prev };
-      delete next[groupId];
-      if (prevAction) {
-        const match = (actionsByLetter.get(letterId) ?? []).find(
-          (a) =>
-            (prevAction.action_template_id != null &&
-              a.action_template_id === prevAction.action_template_id) ||
-            a.name === prevAction.name
-        );
-        if (match) next[groupId] = match.id;
-      }
-      return next;
+    const nextLetter = { ...selectedLetter, [groupId]: letterId };
+    const nextAction = { ...selectedAction };
+    delete nextAction[groupId];
+    if (prevAction) {
+      const match = (actionsByLetter.get(letterId) ?? []).find(
+        (a) =>
+          (prevAction.action_template_id != null &&
+            a.action_template_id === prevAction.action_template_id) ||
+          a.name === prevAction.name
+      );
+      if (match) nextAction[groupId] = match.id;
+    }
+    onSelectionChange({
+      selectedLetter: nextLetter,
+      selectedAction: nextAction,
     });
   }
 
   function toggleAction(groupId: string, actionId: string) {
-    setSelectedAction((prev) => {
-      const next = { ...prev };
-      if (next[groupId] === actionId) delete next[groupId];
-      else next[groupId] = actionId;
-      return next;
-    });
+    const nextAction = { ...selectedAction };
+    if (nextAction[groupId] === actionId) delete nextAction[groupId];
+    else nextAction[groupId] = actionId;
+    onSelectionChange({ selectedAction: nextAction });
   }
 
   const firedSegmentIds = useMemo(() => {
@@ -200,6 +206,7 @@ export function PreviewView({
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <FlashRing color={flashes[`letter:${groupId}`]}>
                     <div className="flex flex-wrap items-center gap-1">
                       {groupLetters.length === 0 ? (
                         <span className="text-xs italic text-muted-foreground/50">
@@ -229,13 +236,18 @@ export function PreviewView({
                         })
                       )}
                     </div>
+                    </FlashRing>
                     {pickedLetter?.summary ? (
                       <span className="min-w-0 flex-1 truncate text-[10px] italic text-muted-foreground/70">
                         {pickedLetter.summary}
                       </span>
                     ) : null}
                     {letterActions.length > 0 ? (
-                      <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+                      <FlashRing
+                        color={flashes[`action:${groupId}`]}
+                        className="ml-auto"
+                      >
+                      <div className="flex flex-wrap items-center justify-end gap-1">
                         {letterActions.map((a) => {
                           const ra = resolveAction(a);
                           const picked = pickedActionId === a.id;
@@ -262,6 +274,7 @@ export function PreviewView({
                           );
                         })}
                       </div>
+                      </FlashRing>
                     ) : pickedLetter ? (
                       <span className="ml-auto text-xs italic text-muted-foreground/50">
                         No actions on {pickedLetter.content_id}.

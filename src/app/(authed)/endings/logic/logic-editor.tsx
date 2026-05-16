@@ -464,6 +464,7 @@ function LogicEditorInner({
                   selections={args.selections}
                   onChangeText={args.onChangeText}
                   onChangeNumber={args.onChangeNumber}
+                  flashColors={args.flashColors}
                   frameworks={frameworkDocs}
                   tiebreakDocs={tiebreakDocs}
                   nations={nations}
