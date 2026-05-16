@@ -81,6 +81,7 @@ import {
 } from "../storylines/actions";
 import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { ImpactTile, NationImpactTile } from "@/components/impact-tile";
+import { MarkdownTextarea } from "@/components/markdown-textarea";
 import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";

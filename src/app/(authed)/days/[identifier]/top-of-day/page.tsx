@@ -1,8 +1,5 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { AutoSaveForm } from "@/components/auto-save-form";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   Day,
@@ -15,7 +12,6 @@ import type {
 import { cn } from "@/lib/utils";
 import { RichTextReadonly } from "@/components/rich-text/rich-text-readonly";
 import { normalizeDayIdentifier } from "@/lib/db/days";
-import { updateDay } from "../../actions";
 
 export default async function TopOfDayTab({
   params,
@@ -110,56 +106,18 @@ export default async function TopOfDayTab({
         <CardHeader>
           <CardTitle>Report</CardTitle>
           <CardDescription>
-            Report intro is read before any report group segments.
+            Report intro is read before any report group segments.{" "}
+            <span className="text-muted-foreground">
+              Edit on the Morning Reports page (Top of Day › Morning Reports).
+            </span>
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <AutoSaveForm action={updateDay} className="flex flex-col gap-2">
-            <input type="hidden" name="id" value={day.id} />
-            <input type="hidden" name="number" value={day.number} />
-            <input type="hidden" name="name" value={day.name ?? ""} />
-            <input type="hidden" name="notes" value={day.notes ?? ""} />
-            <input type="hidden" name="until_qup" value={day.until_qup ?? ""} />
-            <input type="hidden" name="month" value={day.month ?? ""} />
-            <input
-              type="hidden"
-              name="day_of_month"
-              value={day.day_of_month ?? ""}
-            />
-            <input type="hidden" name="year" value={day.year ?? ""} />
-            <input
-              type="hidden"
-              name="day_of_week"
-              value={day.day_of_week ?? ""}
-            />
-            <input
-              type="hidden"
-              name="sort_phase_length_seconds"
-              value={day.sort_phase_length_seconds ?? ""}
-            />
-            <input
-              type="hidden"
-              name="inspection_phase_length_seconds"
-              value={day.inspection_phase_length_seconds ?? ""}
-            />
-            <input
-              type="hidden"
-              name="report_sign_off"
-              value={day.report_sign_off ?? ""}
-            />
-            <input
-              type="hidden"
-              name="end_of_day_sign_off"
-              value={day.end_of_day_sign_off ?? ""}
-            />
-            <Label>Report Intro</Label>
-            <Textarea
-              name="base_report"
-              defaultValue={day.base_report ?? ""}
-              rows={5}
-              className="font-mono"
-            />
-          </AutoSaveForm>
+          <pre className="whitespace-pre-wrap font-sans text-sm">
+            {day.base_report ?? (
+              <span className="italic text-muted-foreground">(empty)</span>
+            )}
+          </pre>
         </CardContent>
       </Card>
 
@@ -249,42 +207,19 @@ export default async function TopOfDayTab({
       <Card>
         <CardHeader>
           <CardTitle>Sign-off</CardTitle>
-          <CardDescription>Read after the last report group.</CardDescription>
+          <CardDescription>
+            Read after the last report group.{" "}
+            <span className="text-muted-foreground">
+              Edit on the Morning Reports page (Top of Day › Morning Reports).
+            </span>
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <AutoSaveForm action={updateDay} className="flex flex-col gap-2">
-            <input type="hidden" name="id" value={day.id} />
-            <input type="hidden" name="number" value={day.number} />
-            <input type="hidden" name="name" value={day.name ?? ""} />
-            <input type="hidden" name="notes" value={day.notes ?? ""} />
-            <input type="hidden" name="until_qup" value={day.until_qup ?? ""} />
-            <input type="hidden" name="month" value={day.month ?? ""} />
-            <input type="hidden" name="day_of_month" value={day.day_of_month ?? ""} />
-            <input type="hidden" name="year" value={day.year ?? ""} />
-            <input type="hidden" name="day_of_week" value={day.day_of_week ?? ""} />
-            <input
-              type="hidden"
-              name="sort_phase_length_seconds"
-              value={day.sort_phase_length_seconds ?? ""}
-            />
-            <input
-              type="hidden"
-              name="inspection_phase_length_seconds"
-              value={day.inspection_phase_length_seconds ?? ""}
-            />
-            <input type="hidden" name="base_report" value={day.base_report ?? ""} />
-            <input
-              type="hidden"
-              name="end_of_day_sign_off"
-              value={day.end_of_day_sign_off ?? ""}
-            />
-            <Textarea
-              name="report_sign_off"
-              defaultValue={day.report_sign_off ?? ""}
-              rows={3}
-              className="font-mono"
-            />
-          </AutoSaveForm>
+          <pre className="whitespace-pre-wrap font-sans text-sm">
+            {day.report_sign_off ?? (
+              <span className="italic text-muted-foreground">(empty)</span>
+            )}
+          </pre>
         </CardContent>
       </Card>
     </div>

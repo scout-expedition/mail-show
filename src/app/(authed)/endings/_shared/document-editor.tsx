@@ -76,6 +76,9 @@ import {
   reorderTree,
 } from "./document-actions";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { useSharedViewState } from "@/lib/realtime/use-shared-view-state";
+import { useFlash } from "@/lib/realtime/use-flash";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import {
@@ -134,6 +137,9 @@ export interface DocumentEditorProps {
     selections: PreviewSelections;
     onChangeText: (variableId: string, valueId: string | null) => void;
     onChangeNumber: (variableId: string, value: number | null) => void;
+    /** Transient peer-change highlights, keyed by variable id (plus the
+     *  `preview-toggle` key). Feeds <FlashRing> around each input. */
+    flashColors: Record<string, string>;
   }) => ReactNode;
   /** Called after a successful framework deletion. Logic docs are
    *  seed-immortal; pass undefined to hide the delete button. */
@@ -287,9 +293,46 @@ export function DocumentEditor({
   dragIdRef.current = dragId;
   targetRef.current = target;
 
-  const [previewOn, setPreviewOn] = useState(false);
-  const [previewSelections, setPreviewSelections] =
-    useState<PreviewSelections>(EMPTY_SELECTIONS);
+  // Preview is a shared session: the toggle + the variable-value picks are
+  // synced live to everyone editing this document, and a peer's change
+  // flashes the affected control. Patches carry only the changed entry, so
+  // two people setting different variables never clobber each other. The
+  // prune effect further down uses `updatePreviewLocal` — a deterministic
+  // local derivation that fills defaults without broadcasting.
+  const { flashes: previewFlashes, flash: flashPreview } = useFlash();
+  const {
+    state: preview,
+    update: updatePreview,
+    updateLocal: updatePreviewLocal,
+  } = useSharedViewState<{
+    previewOn: boolean;
+    previewSelections: PreviewSelections;
+  }>({
+    channelName: `endings-view:${document.id}`,
+    initialState: { previewOn: false, previewSelections: EMPTY_SELECTIONS },
+    onRemote: ({ prev, next, actorColor, kind }) => {
+      // Only a live peer change flashes — a join catch-up adopts silently.
+      if (kind !== "patch") return;
+      const keys: string[] = [];
+      if (prev.previewOn !== next.previewOn) keys.push("preview-toggle");
+      const ps = prev.previewSelections;
+      const ns = next.previewSelections;
+      for (const id of new Set([
+        ...Object.keys(ps.textValueIds),
+        ...Object.keys(ns.textValueIds),
+      ])) {
+        if (ps.textValueIds[id] !== ns.textValueIds[id]) keys.push(id);
+      }
+      for (const id of new Set([
+        ...Object.keys(ps.numbers),
+        ...Object.keys(ns.numbers),
+      ])) {
+        if (ps.numbers[id] !== ns.numbers[id]) keys.push(id);
+      }
+      flashPreview(keys, actorColor);
+    },
+  });
+  const { previewOn, previewSelections } = preview;
   const collapseModeStorageKey = `endings.collapseMode.${document.id}`;
   const [collapseMode, setCollapseModeState] = useState<CollapseMode>("expanded");
   const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
@@ -758,23 +801,34 @@ export function DocumentEditor({
     return variableState.filter((v) => ids.has(v.id));
   }, [chipState, variableState, blockState]);
 
+  // Fill default values for newly-referenced variables. Deterministic from
+  // the document structure, so every client recomputes it identically —
+  // `updatePreviewLocal` applies it without broadcasting. Only missing
+  // entries go in the patch, so existing picks are never overwritten.
   useEffect(() => {
-    setPreviewSelections((prev) => {
-      const next: PreviewSelections = {
-        textValueIds: { ...prev.textValueIds },
-        numbers: { ...prev.numbers },
-      };
+    updatePreviewLocal((cur) => {
+      const textValueIds: Record<string, string | null> = {};
+      const numbers: Record<string, number | null> = {};
       for (const v of referencedVariables) {
-        if (v.kind === "text" && next.textValueIds[v.id] === undefined) {
-          next.textValueIds[v.id] = v.default_value_id ?? null;
+        if (
+          v.kind === "text" &&
+          cur.previewSelections.textValueIds[v.id] === undefined
+        ) {
+          textValueIds[v.id] = v.default_value_id ?? null;
         }
-        if (v.kind === "number_ref" && next.numbers[v.id] === undefined) {
-          next.numbers[v.id] = 0;
+        if (
+          v.kind === "number_ref" &&
+          cur.previewSelections.numbers[v.id] === undefined
+        ) {
+          numbers[v.id] = 0;
         }
       }
-      return next;
+      const sel: Partial<PreviewSelections> = {};
+      if (Object.keys(textValueIds).length > 0) sel.textValueIds = textValueIds;
+      if (Object.keys(numbers).length > 0) sel.numbers = numbers;
+      return Object.keys(sel).length > 0 ? { previewSelections: sel } : {};
     });
-  }, [referencedVariables]);
+  }, [referencedVariables, updatePreviewLocal]);
 
   // Local edits ----------------------------------------------------------
   // Block + chip edits flow through these wrappers. Each one applies an
@@ -1106,15 +1160,14 @@ export function DocumentEditor({
       values,
       selections: previewSelections,
       onChangeText: (variableId, valueId) =>
-        setPreviewSelections((prev) => ({
-          ...prev,
-          textValueIds: { ...prev.textValueIds, [variableId]: valueId },
-        })),
+        updatePreview({
+          previewSelections: { textValueIds: { [variableId]: valueId } },
+        }),
       onChangeNumber: (variableId, value) =>
-        setPreviewSelections((prev) => ({
-          ...prev,
-          numbers: { ...prev.numbers, [variableId]: value },
-        })),
+        updatePreview({
+          previewSelections: { numbers: { [variableId]: value } },
+        }),
+      flashColors: previewFlashes,
     });
   } else {
     body = (
@@ -1211,20 +1264,22 @@ export function DocumentEditor({
               onSelect={applyCollapseMode}
             />
             {renderPreview ? (
-              <button
-                type="button"
-                onClick={() => setPreviewOn((v) => !v)}
-                aria-label={previewOn ? "Exit preview" : "Preview"}
-                title={previewOn ? "Exit preview" : "Preview"}
-                className={cn(
-                  "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
-                  previewOn
-                    ? "bg-primary text-primary-foreground hover:bg-primary/90"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                )}
-              >
-                <Eye size={14} aria-hidden />
-              </button>
+              <FlashRing color={previewFlashes["preview-toggle"]}>
+                <button
+                  type="button"
+                  onClick={() => updatePreview({ previewOn: !previewOn })}
+                  aria-label={previewOn ? "Exit preview" : "Preview"}
+                  title={previewOn ? "Exit preview" : "Preview"}
+                  className={cn(
+                    "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+                    previewOn
+                      ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  <Eye size={14} aria-hidden />
+                </button>
+              </FlashRing>
             ) : null}
           </div>
         }

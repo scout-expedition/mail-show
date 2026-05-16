@@ -31,6 +31,9 @@ export const PHASE_LABELS: Record<Phase, string> = {
   end_of_day: "End of Day",
 };
 
+export const DAY_REPORT_BLOCK_KINDS = ["generic", "letter_group"] as const;
+export type DayReportBlockKind = (typeof DAY_REPORT_BLOCK_KINDS)[number];
+
 export const ADDRESS_TYPES = [
   "full",
   "lookup_1",

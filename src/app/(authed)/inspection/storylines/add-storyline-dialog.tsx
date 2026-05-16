@@ -16,6 +16,7 @@ function nextUnusedAbbreviation(storylines: Storyline[]): string {
   );
   for (let c = 65; c <= 90; c++) {
     const letter = String.fromCharCode(c);
+    if (letter === "D") continue;
     if (!used.has(letter)) return letter;
   }
   return "X";

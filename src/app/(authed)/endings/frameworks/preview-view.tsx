@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import {
   EMPTY_SELECTIONS,
   aggregateKey,
@@ -51,6 +52,7 @@ export function PreviewView({
   selections,
   onChangeText,
   onChangeNumber,
+  flashColors,
   tiebreakInputs,
   nations,
 }: {
@@ -64,6 +66,8 @@ export function PreviewView({
   selections: PreviewSelections;
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
+  /** Transient peer-change highlights keyed by variable id. */
+  flashColors: Record<string, string>;
   tiebreakInputs?: Map<EndingLogicKind, EvalInputs>;
   nations?: Pick<
     Nation,
@@ -422,23 +426,25 @@ export function PreviewView({
                     >
                       {v.name}
                     </Label>
-                    <Select
-                      aria-label={v.name}
-                      value={selections.textValueIds[v.id] ?? ""}
-                      onChange={(e) =>
-                        onChangeText(v.id, e.target.value || null)
-                      }
-                      className={cn("h-8", GHOST_FIELD)}
-                    >
-                      <option value="">—</option>
-                      {values
-                        .filter((val) => val.variable_id === v.id)
-                        .map((val) => (
-                          <option key={val.id} value={val.id}>
-                            {val.value}
-                          </option>
-                        ))}
-                    </Select>
+                    <FlashRing color={flashColors[v.id]}>
+                      <Select
+                        aria-label={v.name}
+                        value={selections.textValueIds[v.id] ?? ""}
+                        onChange={(e) =>
+                          onChangeText(v.id, e.target.value || null)
+                        }
+                        className={cn("h-8", GHOST_FIELD)}
+                      >
+                        <option value="">—</option>
+                        {values
+                          .filter((val) => val.variable_id === v.id)
+                          .map((val) => (
+                            <option key={val.id} value={val.id}>
+                              {val.value}
+                            </option>
+                          ))}
+                      </Select>
+                    </FlashRing>
                   </div>
                 );
               })}
@@ -452,13 +458,14 @@ export function PreviewView({
                   {buckets.classImpacts.map((v) => {
                     const preset = presetFor(v);
                     return (
-                      <ImpactTile
-                        key={v.id}
-                        label={preset?.label ?? v.name}
-                        icon={preset?.icon}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <ImpactTile
+                          label={preset?.label ?? v.name}
+                          icon={preset?.icon}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -473,22 +480,24 @@ export function PreviewView({
                     if (!nation) {
                       const preset = presetFor(v);
                       return (
-                        <ImpactTile
-                          key={v.id}
-                          label={preset?.label ?? v.name}
-                          icon={preset?.icon}
-                          value={numericValue(v)}
-                          onChange={(n) => setNumeric(v, n)}
-                        />
+                        <FlashRing key={v.id} color={flashColors[v.id]}>
+                          <ImpactTile
+                            label={preset?.label ?? v.name}
+                            icon={preset?.icon}
+                            value={numericValue(v)}
+                            onChange={(n) => setNumeric(v, n)}
+                          />
+                        </FlashRing>
                       );
                     }
                     return (
-                      <NationImpactTile
-                        key={v.id}
-                        nation={nation}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <NationImpactTile
+                          nation={nation}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -499,13 +508,14 @@ export function PreviewView({
                   {buckets.worldImpacts.map((v) => {
                     const preset = presetFor(v);
                     return (
-                      <ImpactTile
-                        key={v.id}
-                        label={preset?.label ?? v.name}
-                        icon={preset?.icon}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <ImpactTile
+                          label={preset?.label ?? v.name}
+                          icon={preset?.icon}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -521,23 +531,25 @@ export function PreviewView({
                   className="grid grid-cols-[1fr_1fr] items-center gap-2"
                 >
                   <Label className="!text-xs">{v.name}</Label>
-                  <Input
-                    aria-label={v.name}
-                    type="number"
-                    value={
-                      selections.numbers[v.id] == null
-                        ? ""
-                        : String(selections.numbers[v.id])
-                    }
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      onChangeNumber(
-                        v.id,
-                        raw === "" ? null : Number(raw)
-                      );
-                    }}
-                    className={cn("h-8", GHOST_FIELD)}
-                  />
+                  <FlashRing color={flashColors[v.id]}>
+                    <Input
+                      aria-label={v.name}
+                      type="number"
+                      value={
+                        selections.numbers[v.id] == null
+                          ? ""
+                          : String(selections.numbers[v.id])
+                      }
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        onChangeNumber(
+                          v.id,
+                          raw === "" ? null : Number(raw)
+                        );
+                      }}
+                      className={cn("h-8", GHOST_FIELD)}
+                    />
+                  </FlashRing>
                 </div>
               ))}
             </div>

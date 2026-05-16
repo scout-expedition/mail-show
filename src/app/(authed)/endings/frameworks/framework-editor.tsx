@@ -116,6 +116,7 @@ export function FrameworkEditor({
           selections={args.selections}
           onChangeText={args.onChangeText}
           onChangeNumber={args.onChangeNumber}
+          flashColors={args.flashColors}
           tiebreakInputs={tiebreakInputs}
           nations={nations}
         />

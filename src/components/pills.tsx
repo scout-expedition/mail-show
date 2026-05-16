@@ -2,6 +2,7 @@ import { Mail, MailOpen, Mails, Megaphone } from "lucide-react";
 import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
 import type { Storyline } from "@/lib/db/types";
+import type { IconType } from "@/lib/db/enums";
 
 /** Compute a readable foreground (#000 or #fff) for a given hex background. */
 export function readableOnHex(hex: string): string {
@@ -296,5 +297,50 @@ export function ReportSegmentCard({
         style={widthPx ? { width: widthPx } : undefined}
       />
     </PillCard>
+  );
+}
+
+/**
+ * Action pill: rounded rectangle filled with the action's color, showing
+ * the action icon and name. Icon + text adopt the same foreground color
+ * the action icon uses on the actions tab (readable on the action color).
+ */
+export function ActionPill({
+  name,
+  iconType,
+  iconValue,
+  colorHex,
+  iconOnly,
+  className,
+}: {
+  name: string;
+  iconType: IconType;
+  iconValue: string | null;
+  colorHex: string;
+  iconOnly?: boolean;
+  className?: string;
+}) {
+  const fg = readableOnHex(colorHex);
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-transparent font-mono text-[11px] font-normal normal-case leading-none tracking-normal",
+        iconOnly ? "w-6 justify-center px-0" : "px-1.5",
+        className
+      )}
+      style={{ background: colorHex, color: fg }}
+      title={iconOnly ? name : undefined}
+      aria-label={iconOnly ? name : undefined}
+    >
+      {iconValue ? (
+        <IconDisplay
+          type={iconType}
+          value={iconValue}
+          size={11}
+          className="shrink-0"
+        />
+      ) : null}
+      {iconOnly ? null : <span className="whitespace-nowrap">{name}</span>}
+    </span>
   );
 }
