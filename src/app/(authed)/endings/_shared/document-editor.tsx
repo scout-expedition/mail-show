@@ -293,24 +293,24 @@ export function DocumentEditor({
   dragIdRef.current = dragId;
   targetRef.current = target;
 
-  const [previewOn, setPreviewOn] = useState(false);
-  const [previewSelections, setPreviewSelections] =
-    useState<PreviewSelections>(EMPTY_SELECTIONS);
-
   // Preview is a shared session: the toggle + the variable-value picks are
   // synced live to everyone editing this document, and a peer's change
-  // flashes the affected control. The prune effect further down does NOT
-  // broadcast — it's a deterministic local derivation, not a user action.
+  // flashes the affected control. Patches carry only the changed entry, so
+  // two people setting different variables never clobber each other. The
+  // prune effect further down uses `updatePreviewLocal` — a deterministic
+  // local derivation that fills defaults without broadcasting.
   const { flashes: previewFlashes, flash: flashPreview } = useFlash();
-  const { broadcast: broadcastPreview } = useSharedViewState<{
+  const {
+    state: preview,
+    update: updatePreview,
+    updateLocal: updatePreviewLocal,
+  } = useSharedViewState<{
     previewOn: boolean;
     previewSelections: PreviewSelections;
   }>({
     channelName: `endings-view:${document.id}`,
     initialState: { previewOn: false, previewSelections: EMPTY_SELECTIONS },
     onRemote: ({ prev, next, actorColor, kind }) => {
-      setPreviewOn(next.previewOn);
-      setPreviewSelections(next.previewSelections);
       // Only a live peer change flashes — a join catch-up adopts silently.
       if (kind !== "patch") return;
       const keys: string[] = [];
@@ -332,6 +332,7 @@ export function DocumentEditor({
       flashPreview(keys, actorColor);
     },
   });
+  const { previewOn, previewSelections } = preview;
   const collapseModeStorageKey = `endings.collapseMode.${document.id}`;
   const [collapseMode, setCollapseModeState] = useState<CollapseMode>("expanded");
   const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
@@ -800,23 +801,34 @@ export function DocumentEditor({
     return variableState.filter((v) => ids.has(v.id));
   }, [chipState, variableState, blockState]);
 
+  // Fill default values for newly-referenced variables. Deterministic from
+  // the document structure, so every client recomputes it identically —
+  // `updatePreviewLocal` applies it without broadcasting. Only missing
+  // entries go in the patch, so existing picks are never overwritten.
   useEffect(() => {
-    setPreviewSelections((prev) => {
-      const next: PreviewSelections = {
-        textValueIds: { ...prev.textValueIds },
-        numbers: { ...prev.numbers },
-      };
+    updatePreviewLocal((cur) => {
+      const textValueIds: Record<string, string | null> = {};
+      const numbers: Record<string, number | null> = {};
       for (const v of referencedVariables) {
-        if (v.kind === "text" && next.textValueIds[v.id] === undefined) {
-          next.textValueIds[v.id] = v.default_value_id ?? null;
+        if (
+          v.kind === "text" &&
+          cur.previewSelections.textValueIds[v.id] === undefined
+        ) {
+          textValueIds[v.id] = v.default_value_id ?? null;
         }
-        if (v.kind === "number_ref" && next.numbers[v.id] === undefined) {
-          next.numbers[v.id] = 0;
+        if (
+          v.kind === "number_ref" &&
+          cur.previewSelections.numbers[v.id] === undefined
+        ) {
+          numbers[v.id] = 0;
         }
       }
-      return next;
+      const sel: Partial<PreviewSelections> = {};
+      if (Object.keys(textValueIds).length > 0) sel.textValueIds = textValueIds;
+      if (Object.keys(numbers).length > 0) sel.numbers = numbers;
+      return Object.keys(sel).length > 0 ? { previewSelections: sel } : {};
     });
-  }, [referencedVariables]);
+  }, [referencedVariables, updatePreviewLocal]);
 
   // Local edits ----------------------------------------------------------
   // Block + chip edits flow through these wrappers. Each one applies an
@@ -1147,25 +1159,14 @@ export function DocumentEditor({
       referencedVariables,
       values,
       selections: previewSelections,
-      onChangeText: (variableId, valueId) => {
-        const next: PreviewSelections = {
-          ...previewSelections,
-          textValueIds: {
-            ...previewSelections.textValueIds,
-            [variableId]: valueId,
-          },
-        };
-        setPreviewSelections(next);
-        broadcastPreview({ previewSelections: next });
-      },
-      onChangeNumber: (variableId, value) => {
-        const next: PreviewSelections = {
-          ...previewSelections,
-          numbers: { ...previewSelections.numbers, [variableId]: value },
-        };
-        setPreviewSelections(next);
-        broadcastPreview({ previewSelections: next });
-      },
+      onChangeText: (variableId, valueId) =>
+        updatePreview({
+          previewSelections: { textValueIds: { [variableId]: valueId } },
+        }),
+      onChangeNumber: (variableId, value) =>
+        updatePreview({
+          previewSelections: { numbers: { [variableId]: value } },
+        }),
       flashColors: previewFlashes,
     });
   } else {
@@ -1266,11 +1267,7 @@ export function DocumentEditor({
               <FlashRing color={previewFlashes["preview-toggle"]}>
                 <button
                   type="button"
-                  onClick={() => {
-                    const next = !previewOn;
-                    setPreviewOn(next);
-                    broadcastPreview({ previewOn: next });
-                  }}
+                  onClick={() => updatePreview({ previewOn: !previewOn })}
                   aria-label={previewOn ? "Exit preview" : "Preview"}
                   title={previewOn ? "Exit preview" : "Preview"}
                   className={cn(

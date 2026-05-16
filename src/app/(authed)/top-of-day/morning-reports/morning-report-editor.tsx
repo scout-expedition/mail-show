@@ -6,7 +6,6 @@
 
 import {
   Fragment,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -149,62 +148,39 @@ export function MorningReportEditor({
   // The preview toggle and the per-letter-group simulation picks (which
   // letter was delivered + which action was taken) are synced live to
   // everyone else viewing this day, so collaborators run the same
-  // simulation together. A peer's change flashes the affected control.
-  const [previewOn, setPreviewOn] = useState(false);
-  const [selectedLetter, setSelectedLetter] = useState<Record<string, string>>(
-    {}
-  );
-  const [selectedAction, setSelectedAction] = useState<Record<string, string>>(
-    {}
-  );
+  // simulation together. Patches carry only the changed entry, so two
+  // people picking for different groups never clobber each other; a peer's
+  // change flashes the affected control.
   const { flashes, flash } = useFlash();
-
-  const { broadcast: broadcastView } = useSharedViewState<MorningViewState>({
-    channelName: `morning-reports-view:${day.id}`,
-    initialState: { previewOn: false, selectedLetter: {}, selectedAction: {} },
-    onRemote: ({ prev, next, actorColor, kind }) => {
-      setPreviewOn(next.previewOn);
-      setSelectedLetter(next.selectedLetter);
-      setSelectedAction(next.selectedAction);
-      // Only a live peer change flashes — a join catch-up adopts silently.
-      if (kind !== "patch") return;
-      // Flash whatever the peer just changed, in their avatar color.
-      const keys: string[] = [];
-      if (prev.previewOn !== next.previewOn) keys.push("preview-toggle");
-      for (const g of new Set([
-        ...Object.keys(prev.selectedLetter),
-        ...Object.keys(next.selectedLetter),
-      ])) {
-        if (prev.selectedLetter[g] !== next.selectedLetter[g]) {
-          keys.push(`letter:${g}`);
+  const { state: viewState, update: updateView } =
+    useSharedViewState<MorningViewState>({
+      channelName: `morning-reports-view:${day.id}`,
+      initialState: { previewOn: false, selectedLetter: {}, selectedAction: {} },
+      onRemote: ({ prev, next, actorColor, kind }) => {
+        // Only a live peer change flashes — a join catch-up adopts silently.
+        if (kind !== "patch") return;
+        const keys: string[] = [];
+        if (prev.previewOn !== next.previewOn) keys.push("preview-toggle");
+        for (const g of new Set([
+          ...Object.keys(prev.selectedLetter),
+          ...Object.keys(next.selectedLetter),
+        ])) {
+          if (prev.selectedLetter[g] !== next.selectedLetter[g]) {
+            keys.push(`letter:${g}`);
+          }
         }
-      }
-      for (const g of new Set([
-        ...Object.keys(prev.selectedAction),
-        ...Object.keys(next.selectedAction),
-      ])) {
-        if (prev.selectedAction[g] !== next.selectedAction[g]) {
-          keys.push(`action:${g}`);
+        for (const g of new Set([
+          ...Object.keys(prev.selectedAction),
+          ...Object.keys(next.selectedAction),
+        ])) {
+          if (prev.selectedAction[g] !== next.selectedAction[g]) {
+            keys.push(`action:${g}`);
+          }
         }
-      }
-      flash(keys, actorColor);
-    },
-  });
-
-  // Apply a local preview change to React state, then broadcast the patch.
-  const updateView = useCallback(
-    (patch: Partial<MorningViewState>) => {
-      if (patch.previewOn !== undefined) setPreviewOn(patch.previewOn);
-      if (patch.selectedLetter !== undefined) {
-        setSelectedLetter(patch.selectedLetter);
-      }
-      if (patch.selectedAction !== undefined) {
-        setSelectedAction(patch.selectedAction);
-      }
-      broadcastView(patch);
-    },
-    [broadcastView]
-  );
+        flash(keys, actorColor);
+      },
+    });
+  const { previewOn, selectedLetter, selectedAction } = viewState;
 
   // --- lookups -----------------------------------------------------------
   const storylinesById = useMemo(

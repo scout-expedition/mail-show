@@ -97,17 +97,15 @@ export function PreviewView({
 
   // Per letter group: the one delivered letter + the one chosen action.
   // State lives in the editor (so it can be synced across users); this view
-  // reads it from props and reports changes via onSelectionChange.
+  // reads it from props and reports changes via onSelectionChange. Each
+  // change touches only its own group's entry — "" means cleared (an
+  // entry-level patch can't express a key deletion).
   function selectLetter(groupId: string, letterId: string) {
     if (selectedLetter[groupId] === letterId) {
-      // Clicking the selected letter deselects it (and its action).
-      const nextLetter = { ...selectedLetter };
-      const nextAction = { ...selectedAction };
-      delete nextLetter[groupId];
-      delete nextAction[groupId];
+      // Clicking the selected letter clears it (and its action).
       onSelectionChange({
-        selectedLetter: nextLetter,
-        selectedAction: nextAction,
+        selectedLetter: { [groupId]: "" },
+        selectedAction: { [groupId]: "" },
       });
       return;
     }
@@ -116,9 +114,7 @@ export function PreviewView({
     const prevAction = selectedAction[groupId]
       ? actions.find((a) => a.id === selectedAction[groupId])
       : undefined;
-    const nextLetter = { ...selectedLetter, [groupId]: letterId };
-    const nextAction = { ...selectedAction };
-    delete nextAction[groupId];
+    let carried = "";
     if (prevAction) {
       const match = (actionsByLetter.get(letterId) ?? []).find(
         (a) =>
@@ -126,19 +122,17 @@ export function PreviewView({
             a.action_template_id === prevAction.action_template_id) ||
           a.name === prevAction.name
       );
-      if (match) nextAction[groupId] = match.id;
+      if (match) carried = match.id;
     }
     onSelectionChange({
-      selectedLetter: nextLetter,
-      selectedAction: nextAction,
+      selectedLetter: { [groupId]: letterId },
+      selectedAction: { [groupId]: carried },
     });
   }
 
   function toggleAction(groupId: string, actionId: string) {
-    const nextAction = { ...selectedAction };
-    if (nextAction[groupId] === actionId) delete nextAction[groupId];
-    else nextAction[groupId] = actionId;
-    onSelectionChange({ selectedAction: nextAction });
+    const next = selectedAction[groupId] === actionId ? "" : actionId;
+    onSelectionChange({ selectedAction: { [groupId]: next } });
   }
 
   const firedSegmentIds = useMemo(() => {
