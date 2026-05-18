@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   IconArrowBackUp,
@@ -15,10 +22,12 @@ import {
   moveLetterGroupToDay,
   moveLetterToGroup,
   moveReportSegmentToDay,
+  restoreReportSegmentDelivery,
   setActionNextLetterByLetterId,
   setActionReportSegment,
 } from "../inspection/letters/actions";
 import { Button } from "@/components/ui/button";
+import { NavMenuButton } from "@/components/nav";
 import { PageHeader } from "@/components/page-header";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
@@ -40,7 +49,12 @@ import type {
   ReportSegmentView,
   Storyline,
 } from "@/lib/db/types";
-import { GraphView, type GraphSelection, type UndoEntry } from "./graph-view";
+import {
+  GraphView,
+  type GraphSelection,
+  type PeerRingMap,
+  type UndoEntry,
+} from "./graph-view";
 import { ImpactOverlayPanel } from "./impact-overlay-panel";
 import {
   LettersWorkspace,
@@ -135,10 +149,39 @@ function GraphSurfaceInner({
   currentProfile,
 }: GraphSurfaceProps) {
   const router = useRouter();
-  const { peers, selfPeer } = usePresenceContext();
+  const { peers, selfPeer, selfColor, onPostgresChanges } = usePresenceContext();
   // Workspace-stack peers are owned by /graph; AppPresence (othersOnly in
   // PageHeader) filters these userIds so they don't double-render.
   useClaimWorkspacePeers(peers.map((p) => p.userId));
+
+  // Live-refresh the graph when any table that affects its layout or edges
+  // changes. View columns (effective_day_id, content_id, …) aren't on the
+  // postgres_changes payload, so a router.refresh re-runs the RSC and reseeds
+  // GraphView with fresh data. Debounce coalesces bursts; in-flight inspector
+  // edits are protected by useInstantField's committedAwaitingRemote guard so
+  // the refresh doesn't snap typed-but-unsaved values back.
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const watched = new Set([
+      "inspection_letters",
+      "letter_groups",
+      "actions",
+      "report_segments",
+      "storylines",
+    ]);
+    return onPostgresChanges((change) => {
+      if (!watched.has(change.table)) return;
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        startTransition(() => {
+          router.refresh();
+        });
+      }, 250);
+    });
+  }, [onPostgresChanges, router]);
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
     "graph.impactFilter",
     DEFAULT_IMPACT_FILTER
@@ -166,7 +209,11 @@ function GraphSurfaceInner({
         await moveLetterToGroup(entry.letterId, entry.previousGroupId);
         return;
       case "moveReport":
-        await moveReportSegmentToDay(entry.segmentId, entry.previousDayId);
+        await restoreReportSegmentDelivery(
+          entry.segmentId,
+          entry.previousOverrideId,
+          entry.previousOffset
+        );
         return;
       case "setNextLetter":
         await setActionNextLetterByLetterId(
@@ -254,6 +301,44 @@ function GraphSurfaceInner({
     return graphSelectionToPresence(selection, letters);
   }, [inspectorOpen, selection, letters]);
 
+  // Bucket every peer's avatar color by what they have selected, so the
+  // graph can render a peer-colored outer ring on the matching node.
+  // PresenceSelection doesn't carry actionId — peers on the "actions"
+  // panel ring the parent letter (their action focus isn't broadcast
+  // separately).
+  const peerRings = useMemo<PeerRingMap>(() => {
+    const groups = new Map<string, string[]>();
+    const lettersMap = new Map<string, string[]>();
+    const segmentsMap = new Map<string, string[]>();
+    const actionsMap = new Map<string, string[]>();
+    for (const peer of peers) {
+      if (!peer.selection) continue;
+      const sel = presenceSelectionToGraph(peer.selection, letters);
+      if (!sel) continue;
+      const peerColor = peer.profile?.avatarColorHex ?? peer.color;
+      if (sel.kind === "segment") {
+        const list = segmentsMap.get(sel.segmentId) ?? [];
+        list.push(peerColor);
+        segmentsMap.set(sel.segmentId, list);
+      } else if (sel.kind === "letter" || sel.kind === "actions") {
+        const key = `${sel.groupId}:${sel.variantKey}`;
+        const list = lettersMap.get(key) ?? [];
+        list.push(peerColor);
+        lettersMap.set(key, list);
+      } else if (sel.kind === "group") {
+        const list = groups.get(sel.groupId) ?? [];
+        list.push(peerColor);
+        groups.set(sel.groupId, list);
+      }
+    }
+    return {
+      groups,
+      letters: lettersMap,
+      segments: segmentsMap,
+      actions: actionsMap,
+    };
+  }, [peers, letters]);
+
   // Click a peer's avatar → open the inspector and load their panel.
   const jumpToPeer = useCallback(
     (peer: PresencePeer) => {
@@ -330,6 +415,7 @@ function GraphSurfaceInner({
       <PageHeader
         title="Narrative Graph"
         presenceOthersOnly
+        leading={<NavMenuButton />}
         actions={
           <div className="flex items-center gap-2">
             <AvatarStack
@@ -422,6 +508,8 @@ function GraphSurfaceInner({
               recordUndo={recordUndo}
               selection={inspectorOpen ? selection : null}
               onSelectionChange={handleSelectionChange}
+              selfRingColor={selfColor}
+              peerRings={peerRings}
             />
           </div>
           {overlayOpen ? (

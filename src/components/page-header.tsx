@@ -8,12 +8,16 @@ export function PageHeader({
   title,
   description,
   actions,
+  leading,
   className,
   presenceOthersOnly = false,
 }: {
   title: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
+  /** Optional content rendered to the LEFT of the title (e.g. the inline
+   *  nav menu button on routes that suppress the floating one). */
+  leading?: React.ReactNode;
   className?: string;
   /** When the page mounts its OWN per-surface AvatarStack (e.g. /graph), set
    *  this so the header AppPresence filters out same-pathname peers — they
@@ -29,13 +33,16 @@ export function PageHeader({
         className
       )}
     >
-      <div className="flex flex-col gap-1">
-        <h1 className="font-mono text-2xl font-semibold tracking-tight">
-          {title}
-        </h1>
-        {description ? (
-          <p className="text-sm text-muted-foreground">{description}</p>
-        ) : null}
+      <div className="flex items-end gap-3">
+        {leading ? <div className="flex items-center pb-1">{leading}</div> : null}
+        <div className="flex flex-col gap-1">
+          <h1 className="font-mono text-2xl font-semibold tracking-tight">
+            {title}
+          </h1>
+          {description ? (
+            <p className="text-sm text-muted-foreground">{description}</p>
+          ) : null}
+        </div>
       </div>
       <div className="flex items-center gap-3">
         {/* AppPresence renders FIRST (left) so on pages that put their own

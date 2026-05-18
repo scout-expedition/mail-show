@@ -17,6 +17,7 @@ import type {
 import { parseGroupSlug } from "@/lib/letter-groups";
 import { profileFromMetadata } from "@/lib/auth/profile";
 import { LettersWorkspace } from "./workspace";
+import { sweepOrphanActionRefs } from "./actions";
 
 export default async function InspectionLettersPage({
   searchParams,
@@ -35,6 +36,7 @@ export default async function InspectionLettersPage({
     report: reportParam,
   } = await searchParams;
   const supabase = await createSupabaseServerClient();
+  await sweepOrphanActionRefs();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
   const currentEmail = meData.user?.email;

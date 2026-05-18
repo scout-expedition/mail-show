@@ -177,15 +177,82 @@ export function OverflowMenu({
   size?: "default" | "sm";
 }) {
   const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{
+    top: number;
+    left: number;
+    placement: "down" | "up";
+  } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+
+  // Reposition relative to viewport so the menu escapes any overflow-hidden
+  // ancestor. Flips above the button when there isn't room below.
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current || !menuRef.current) return;
+    const btn = buttonRef.current.getBoundingClientRect();
+    const menuH = menuRef.current.offsetHeight;
+    const menuW = menuRef.current.offsetWidth;
+    const margin = 4;
+    const fitsBelow = btn.bottom + menuH + margin <= window.innerHeight;
+    const placement = fitsBelow ? "down" : "up";
+    const top =
+      placement === "down" ? btn.bottom + margin : btn.top - menuH - margin;
+    const left = Math.max(margin, Math.min(btn.right - menuW, window.innerWidth - menuW - margin));
+    setMenuPos((prev) => {
+      if (
+        prev &&
+        prev.top === top &&
+        prev.left === left &&
+        prev.placement === placement
+      ) {
+        return prev;
+      }
+      return { top, left, placement };
+    });
+  }, [open, items.length]);
+
+  // Recompute on scroll/resize while open so the menu stays anchored.
+  useEffect(() => {
+    if (!open) return;
+    function reposition() {
+      if (!buttonRef.current || !menuRef.current) return;
+      const btn = buttonRef.current.getBoundingClientRect();
+      const menuH = menuRef.current.offsetHeight;
+      const menuW = menuRef.current.offsetWidth;
+      const margin = 4;
+      const fitsBelow = btn.bottom + menuH + margin <= window.innerHeight;
+      const placement = fitsBelow ? "down" : "up";
+      const top =
+        placement === "down"
+          ? btn.bottom + margin
+          : btn.top - menuH - margin;
+      const left = Math.max(
+        margin,
+        Math.min(btn.right - menuW, window.innerWidth - menuW - margin)
+      );
+      setMenuPos({ top, left, placement });
+    }
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open]);
+
   const buttonClass =
     size === "sm"
       ? "inline-flex h-4 w-4 items-center justify-center overflow-visible rounded text-muted-foreground transition-colors hover:text-foreground"
@@ -194,6 +261,7 @@ export function OverflowMenu({
   return (
     <div ref={ref} className="relative">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
@@ -205,8 +273,14 @@ export function OverflowMenu({
       </button>
       {open ? (
         <div
+          ref={menuRef}
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          className="fixed z-50 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          style={{
+            top: menuPos?.top ?? -9999,
+            left: menuPos?.left ?? -9999,
+            visibility: menuPos ? "visible" : "hidden",
+          }}
         >
           {items.map((item, i) => {
             if ("divider" in item) {

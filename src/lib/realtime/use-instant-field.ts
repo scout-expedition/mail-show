@@ -7,6 +7,14 @@ export type InstantFieldStatus = "idle" | "dirty" | "saving" | "error";
 export type InstantFieldState<T> = {
   localValue: T;
   status: InstantFieldStatus;
+  /**
+   * After a successful commit, the value we just sent to the server. Remote
+   * updates that don't match this are ignored until realtime catches up to it,
+   * so a saveSuccess→idle transition can't briefly snap the field back to the
+   * stale upstream value while the realtime broadcast is in flight.
+   * Cleared on `set` (user typed again) and on `remote` once it matches.
+   */
+  committedAwaitingRemote?: T | null;
   /** Most recent remote value dropped while the field was dirty/saving.
    *  Replayed on the saving→idle transition so a peer write that landed
    *  inside the save window isn't lost. `null` when nothing is queued. */
@@ -36,7 +44,10 @@ export type InstantFieldAction<T> =
  *                   didn't keep typing during the save (localValue still
  *                   matches the value that was committed). On that transition
  *                   a stashed pendingRemote that differs from localValue is
- *                   applied so a peer write during the save window converges.
+ *                   applied so a peer write during the save window converges;
+ *                   otherwise the committed value is recorded in
+ *                   committedAwaitingRemote so a stale upstream `value` still
+ *                   in flight can't snap the field back before our own echo.
  * - `saveError`   → commit threw. Revert localValue to the stashed remote if
  *                   one exists (freshest server truth), else the server value,
  *                   and surface "error" (inline glyph, no toast — caller styles it).
@@ -49,7 +60,12 @@ export function instantFieldReducer<T>(
   switch (action.type) {
     case "set":
       if (equals(action.value, state.localValue)) return state;
-      return { localValue: action.value, status: "dirty", pendingRemote: null };
+      return {
+        localValue: action.value,
+        status: "dirty",
+        committedAwaitingRemote: null,
+        pendingRemote: null,
+      };
     case "remote":
       if (state.status === "dirty" || state.status === "saving") {
         // Local typing wins for now — stash the latest remote instead of
@@ -68,10 +84,24 @@ export function instantFieldReducer<T>(
         }
         return { ...state, pendingRemote: { value: action.value } };
       }
-      if (equals(action.value, state.localValue)) return state;
+      // Idle / error: ignore a stale upstream value still in flight from
+      // before our own just-committed write landed its realtime echo.
+      if (
+        state.committedAwaitingRemote != null &&
+        !equals(action.value, state.committedAwaitingRemote)
+      ) {
+        return state;
+      }
+      if (equals(action.value, state.localValue)) {
+        if (state.committedAwaitingRemote != null) {
+          return { ...state, committedAwaitingRemote: null };
+        }
+        return state;
+      }
       return {
         localValue: action.value,
         status: state.status,
+        committedAwaitingRemote: null,
         pendingRemote: null,
       };
     case "saveStart":
@@ -86,14 +116,23 @@ export function instantFieldReducer<T>(
           !equals(state.pendingRemote.value, state.localValue)
         ) {
           // A peer write landed during the save window — replay it now
-          // that local typing has settled.
+          // that local typing has settled. It becomes the new truth, so
+          // nothing of ours is awaiting a realtime echo.
           return {
             localValue: state.pendingRemote.value,
             status: "idle",
+            committedAwaitingRemote: null,
             pendingRemote: null,
           };
         }
-        return { ...state, status: "idle", pendingRemote: null };
+        // No peer write queued — our committed value now awaits its own
+        // realtime echo (see committedAwaitingRemote).
+        return {
+          ...state,
+          status: "idle",
+          committedAwaitingRemote: action.pendingValue,
+          pendingRemote: null,
+        };
       }
       return state;
     case "saveError":
@@ -103,6 +142,7 @@ export function instantFieldReducer<T>(
             ? state.pendingRemote.value
             : action.serverValue,
         status: "error",
+        committedAwaitingRemote: null,
         pendingRemote: null,
       };
     default:
@@ -168,6 +208,7 @@ export function useInstantField<T>(
   const [state, setState] = useState<InstantFieldState<T>>({
     localValue: value,
     status: "idle",
+    committedAwaitingRemote: null,
     pendingRemote: null,
   });
 

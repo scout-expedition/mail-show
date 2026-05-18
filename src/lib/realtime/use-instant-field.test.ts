@@ -7,21 +7,25 @@ import {
 const idle = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "idle",
+  committedAwaitingRemote: null,
   pendingRemote: null,
 });
 const dirty = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "dirty",
+  committedAwaitingRemote: null,
   pendingRemote: null,
 });
 const saving = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "saving",
+  committedAwaitingRemote: null,
   pendingRemote: null,
 });
 const errored = <T,>(localValue: T): InstantFieldState<T> => ({
   localValue,
   status: "error",
+  committedAwaitingRemote: null,
   pendingRemote: null,
 });
 
@@ -78,6 +82,7 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
     ).toEqual({
       localValue: "local",
       status: "dirty",
+      committedAwaitingRemote: null,
       pendingRemote: { value: "remote" },
     });
   });
@@ -89,6 +94,7 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
     ).toEqual({
       localValue: "local",
       status: "saving",
+      committedAwaitingRemote: null,
       pendingRemote: { value: "remote" },
     });
   });
@@ -105,6 +111,7 @@ describe("instantFieldReducer — remote (LWW merge rule)", () => {
     expect(afterSecond).toEqual({
       localValue: "local",
       status: "saving",
+      committedAwaitingRemote: null,
       pendingRemote: { value: "r2" },
     });
   });
@@ -189,7 +196,12 @@ describe("instantFieldReducer — save lifecycle", () => {
         type: "saveSuccess",
         pendingValue: "b",
       })
-    ).toEqual(idle("b"));
+    ).toEqual({
+      localValue: "b",
+      status: "idle",
+      committedAwaitingRemote: "b",
+      pendingRemote: null,
+    });
   });
 
   it("saveSuccess leaves state alone if user kept typing during the save", () => {
@@ -245,7 +257,12 @@ describe("instantFieldReducer — save lifecycle", () => {
     };
     expect(
       instantFieldReducer(s, { type: "saveSuccess", pendingValue: "b" })
-    ).toEqual(idle("b"));
+    ).toEqual({
+      localValue: "b",
+      status: "idle",
+      committedAwaitingRemote: "b",
+      pendingRemote: null,
+    });
   });
 
   it("saveError reverts localValue to the server value and surfaces error", () => {
@@ -280,6 +297,48 @@ describe("instantFieldReducer — save lifecycle", () => {
         serverValue: "stale-server",
       })
     ).toEqual(errored("peer"));
+  });
+});
+
+describe("instantFieldReducer — committedAwaitingRemote (post-save flicker guard)", () => {
+  const justCommitted = <T,>(value: T): InstantFieldState<T> => ({
+    localValue: value,
+    status: "idle",
+    committedAwaitingRemote: value,
+    pendingRemote: null,
+  });
+
+  it("ignores a stale remote value after saveSuccess until realtime catches up", () => {
+    // Field just saved "b". A remote update with the pre-save "a" arrives
+    // (realtime is still in flight). It must be dropped, not snap us back.
+    const s = justCommitted("b");
+    expect(instantFieldReducer(s, { type: "remote", value: "a" })).toBe(s);
+  });
+
+  it("clears the committed flag when remote finally matches", () => {
+    const s = justCommitted("b");
+    expect(
+      instantFieldReducer(s, { type: "remote", value: "b" })
+    ).toEqual(idle("b"));
+  });
+
+  it("set() clears the committed flag (user moved on)", () => {
+    const s = justCommitted("b");
+    expect(
+      instantFieldReducer(s, { type: "set", value: "c" })
+    ).toEqual(dirty("c"));
+  });
+
+  it("saveError clears the committed flag", () => {
+    const s: InstantFieldState<string> = {
+      localValue: "typed",
+      status: "saving",
+      committedAwaitingRemote: "b",
+      pendingRemote: null,
+    };
+    expect(
+      instantFieldReducer(s, { type: "saveError", serverValue: "server" })
+    ).toEqual(errored("server"));
   });
 });
 

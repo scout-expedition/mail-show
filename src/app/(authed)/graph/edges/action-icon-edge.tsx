@@ -16,6 +16,13 @@ import type { ActiveImpact } from "@/lib/graph-overlay";
 
 export type ActionIconEdgeData = {
   color: string;
+  /**
+   * Optional override for the action-chip background, used when the line
+   * itself is muted (e.g. `ln` edges paint a grey line into a next letter
+   * but the chip should keep the action's own color). Falls back to
+   * `color` when unset.
+   */
+  chipColor?: string;
   iconType: IconType;
   iconValue: string | null;
   actionName: string;
@@ -32,18 +39,76 @@ export type ActionIconEdgeData = {
   /** Horizontal nudge applied to the path's target endpoint so converging
    * arrowheads on the same letter/report don't stack at one point. */
   targetXOffset?: number;
+  /** Horizontal nudge applied to the path's SOURCE endpoint. Used to
+   * spread sn-edge departures across a report's bottom edge so each
+   * outgoing line aligns with the matching action's arrival on top. */
+  sourceXOffset?: number;
   /** True when this action sets an ending variable and the ending overlay is on. */
   hasEnding?: boolean;
   /** True when this chip is the active inspector selection. */
   selected?: boolean;
+  /** Avatar color used for the self-selection ring. Falls back to var(--ring). */
+  selfRingColor?: string;
+  /** Avatar colors of peers co-selecting this chip — stacked outer rings. */
+  peerRingColors?: string[];
+  /** True while a delete-action is in flight — chip + lines fade and
+   *  pulse so the user sees the optimistic removal in progress. */
+  pendingDelete?: boolean;
+  /** True while a reconnect / link change is in flight (chip already
+   *  snapped to the new target). Adds a subtle pulse on the chip so
+   *  the user sees that the change is still saving. */
+  optimisticPending?: boolean;
   /** Click handler that opens the inspector panel for this action. */
   onSelect?: () => void;
+  /** Right-click handler attached to the chip — used to surface a small
+   *  Delete Action context menu on the graph. */
+  onContextMenu?: (event: React.MouseEvent) => void;
   /** Hide the chip icon+badges (e.g., report → next-letter continuations); just draw the colored line. */
   hideChip?: boolean;
+  /**
+   * Edge represents a broken timing chain — the triggering letter's
+   * effective day is the same as or after the report's effective day, so
+   * the report can't actually include the letter's outcome. Renders the
+   * path as a destructive-color dashed line.
+   */
+  invalid?: boolean;
+  /**
+   * When true, the edge's arrow terminator is replaced with a small
+   * circle "connector". Reconnectable arrows become drag-to-retarget
+   * handles; non-reconnectable arrows just render as static circles.
+   */
+  editingEnabled?: boolean;
+  /** When the connector represents a reconnectable target end, render it
+   *  in the line's color (matches the chip drag affordance). */
+  reconnectable?: boolean;
 };
 
 const CHIP_PX = 20;
 const CHIP_TO_BADGES_GAP_PX = 3;
+
+/**
+ * Mirror of `composeSelectionShadow` in pills.tsx, scoped to the chip
+ * button. Self ring sits inside (1px bg gap + 2px ring), peer rings stack
+ * outward in 2px slabs.
+ */
+function composeChipShadow(opts: {
+  selected?: boolean;
+  selfRingColor?: string;
+  peerRingColors?: string[];
+}): string | undefined {
+  const parts: string[] = [];
+  if (opts.selected) {
+    parts.push(`0 0 0 1px var(--background)`);
+    parts.push(`0 0 0 3px ${opts.selfRingColor ?? "var(--ring)"}`);
+  }
+  if (opts.peerRingColors?.length) {
+    const baseRadius = opts.selected ? 3 : 0;
+    opts.peerRingColors.forEach((c, i) => {
+      parts.push(`0 0 0 ${baseRadius + (i + 1) * 2}px ${c}`);
+    });
+  }
+  return parts.length > 0 ? parts.join(", ") : undefined;
+}
 
 function ActionIconEdgeComponent({
   id,
@@ -55,11 +120,25 @@ function ActionIconEdgeComponent({
   data,
 }: EdgeProps) {
   const d = data as unknown as ActionIconEdgeData;
-  const color = d.color || "#ffffff";
+  const invalid = !!d.invalid;
+  const color = invalid ? "#ef4444" : d.color || "#ffffff";
   const terminator = d.terminator ?? "arrow";
   const chipX = d.chipX;
   const chipY = d.chipY;
   const hideChip = !!d.hideChip;
+  // Pending-delete fades the whole edge; optimistic-pending leaves it
+  // at full color but the chip+lines pulse.
+  const pendingDelete = !!d.pendingDelete;
+  const optimisticPending = !!d.optimisticPending;
+  const baseOpacity = pendingDelete ? 0.4 : 1;
+  const strokeStyle = invalid
+    ? {
+        stroke: color,
+        strokeWidth: 1.75,
+        strokeDasharray: "6 4",
+        opacity: baseOpacity,
+      }
+    : { stroke: color, strokeWidth: 1.75, opacity: baseOpacity };
 
   // Cubic bezier segments so the line leaves the source and arrives at the
   // target perpendicular to the pill edges (vertical exit / entry via
@@ -72,18 +151,21 @@ function ActionIconEdgeComponent({
   // arrowhead closer to vertical instead of cutting in at a shallow
   // angle.
   const CURVATURE = 0.5;
-  // Stop the path a couple px short of the actual target Y so the
-  // arrowhead's back edge lines up centered on the line. Without this,
-  // SVG's marker is placed with its TIP at the path endpoint and the
-  // line appears to enter the arrow off-center.
-  const ARROW_PULLBACK = 3;
-  const arrowTargetY = targetY - ARROW_PULLBACK;
+  // In edit mode the terminator is a 12px circle (no SVG arrowhead);
+  // tuck it inside the target box's top edge so it reads as attached to
+  // the letter/report it points at. In locked mode the SVG arrowhead's
+  // tip lands right on the box edge — no pullback — so the line meets
+  // the arrowhead's back cleanly with no floating gap.
+  const CONNECTOR_TUCK = 8;
+  const arrowTargetY = d.editingEnabled ? targetY + CONNECTOR_TUCK : targetY;
   // Spread converging arrowheads across the target's top edge.
   const arrowTargetX = targetX + (d.targetXOffset ?? 0);
+  // Mirror spread on the source side (used for `sn` exits from a report).
+  const adjustedSourceX = sourceX + (d.sourceXOffset ?? 0);
   const single =
     hideChip && terminator === "arrow"
       ? getBezierPath({
-          sourceX,
+          sourceX: adjustedSourceX,
           sourceY,
           targetX: arrowTargetX,
           targetY: arrowTargetY,
@@ -95,7 +177,7 @@ function ActionIconEdgeComponent({
   const [path1] = single
     ? [null]
     : getBezierPath({
-        sourceX,
+        sourceX: adjustedSourceX,
         sourceY,
         targetX: chipX,
         targetY: chipY,
@@ -123,58 +205,114 @@ function ActionIconEdgeComponent({
       ? chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX
       : chipX - CHIP_PX / 2 - CHIP_TO_BADGES_GAP_PX;
 
+  // Selection halo: when the action is selected, paint a wider, partly
+  // transparent stroke beneath each segment in the user's avatar color
+  // so the line itself reads as selected — mirrors the ring around the
+  // chip. Falls back to `var(--ring)` when no avatar color is wired.
+  const haloColor = d.selfRingColor ?? "var(--ring)";
+  const haloStyle = {
+    stroke: haloColor,
+    strokeWidth: 5,
+    opacity: 0.55,
+  };
+  const selected = !!d.selected;
   return (
     <>
+      {selected && single ? (
+        <BaseEdge id={`${id}-halo-s`} path={single} style={haloStyle} />
+      ) : null}
+      {selected && path1 ? (
+        <BaseEdge id={`${id}-halo-a`} path={path1} style={haloStyle} />
+      ) : null}
+      {selected && path2 ? (
+        <BaseEdge id={`${id}-halo-b`} path={path2} style={haloStyle} />
+      ) : null}
       {single ? (
         <BaseEdge
           id={`${id}-s`}
           path={single}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
           markerEnd={markerEnd}
         />
       ) : path1 ? (
         <BaseEdge
           id={`${id}-a`}
           path={path1}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
         />
       ) : null}
       {path2 ? (
         <BaseEdge
           id={`${id}-b`}
           path={path2}
-          style={{ stroke: color, strokeWidth: 1.75 }}
+          style={strokeStyle}
           markerEnd={markerEnd}
         />
       ) : null}
 
+      {d.editingEnabled && terminator === "arrow" ? (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${arrowTargetX}px, ${arrowTargetY}px)`,
+              pointerEvents: "none",
+              // Keep connector terminus circles on the top layer so they
+              // sit over letter-group / report-cluster outline boxes.
+              zIndex: 1000,
+            }}
+            aria-hidden
+          >
+            <div
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                background: color,
+                border: "1.5px solid var(--background)",
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.45)",
+              }}
+            />
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
       {hideChip ? null : (
       <EdgeLabelRenderer>
         <div
-          className="nodrag nopan"
+          className={
+            "nodrag nopan" +
+            (pendingDelete || optimisticPending ? " animate-pulse" : "")
+          }
           style={{
             position: "absolute",
             transform: `translate(-50%, -50%) translate(${chipX}px, ${chipY}px)`,
             pointerEvents: "none",
             zIndex: 10,
+            opacity: baseOpacity,
           }}
           title={d.actionName}
         >
           <button
             type="button"
             onClick={d.onSelect}
+            onContextMenu={d.onContextMenu}
             onPointerDown={(e) => e.stopPropagation()}
-            className={
-              "relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0" +
-              (d.selected
-                ? " ring-2 ring-ring ring-offset-1 ring-offset-background"
-                : "")
-            }
+            className="relative inline-flex h-5 w-5 items-center justify-center rounded-md border-0"
             style={{
-              background: color,
-              color: readableOnHex(color),
+              background: invalid
+                ? color
+                : d.chipColor ?? color,
+              color: readableOnHex(
+                invalid ? color : d.chipColor ?? color
+              ),
               pointerEvents: "auto",
               cursor: d.onSelect ? "pointer" : "default",
+              boxShadow: composeChipShadow({
+                selected: d.selected,
+                selfRingColor: d.selfRingColor,
+                peerRingColors: d.peerRingColors,
+              }),
             }}
           >
             {d.iconValue ? (
