@@ -18,21 +18,25 @@ import {
 } from "./evaluator";
 import type { EndingLogicKind } from "@/lib/db/enums";
 
-const textVar = (id: string): EvalVariable => ({
+const textVar = (id: string, name = id): EvalVariable => ({
   id,
+  name,
   kind: "text",
   aggregate_ref: null,
 });
-const numVar = (id: string): EvalVariable => ({
+const numVar = (id: string, name = id): EvalVariable => ({
   id,
+  name,
   kind: "number_ref",
   aggregate_ref: null,
 });
 const aggVar = (
   id: string,
-  ref: "class_affinity" | "nation_affinity"
+  ref: "class_affinity" | "nation_affinity",
+  name = id
 ): EvalVariable => ({
   id,
+  name,
   kind: "aggregate_ref",
   aggregate_ref: ref,
 });
@@ -1602,5 +1606,227 @@ describe("resolveAggregatesDetailed / nation tiebreak random", () => {
     );
     expect(res?.rollPool).toHaveLength(2);
     expect(["folos", "emberlyn"]).toContain(res?.value);
+  });
+});
+
+describe("text substitution: @[Name]", () => {
+  // All cases run through `evaluateFramework`, which funnels every text
+  // block through `renderBlocks` → `substituteVariables`. Asserting at
+  // this level proves the wiring (Indexes builds the name + value maps;
+  // selections + values flow through) end-to-end.
+
+  function buildInputs(
+    text: string,
+    variables: EvalVariable[],
+    selections: PreviewSelections,
+    values: Array<{ id: string; variable_id: string; value: string }> = []
+  ): EvalInputs {
+    return {
+      blocks: [textBlock("t1", text)],
+      rows: [],
+      chips: [],
+      variables,
+      selections,
+      values: values.map((v) => ({
+        id: v.id,
+        variable_id: v.variable_id,
+        value: v.value,
+        sort_order: 0,
+      })),
+    };
+  }
+
+  it("substitutes a text variable's selected value", () => {
+    const v = textVar("v1", "Mainstage Performer");
+    const out = evaluateFramework(
+      buildInputs(
+        "The concert was headlined by @[Mainstage Performer].",
+        [v],
+        textSelections({ v1: "val-winterose" }),
+        [{ id: "val-winterose", variable_id: "v1", value: "Winterose" }]
+      )
+    );
+    expect(out).toEqual(["The concert was headlined by Winterose."]);
+  });
+
+  it("leaves token literal when text variable has no selection", () => {
+    const v = textVar("v1", "Mainstage Performer");
+    const out = evaluateFramework(
+      buildInputs(
+        "Headlined by @[Mainstage Performer].",
+        [v],
+        textSelections({ v1: null }),
+        [{ id: "val-x", variable_id: "v1", value: "Winterose" }]
+      )
+    );
+    expect(out).toEqual(["Headlined by @[Mainstage Performer]."]);
+  });
+
+  it("substitutes a number_ref variable", () => {
+    const v = numVar("v1", "Demerits");
+    const out = evaluateFramework(
+      buildInputs(
+        "You earned @[Demerits] demerits.",
+        [v],
+        numSelections({ v1: 7 })
+      )
+    );
+    expect(out).toEqual(["You earned 7 demerits."]);
+  });
+
+  it("leaves token literal when number_ref variable has no value", () => {
+    const v = numVar("v1", "Demerits");
+    const out = evaluateFramework(
+      buildInputs("Score: @[Demerits].", [v], numSelections({ v1: null }))
+    );
+    expect(out).toEqual(["Score: @[Demerits]."]);
+  });
+
+  it("substitutes an aggregate_ref variable using VARIABLE_LABELS", () => {
+    const v = aggVar("v1", "class_affinity", "Class Winner");
+    const selections: PreviewSelections = {
+      textValueIds: {},
+      numbers: {},
+      resolved_aggregates: new Map([["class_affinity|top", "proletariat"]]),
+    };
+    const out = evaluateFramework(
+      buildInputs("The winning class is @[Class Winner].", [v], selections)
+    );
+    // VARIABLE_LABELS.proletariat = "Working Class"
+    expect(out).toEqual(["The winning class is Working Class."]);
+  });
+
+  it("leaves token literal when aggregate is unresolved", () => {
+    const v = aggVar("v1", "class_affinity", "Class Winner");
+    const out = evaluateFramework(
+      buildInputs("Class: @[Class Winner].", [v], {
+        textValueIds: {},
+        numbers: {},
+      })
+    );
+    expect(out).toEqual(["Class: @[Class Winner]."]);
+  });
+
+  it("leaves token literal when variable name is unknown", () => {
+    const v = textVar("v1", "RealName");
+    const out = evaluateFramework(
+      buildInputs(
+        "Hello @[Unknown Var].",
+        [v],
+        textSelections({ v1: "val-a" }),
+        [{ id: "val-a", variable_id: "v1", value: "X" }]
+      )
+    );
+    expect(out).toEqual(["Hello @[Unknown Var]."]);
+  });
+
+  it("substitutes multiple tokens in the same text", () => {
+    const a = textVar("v1", "First");
+    const b = textVar("v2", "Second");
+    const out = evaluateFramework(
+      buildInputs(
+        "First: @[First], Second: @[Second].",
+        [a, b],
+        textSelections({ v1: "val-a", v2: "val-b" }),
+        [
+          { id: "val-a", variable_id: "v1", value: "Alpha" },
+          { id: "val-b", variable_id: "v2", value: "Bravo" },
+        ]
+      )
+    );
+    expect(out).toEqual(["First: Alpha, Second: Bravo."]);
+  });
+
+  it("substitutes a token mid-sentence after punctuation", () => {
+    const v = textVar("v1", "Name");
+    const out = evaluateFramework(
+      buildInputs(
+        "Hello, @[Name]! Welcome.",
+        [v],
+        textSelections({ v1: "val-bob" }),
+        [{ id: "val-bob", variable_id: "v1", value: "Bob" }]
+      )
+    );
+    expect(out).toEqual(["Hello, Bob! Welcome."]);
+  });
+
+  it("does not substitute inside an email-like address", () => {
+    // The negative lookbehind keeps `email@[host.com]` from triggering
+    // substitution even though `host.com` is technically a valid name
+    // pattern.
+    const v = textVar("v1", "host.com");
+    const out = evaluateFramework(
+      buildInputs(
+        "Contact me at user@[host.com].",
+        [v],
+        textSelections({ v1: "val-x" }),
+        [{ id: "val-x", variable_id: "v1", value: "example.org" }]
+      )
+    );
+    expect(out).toEqual(["Contact me at user@[host.com]."]);
+  });
+
+  it("does not substitute @@[Name] (double-at)", () => {
+    const v = textVar("v1", "Name");
+    const out = evaluateFramework(
+      buildInputs(
+        "Literal @@[Name] stays.",
+        [v],
+        textSelections({ v1: "val-x" }),
+        [{ id: "val-x", variable_id: "v1", value: "X" }]
+      )
+    );
+    expect(out).toEqual(["Literal @@[Name] stays."]);
+  });
+
+  it("leaves empty brackets @[] literal", () => {
+    const out = evaluateFramework(
+      buildInputs("Empty @[] token.", [], { textValueIds: {}, numbers: {} })
+    );
+    expect(out).toEqual(["Empty @[] token."]);
+  });
+
+  it("handles names with spaces and punctuation", () => {
+    const v = textVar("v1", "City of Brass");
+    const out = evaluateFramework(
+      buildInputs(
+        "Welcome to @[City of Brass].",
+        [v],
+        textSelections({ v1: "val-c" }),
+        [{ id: "val-c", variable_id: "v1", value: "the capital" }]
+      )
+    );
+    expect(out).toEqual(["Welcome to the capital."]);
+  });
+
+  it("nested brackets resolve to the inner name (regex stops at first `]`)", () => {
+    // `@[Foo[Bar]]` matches `@[Foo[Bar]` capturing `Foo[Bar`. That's not
+    // a real variable name → token left literal.
+    const v = textVar("v1", "RealName");
+    const out = evaluateFramework(
+      buildInputs(
+        "Nested @[Foo[Bar]] stays.",
+        [v],
+        textSelections({ v1: "val-a" }),
+        [{ id: "val-a", variable_id: "v1", value: "X" }]
+      )
+    );
+    expect(out[0]).toContain("@[Foo[Bar]");
+  });
+
+  it("legacy callers without `values` see no substitution but no crash", () => {
+    // The `values` field on EvalInputs is optional. Callers that omit it
+    // (older tests, static-analysis paths) get an empty `valuesById`
+    // map — text variables can't resolve, so tokens stay literal.
+    const v = textVar("v1", "Name");
+    const out = evaluateFramework({
+      blocks: [textBlock("t1", "Hi @[Name].")],
+      rows: [],
+      chips: [],
+      variables: [v],
+      selections: textSelections({ v1: "val-x" }),
+      // values intentionally omitted
+    });
+    expect(out).toEqual(["Hi @[Name]."]);
   });
 });

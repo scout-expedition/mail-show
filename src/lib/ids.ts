@@ -23,6 +23,14 @@ export function formatReportId(params: {
   return `R-${storylineAbbreviation}${groupSequence}/${variant}`;
 }
 
+/** Format a generic day-report id: R-D[day number]/[variant]. */
+export function formatDayReportId(params: {
+  dayNumber: number;
+  variant: string;
+}): string {
+  return `R-D${params.dayNumber}/${params.variant}`;
+}
+
 /** Format a sorting-letter content id: S#-##. */
 export function formatSortingLetterId(params: {
   dayNumber: number;

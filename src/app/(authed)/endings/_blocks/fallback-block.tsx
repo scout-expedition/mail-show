@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { GripVertical } from "lucide-react";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
@@ -10,12 +11,17 @@ import {
   RANDOM_SUBSET_SENTINEL_PREFIX,
 } from "@/lib/db/enums";
 import type { BlockState } from "@/lib/endings/block-state";
+import { patchBlock } from "../_shared/document-actions";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
+import { SubsetPills } from "./subset-pills";
 
 export type FallbackOption = { value: string; label: string };
 
-/** Marker value for the "Random (custom subset)" dropdown row. The
- *  picker rewrites this to a real subset sentinel once the user has
- *  toggled the framework checkboxes. Mirrors result-block.tsx. */
+/** Marker value for the "Random (subset)" dropdown row. The picker
+ *  rewrites this to a real subset sentinel once the user has toggled
+ *  the framework pills. Mirrors result-block.tsx. */
 const SUBSET_PICKER_VALUE = `${RANDOM_SUBSET_SENTINEL_PREFIX}__pending__`;
 
 /**
@@ -45,7 +51,6 @@ export function FallbackBlock({
   helperText,
   emptyLabel,
   title,
-  onChange,
 }: {
   block: BlockState;
   options: FallbackOption[];
@@ -57,46 +62,59 @@ export function FallbackBlock({
   emptyLabel: string;
   /** Header label on the panel. Defaults to "Fallback ending". */
   title?: string;
-  onChange: (result_value: string | null) => void;
 }) {
-  const value = block.result_value ?? "";
+  const { peers, setFocus } = usePresenceContext();
+  // Fallback result_value autosaves through patchBlock. Empty-string is
+  // stored as null so the column reflects "no fallback set".
+  const resultField = useInstantField<string>({
+    value: block.result_value ?? "",
+    onCommit: (v) =>
+      patchBlock(block.id, { result_value: v === "" ? null : v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "result_value" }
+          : null
+      ),
+  });
+  // Local working copy of the subset selection while editing. null =
+  // not editing (picker reflects the saved value); a non-null array
+  // (including []) drives the picker, so the selection can sit at zero
+  // until the author picks at least one framework.
+  const [subsetDraft, setSubsetDraft] = useState<string[] | null>(null);
+  const value = resultField.value;
   const isEmpty = value === "";
   const subset = subsetEnabled ? parseRandomSubset(value) : null;
   const isSubset = subset != null;
+  const showSubsetPicker = isSubset || subsetDraft != null;
+  const subsetSelected = subsetDraft ?? subset ?? [];
   const valueKnown =
     isEmpty || isSubset || options.some((o) => o.value === value);
 
-  const subsetSize = subset?.length ?? 0;
-  const subsetTotal = subsetFrameworks?.length ?? 0;
-  const subsetLabel = isSubset
-    ? `Random (subset: ${subsetSize}${
-        subsetTotal > 0 ? ` of ${subsetTotal}` : ""
-      })`
-    : "";
-
   function handleSelectChange(next: string) {
     if (next === SUBSET_PICKER_VALUE) {
-      const defaultIds = (subsetFrameworks ?? []).map((f) => f.value);
-      if (defaultIds.length === 0) return;
-      onChange(formatRandomSubset(defaultIds));
+      // Open the picker empty; nothing is persisted until a pill is on.
+      setSubsetDraft([]);
       return;
     }
-    onChange(next || null);
+    setSubsetDraft(null);
+    resultField.set(next);
   }
 
   function toggleSubsetId(id: string) {
-    if (!isSubset) return;
-    const current = new Set(subset);
+    const current = new Set(subsetDraft ?? subset ?? []);
     if (current.has(id)) current.delete(id);
     else current.add(id);
-    if (current.size === 0) return;
     const ordered = (subsetFrameworks ?? [])
       .map((f) => f.value)
       .filter((id2) => current.has(id2));
     for (const id2 of current) {
       if (!ordered.includes(id2)) ordered.push(id2);
     }
-    onChange(formatRandomSubset(ordered));
+    // Mirror the selection locally; an empty set stays empty (not
+    // persistable) — persist only with at least one framework.
+    setSubsetDraft(ordered);
+    if (ordered.length > 0) resultField.set(formatRandomSubset(ordered));
   }
 
   return (
@@ -108,13 +126,15 @@ export function FallbackBlock({
         <p className="text-[11px] text-muted-foreground">{helperText}</p>
       </div>
       <div
-        className="relative flex items-stretch rounded-md border border-[var(--block-border)]"
+        className="relative flex items-center self-start rounded-md border border-[var(--block-border)]"
         style={{ backgroundColor: "var(--block-card)" }}
       >
-        <span aria-hidden className="invisible w-2.5 shrink-0">
-          <GripVertical size={10} />
+        {/* Invisible grip — width matches a result block's drag handle
+            so the arrow + dropdown line up with one inside a row. */}
+        <span aria-hidden className="invisible w-6 shrink-0">
+          <GripVertical size={14} />
         </span>
-        <div className="flex flex-1 flex-col gap-2 py-2">
+        <div className="flex flex-1 flex-col gap-2 py-1.5 pl-2">
           <div className="flex items-center gap-2">
             <span
               aria-hidden
@@ -122,103 +142,52 @@ export function FallbackBlock({
             >
               →
             </span>
-            <Select
-              value={isSubset ? SUBSET_PICKER_VALUE : value}
-              onChange={(e) => handleSelectChange(e.target.value)}
-              style={{ backgroundColor: "var(--block-result-bg)" }}
-              className={cn(
-                "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
-                isEmpty &&
-                  "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground"
-              )}
+            <FieldHighlight
+              peers={peers}
+              focusKey={{
+                table: "ending_blocks",
+                recordId: block.id,
+                field: "result_value",
+              }}
             >
-              {isEmpty ? <option value="">{emptyLabel}</option> : null}
-              {!isEmpty && !valueKnown ? (
-                <option value={value}>(unknown: {value})</option>
-              ) : null}
-              {options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-              {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
-                <option value={SUBSET_PICKER_VALUE}>
-                  {isSubset ? subsetLabel : "Random (custom subset)…"}
-                </option>
-              ) : null}
-            </Select>
+              <Select
+                value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
+                onChange={(e) => handleSelectChange(e.target.value)}
+                onFocus={resultField.onFocus}
+                onBlur={resultField.onBlur}
+                style={{ backgroundColor: "var(--block-result-bg)" }}
+                className={cn(
+                  "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                  isEmpty &&
+                    !showSubsetPicker &&
+                    "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                  resultField.status === "error" && "ring-2 ring-destructive"
+                )}
+              >
+                {isEmpty ? <option value="">{emptyLabel}</option> : null}
+                {!isEmpty && !valueKnown ? (
+                  <option value={value}>(unknown: {value})</option>
+                ) : null}
+                {options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
+                  <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
+                ) : null}
+              </Select>
+            </FieldHighlight>
           </div>
-          {isSubset && subsetFrameworks ? (
-            <FallbackSubsetPicker
+          {showSubsetPicker && subsetFrameworks ? (
+            <SubsetPills
               frameworks={subsetFrameworks}
-              selectedIds={subset!}
+              selectedIds={subsetSelected}
               onToggle={toggleSubsetId}
             />
           ) : null}
         </div>
       </div>
     </section>
-  );
-}
-
-function FallbackSubsetPicker({
-  frameworks,
-  selectedIds,
-  onToggle,
-}: {
-  frameworks: FallbackOption[];
-  selectedIds: string[];
-  onToggle: (id: string) => void;
-}) {
-  const selectedSet = new Set(selectedIds);
-  const known = new Set(frameworks.map((f) => f.value));
-  const missing = selectedIds.filter((id) => !known.has(id));
-  return (
-    <div
-      className="ml-4 grid grid-cols-1 gap-1 rounded-md border border-transparent p-2 sm:grid-cols-2"
-      style={{ backgroundColor: "var(--block-result-bg)" }}
-    >
-      {frameworks.length === 0 ? (
-        <p className="col-span-full text-[11px] italic text-muted-foreground">
-          No frameworks available.
-        </p>
-      ) : null}
-      {frameworks.map((f) => {
-        const checked = selectedSet.has(f.value);
-        const disable = checked && selectedIds.length === 1;
-        return (
-          <label
-            key={f.value}
-            className={cn(
-              "flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-muted/30",
-              disable && "cursor-not-allowed opacity-60"
-            )}
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              disabled={disable}
-              onChange={() => onToggle(f.value)}
-              className="h-3 w-3"
-            />
-            <span className="truncate">{f.label}</span>
-          </label>
-        );
-      })}
-      {missing.map((id) => (
-        <label
-          key={id}
-          className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-warning-foreground hover:bg-warning/10"
-        >
-          <input
-            type="checkbox"
-            checked
-            onChange={() => onToggle(id)}
-            className="h-3 w-3"
-          />
-          <span className="truncate">(missing framework: {id})</span>
-        </label>
-      ))}
-    </div>
   );
 }

@@ -15,21 +15,25 @@ import type { EndingLogicKind } from "@/lib/db/enums";
 // helpers
 // ----------------------------------------------------------------------
 
-const textVar = (id: string): EvalVariable => ({
+const textVar = (id: string, name = id): EvalVariable => ({
   id,
+  name,
   kind: "text",
   aggregate_ref: null,
 });
-const numVar = (id: string): EvalVariable => ({
+const numVar = (id: string, name = id): EvalVariable => ({
   id,
+  name,
   kind: "number_ref",
   aggregate_ref: null,
 });
 const aggVar = (
   id: string,
-  ref: "class_affinity" | "nation_affinity"
+  ref: "class_affinity" | "nation_affinity",
+  name = id
 ): EvalVariable => ({
   id,
+  name,
   kind: "aggregate_ref",
   aggregate_ref: ref,
 });

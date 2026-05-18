@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { IconDisplay } from "@/components/icon-display";
 import { PanelHeader } from "@/components/panel";
 import type { Nation } from "@/lib/db/types";
+import type { IconType } from "@/lib/db/enums";
 import {
   DEFAULT_IMPACT_FILTER,
   IMPACT_CLASSES,
@@ -266,7 +267,7 @@ type VariableItem = {
   id: string;
   label: string;
   color: string;
-  iconType: "tabler" | "lucide" | "emoji" | "svg";
+  iconType: IconType;
   iconValue: string | null;
   checked: boolean;
 };

@@ -1,0 +1,6 @@
+PROJECT_NAME="mail-show"
+PROJECT_EMOJI="📬"
+PROJECT_ROOT="$HOME/Documents/code/mail-show"
+WORKTREES_ROOT="$HOME/Documents/code/mail-show-worktrees"
+INSTALL_CMD="npm install"
+ENV_FILES=(".env.local" )

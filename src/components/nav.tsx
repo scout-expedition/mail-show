@@ -12,10 +12,10 @@ import {
   Users,
   Map as MapIcon,
   MapPin,
+  Megaphone,
   Flag,
   Inbox,
   Menu,
-  Milestone,
   Network,
   Ruler,
   Package,
@@ -24,7 +24,7 @@ import {
   Settings,
   Variable,
 } from "lucide-react";
-import { IconMailOpened } from "@tabler/icons-react";
+import { IconBolt, IconMailOpened } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
@@ -33,7 +33,14 @@ const NAV_ITEMS: Array<{
   href: string;
   label: string;
   icon: NavIcon;
-  section: "Game" | "Sorting" | "Inspection" | "Endings" | "Data" | "Run";
+  section:
+    | "Game"
+    | "Sorting"
+    | "Inspection"
+    | "Top of Day"
+    | "Endings"
+    | "Data"
+    | "Run";
 }> = [
   { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
   { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
@@ -43,7 +50,8 @@ const NAV_ITEMS: Array<{
   { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
   { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
   { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
-  { href: "/inspection/actions", label: "Actions", icon: Milestone, section: "Inspection" },
+  { href: "/inspection/actions", label: "Actions", icon: IconBolt, section: "Inspection" },
+  { href: "/top-of-day/morning-reports", label: "Morning Reports", icon: Megaphone, section: "Top of Day" },
   { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
   { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
   { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
@@ -107,6 +115,7 @@ export function Nav() {
   const inlineMenu = isInlineMenuPath(pathname);
   const sections = [
     "Game",
+    "Top of Day",
     "Sorting",
     "Inspection",
     "Endings",
@@ -157,9 +166,13 @@ export function Nav() {
         className={cn(
           "flex h-full w-56 shrink-0 flex-col gap-4 border-r border-border bg-card px-3 py-4",
           // Always a fixed overlay; at lg+ on non-force-narrow routes the
-          // overlay becomes inline.
+          // overlay becomes inline. The nav is rendered AFTER page content
+          // in the DOM (so Tab reaches the page first); lg:order-1 pulls it
+          // back to the left visually.
           "fixed inset-y-0 left-0 z-30 shadow-xl transition-transform duration-200",
-          forceNarrow ? null : "lg:static lg:translate-x-0 lg:shadow-none",
+          forceNarrow
+            ? null
+            : "lg:static lg:order-1 lg:translate-x-0 lg:shadow-none",
           open
             ? "translate-x-0"
             : forceNarrow
@@ -188,7 +201,10 @@ export function Nav() {
                     key={item.href}
                     href={item.href}
                     className={cn(
-                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+                      // Inset focus ring — the scrolling section list
+                      // (overflow-y-auto) would clip an outset ring/
+                      // outline on links near its edges.
+                      "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                       active
                         ? "bg-accent text-accent-foreground"
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"

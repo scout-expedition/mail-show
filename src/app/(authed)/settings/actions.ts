@@ -12,6 +12,8 @@ import {
   validatePassword,
 } from "@/lib/auth/validation";
 import { ICON_TYPES, type IconType } from "@/lib/db/enums";
+import { profileFromMetadata } from "@/lib/auth/profile";
+import { pickRandomAvatar } from "@/lib/auth/assign-avatar";
 
 function parseAvatarFields(formData: FormData): {
   avatar_icon_type: IconType | null;
@@ -39,6 +41,11 @@ async function siteOrigin(): Promise<string> {
   return `${protocol}://${host}`;
 }
 
+function confirmUrl(origin: string, next: string): string {
+  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+  return `${origin}/auth/confirm?next=${encodeURIComponent(safeNext)}`;
+}
+
 export type InviteState =
   | { status: "idle" }
   | { status: "success"; email: string }
@@ -51,16 +58,20 @@ export async function inviteUser(
   const check = validateEmail(formData.get("email"));
   if (!check.ok) return { status: "error", error: check.error };
 
-  const h = await headers();
-  const host = h.get("host") ?? "localhost:3000";
-  const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
-  const redirectTo = `${protocol}://${host}/auth/callback?next=${encodeURIComponent(
-    "/auth/set-password"
-  )}`;
+  const origin = await siteOrigin();
+  const redirectTo = confirmUrl(origin, "/auth/set-password");
 
   const service = createSupabaseServiceClient();
+
+  const { data: usersData } = await service.auth.admin.listUsers({ perPage: 200 });
+  const existingProfiles = (usersData?.users ?? []).map((u) =>
+    profileFromMetadata(u.user_metadata)
+  );
+  const avatar = pickRandomAvatar(existingProfiles);
+
   const { error } = await service.auth.admin.inviteUserByEmail(check.email, {
     redirectTo,
+    data: avatar,
   });
   if (error) return { status: "error", error: error.message };
 
@@ -73,9 +84,7 @@ export async function adminResetPassword(formData: FormData) {
   if (!check.ok) throw new Error(check.error);
 
   const origin = await siteOrigin();
-  const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent(
-    "/auth/set-password"
-  )}`;
+  const redirectTo = confirmUrl(origin, "/auth/set-password");
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.resetPasswordForEmail(check.email, {
@@ -89,9 +98,7 @@ export async function adminSendMagicLink(formData: FormData) {
   if (!check.ok) throw new Error(check.error);
 
   const origin = await siteOrigin();
-  const emailRedirectTo = `${origin}/auth/callback?next=${encodeURIComponent(
-    "/dashboard"
-  )}`;
+  const emailRedirectTo = confirmUrl(origin, "/dashboard");
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithOtp({

@@ -74,9 +74,12 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <PresenceUserProvider value={presenceUser}>
       <NavStateProvider>
+      {/* Page content is rendered BEFORE <Nav /> in the DOM so Tab walks
+          the page's form fields first; the nav is placed back on the
+          left visually via `lg:order-1` (see nav.tsx). Keyboard users
+          reach the nav only after cycling the page. */}
       <div className="flex h-screen w-screen overflow-hidden">
-        <Nav />
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex flex-1 flex-col overflow-hidden lg:order-2">
           {/* Reserves room for the fixed nav Menu toggle so it doesn't
               overlap page content at narrow viewports. At lg+ the nav is
               inline and the toggle is hidden, so the spacer collapses —
@@ -110,6 +113,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </main>
         </div>
+        <Nav />
       </div>
       </NavStateProvider>
     </PresenceUserProvider>

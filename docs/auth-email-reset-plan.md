@@ -101,3 +101,81 @@ Modified: `src/app/sign-in/actions.ts`, `src/app/sign-in/sign-in-form.tsx`, `src
 Added: (none — reusing `/auth/set-password`)
 
 Deleted: (none)
+
+## Followup: token-hash flow + email template strings
+
+The original implementation pointed every auth email at `/auth/callback`, which
+called `exchangeCodeForSession(code)`. That's PKCE, and PKCE requires a
+`code_verifier` cookie in the recipient's browser — fine for user-initiated
+flows from the same browser, but **broken for every admin-generated email**
+(invites from `/settings`, "Send reset" / "Send magic link" from the Supabase
+dashboard). It was also fragile for the user-initiated reset because the
+default Supabase template routes through `/auth/v1/verify` first.
+
+Fix: switched to the Supabase-recommended **token-hash flow**.
+
+- New route `src/app/auth/confirm/route.ts` calls
+  `supabase.auth.verifyOtp({ token_hash, type })` and redirects to `next`.
+  Works for admin- and user-initiated links — no `code_verifier` cookie
+  needed.
+- Server actions now pass the **final destination** as `redirectTo`
+  (e.g. `${origin}/auth/set-password` for invites/resets,
+  `${origin}/dashboard` for magic links). The email template surfaces this
+  as `{{ .RedirectTo }}` and routes it through as `next`.
+- `/auth/callback` is left in place for any in-flight emails sent before
+  this change.
+
+### Email templates to paste into Supabase → Auth → Email Templates
+
+Templates use `{{ .RedirectTo }}` as the base of the link (not `{{ .SiteURL }}`)
+so the email's host follows whatever environment triggered the action. The
+server action sets `redirectTo` to `${origin}/auth/confirm?next=<final>`, and
+the template appends `&token_hash=…&type=…`. Trigger from prod → email goes
+to prod. Trigger from a Vercel preview → email goes to that preview. Trigger
+from localhost → email goes to localhost. No Site URL swap needed for
+preview/local testing.
+
+Replace the body of each template. The only difference between templates is
+the `type=` value.
+
+**Confirm signup** (`type=signup`):
+```html
+<h2>Confirm your signup</h2>
+<p>Follow this link to confirm your account:</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=signup">Confirm your account</a></p>
+```
+
+**Invite user** (`type=invite`):
+```html
+<h2>You're invited to Mail Show</h2>
+<p>Follow this link to accept your invite and set a password:</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=invite">Accept invite</a></p>
+```
+
+**Magic Link** (`type=magiclink`):
+```html
+<h2>Sign in to Mail Show</h2>
+<p>Follow this link to sign in:</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=magiclink">Sign in</a></p>
+```
+
+**Reset Password** (`type=recovery`):
+```html
+<h2>Reset your password</h2>
+<p>Follow this link to set a new password:</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=recovery">Reset password</a></p>
+```
+
+**Change Email Address** (`type=email_change`):
+```html
+<h2>Confirm your new email</h2>
+<p>Follow this link to confirm your new email address:</p>
+<p><a href="{{ .RedirectTo }}&token_hash={{ .TokenHash }}&type=email_change">Confirm email change</a></p>
+```
+
+Note the leading `&` (not `?`) — the server action's `redirectTo` already
+contains a `?next=…`, so the template just appends additional params.
+
+Supabase Redirect URLs allow list must permit `…/auth/confirm` paths. The
+existing wildcards `https://*.vercel.app/**` and `http://localhost:3000/**`
+cover all preview deployments and local dev — no dashboard change needed.

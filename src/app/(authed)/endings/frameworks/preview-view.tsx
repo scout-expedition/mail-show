@@ -7,10 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { GHOST_FIELD } from "@/components/panel";
 import { cn } from "@/lib/utils";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import {
   EMPTY_SELECTIONS,
   aggregateKey,
-  evaluateFramework,
+  evaluateDocumentDetailed,
   resolveAggregatesDetailed,
   shadowedRowIds,
   type EvalBlock,
@@ -20,6 +21,7 @@ import {
   type EvalVariable,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
+import type { SubstitutionSegment } from "@/lib/endings/text-substitution";
 import type {
   BlockState,
   ChipState,
@@ -50,6 +52,7 @@ export function PreviewView({
   selections,
   onChangeText,
   onChangeNumber,
+  flashColors,
   tiebreakInputs,
   nations,
 }: {
@@ -63,6 +66,8 @@ export function PreviewView({
   selections: PreviewSelections;
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
+  /** Transient peer-change highlights keyed by variable id. */
+  flashColors: Record<string, string>;
   tiebreakInputs?: Map<EndingLogicKind, EvalInputs>;
   nations?: Pick<
     Nation,
@@ -92,6 +97,7 @@ export function PreviewView({
       variables.map(
         (v): EvalVariable => ({
           id: v.id,
+          name: v.name,
           kind: v.kind,
           aggregate_ref: v.aggregate_ref,
         })
@@ -206,14 +212,42 @@ export function PreviewView({
       rows: rows as EvalRow[],
       chips: evalChips,
       variables: evalVariables,
+      values,
       selections: {
         ...baseSelections,
         resolved_aggregates: resolvedAggregates,
       },
     }),
-    [blocks, rows, evalChips, evalVariables, baseSelections, resolvedAggregates]
+    [
+      blocks,
+      rows,
+      evalChips,
+      evalVariables,
+      values,
+      baseSelections,
+      resolvedAggregates,
+    ]
   );
-  const paragraphs = useMemo(() => evaluateFramework(evalInputs), [evalInputs]);
+  const evaluation = useMemo(
+    () => evaluateDocumentDetailed(evalInputs),
+    [evalInputs]
+  );
+  const paragraphs = evaluation.paragraphs;
+  const paragraphSegments = evaluation.paragraphSegments;
+
+  // Names of variables that authored `@[Name]` tokens in the body but
+  // didn't resolve to a value (unknown name, unset selection, or
+  // unresolved aggregate). The right-side input list yellows their
+  // labels so authors can spot what still needs a value.
+  const unresolvedVariableNames = useMemo(() => {
+    const out = new Set<string>();
+    for (const segs of paragraphSegments) {
+      for (const seg of segs) {
+        if (seg.kind === "unresolved") out.add(seg.variableName);
+      }
+    }
+    return out;
+  }, [paragraphSegments]);
 
   // Aggregate ties surfaced on the framework's referenced chips. The
   // resolution itself happens in `resolveAggregates` above (rolls
@@ -377,31 +411,43 @@ export function PreviewView({
 
           {buckets.text.length > 0 ? (
             <div className="mb-2 grid gap-2 sm:grid-cols-2">
-              {buckets.text.map((v) => (
-                <div
-                  key={v.id}
-                  className="grid grid-cols-[1fr_1fr] items-center gap-2"
-                >
-                  <Label className="!text-xs">{v.name}</Label>
-                  <Select
-                    aria-label={v.name}
-                    value={selections.textValueIds[v.id] ?? ""}
-                    onChange={(e) =>
-                      onChangeText(v.id, e.target.value || null)
-                    }
-                    className={cn("h-8", GHOST_FIELD)}
+              {buckets.text.map((v) => {
+                const isUnresolved = unresolvedVariableNames.has(v.name);
+                return (
+                  <div
+                    key={v.id}
+                    className="grid grid-cols-[1fr_1fr] items-center gap-2"
                   >
-                    <option value="">—</option>
-                    {values
-                      .filter((val) => val.variable_id === v.id)
-                      .map((val) => (
-                        <option key={val.id} value={val.id}>
-                          {val.value}
-                        </option>
-                      ))}
-                  </Select>
-                </div>
-              ))}
+                    <Label
+                      className={cn(
+                        "!text-xs",
+                        isUnresolved && "text-amber-300"
+                      )}
+                    >
+                      {v.name}
+                    </Label>
+                    <FlashRing color={flashColors[v.id]}>
+                      <Select
+                        aria-label={v.name}
+                        value={selections.textValueIds[v.id] ?? ""}
+                        onChange={(e) =>
+                          onChangeText(v.id, e.target.value || null)
+                        }
+                        className={cn("h-8", GHOST_FIELD)}
+                      >
+                        <option value="">—</option>
+                        {values
+                          .filter((val) => val.variable_id === v.id)
+                          .map((val) => (
+                            <option key={val.id} value={val.id}>
+                              {val.value}
+                            </option>
+                          ))}
+                      </Select>
+                    </FlashRing>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
 
@@ -412,13 +458,14 @@ export function PreviewView({
                   {buckets.classImpacts.map((v) => {
                     const preset = presetFor(v);
                     return (
-                      <ImpactTile
-                        key={v.id}
-                        label={preset?.label ?? v.name}
-                        icon={preset?.icon}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <ImpactTile
+                          label={preset?.label ?? v.name}
+                          icon={preset?.icon}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -433,22 +480,24 @@ export function PreviewView({
                     if (!nation) {
                       const preset = presetFor(v);
                       return (
-                        <ImpactTile
-                          key={v.id}
-                          label={preset?.label ?? v.name}
-                          icon={preset?.icon}
-                          value={numericValue(v)}
-                          onChange={(n) => setNumeric(v, n)}
-                        />
+                        <FlashRing key={v.id} color={flashColors[v.id]}>
+                          <ImpactTile
+                            label={preset?.label ?? v.name}
+                            icon={preset?.icon}
+                            value={numericValue(v)}
+                            onChange={(n) => setNumeric(v, n)}
+                          />
+                        </FlashRing>
                       );
                     }
                     return (
-                      <NationImpactTile
-                        key={v.id}
-                        nation={nation}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <NationImpactTile
+                          nation={nation}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -459,13 +508,14 @@ export function PreviewView({
                   {buckets.worldImpacts.map((v) => {
                     const preset = presetFor(v);
                     return (
-                      <ImpactTile
-                        key={v.id}
-                        label={preset?.label ?? v.name}
-                        icon={preset?.icon}
-                        value={numericValue(v)}
-                        onChange={(n) => setNumeric(v, n)}
-                      />
+                      <FlashRing key={v.id} color={flashColors[v.id]}>
+                        <ImpactTile
+                          label={preset?.label ?? v.name}
+                          icon={preset?.icon}
+                          value={numericValue(v)}
+                          onChange={(n) => setNumeric(v, n)}
+                        />
+                      </FlashRing>
                     );
                   })}
                 </div>
@@ -481,23 +531,25 @@ export function PreviewView({
                   className="grid grid-cols-[1fr_1fr] items-center gap-2"
                 >
                   <Label className="!text-xs">{v.name}</Label>
-                  <Input
-                    aria-label={v.name}
-                    type="number"
-                    value={
-                      selections.numbers[v.id] == null
-                        ? ""
-                        : String(selections.numbers[v.id])
-                    }
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      onChangeNumber(
-                        v.id,
-                        raw === "" ? null : Number(raw)
-                      );
-                    }}
-                    className={cn("h-8", GHOST_FIELD)}
-                  />
+                  <FlashRing color={flashColors[v.id]}>
+                    <Input
+                      aria-label={v.name}
+                      type="number"
+                      value={
+                        selections.numbers[v.id] == null
+                          ? ""
+                          : String(selections.numbers[v.id])
+                      }
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        onChangeNumber(
+                          v.id,
+                          raw === "" ? null : Number(raw)
+                        );
+                      }}
+                      className={cn("h-8", GHOST_FIELD)}
+                    />
+                  </FlashRing>
                 </div>
               ))}
             </div>
@@ -569,15 +621,36 @@ export function PreviewView({
             (no blocks to render)
           </p>
         ) : (
-          paragraphs.map((para, i) => (
+          paragraphSegments.map((segments, i) => (
             <p key={i} className="whitespace-pre-wrap">
-              {para}
+              {segments.map((seg, j) => (
+                <PreviewSegment key={j} segment={seg} />
+              ))}
             </p>
           ))
         )}
       </article>
     </div>
   );
+}
+
+function PreviewSegment({ segment }: { segment: SubstitutionSegment }) {
+  if (segment.kind === "value") {
+    // Resolved variable value — render in the primary blue accent so
+    // authors can see where substitution occurred at a glance.
+    return <span className="text-[var(--primary)]">{segment.text}</span>;
+  }
+  if (segment.kind === "unresolved") {
+    // Literal `@[Name]` token that didn't resolve (unknown name, unset
+    // value, or unresolved aggregate). Yellow warning chrome matches
+    // the unset-input label in the right-hand panel.
+    return (
+      <span className="text-amber-300" title="Variable not set">
+        {segment.text}
+      </span>
+    );
+  }
+  return <>{segment.text}</>;
 }
 
 function chipSummary(

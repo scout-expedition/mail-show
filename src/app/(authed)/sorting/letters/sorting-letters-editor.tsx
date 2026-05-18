@@ -1,92 +1,148 @@
 "use client";
 
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/confirm-dialog";
-import type { Day, SortingLetterView } from "@/lib/db/types";
+import { useToast } from "@/components/toast";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type { PostgresChange } from "@/lib/realtime/channel";
+import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
 import {
-  deleteSortingLetter,
-  updateAllSortingLetters,
-} from "./actions";
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import type { Day, SortingLetterView } from "@/lib/db/types";
+import { deleteSortingLetter, patchSortingLetter } from "./actions";
 
-type RowState = {
-  id: string;
-  content_id: string;
-  day_id: string;
-  recipient_name: string;
-  sender_name: string;
-  storage_location: string;
-  is_counterfeit: boolean;
-};
+const POSTGRES_TABLES = ["sorting_letters"];
 
-function toRowState(l: SortingLetterView): RowState {
-  return {
-    id: l.id,
-    content_id: l.content_id,
-    day_id: l.day_id,
-    recipient_name: l.recipient_name ?? "",
-    sender_name: l.sender_name ?? "",
-    storage_location: l.storage_location ?? "",
-    is_counterfeit: l.is_counterfeit,
-  };
-}
+// ─── Public component: wraps inner in WorkspacePresenceProvider ──────────────
 
 export function SortingLettersEditor({
   letters,
+  days,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  letters: SortingLetterView[];
+  days: Day[];
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="sorting-letters"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={POSTGRES_TABLES}
+    >
+      <SortingLettersEditorInner
+        letters={letters}
+        days={days}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+// ─── Inner component (reads presence context) ────────────────────────────────
+
+function SortingLettersEditorInner({
+  letters: lettersProp,
   days,
 }: {
   letters: SortingLetterView[];
   days: Day[];
 }) {
-  const formRef = useRef<HTMLFormElement>(null);
-  const [rows, setRows] = useState<RowState[]>(() => letters.map(toRowState));
-  const [dirty, setDirty] = useState(false);
-  const [pending, startTransition] = useTransition();
+  const router = useRouter();
+  const { peers, onPostgresChanges } = usePresenceContext();
+  const { toast, toaster } = useToast();
+
+  // Mirror server array so postgres_changes can fan out without a page reload.
+  // "Adjust state during render" pattern keeps it in sync on structural revalidates.
+  const [letters, setLetters] = useState(lettersProp);
+  const [prevLettersProp, setPrevLettersProp] = useState(lettersProp);
+  if (lettersProp !== prevLettersProp) {
+    setPrevLettersProp(lettersProp);
+    setLetters(lettersProp);
+  }
+
   const [filterDayId, setFilterDayId] = useState<string>("");
 
+  // Debounced router.refresh for INSERT events from peers (view-derived columns
+  // like content_id require the RSC layer — can't be computed client-side).
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      startTransition(() => {
+        router.refresh();
+      });
+    }, 100);
+  }, [router]);
+
+  // postgres_changes subscription
   useEffect(() => {
-    setRows((prev) => {
-      const prevById = new Map(prev.map((r) => [r.id, r]));
-      const serverIds = new Set(letters.map((l) => l.id));
-      const kept = prev.filter((r) => serverIds.has(r.id));
-      const additions: RowState[] = [];
-      for (const l of letters) {
-        if (!prevById.has(l.id)) additions.push(toRowState(l));
+    return onPostgresChanges((change: PostgresChange) => {
+      const { table, eventType } = change;
+      if (table !== "sorting_letters") return;
+
+      if (eventType === "UPDATE") {
+        const newRow = change.new as Record<string, unknown>;
+        const id = newRow.id as string | undefined;
+        if (!id) return;
+        setLetters((prev) =>
+          prev.map((r) =>
+            r.id === id ? ({ ...r, ...newRow } as unknown as SortingLetterView) : r
+          )
+        );
+        return;
       }
-      if (additions.length === 0 && kept.length === prev.length) return prev;
-      return [...kept, ...additions];
-    });
-  }, [letters]);
 
-  function save() {
-    const form = formRef.current;
-    if (!form) return;
-    const fd = new FormData(form);
-    startTransition(async () => {
-      await updateAllSortingLetters(fd);
-      setDirty(false);
-    });
-  }
+      if (eventType === "DELETE") {
+        const oldRow = change.old as Record<string, unknown> | undefined;
+        const id = oldRow?.id as string | undefined;
+        if (!id) return;
+        setLetters((prev) => prev.filter((r) => r.id !== id));
+        toast({ intent: "destructive", message: "Someone deleted a sorting letter" });
+        return;
+      }
 
-  function updateRow(id: string, patch: Partial<RowState>) {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-    setDirty(true);
-  }
+      if (eventType === "INSERT") {
+        scheduleRefresh();
+        return;
+      }
+    });
+  }, [onPostgresChanges, toast, scheduleRefresh]);
 
   const view = useMemo(() => {
-    let list = rows.slice();
-    if (filterDayId) list = list.filter((r) => r.day_id === filterDayId);
-    return list;
-  }, [rows, filterDayId]);
+    if (!filterDayId) return letters;
+    return letters.filter((r) => r.day_id === filterDayId);
+  }, [letters, filterDayId]);
 
   return (
     <>
+      {toaster}
       <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
         <Label className="!text-xs">Day</Label>
         <Select
@@ -102,29 +158,10 @@ export function SortingLettersEditor({
             </option>
           ))}
         </Select>
-        <Button
-          type="button"
-          onClick={save}
-          variant={dirty ? "default" : "secondary"}
-          size="sm"
-          disabled={pending || !dirty}
-          className="ml-3"
-        >
-          {pending ? (
-            <>
-              <Spinner />
-              Saving…
-            </>
-          ) : (
-            "Save"
-          )}
-        </Button>
+
       </div>
 
-      <form
-        ref={formRef}
-        className="overflow-hidden rounded-md border border-border bg-card"
-      >
+      <div className="overflow-hidden rounded-md border border-border bg-card">
         <div className="grid grid-cols-[80px_70px_1fr_1fr_70px_120px_28px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
           <Label>ID</Label>
           <Label>Day</Label>
@@ -136,97 +173,167 @@ export function SortingLettersEditor({
           <span />
         </div>
         {view.map((row) => (
-          <div
+          <SortingLetterRow
             key={row.id}
-            className="grid grid-cols-[80px_70px_1fr_1fr_70px_120px_28px_36px] items-center gap-2 border-t border-border px-3 py-1 first:border-t-0"
-          >
-            <input type="hidden" name="ids" value={row.id} />
-            <input type="hidden" name="day_ids" value={row.day_id} />
-            <input type="hidden" name="recipient_names" value={row.recipient_name} />
-            <input type="hidden" name="sender_names" value={row.sender_name} />
-            <input
-              type="hidden"
-              name="storage_locations"
-              value={row.storage_location}
-            />
-            <input
-              type="hidden"
-              name="is_counterfeits"
-              value={row.is_counterfeit ? "true" : "false"}
-            />
-
-            <Badge variant="secondary" className="font-mono">
-              {row.content_id}
-            </Badge>
-            <Select
-              value={row.day_id}
-              onChange={(e) => updateRow(row.id, { day_id: e.target.value })}
-              className="h-8"
-            >
-              {days.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.identifier}
-                </option>
-              ))}
-            </Select>
-            <Input
-              value={row.recipient_name}
-              onChange={(e) =>
-                updateRow(row.id, { recipient_name: e.target.value })
-              }
-              placeholder="—"
-              className="h-8"
-            />
-            <Input
-              value={row.sender_name}
-              onChange={(e) =>
-                updateRow(row.id, { sender_name: e.target.value })
-              }
-              placeholder="—"
-              className="h-8"
-            />
-            <label
-              className={cn(
-                "flex h-8 cursor-pointer items-center justify-center rounded-md text-xs",
-                row.is_counterfeit && "text-destructive"
-              )}
-            >
-              <input
-                type="checkbox"
-                checked={row.is_counterfeit}
-                onChange={(e) =>
-                  updateRow(row.id, { is_counterfeit: e.target.checked })
-                }
-                className="mr-1 accent-destructive"
-              />
-              {row.is_counterfeit ? "yes" : "no"}
-            </label>
-            <Input
-              value={row.storage_location}
-              onChange={(e) =>
-                updateRow(row.id, { storage_location: e.target.value })
-              }
-              placeholder="—"
-              className="h-8 font-mono"
-            />
-            <Link
-              href={`/sorting/letters/${row.id}`}
-              aria-label="Open detail editor"
-              title="Open detail editor"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <PencilIcon />
-            </Link>
-            <DeleteX id={row.id} name={row.content_id} />
-          </div>
+            row={row}
+            days={days}
+            peers={peers}
+          />
         ))}
         {view.length === 0 ? (
           <p className="px-4 py-6 text-center text-sm text-muted-foreground">
             No sorting letters{filterDayId ? " for that day" : ""} yet.
           </p>
         ) : null}
-      </form>
+      </div>
     </>
+  );
+}
+
+// ─── Per-row component with instant-save fields ──────────────────────────────
+
+function SortingLetterRow({
+  row,
+  days,
+  peers,
+}: {
+  row: SortingLetterView;
+  days: Day[];
+  peers: ReturnType<typeof usePresenceContext>["peers"];
+}) {
+  const { setFocus, pingActivity } = usePresenceContext();
+
+  function makeFocusKey(field: string): PresenceFocus {
+    return { table: "sorting_letters", recordId: row.id, field };
+  }
+
+  const dayField = useInstantField<string>({
+    value: row.day_id,
+    onCommit: (v) => patchSortingLetter(row.id, { day_id: v }),
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("day_id") : null),
+    onActivity: pingActivity,
+  });
+
+  const recipientField = useInstantField<string>({
+    value: row.recipient_name ?? "",
+    onCommit: (v) => patchSortingLetter(row.id, { recipient_name: v.trim() || null }),
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("recipient_name") : null),
+    onActivity: pingActivity,
+  });
+
+  const senderField = useInstantField<string>({
+    value: row.sender_name ?? "",
+    onCommit: (v) => patchSortingLetter(row.id, { sender_name: v.trim() || null }),
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("sender_name") : null),
+    onActivity: pingActivity,
+  });
+
+  const counterField = useInstantField<boolean>({
+    value: row.is_counterfeit,
+    onCommit: (v) => patchSortingLetter(row.id, { is_counterfeit: v }),
+    onFocusChange: (focused) =>
+      setFocus(focused ? makeFocusKey("is_counterfeit") : null),
+    onActivity: pingActivity,
+  });
+
+  const storageField = useInstantField<string>({
+    value: row.storage_location ?? "",
+    onCommit: (v) =>
+      patchSortingLetter(row.id, { storage_location: v.trim() || null }),
+    onFocusChange: (focused) =>
+      setFocus(focused ? makeFocusKey("storage_location") : null),
+    onActivity: pingActivity,
+  });
+
+  return (
+    <div className="grid grid-cols-[80px_70px_1fr_1fr_70px_120px_28px_36px] items-center gap-2 border-t border-border px-3 py-1 first:border-t-0">
+      <Badge variant="secondary" className="font-mono">
+        {row.content_id}
+      </Badge>
+
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("day_id")}>
+        <Select
+          value={dayField.value}
+          onChange={(e) => dayField.set(e.target.value)}
+          onFocus={dayField.onFocus}
+          onBlur={dayField.onBlur}
+          className="h-8"
+        >
+          {days.map((d) => (
+            <option key={d.id} value={d.id}>
+              {d.identifier}
+            </option>
+          ))}
+        </Select>
+      </FieldHighlight>
+
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("recipient_name")}>
+        <Input
+          value={recipientField.value}
+          onChange={(e) => recipientField.set(e.target.value)}
+          onFocus={recipientField.onFocus}
+          onBlur={recipientField.onBlur}
+          placeholder="—"
+          className="h-8"
+        />
+      </FieldHighlight>
+
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("sender_name")}>
+        <Input
+          value={senderField.value}
+          onChange={(e) => senderField.set(e.target.value)}
+          onFocus={senderField.onFocus}
+          onBlur={senderField.onBlur}
+          placeholder="—"
+          className="h-8"
+        />
+      </FieldHighlight>
+
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("is_counterfeit")}>
+        <label
+          className={cn(
+            "flex h-8 cursor-pointer items-center justify-center rounded-md text-xs",
+            counterField.value && "text-destructive"
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={counterField.value}
+            onChange={(e) => {
+              counterField.set(e.target.checked);
+              // Checkbox fires change but not focus — call handlers explicitly.
+              counterField.onFocus();
+              // Blur fires separately; leave the blur handler wired on the label.
+            }}
+            onFocus={counterField.onFocus}
+            onBlur={counterField.onBlur}
+            className="mr-1 accent-destructive"
+          />
+          {counterField.value ? "yes" : "no"}
+        </label>
+      </FieldHighlight>
+
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("storage_location")}>
+        <Input
+          value={storageField.value}
+          onChange={(e) => storageField.set(e.target.value)}
+          onFocus={storageField.onFocus}
+          onBlur={storageField.onBlur}
+          placeholder="—"
+          className="h-8 font-mono"
+        />
+      </FieldHighlight>
+
+      <Link
+        href={`/sorting/letters/${row.id}`}
+        aria-label="Open detail editor"
+        title="Open detail editor"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        <PencilIcon />
+      </Link>
+      <DeleteX id={row.id} name={row.content_id} />
+    </div>
   );
 }
 
@@ -289,14 +396,5 @@ function DeleteX({ id, name }: { id: string; name: string }) {
       </button>
       {confirmDialogEl}
     </>
-  );
-}
-
-function Spinner() {
-  return (
-    <span
-      aria-hidden
-      className="mr-1 inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent"
-    />
   );
 }

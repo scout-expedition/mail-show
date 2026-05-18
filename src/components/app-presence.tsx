@@ -82,6 +82,11 @@ function surfaceSegments(pathname: string): string[] {
     return ["Inspection", "Storylines"];
   if (pathname.startsWith("/inspection/actions"))
     return ["Inspection", "Actions"];
+  // /top-of-day/morning-reports publishes a single-segment extension (the
+  // selected day, e.g. "D2") via useBreadcrumbExtension, so the popup reads
+  // "Morning Reports > D2" rather than stacking a "Top of Day" parent.
+  if (pathname.startsWith("/top-of-day/morning-reports"))
+    return ["Morning Reports"];
   if (pathname.startsWith("/graph")) return ["Graph View"];
   if (pathname.startsWith("/sorting/letters")) return ["Sorting", "Letters"];
   if (pathname.startsWith("/sorting/rules")) return ["Sorting", "Rules"];

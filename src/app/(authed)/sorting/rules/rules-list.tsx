@@ -1,6 +1,15 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,28 +18,171 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ConditionDescription } from "@/components/condition-description";
 import { useConfirm } from "@/components/confirm-dialog";
+import { useToast } from "@/components/toast";
 import {
   ConditionBuilderInline,
   type BuilderCondition,
 } from "@/components/condition-builder";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import type { PostgresChange } from "@/lib/realtime/channel";
+import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
 import type {
   Day,
   SortingRule,
   SortingRuleCondition,
 } from "@/lib/db/types";
 import type { RuleMatchMode } from "@/lib/db/enums";
-import { deleteRule, duplicateRule, saveRuleAll } from "./actions";
+import {
+  deleteRule,
+  duplicateRule,
+  patchSortingRule,
+  saveConditions,
+} from "./actions";
+
+const POSTGRES_TABLES = ["sorting_rules", "sorting_rule_conditions"];
+
+// ─── Public component: wraps inner in WorkspacePresenceProvider ──────────────
 
 export function RulesList({
   rules,
   conditionsByRule,
+  days,
+  currentUserId,
+  currentEmail,
+  currentProfile,
+}: {
+  rules: SortingRule[];
+  conditionsByRule: Record<string, SortingRuleCondition[]>;
+  days: Day[];
+  currentUserId?: string;
+  currentEmail?: string;
+  currentProfile?: PresenceProfile | null;
+}) {
+  return (
+    <WorkspacePresenceProvider
+      channelName="sorting-rules"
+      userId={currentUserId}
+      email={currentEmail}
+      profile={currentProfile}
+      postgresTables={POSTGRES_TABLES}
+    >
+      <RulesListInner
+        rules={rules}
+        conditionsByRule={conditionsByRule}
+        days={days}
+      />
+    </WorkspacePresenceProvider>
+  );
+}
+
+// ─── Inner component ─────────────────────────────────────────────────────────
+
+function RulesListInner({
+  rules: rulesProp,
+  conditionsByRule: conditionsByRuleProp,
   days,
 }: {
   rules: SortingRule[];
   conditionsByRule: Record<string, SortingRuleCondition[]>;
   days: Day[];
 }) {
+  const router = useRouter();
+  const { peers, onPostgresChanges } = usePresenceContext();
+  const { toast, toaster } = useToast();
+
+  // Mirror rules + conditions so postgres_changes fans out without reload.
+  const [rules, setRules] = useState(rulesProp);
+  const [prevRulesProp, setPrevRulesProp] = useState(rulesProp);
+  if (rulesProp !== prevRulesProp) {
+    setPrevRulesProp(rulesProp);
+    setRules(rulesProp);
+  }
+
+  const [conditionsByRule, setConditionsByRule] = useState(conditionsByRuleProp);
+  const [prevCondsByRule, setPrevCondsByRule] = useState(conditionsByRuleProp);
+  if (conditionsByRuleProp !== prevCondsByRule) {
+    setPrevCondsByRule(conditionsByRuleProp);
+    setConditionsByRule(conditionsByRuleProp);
+  }
+
   const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+
+  // Debounced router.refresh for INSERT events (view-derived columns need RSC).
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      startTransition(() => router.refresh());
+    }, 100);
+  }, [router]);
+
+  // postgres_changes subscription
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      const { table, eventType } = change;
+
+      if (table === "sorting_rules") {
+        if (eventType === "UPDATE") {
+          const newRow = change.new as Record<string, unknown>;
+          const id = newRow.id as string | undefined;
+          if (!id) return;
+          setRules((prev) =>
+            prev.map((r) =>
+              r.id === id ? ({ ...r, ...newRow } as unknown as SortingRule) : r
+            )
+          );
+          return;
+        }
+        if (eventType === "DELETE") {
+          const oldRow = change.old as Record<string, unknown> | undefined;
+          const id = oldRow?.id as string | undefined;
+          if (!id) return;
+          setRules((prev) => prev.filter((r) => r.id !== id));
+          setConditionsByRule((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          toast({ intent: "destructive", message: "Someone deleted a sorting rule" });
+          return;
+        }
+        if (eventType === "INSERT") {
+          scheduleRefresh();
+          return;
+        }
+      }
+
+      if (table === "sorting_rule_conditions") {
+        if (eventType === "UPDATE") {
+          const newRow = change.new as Record<string, unknown>;
+          const id = newRow.id as string | undefined;
+          const ruleId = newRow.rule_id as string | undefined;
+          if (!id || !ruleId) return;
+          setConditionsByRule((prev) => ({
+            ...prev,
+            [ruleId]: (prev[ruleId] ?? []).map((c) =>
+              c.id === id
+                ? ({ ...c, ...newRow } as unknown as SortingRuleCondition)
+                : c
+            ),
+          }));
+          return;
+        }
+        if (eventType === "INSERT" || eventType === "DELETE") {
+          // Conditions are replaced as a set; trigger RSC refresh so the
+          // mirror stays consistent with position ordering.
+          scheduleRefresh();
+          return;
+        }
+      }
+    });
+  }, [onPostgresChanges, toast, scheduleRefresh]);
 
   const allOpen = rules.length > 0 && openIds.size === rules.length;
 
@@ -48,33 +200,39 @@ export function RulesList({
   }
 
   return (
-    <div className="flex flex-col gap-2 font-mono">
-      {rules.length > 0 ? (
-        <div className="mb-1 flex justify-end">
-          <Button type="button" variant="ghost" size="sm" onClick={toggleAll}>
-            {allOpen ? "Collapse all" : "Expand all"}
-          </Button>
-        </div>
-      ) : null}
+    <>
+      {toaster}
+      <div className="flex flex-col gap-2 font-mono">
+        {rules.length > 0 ? (
+          <div className="mb-1 flex items-center justify-end">
+            <Button type="button" variant="ghost" size="sm" onClick={toggleAll}>
+              {allOpen ? "Collapse all" : "Expand all"}
+            </Button>
+          </div>
+        ) : null}
 
-      {rules.map((r) => (
-        <RuleRow
-          key={r.id}
-          rule={r}
-          conditions={conditionsByRule[r.id] ?? []}
-          days={days}
-          open={openIds.has(r.id)}
-          onToggle={() => toggle(r.id)}
-        />
-      ))}
-      {rules.length === 0 ? (
-        <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-          No rules yet.
-        </p>
-      ) : null}
-    </div>
+        {rules.map((r) => (
+          <RuleRow
+            key={r.id}
+            rule={r}
+            conditions={conditionsByRule[r.id] ?? []}
+            days={days}
+            peers={peers}
+            open={openIds.has(r.id)}
+            onToggle={() => toggle(r.id)}
+          />
+        ))}
+        {rules.length === 0 ? (
+          <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            No rules yet.
+          </p>
+        ) : null}
+      </div>
+    </>
   );
 }
+
+// ─── Per-rule row with instant-save scalar fields ─────────────────────────────
 
 function toBuilderConditions(
   conditions: SortingRuleCondition[]
@@ -92,62 +250,111 @@ function RuleRow({
   rule,
   conditions,
   days,
+  peers,
   open,
   onToggle,
 }: {
   rule: SortingRule;
   conditions: SortingRuleCondition[];
   days: Day[];
+  peers: ReturnType<typeof usePresenceContext>["peers"];
   open: boolean;
   onToggle: () => void;
 }) {
   const [duplicating, startDuplicate] = useTransition();
-  const [saving, startSave] = useTransition();
+  const [savingConditions, startSaveConditions] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const { setFocus, pingActivity } = usePresenceContext();
 
-  // Editable local state — mirrors current server rule when opened fresh.
-  const [letter, setLetter] = useState(rule.letter);
-  const [slot, setSlot] = useState<number | null>(rule.destination_slot);
-  const [dayId, setDayId] = useState<string | null>(rule.day_implemented_id);
-  const [storage, setStorage] = useState<string | null>(rule.storage_location);
-  const [summary, setSummary] = useState<string | null>(rule.summary);
-  const [matchMode, setMatchMode] = useState<RuleMatchMode>(rule.match_mode);
+  // ── Conditions: still structural (delete+insert), keep manual save ──
+  // Track local conditions state separately from the instant-save scalar fields.
   const [builderConds, setBuilderConds] = useState<BuilderCondition[]>(() =>
     toBuilderConditions(conditions)
   );
-  const [dirty, setDirty] = useState(false);
+  const [matchMode, setMatchMode] = useState<RuleMatchMode>(rule.match_mode);
+  const [condsDirty, setCondsDirty] = useState(false);
 
-  // When the row re-opens with new server data, refresh if user hasn't edited.
-  const serverKey = useMemo(
+  // Sync builder conditions when conditions prop changes and user hasn't edited.
+  const condServerKey = useMemo(
     () =>
-      JSON.stringify([
-        rule.letter,
-        rule.destination_slot,
-        rule.day_implemented_id,
-        rule.storage_location,
-        rule.summary,
-        rule.match_mode,
+      JSON.stringify(
         conditions.map((c) => [
           c.target,
           c.target_slice,
           c.operator,
           c.reference_type,
           c.reference_value,
-        ]),
-      ]),
-    [rule, conditions]
+        ])
+      ),
+    [conditions]
   );
-  const [lastKey, setLastKey] = useState(serverKey);
-  if (!dirty && lastKey !== serverKey) {
-    setLetter(rule.letter);
-    setSlot(rule.destination_slot);
-    setDayId(rule.day_implemented_id);
-    setStorage(rule.storage_location);
-    setSummary(rule.summary);
-    setMatchMode(rule.match_mode);
+  const [lastCondKey, setLastCondKey] = useState(condServerKey);
+  if (!condsDirty && lastCondKey !== condServerKey) {
     setBuilderConds(toBuilderConditions(conditions));
-    setLastKey(serverKey);
+    setMatchMode(rule.match_mode);
+    setLastCondKey(condServerKey);
   }
+
+  // Resync matchMode independently when a peer changes only match_mode (without
+  // touching conditions, which would change condServerKey). Safe when the user
+  // hasn't dirtied the condition block — condsDirty=false implies the local
+  // matchMode was never locally edited, so it equals the last-seen server value
+  // and resyncing cannot clobber an in-progress edit.
+  const [lastSeenMatchMode, setLastSeenMatchMode] = useState(rule.match_mode);
+  if (!condsDirty && lastSeenMatchMode !== rule.match_mode) {
+    setMatchMode(rule.match_mode);
+    setLastSeenMatchMode(rule.match_mode);
+  }
+
+  function makeFocusKey(field: string): PresenceFocus {
+    return { table: "sorting_rules", recordId: rule.id, field };
+  }
+
+  // ── Instant-save scalar fields ──
+
+  const letterField = useInstantField<string>({
+    value: rule.letter,
+    onCommit: (v) => patchSortingRule(rule.id, { letter: v }),
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("letter") : null),
+    onActivity: pingActivity,
+  });
+
+  const slotField = useInstantField<string>({
+    value: rule.destination_slot != null ? String(rule.destination_slot) : "",
+    onCommit: (v) => {
+      const n = v.trim() === "" ? null : Number(v);
+      return patchSortingRule(rule.id, {
+        destination_slot: Number.isFinite(n) ? (n as number) : null,
+      });
+    },
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("destination_slot") : null),
+    onActivity: pingActivity,
+  });
+
+  const dayField = useInstantField<string>({
+    value: rule.day_implemented_id ?? "",
+    onCommit: (v) =>
+      patchSortingRule(rule.id, { day_implemented_id: v.trim() || null }),
+    onFocusChange: (focused) =>
+      setFocus(focused ? makeFocusKey("day_implemented_id") : null),
+    onActivity: pingActivity,
+  });
+
+  const storageField = useInstantField<string>({
+    value: rule.storage_location ?? "",
+    onCommit: (v) =>
+      patchSortingRule(rule.id, { storage_location: v.trim() || null }),
+    onFocusChange: (focused) =>
+      setFocus(focused ? makeFocusKey("storage_location") : null),
+    onActivity: pingActivity,
+  });
+
+  const summaryField = useInstantField<string>({
+    value: rule.summary ?? "",
+    onCommit: (v) => patchSortingRule(rule.id, { summary: v.trim() || null }),
+    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("summary") : null),
+    onActivity: pingActivity,
+  });
 
   function handleDuplicate(e: React.MouseEvent | React.KeyboardEvent) {
     e.stopPropagation();
@@ -168,24 +375,19 @@ function RuleRow({
     if (!ok) return;
     const fd = new FormData();
     fd.append("id", rule.id);
-    startSave(async () => {
+    startSaveConditions(async () => {
       await deleteRule(fd);
     });
   }
 
-  function handleSave() {
-    startSave(async () => {
-      await saveRuleAll({
-        id: rule.id,
-        letter: (letter || "").toUpperCase().slice(0, 1),
-        destination_slot: slot,
-        day_implemented_id: dayId,
-        storage_location: storage,
-        summary,
-        match_mode: matchMode,
-        conditions: builderConds,
-      });
-      setDirty(false);
+  function handleSaveConditions() {
+    startSaveConditions(async () => {
+      await saveConditions(
+        rule.id,
+        builderConds.map((c, i) => ({ ...c, position: i + 1 })),
+        matchMode
+      );
+      setCondsDirty(false);
     });
   }
 
@@ -245,89 +447,96 @@ function RuleRow({
           <div className="grid grid-cols-12 gap-2">
             <div className="col-span-1 flex flex-col gap-1">
               <Label>Letter</Label>
-              <Input
-                value={letter}
-                onChange={(e) => {
-                  setLetter(
-                    e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1)
-                  );
-                  setDirty(true);
-                }}
-                maxLength={1}
-                className="h-8 text-center uppercase"
-              />
+              <FieldHighlight peers={peers} focusKey={makeFocusKey("letter")}>
+                <Input
+                  value={letterField.value}
+                  onChange={(e) => {
+                    letterField.set(
+                      e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1)
+                    );
+                  }}
+                  onFocus={letterField.onFocus}
+                  onBlur={letterField.onBlur}
+                  maxLength={1}
+                  className="h-8 text-center uppercase"
+                />
+              </FieldHighlight>
             </div>
             <div className="col-span-1 flex flex-col gap-1">
               <Label>Slot</Label>
-              <Input
-                type="number"
-                min={1}
-                max={8}
-                value={slot ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value === "" ? null : Number(e.target.value);
-                  setSlot(v);
-                  setDirty(true);
-                }}
-                className="h-8"
-              />
+              <FieldHighlight peers={peers} focusKey={makeFocusKey("destination_slot")}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={slotField.value}
+                  onChange={(e) => slotField.set(e.target.value)}
+                  onFocus={slotField.onFocus}
+                  onBlur={slotField.onBlur}
+                  className="h-8"
+                />
+              </FieldHighlight>
             </div>
             <div className="col-span-4 flex flex-col gap-1">
               <Label>Day implemented</Label>
-              <Select
-                value={dayId ?? ""}
-                onChange={(e) => {
-                  setDayId(e.target.value || null);
-                  setDirty(true);
-                }}
-                className="h-8"
-              >
-                <option value="">—</option>
-                {days.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.identifier}
-                    {d.name ? ` — ${d.name}` : ""}
-                  </option>
-                ))}
-              </Select>
+              <FieldHighlight peers={peers} focusKey={makeFocusKey("day_implemented_id")}>
+                <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
+                  <Select
+                    value={dayField.value}
+                    onChange={(e) => dayField.set(e.target.value)}
+                    className="h-8"
+                  >
+                    <option value="">—</option>
+                    {days.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.identifier}
+                        {d.name ? ` — ${d.name}` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              </FieldHighlight>
             </div>
             <div className="col-span-6 flex flex-col gap-1">
               <Label>Storage location</Label>
-              <Input
-                value={storage ?? ""}
-                onChange={(e) => {
-                  setStorage(e.target.value || null);
-                  setDirty(true);
-                }}
-                placeholder="e.g. Yellow Bin"
-                className="h-8"
-              />
+              <FieldHighlight peers={peers} focusKey={makeFocusKey("storage_location")}>
+                <Input
+                  value={storageField.value}
+                  onChange={(e) => storageField.set(e.target.value)}
+                  onFocus={storageField.onFocus}
+                  onBlur={storageField.onBlur}
+                  placeholder="e.g. Yellow Bin"
+                  className="h-8"
+                />
+              </FieldHighlight>
             </div>
             <div className="col-span-12 flex flex-col gap-1">
               <Label>Summary</Label>
-              <Textarea
-                value={summary ?? ""}
-                onChange={(e) => {
-                  setSummary(e.target.value || null);
-                  setDirty(true);
-                }}
-                rows={2}
-              />
+              <FieldHighlight peers={peers} focusKey={makeFocusKey("summary")}>
+                <Textarea
+                  value={summaryField.value}
+                  onChange={(e) => summaryField.set(e.target.value)}
+                  onFocus={summaryField.onFocus}
+                  onBlur={summaryField.onBlur}
+                  rows={2}
+                />
+              </FieldHighlight>
             </div>
           </div>
 
+          {/* Conditions: structural mutation — keep explicit save */}
           <ConditionBuilderInline
             conditions={builderConds}
             matchMode={matchMode}
             onChange={(next, mode) => {
               setBuilderConds(next);
               if (mode) setMatchMode(mode);
-              setDirty(true);
+              setCondsDirty(true);
             }}
           />
 
-          {/* Read-only description */}
-          {builderConds.length > 0 ? (
+          {/* Read-only description of saved conditions */}
+          {conditions.length > 0 ? (
             <div className="flex flex-col gap-1 rounded-md border border-dashed border-border p-2">
               {conditions.map((c, i) => (
                 <div
@@ -351,18 +560,18 @@ function RuleRow({
               size="sm"
               variant="destructive"
               onClick={handleDelete}
-              disabled={saving}
+              disabled={savingConditions}
             >
               Delete rule
             </Button>
             <Button
               type="button"
               size="sm"
-              onClick={handleSave}
-              disabled={saving || !dirty}
-              variant={dirty ? "default" : "secondary"}
+              onClick={handleSaveConditions}
+              disabled={savingConditions || !condsDirty}
+              variant={condsDirty ? "default" : "secondary"}
             >
-              {saving ? "Saving…" : "Save"}
+              {savingConditions ? "Saving…" : "Save conditions"}
             </Button>
           </div>
         </div>

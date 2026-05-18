@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/select";
 import { GHOST_FIELD } from "@/components/panel";
 import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
+import { FlashRing } from "@/lib/realtime/flash-ring";
 import {
   EMPTY_SELECTIONS,
   evaluateDocumentDetailed,
@@ -131,6 +132,7 @@ export function LogicPreviewView({
   selections,
   onChangeText,
   onChangeNumber,
+  flashColors,
   frameworks,
   tiebreakDocs,
   nations,
@@ -145,6 +147,8 @@ export function LogicPreviewView({
   selections: PreviewSelections;
   onChangeText: (variableId: string, valueId: string | null) => void;
   onChangeNumber: (variableId: string, value: number | null) => void;
+  /** Transient peer-change highlights keyed by variable id. */
+  flashColors: Record<string, string>;
   frameworks: EndingDocument[];
   tiebreakDocs: Map<EndingLogicKind, EvalInputs>;
   nations: Pick<
@@ -181,6 +185,7 @@ export function LogicPreviewView({
       variables: variables.map(
         (v): EvalVariable => ({
           id: v.id,
+          name: v.name,
           kind: v.kind,
           aggregate_ref: v.aggregate_ref,
         })
@@ -264,43 +269,45 @@ export function LogicPreviewView({
                   className="grid grid-cols-[1fr_1fr] items-center gap-2"
                 >
                   <Label className="!text-xs">{v.name}</Label>
-                  {v.kind === "text" ? (
-                    <Select
-                      aria-label={v.name}
-                      value={selections.textValueIds[v.id] ?? ""}
-                      onChange={(e) =>
-                        onChangeText(v.id, e.target.value || null)
-                      }
-                      className={cn("h-8", GHOST_FIELD)}
-                    >
-                      <option value="">—</option>
-                      {values
-                        .filter((val) => val.variable_id === v.id)
-                        .map((val) => (
-                          <option key={val.id} value={val.id}>
-                            {val.value}
-                          </option>
-                        ))}
-                    </Select>
-                  ) : (
-                    <Input
-                      aria-label={v.name}
-                      type="number"
-                      value={
-                        selections.numbers[v.id] == null
-                          ? ""
-                          : String(selections.numbers[v.id])
-                      }
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        onChangeNumber(
-                          v.id,
-                          raw === "" ? null : Number(raw)
-                        );
-                      }}
-                      className={cn("h-8", GHOST_FIELD)}
-                    />
-                  )}
+                  <FlashRing color={flashColors[v.id]}>
+                    {v.kind === "text" ? (
+                      <Select
+                        aria-label={v.name}
+                        value={selections.textValueIds[v.id] ?? ""}
+                        onChange={(e) =>
+                          onChangeText(v.id, e.target.value || null)
+                        }
+                        className={cn("h-8", GHOST_FIELD)}
+                      >
+                        <option value="">—</option>
+                        {values
+                          .filter((val) => val.variable_id === v.id)
+                          .map((val) => (
+                            <option key={val.id} value={val.id}>
+                              {val.value}
+                            </option>
+                          ))}
+                      </Select>
+                    ) : (
+                      <Input
+                        aria-label={v.name}
+                        type="number"
+                        value={
+                          selections.numbers[v.id] == null
+                            ? ""
+                            : String(selections.numbers[v.id])
+                        }
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          onChangeNumber(
+                            v.id,
+                            raw === "" ? null : Number(raw)
+                          );
+                        }}
+                        className={cn("h-8", GHOST_FIELD)}
+                      />
+                    )}
+                  </FlashRing>
                 </div>
               ))}
           </div>

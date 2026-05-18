@@ -37,8 +37,12 @@ import {
   deleteRow,
   duplicateBlock,
   duplicateRow,
+  patchBlock,
   removeBlockVariable,
 } from "../_shared/document-actions";
+import { useInstantField } from "@/lib/realtime/use-instant-field";
+import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useAnalysis } from "../_shared/lib/analysis";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
@@ -82,6 +86,17 @@ export function ConditionBlock({
    *  no child blocks. */
   getRowBlockCount?: (rowId: string) => number;
 }) {
+  const { peers, setFocus } = usePresenceContext();
+  const summaryField = useInstantField<string>({
+    value: block.summary,
+    onCommit: (v) => patchBlock(block.id, { summary: v }),
+    onFocusChange: (focused) =>
+      setFocus(
+        focused
+          ? { table: "ending_blocks", recordId: block.id, field: "summary" }
+          : null
+      ),
+  });
   const ref = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const drag = useDrag();
@@ -126,9 +141,16 @@ export function ConditionBlock({
     });
   }
 
+  const dragFocusKey = {
+    table: "ending_blocks",
+    recordId: block.id,
+    field: "drag",
+  } as const;
+
   return (
     <div ref={ref} className="relative">
       <DropLine active={targetBefore} side="top" />
+      <FieldHighlight peers={peers} focusKey={dragFocusKey}>
       <div
         ref={cardRef}
         onDragEnter={(e) => {
@@ -159,8 +181,8 @@ export function ConditionBlock({
           isDragging && "opacity-40"
         )}
       >
-      <div className={cn("group/header flex items-center justify-between gap-2 px-0", collapsed ? "pb-0" : "pb-2") }>
-        <div className="flex items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+      <div className={cn("group/header flex items-center gap-1 px-0", collapsed ? "pb-0" : "pb-2") }>
+        <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
           <span
             aria-hidden
             draggable
@@ -208,7 +230,27 @@ export function ConditionBlock({
             confirm={confirm}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <FieldHighlight
+          peers={peers}
+          focusKey={{
+            table: "ending_blocks",
+            recordId: block.id,
+            field: "summary",
+          }}
+          className="flex-1 min-w-0"
+        >
+          <input
+            type="text"
+            value={summaryField.value}
+            onChange={(e) => summaryField.set(e.target.value)}
+            onFocus={summaryField.onFocus}
+            onBlur={summaryField.onBlur}
+            placeholder="Summary…"
+            aria-label="Block summary"
+            className="w-full min-w-0 rounded border border-transparent bg-transparent px-1 py-0.5 !text-[10px] font-normal normal-case tracking-normal text-foreground placeholder:!text-muted-foreground/40 focus:border-border focus:shadow-sm focus:outline-none"
+          />
+        </FieldHighlight>
+        <div className="flex shrink-0 items-center gap-2">
           {blockAnalysis ? (
             <BlockAnalysisBadge
               analysis={blockAnalysis}
@@ -340,6 +382,7 @@ export function ConditionBlock({
         </>
       )}
       </div>
+      </FieldHighlight>
       <DropLine active={targetAfter} side="bottom" />
       {confirmDialog}
     </div>

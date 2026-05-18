@@ -54,6 +54,13 @@ export type PresenceSelection = {
   segmentId: string | null;
   view: string;
   narrow?: boolean;
+  /**
+   * Surface-specific extra context. Carried as a flat string map so the
+   * shared PresenceSelection type doesn't grow a new top-level field per
+   * surface. Endings uses keys like `endingFrameworkId`, `endingTabId`,
+   * `endingDocumentId`; consumers tolerate missing keys.
+   */
+  payload?: Record<string, string | null>;
 };
 
 export type PresenceSelf = {

@@ -7,6 +7,7 @@
 
 import { PageHeader } from "@/components/page-header";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { profileFromMetadata } from "@/lib/auth/profile";
 import type {
   EndingBlock,
   EndingConditionBlockVariable,
@@ -21,6 +22,16 @@ import { LogicEditor } from "./logic-editor";
 
 export default async function EndingLogicPage() {
   const supabase = await createSupabaseServerClient();
+  const { data: meData } = await supabase.auth.getUser();
+  const currentUserId = meData.user?.id;
+  const currentEmail = meData.user?.email;
+  const meProfile = profileFromMetadata(meData.user?.user_metadata);
+  const presenceProfile = {
+    displayName: meProfile.display_name,
+    avatarIconType: meProfile.avatar_icon_type,
+    avatarIconValue: meProfile.avatar_icon_value,
+    avatarColorHex: meProfile.avatar_color_hex,
+  };
 
   const [
     { data: documentData },
@@ -90,6 +101,9 @@ export default async function EndingLogicPage() {
           "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
         >[]
       }
+      currentUserId={currentUserId}
+      currentEmail={currentEmail}
+      currentProfile={presenceProfile}
     />
     </div>
   );

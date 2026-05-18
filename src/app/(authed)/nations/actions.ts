@@ -5,6 +5,26 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { normalizeHex } from "@/lib/color";
 import type { IconType } from "@/lib/db/enums";
 
+/**
+ * Narrow per-field patch — called by useInstantField in NationsEditor.
+ * Does NOT call revalidatePath; realtime fans out the change to other clients.
+ */
+export async function patchNation(
+  id: string,
+  patch: Partial<{
+    name: string;
+    abbreviation: string | null;
+    color_hex: string;
+    icon_type: IconType;
+    icon_value: string | null;
+    sort_order: number;
+  }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.from("nations").update(patch).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 export async function createNation() {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase

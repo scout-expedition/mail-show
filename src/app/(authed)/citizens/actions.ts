@@ -4,6 +4,25 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { CitizenType } from "@/lib/db/enums";
 
+/**
+ * Narrow per-field patch — called by useInstantField in CitizensEditor.
+ * Does NOT call revalidatePath; realtime fans out the change to other clients.
+ */
+export async function patchCitizen(
+  id: string,
+  patch: Partial<{
+    name: string;
+    type: CitizenType;
+    citizen_id: string | null;
+    city_id: string | null;
+    nation_id: string | null;
+  }>
+) {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.from("citizens").update(patch).eq("id", id);
+  if (error) throw new Error(error.message);
+}
+
 function nilOrString(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
   return s === "" ? null : s;

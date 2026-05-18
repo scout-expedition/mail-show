@@ -34,7 +34,7 @@ export function EditAvatarDialog({
   onError?: (message: string) => void;
 }) {
   const [iconType, setIconType] = useState<IconType>(
-    initial.avatar_icon_type ?? "lucide"
+    initial.avatar_icon_type ?? "animal"
   );
   const [iconValue, setIconValue] = useState<string>(
     initial.avatar_icon_value ?? ""
@@ -71,6 +71,7 @@ export function EditAvatarDialog({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={onClose}
+      onKeyDown={(e) => e.key === "Escape" && onClose()}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -89,19 +90,17 @@ export function EditAvatarDialog({
           <div className="text-xs text-muted-foreground">Preview</div>
         </div>
 
-        <div className="rounded-md border border-border bg-accent/10 px-3 py-3">
-          <IconPicker
-            initialType={iconType}
-            initialValue={iconValue || null}
-            emitHiddenFields={false}
-            onChange={(next) => {
-              setIconType(next.type);
-              setIconValue(next.value);
-            }}
-            color={colorHex}
-            onColorChange={setColorHex}
-          />
-        </div>
+        <IconPicker
+          initialType={iconType}
+          initialValue={iconValue || null}
+          emitHiddenFields={false}
+          onChange={(next) => {
+            setIconType(next.type);
+            setIconValue(next.value);
+          }}
+          color={colorHex}
+          onColorChange={setColorHex}
+        />
 
         <div className="mt-6 flex justify-end gap-2">
           <Button

@@ -1,6 +1,6 @@
 // Enum values mirrored from supabase/migrations/0001_init.sql.
 
-export const ICON_TYPES = ["lucide", "tabler", "emoji", "svg"] as const;
+export const ICON_TYPES = ["lucide", "tabler", "animal", "emoji", "svg"] as const;
 export type IconType = (typeof ICON_TYPES)[number];
 
 export const CITIZEN_TYPES = ["hero", "npc"] as const;
@@ -30,6 +30,9 @@ export const PHASE_LABELS: Record<Phase, string> = {
   inspection: "Inspection",
   end_of_day: "End of Day",
 };
+
+export const DAY_REPORT_BLOCK_KINDS = ["generic", "letter_group"] as const;
+export type DayReportBlockKind = (typeof DAY_REPORT_BLOCK_KINDS)[number];
 
 export const ADDRESS_TYPES = [
   "full",

@@ -7,6 +7,7 @@
 // would be wrong here: there's no horizontal narrative to preserve.
 
 import { cn } from "@/lib/utils";
+import type { ReactNode } from "react";
 
 export type TabBarItem<TId extends string = string> = {
   id: TId;
@@ -17,11 +18,17 @@ export function LogicTabBar<TId extends string>({
   tabs,
   activeId,
   onSelect,
+  /** Optional render-slot for per-tab presence dots (or any other
+   *  trailing indicator). Receives the tab id, returns a node to draw
+   *  to the right of the label. Returning null hides the slot for that
+   *  tab. */
+  renderTrailing,
   className,
 }: {
   tabs: readonly TabBarItem<TId>[];
   activeId: TId;
   onSelect: (id: TId) => void;
+  renderTrailing?: (tabId: TId) => ReactNode;
   className?: string;
 }) {
   return (
@@ -42,13 +49,14 @@ export function LogicTabBar<TId extends string>({
             aria-selected={active}
             onClick={() => onSelect(t.id)}
             className={cn(
-              "-mb-px inline-flex h-9 items-center border-b-2 px-3 transition-colors",
+              "-mb-px inline-flex h-9 items-center gap-2 border-b-2 px-3 transition-colors",
               active
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:border-border/60 hover:bg-white/[0.04] hover:text-foreground"
             )}
           >
-            {t.label}
+            <span>{t.label}</span>
+            {renderTrailing?.(t.id)}
           </button>
         );
       })}

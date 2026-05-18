@@ -26,6 +26,12 @@ import {
   type EndingVariableKind,
   type ScoringAggregateRef,
 } from "@/lib/db/enums";
+import type { EndingVariableValue } from "@/lib/db/types";
+import {
+  substituteVariables,
+  substituteVariablesToSegments,
+  type SubstitutionSegment,
+} from "./text-substitution";
 
 export interface EvalBlock {
   id: string;
@@ -67,6 +73,10 @@ export interface EvalChip {
 
 export interface EvalVariable {
   id: string;
+  /** Display name. Used by `substituteVariables` to resolve `@[Name]`
+   *  tokens in text-block bodies. UNIQUE in the DB (see migration 0009),
+   *  so name lookups can't silently collide. */
+  name: string;
   kind: EndingVariableKind;
   /** Set when kind === 'aggregate_ref'. */
   aggregate_ref: AggregateRef | null;
@@ -573,6 +583,10 @@ export interface EvalInputs {
   chips: EvalChip[];
   variables: EvalVariable[];
   selections: PreviewSelections;
+  /** Optional. Used by `substituteVariables` to resolve `@[Name]` tokens
+   *  in text-block bodies. Callers that don't care about substitution
+   *  (static analysis, non-preview tests) can omit. */
+  values?: EndingVariableValue[];
 }
 
 interface Indexes {
@@ -580,6 +594,12 @@ interface Indexes {
   rowsByBlock: Map<string, EvalRow[]>;
   chipsByRow: Map<string, EvalChip[]>;
   variableById: Map<string, EvalVariable>;
+  /** Name → variable, for `@[Name]` substitution. Empty when no variables
+   *  share a name (which is enforced by the DB UNIQUE constraint). */
+  variableByName: Map<string, EvalVariable>;
+  /** ending_variable_values.id → .value (display label). Empty when
+   *  EvalInputs.values is omitted. */
+  valuesById: Map<string, string>;
 }
 
 function buildIndexes(input: EvalInputs): Indexes {
@@ -615,9 +635,23 @@ function buildIndexes(input: EvalInputs): Indexes {
   }
 
   const variableById = new Map<string, EvalVariable>();
-  for (const v of input.variables) variableById.set(v.id, v);
+  const variableByName = new Map<string, EvalVariable>();
+  for (const v of input.variables) {
+    variableById.set(v.id, v);
+    variableByName.set(v.name, v);
+  }
 
-  return { byParent, rowsByBlock, chipsByRow, variableById };
+  const valuesById = new Map<string, string>();
+  for (const v of input.values ?? []) valuesById.set(v.id, v.value);
+
+  return {
+    byParent,
+    rowsByBlock,
+    chipsByRow,
+    variableById,
+    variableByName,
+    valuesById,
+  };
 }
 
 export function parentKey(
@@ -696,6 +730,13 @@ function evaluateDocumentInternal(
  */
 export interface DocumentEvaluation {
   paragraphs: string[];
+  /** Parallel to `paragraphs`. Typed segments behind each paragraph
+   *  so preview surfaces can color resolved values vs unresolved
+   *  `@[Name]` literals. Length always matches `paragraphs`; for
+   *  paragraphs that didn't go through text-substitution (result
+   *  leaves, narrowing roll sentinels), the segment array is a single
+   *  `literal` containing the paragraph text. */
+  paragraphSegments: SubstitutionSegment[][];
   rollSentinel: string | null;
   rollPool: string[] | null;
 }
@@ -718,11 +759,13 @@ function evaluateDocumentDetailedInternal(
       evaluatingDocs,
       options.initialTiebreakSet
     );
+    const paragraphs =
+      narrow.rollSentinel != null ? [narrow.rollSentinel] : narrow.paragraphs;
     return {
-      paragraphs:
-        narrow.rollSentinel != null
-          ? [narrow.rollSentinel]
-          : narrow.paragraphs,
+      paragraphs,
+      paragraphSegments: paragraphs.map((p) => [
+        { kind: "literal" as const, text: p },
+      ]),
       rollSentinel: narrow.rollSentinel,
       rollPool: narrow.rollPool,
     };
@@ -733,6 +776,7 @@ function evaluateDocumentDetailedInternal(
   if (result.paragraphs.length > 0) {
     return {
       paragraphs: result.paragraphs,
+      paragraphSegments: result.paragraphSegments,
       rollSentinel: null,
       rollPool: null,
     };
@@ -741,11 +785,19 @@ function evaluateDocumentDetailedInternal(
   if (fallback?.result_value != null && fallback.result_value !== "") {
     return {
       paragraphs: [fallback.result_value],
+      paragraphSegments: [
+        [{ kind: "literal" as const, text: fallback.result_value }],
+      ],
       rollSentinel: null,
       rollPool: null,
     };
   }
-  return { paragraphs: [], rollSentinel: null, rollPool: null };
+  return {
+    paragraphs: [],
+    paragraphSegments: [],
+    rollSentinel: null,
+    rollPool: null,
+  };
 }
 
 /**
@@ -901,6 +953,11 @@ function expandTerminalSentinel(
 
 interface RenderResult {
   paragraphs: string[];
+  /** Parallel to `paragraphs`. Carries the typed segments behind each
+   *  paragraph (literal text vs resolved variable value vs unresolved
+   *  `@[Name]` token). Preview surfaces use this to color
+   *  substitutions. Length always matches `paragraphs`. */
+  paragraphSegments: SubstitutionSegment[][];
   /** A `result` leaf fired in this subtree; the caller should stop
    *  walking later siblings as well. */
   stopped: boolean;
@@ -913,17 +970,29 @@ function renderBlocks(
   evaluatingDocs: Set<EndingLogicKind>
 ): RenderResult {
   const out: string[] = [];
+  const outSegments: SubstitutionSegment[][] = [];
   for (const b of blocks) {
     if (b.block_type === "text") {
       const trimmed = b.text.trim();
-      if (trimmed.length > 0) out.push(b.text);
+      if (trimmed.length > 0) {
+        const segments = substituteVariablesToSegments(b.text, {
+          variableByName: indexes.variableByName,
+          selections,
+          valuesById: indexes.valuesById,
+        });
+        out.push(segments.map((s) => s.text).join(""));
+        outSegments.push(segments);
+      }
       continue;
     }
     if (b.block_type === "result") {
       // First matching `result` leaf wins for this path. Push the value
       // and signal the caller to stop walking later siblings.
-      if (b.result_value != null) out.push(b.result_value);
-      return { paragraphs: out, stopped: true };
+      if (b.result_value != null) {
+        out.push(b.result_value);
+        outSegments.push([{ kind: "literal", text: b.result_value }]);
+      }
+      return { paragraphs: out, paragraphSegments: outSegments, stopped: true };
     }
     if (b.block_type === "fallback") {
       // Fallback blocks fire only if the rest of the walk produced
@@ -947,11 +1016,13 @@ function renderBlocks(
         evaluatingDocs
       );
       out.push(...childRender.paragraphs);
-      if (childRender.stopped) return { paragraphs: out, stopped: true };
+      outSegments.push(...childRender.paragraphSegments);
+      if (childRender.stopped)
+        return { paragraphs: out, paragraphSegments: outSegments, stopped: true };
       break; // first match wins
     }
   }
-  return { paragraphs: out, stopped: false };
+  return { paragraphs: out, paragraphSegments: outSegments, stopped: false };
 }
 
 /**
