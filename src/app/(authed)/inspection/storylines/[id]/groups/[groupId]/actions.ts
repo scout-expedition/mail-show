@@ -125,7 +125,6 @@ export async function updateAction(formData: FormData) {
     icon_value: nilStr(formData.get("icon_value")),
     color_hex: String(formData.get("color_hex") ?? "#888888"),
     report_segment_id: nilStr(formData.get("report_segment_id")),
-    next_letter_variant: nilStr(formData.get("next_letter_variant")),
     impact_world_status: Number(formData.get("impact_world_status") ?? 0),
     impact_demerits: Number(formData.get("impact_demerits") ?? 0),
     impact_proletariat: Number(formData.get("impact_proletariat") ?? 0),

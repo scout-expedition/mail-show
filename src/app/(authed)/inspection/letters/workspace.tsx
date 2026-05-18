@@ -63,7 +63,6 @@ import {
   deleteGroup,
   deleteInspectionLetter,
   deleteReportSegment,
-  ensureInspectionLetterVariant,
   patchAction,
   patchActionEndingAssignments,
   patchInspectionLetter,
@@ -251,7 +250,7 @@ type ActionState = ActionImpacts & {
   icon_value: string | null;
   color_hex: string;
   report_segment_id: string | null;
-  next_letter_variant: string | null;
+  next_letter_id: string | null;
   ending_assignments: EndingAssignmentState[];
 };
 
@@ -293,7 +292,7 @@ function toLetterState(
         icon_value: a.icon_value,
         color_hex: a.color_hex,
         report_segment_id: a.report_segment_id,
-        next_letter_variant: a.next_letter_variant,
+        next_letter_id: a.next_letter_id,
         impact_world_status: a.impact_world_status,
         impact_demerits: a.impact_demerits,
         impact_proletariat: a.impact_proletariat,
@@ -550,6 +549,10 @@ function LettersWorkspaceInner({
     [allSegments, group]
   );
 
+  // The next letter group by storyline sequence. Used ONLY to choose
+  // between the dropdown's "+ Letter" (create into this group) and
+  // "+ Letter Group + Letter" create rows — next-letter *targets* come
+  // from `nextDayLetters` (computed below from the current letter's day).
   const nextGroup = useMemo(() => {
     if (!group) return null;
     return (
@@ -560,28 +563,6 @@ function LettersWorkspaceInner({
         .sort((a, b) => a.sequence - b.sequence)[0] ?? null
     );
   }, [allGroups, group]);
-
-  const nextGroupLetters = useMemo(() => {
-    if (!nextGroup) return [] as InspectionLetterView[];
-    // The action's `next_letter_variant` references a variant key, not a
-    // piece id. Collapse multi-piece letters to one row per variant
-    // (lowest piece) so the picker doesn't show "L-U3/a", "L-U3/a2",
-    // "L-U3/a3" as three separate next-letter targets.
-    const seen = new Map<string, InspectionLetterView>();
-    for (const l of allLetters) {
-      if (l.letter_group_id !== nextGroup.id) continue;
-      const k = l.variant ?? "";
-      const existing = seen.get(k);
-      if (!existing || (l.piece ?? 0) < (existing.piece ?? 0)) {
-        seen.set(k, l);
-      }
-    }
-    return Array.from(seen.values()).sort((a, b) => {
-      const va = a.variant ?? "";
-      const vb = b.variant ?? "";
-      return va.localeCompare(vb);
-    });
-  }, [allLetters, nextGroup]);
 
   // ----- Group state -----
   const [groupState, setGroupState] = useState(() => ({
@@ -1393,10 +1374,8 @@ function LettersWorkspaceInner({
 
   function openLetterForAction(actionIdx: number) {
     const action = letterState?.actions[actionIdx];
-    if (!action?.next_letter_variant) return;
-    const letter = nextGroupLetters.find(
-      (l) => l.variant === action.next_letter_variant
-    );
+    if (!action?.next_letter_id) return;
+    const letter = allLetters.find((l) => l.id === action.next_letter_id);
     if (!letter) return;
     // Snapshot the source so the next letter's back button can return to
     // the action panel that initiated this navigation.
@@ -1733,6 +1712,43 @@ function LettersWorkspaceInner({
   const selectedSegment = selectedSegmentId
     ? segments.find((s) => s.id === selectedSegmentId)
     : null;
+
+  // Next-letter targets: every letter in the current letter's storyline
+  // that delivers on the SOONEST day strictly after it. Multi-piece
+  // letters collapse to one row per (group, variant), lowest piece. Empty
+  // when the current letter has no resolved effective day.
+  const nextDayLetters = useMemo(() => {
+    const cur = selectedLetter;
+    if (!cur?.effective_day_id) return [] as InspectionLetterView[];
+    const dayNumberById = new Map(days.map((d) => [d.id, d.number]));
+    const curNumber = dayNumberById.get(cur.effective_day_id);
+    if (curNumber === undefined) return [] as InspectionLetterView[];
+    const later = allLetters.filter((l) => {
+      if (l.storyline_id !== cur.storyline_id) return false;
+      if (!l.effective_day_id) return false;
+      const n = dayNumberById.get(l.effective_day_id);
+      return n !== undefined && n > curNumber;
+    });
+    if (later.length === 0) return [] as InspectionLetterView[];
+    const soonest = Math.min(
+      ...later.map((l) => dayNumberById.get(l.effective_day_id as string) as number)
+    );
+    const seen = new Map<string, InspectionLetterView>();
+    for (const l of later) {
+      if (dayNumberById.get(l.effective_day_id as string) !== soonest) continue;
+      const k = `${l.letter_group_id}:${l.variant ?? ""}`;
+      const existing = seen.get(k);
+      if (!existing || (l.piece ?? 0) < (existing.piece ?? 0)) {
+        seen.set(k, l);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => {
+      const ga = a.group_sequence ?? 0;
+      const gb = b.group_sequence ?? 0;
+      if (ga !== gb) return ga - gb;
+      return (a.variant ?? "").localeCompare(b.variant ?? "");
+    });
+  }, [allLetters, days, selectedLetter]);
 
   // Publish workspace peer userIds so the global AppPresence stack
   // (othersOnly) can dedupe — peers on the letters-workspace channel get
@@ -2558,7 +2574,8 @@ function LettersWorkspaceInner({
               storyline={currentStoryline}
               letterContentId={selectedLetter?.content_id ?? ""}
               nextGroup={nextGroup}
-              nextGroupLetters={nextGroupLetters}
+              nextDayLetters={nextDayLetters}
+              allLetters={allLetters}
               groupId={group?.id ?? ""}
               days={days}
               currentLetterDayId={
@@ -2575,9 +2592,7 @@ function LettersWorkspaceInner({
               onOpenSegment={openSegmentForAction}
               openSegmentId={selectedSegmentId}
               onOpenLetter={openLetterForAction}
-              openLetterId={
-                selectedGroupId === nextGroup?.id ? selectedId : null
-              }
+              openLetterId={selectedId}
               highlightedActionId={
                 controlledSelection?.kind === "actions"
                   ? controlledSelection.actionId ?? null
@@ -2991,7 +3006,8 @@ function LetterActionsCard({
   storyline,
   letterContentId,
   nextGroup,
-  nextGroupLetters,
+  nextDayLetters,
+  allLetters,
   groupId,
   days,
   currentLetterDayId,
@@ -3016,7 +3032,8 @@ function LetterActionsCard({
   storyline: Storyline | undefined;
   letterContentId: string;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
-  nextGroupLetters: InspectionLetterView[];
+  nextDayLetters: InspectionLetterView[];
+  allLetters: InspectionLetterView[];
   groupId: string;
   days: Day[];
   currentLetterDayId: string | null;
@@ -3086,7 +3103,8 @@ function LetterActionsCard({
             segments={segments}
             storyline={storyline}
             nextGroup={nextGroup}
-            nextGroupLetters={nextGroupLetters}
+            nextDayLetters={nextDayLetters}
+            allLetters={allLetters}
             groupId={groupId}
             days={days}
             currentLetterDayId={currentLetterDayId}
@@ -3100,9 +3118,7 @@ function LetterActionsCard({
             }
             onOpenLetter={() => onOpenLetter(i)}
             letterOpen={
-              !!a.next_letter_variant &&
-              (nextGroupLetters.find((l) => l.variant === a.next_letter_variant)
-                ?.id ?? null) === openLetterId
+              !!a.next_letter_id && a.next_letter_id === openLetterId
             }
             highlighted={a.id === highlightedActionId}
           />
@@ -4482,7 +4498,8 @@ function ActionEditor({
   segments,
   storyline,
   nextGroup,
-  nextGroupLetters,
+  nextDayLetters,
+  allLetters,
   groupId,
   days,
   currentLetterDayId,
@@ -4502,7 +4519,8 @@ function ActionEditor({
   segments: ReportSegmentView[];
   storyline: Storyline | undefined;
   nextGroup: Pick<LetterGroup, "id" | "storyline_id" | "sequence" | "name"> | null;
-  nextGroupLetters: InspectionLetterView[];
+  nextDayLetters: InspectionLetterView[];
+  allLetters: InspectionLetterView[];
   groupId: string;
   days: Day[];
   currentLetterDayId: string | null;
@@ -4524,13 +4542,27 @@ function ActionEditor({
   const nextLetterFocus: PresenceFocus = {
     table: "actions",
     recordId: action.id,
-    field: "next_letter_variant",
+    field: "next_letter_id",
   };
   const segmentFocus: PresenceFocus = {
     table: "actions",
     recordId: action.id,
     field: "report_segment_id",
   };
+
+  // The letter this action's next-letter link currently points at (any
+  // letter, resolved against the full set). Dropdown rows are the next
+  // day's letters, plus the current target if it sits outside that day
+  // (an older link or a further-out graph drag) so the active selection
+  // is always visible and selectable.
+  const currentNextLetter = action.next_letter_id
+    ? allLetters.find((l) => l.id === action.next_letter_id) ?? null
+    : null;
+  const pickableLetters =
+    currentNextLetter &&
+    !nextDayLetters.some((l) => l.id === currentNextLetter.id)
+      ? [currentNextLetter, ...nextDayLetters]
+      : nextDayLetters;
 
   // Resolve "which sub-field just got focus" by walking up from `e.target`
   // to the nearest `[data-focus-field]` marker (stamped by FieldHighlight).
@@ -4570,31 +4602,22 @@ function ActionEditor({
     .sort((a, b) => a.sort_order - b.sort_order)
     .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
 
-  const nextLetterMatch =
-    action.next_letter_variant
-      ? nextGroupLetters.find((l) => l.variant === action.next_letter_variant) ?? null
-      : null;
-  const nextLetterSummary =
-    action.next_letter_variant && nextLetterMatch?.summary
-      ? nextLetterMatch.summary
-      : "";
+  const nextLetterSummary = currentNextLetter?.summary ?? "";
   const reportSegment = action.report_segment_id
     ? segments.find((s) => s.id === action.report_segment_id) ?? null
     : null;
   const reportSummary = reportSegment?.summary ?? "";
 
   const nextLetterPill =
-    action.next_letter_variant && storyline ? (
-      nextLetterMatch ? (
+    action.next_letter_id && storyline ? (
+      currentNextLetter ? (
         <InspectionLetterPill
           storyline={storyline}
-          contentId={nextLetterMatch.content_id}
+          contentId={currentNextLetter.content_id}
         />
       ) : (
-        // Broken / orphaned ref — the variant the action points at no
-        // longer exists in the next group (likely the target letter was
-        // deleted before delete-cascade cleanup landed). Surface as a
-        // destructive-tinted pill so the user can re-pick or clear it.
+        // The FK auto-nulls on target delete, so an unresolvable link is
+        // rare — surface it so the user can re-pick or clear it.
         <span
           className="inline-flex h-6 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-destructive bg-destructive/15 px-1.5 font-mono text-[11px] font-normal normal-case leading-none tracking-normal text-destructive"
           title="This action's next-letter target no longer exists. Pick a new one or set to (Unset)."
@@ -4612,46 +4635,30 @@ function ActionEditor({
           >
             <path d="M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
           </svg>
-          <span className="whitespace-nowrap">
-            {action.next_letter_variant} (missing)
-          </span>
+          <span className="whitespace-nowrap">(missing)</span>
         </span>
       )
     ) : null;
 
   const nextLetterItems: PillSelectItem[] = [
-    ...(nextGroup
-      ? nextGroupLetters.map<PillSelectItem>((l) => ({
-          key: l.id,
-          active:
-            !!l.variant && action.next_letter_variant === l.variant,
-          label: (
-            <>
-              <InspectionLetterPill
-                storyline={storyline}
-                contentId={l.content_id}
-              />
-              {l.summary ? (
-                <span className="truncate text-muted-foreground">
-                  {l.summary.slice(0, 24)}
-                </span>
-              ) : null}
-            </>
-          ),
-          onPick: () => {
-            if (l.variant) {
-              onChange({ next_letter_variant: l.variant });
-              return;
-            }
-            // The next letter has no variant (single-letter group).
-            // Promote it to 'a' so the action can reference it stably.
-            startCreateLetter(async () => {
-              const { variant } = await ensureInspectionLetterVariant(l.id);
-              onChange({ next_letter_variant: variant });
-            });
-          },
-        }))
-      : []),
+    ...pickableLetters.map<PillSelectItem>((l) => ({
+      key: l.id,
+      active: action.next_letter_id === l.id,
+      label: (
+        <>
+          <InspectionLetterPill
+            storyline={storyline}
+            contentId={l.content_id}
+          />
+          {l.summary ? (
+            <span className="truncate text-muted-foreground">
+              {l.summary.slice(0, 24)}
+            </span>
+          ) : null}
+        </>
+      ),
+      onPick: () => onChange({ next_letter_id: l.id }),
+    })),
     nextGroup
       ? {
           key: "__new_letter",
@@ -4664,8 +4671,8 @@ function ActionEditor({
           ),
           onPick: () =>
             startCreateLetter(async () => {
-              const { variant } = await createLetterInNextGroup(groupId);
-              onChange({ next_letter_variant: variant });
+              const { letterId } = await createLetterInNextGroup(groupId);
+              onChange({ next_letter_id: letterId });
             }),
         }
       : {
@@ -4679,9 +4686,9 @@ function ActionEditor({
           ),
           onPick: () =>
             startCreateLetter(async () => {
-              const { variant } =
+              const { letterId } =
                 await createNextLetterGroupAndLetter(groupId);
-              onChange({ next_letter_variant: variant });
+              onChange({ next_letter_id: letterId });
             }),
         },
     {
@@ -4693,8 +4700,8 @@ function ActionEditor({
           Clear Next Letter
         </span>
       ),
-      active: !action.next_letter_variant,
-      onPick: () => onChange({ next_letter_variant: null }),
+      active: !action.next_letter_id,
+      onPick: () => onChange({ next_letter_id: null }),
     },
   ];
 
@@ -4814,9 +4821,7 @@ function ActionEditor({
           <LinkField
             label="Next letter"
             pill={nextLetterPill}
-            pillNavigates={
-              !!action.next_letter_variant && !!nextLetterMatch
-            }
+            pillNavigates={!!action.next_letter_id && !!currentNextLetter}
             navAriaLabel="Open next letter"
             onPillClick={onOpenLetter}
             pillActive={letterOpen}

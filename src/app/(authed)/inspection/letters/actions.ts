@@ -154,22 +154,18 @@ export async function moveLetterGroupToDay(
 
 /**
  * Defensive sweep that clears action references whose targets no longer
- * exist. The graph view already refuses to draw edges to missing targets,
- * but the underlying `actions.next_letter_variant` value would otherwise
- * persist and re-surface in the action editor as a stale "next letter"
- * choice. Called from the workspace + graph page server components on load
- * so the editor never shows a dangling reference.
+ * exist. `report_segment_id` is protected by `ON DELETE SET NULL`, so
+ * orphans normally don't happen — but we belt-and-suspender it. Called from
+ * the workspace + graph page server components on load.
  *
- * - `report_segment_id` is protected by `ON DELETE SET NULL`, so orphans
- *   normally don't happen here — but we belt-and-suspender it.
- * - `next_letter_variant` is a plain char(1) (no FK), so it can dangle when
- *   the next group is deleted, the matching letter is removed, or the
- *   variant is reassigned. The cleanup mirrors migration 0013's logic.
+ * `next_letter_id` needs no sweep: it is a real FK with `ON DELETE SET
+ * NULL`, so deleting a target letter (or its group, which cascades to its
+ * letters) clears the ref automatically.
  */
 export async function sweepOrphanActionRefs(): Promise<void> {
   const supabase = await createSupabaseServerClient();
 
-  // 1) Clear report_segment_id refs that no longer resolve.
+  // Clear report_segment_id refs that no longer resolve.
   const { data: actionsWithSegment } = await supabase
     .from("actions")
     .select("id, report_segment_id")
@@ -196,92 +192,6 @@ export async function sweepOrphanActionRefs(): Promise<void> {
         .update({ report_segment_id: null })
         .in("id", orphanActionIds);
     }
-  }
-
-  // 2) Clear next_letter_variant refs that don't resolve to a real letter in
-  //    the *next* group (storyline, sequence + smallest positive delta).
-  const { data: actionsWithNext } = await supabase
-    .from("actions")
-    .select(
-      "id, next_letter_variant, inspection_letter_id, inspection_letters!inner(letter_group_id, letter_groups!inner(storyline_id, sequence))"
-    )
-    .not("next_letter_variant", "is", null);
-  if (!actionsWithNext || actionsWithNext.length === 0) return;
-
-  type Row = {
-    id: string;
-    next_letter_variant: string;
-    inspection_letters: {
-      letter_group_id: string;
-      letter_groups: { storyline_id: string; sequence: number };
-    };
-  };
-  const rows = actionsWithNext as unknown as Row[];
-  const storylineIds = Array.from(
-    new Set(rows.map((r) => r.inspection_letters.letter_groups.storyline_id))
-  );
-
-  // Pull every letter group's sequence for the relevant storylines so we
-  // can resolve each action's "next group" without N round trips.
-  const { data: groupRows } = await supabase
-    .from("letter_groups")
-    .select("id, storyline_id, sequence")
-    .in("storyline_id", storylineIds);
-  const groupsByStoryline = new Map<
-    string,
-    Array<{ id: string; sequence: number }>
-  >();
-  for (const g of groupRows ?? []) {
-    const list = groupsByStoryline.get(g.storyline_id as string) ?? [];
-    list.push({ id: g.id as string, sequence: g.sequence as number });
-    groupsByStoryline.set(g.storyline_id as string, list);
-  }
-  for (const list of groupsByStoryline.values()) {
-    list.sort((a, b) => a.sequence - b.sequence);
-  }
-
-  // Letters in every potential next group, indexed for fast lookup.
-  const nextGroupIds = new Set<string>();
-  const nextGroupByAction = new Map<string, string | null>();
-  for (const r of rows) {
-    const lg = r.inspection_letters.letter_groups;
-    const list = groupsByStoryline.get(lg.storyline_id) ?? [];
-    const next = list.find((g) => g.sequence > lg.sequence) ?? null;
-    nextGroupByAction.set(r.id, next?.id ?? null);
-    if (next) nextGroupIds.add(next.id);
-  }
-  const variantsByGroup = new Map<string, Set<string>>();
-  if (nextGroupIds.size > 0) {
-    const { data: variantRows } = await supabase
-      .from("inspection_letters")
-      .select("letter_group_id, variant")
-      .in("letter_group_id", Array.from(nextGroupIds))
-      .not("variant", "is", null);
-    for (const v of variantRows ?? []) {
-      const set =
-        variantsByGroup.get(v.letter_group_id as string) ?? new Set<string>();
-      set.add(v.variant as string);
-      variantsByGroup.set(v.letter_group_id as string, set);
-    }
-  }
-
-  const orphanActionIds: string[] = [];
-  for (const r of rows) {
-    const nextGroupId = nextGroupByAction.get(r.id);
-    if (!nextGroupId) {
-      orphanActionIds.push(r.id);
-      continue;
-    }
-    const variants = variantsByGroup.get(nextGroupId);
-    if (!variants?.has(r.next_letter_variant)) {
-      orphanActionIds.push(r.id);
-    }
-  }
-  if (orphanActionIds.length > 0) {
-    await supabase
-      .from("actions")
-      .update({ next_letter_variant: null })
-      .in("id", orphanActionIds);
   }
 }
 
@@ -539,10 +449,9 @@ export async function pinReportSegmentToDay(
 
 /**
  * Move an inspection letter to a different group within the same
- * storyline. Re-slots variants in both groups, renumbers pieces in the
- * old group, and nulls any `actions.next_letter_variant` refs on the
- * old group's letters that pointed at the moved letter's previous
- * variant (which is about to be reassigned). Rejects cross-storyline
+ * storyline. Re-slots variants in both groups and renumbers pieces in the
+ * old group. Inbound next-letter links are FK-based (`next_letter_id`), so
+ * they follow the moved letter automatically. Rejects cross-storyline
  * moves.
  */
 export async function moveLetterToGroup(
@@ -598,24 +507,6 @@ export async function moveLetterToGroup(
     .eq("id", letterId);
   if (mErr) throw new Error(mErr.message);
 
-  // Null out any next_letter_variant on the source group's letters that
-  // pointed at the old variant (those refs are no longer valid since the
-  // letter left the group and variants will re-slot).
-  if (oldVariant) {
-    const { data: sourceLetters } = await supabase
-      .from("inspection_letters")
-      .select("id")
-      .eq("letter_group_id", sourceGroupId);
-    const sourceLetterIds = (sourceLetters ?? []).map((l) => l.id as string);
-    if (sourceLetterIds.length > 0) {
-      await supabase
-        .from("actions")
-        .update({ next_letter_variant: null })
-        .in("inspection_letter_id", sourceLetterIds)
-        .eq("next_letter_variant", oldVariant);
-    }
-  }
-
   // Re-slot variants in both groups (lowercase a, b, c, … by sort_order).
   await reassignVariants(sourceGroupId);
   await reassignVariants(targetGroupId);
@@ -631,16 +522,15 @@ export async function moveLetterToGroup(
 
 /**
  * Set or clear an action's next-letter link by the target letter id. Used
- * by the narrative graph's edge-reconnect drag.
+ * by the narrative graph's edge-reconnect drag and the inspector dropdown.
  *
  * - Passing `null` clears the link (the action's arrow becomes dangling).
- * - Passing a `letterId` validates the target sits in the next adjacent
- *   group of the source action's storyline (same storyline_id, sequence +
- *   1). Promotes the target letter's variant from null → 'a' if needed so
- *   `next_letter_variant` always points at a stable, non-null variant.
+ * - Passing a `letterId` validates the target is in the SAME storyline as
+ *   the source letter and delivers on a STRICTLY LATER effective day. A
+ *   letter with no effective day can be neither a source nor a target.
  *
- * Invalid links (cross-storyline, non-adjacent, missing rows) are silently
- * ignored — the graph snaps back on revalidation.
+ * Invalid links (cross-storyline, same/earlier day, unscheduled, missing
+ * rows) are silently ignored — the graph snaps back on revalidation.
  */
 export async function setActionNextLetterByLetterId(
   actionId: string,
@@ -650,7 +540,7 @@ export async function setActionNextLetterByLetterId(
   if (letterId === null) {
     const { error } = await supabase
       .from("actions")
-      .update({ next_letter_variant: null })
+      .update({ next_letter_id: null })
       .eq("id", actionId);
     if (error) throw new Error(error.message);
     revalidatePath("/inspection/letters");
@@ -663,35 +553,29 @@ export async function setActionNextLetterByLetterId(
     .eq("id", actionId)
     .maybeSingle();
   if (!act) return;
-  const { data: srcLetter } = await supabase
-    .from("inspection_letters")
-    .select("letter_group_id")
-    .eq("id", act.inspection_letter_id as string)
-    .maybeSingle();
-  const { data: tgtLetter } = await supabase
-    .from("inspection_letters")
-    .select("letter_group_id, variant")
-    .eq("id", letterId)
-    .maybeSingle();
-  if (!srcLetter || !tgtLetter) return;
-  const sourceGroupId = srcLetter.letter_group_id as string;
-  const targetGroupId = tgtLetter.letter_group_id as string;
-  const { data: groups } = await supabase
-    .from("letter_groups")
-    .select("id, storyline_id, sequence")
-    .in("id", [sourceGroupId, targetGroupId]);
-  const srcGroup = groups?.find((g) => g.id === sourceGroupId);
-  const tgtGroup = groups?.find((g) => g.id === targetGroupId);
-  if (!srcGroup || !tgtGroup) return;
-  if (srcGroup.storyline_id !== tgtGroup.storyline_id) return;
-  if (Number(tgtGroup.sequence) !== Number(srcGroup.sequence) + 1) return;
-  let variant = (tgtLetter.variant as string | null) ?? null;
-  if (!variant) {
-    variant = await ensureLetterVariant(letterId);
-  }
+  const srcLetterId = act.inspection_letter_id as string;
+  // Resolve both letters' storyline + effective day from the view.
+  const { data: letterRows } = await supabase
+    .from("inspection_letters_view")
+    .select("id, storyline_id, effective_day_id")
+    .in("id", [srcLetterId, letterId]);
+  const src = letterRows?.find((l) => l.id === srcLetterId);
+  const tgt = letterRows?.find((l) => l.id === letterId);
+  if (!src || !tgt) return;
+  if (src.storyline_id !== tgt.storyline_id) return;
+  if (!src.effective_day_id || !tgt.effective_day_id) return;
+  // The next letter must deliver strictly later than the source letter.
+  const { data: dayRows } = await supabase
+    .from("days")
+    .select("id, number")
+    .in("id", [src.effective_day_id, tgt.effective_day_id]);
+  const srcDay = dayRows?.find((d) => d.id === src.effective_day_id);
+  const tgtDay = dayRows?.find((d) => d.id === tgt.effective_day_id);
+  if (!srcDay || !tgtDay) return;
+  if (Number(tgtDay.number) <= Number(srcDay.number)) return;
   const { error } = await supabase
     .from("actions")
-    .update({ next_letter_variant: variant })
+    .update({ next_letter_id: letterId })
     .eq("id", actionId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
@@ -792,47 +676,15 @@ export async function batchMoveToDay(
 
 export async function deleteGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
-  // Capture the previous group in this storyline so we can clear stale
-  // next_letter_variant refs that pointed into the now-deleted group.
-  const { data: thisGroup } = await supabase
-    .from("letter_groups")
-    .select("storyline_id, sequence")
-    .eq("id", groupId)
-    .maybeSingle();
-  let prevLetterIds: string[] = [];
-  if (thisGroup) {
-    const { data: prev } = await supabase
-      .from("letter_groups")
-      .select("id")
-      .eq("storyline_id", thisGroup.storyline_id)
-      .lt("sequence", thisGroup.sequence)
-      .order("sequence", { ascending: false })
-      .limit(1);
-    const prevGroupId = prev?.[0]?.id as string | undefined;
-    if (prevGroupId) {
-      const { data: prevLetters } = await supabase
-        .from("inspection_letters")
-        .select("id")
-        .eq("letter_group_id", prevGroupId);
-      prevLetterIds = (prevLetters ?? []).map((r) => r.id as string);
-    }
-  }
   // FK cascade handles report_groups, report_segments, inspection_letters,
-  // and (transitively) actions tied to this group's letters.
+  // and (transitively) actions tied to this group's letters. Inbound
+  // next-letter links auto-null via the next_letter_id FK (ON DELETE SET
+  // NULL) as the cascade removes the target letters.
   const { error } = await supabase
     .from("letter_groups")
     .delete()
     .eq("id", groupId);
   if (error) throw new Error(error.message);
-  // Clear actions in the previous group whose next_letter_variant pointed
-  // into the now-deleted group.
-  if (prevLetterIds.length > 0) {
-    await supabase
-      .from("actions")
-      .update({ next_letter_variant: null })
-      .in("inspection_letter_id", prevLetterIds)
-      .not("next_letter_variant", "is", null);
-  }
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
   // Intentionally no redirect — the caller may be embedded in /graph and
@@ -990,7 +842,8 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
     .maybeSingle();
   const deletedVariant = (deleted?.variant ?? null) as string | null;
   // FK cascade on actions.inspection_letter_id removes this letter's own
-  // actions automatically.
+  // actions; the next_letter_id FK (ON DELETE SET NULL) clears any inbound
+  // next-letter links automatically.
   const { error } = await supabase
     .from("inspection_letters")
     .delete()
@@ -998,60 +851,6 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
   if (error) throw new Error(error.message);
   await reassignVariants(groupId);
   if (deletedVariant) await reassignPiecesForVariant(groupId, deletedVariant);
-  // Clear orphaned next_letter_variant refs in the previous group: any
-  // action whose target variant key no longer exists in this group after
-  // the delete + reassign.
-  const { data: thisGroup } = await supabase
-    .from("letter_groups")
-    .select("storyline_id, sequence")
-    .eq("id", groupId)
-    .maybeSingle();
-  if (thisGroup) {
-    const { data: prev } = await supabase
-      .from("letter_groups")
-      .select("id")
-      .eq("storyline_id", thisGroup.storyline_id)
-      .lt("sequence", thisGroup.sequence)
-      .order("sequence", { ascending: false })
-      .limit(1);
-    const prevGroupId = prev?.[0]?.id as string | undefined;
-    if (prevGroupId) {
-      const { data: prevLetterRows } = await supabase
-        .from("inspection_letters")
-        .select("id")
-        .eq("letter_group_id", prevGroupId);
-      const prevLetterIds = (prevLetterRows ?? []).map((r) => r.id as string);
-      if (prevLetterIds.length > 0) {
-        const { data: currentLetters } = await supabase
-          .from("inspection_letters")
-          .select("variant")
-          .eq("letter_group_id", groupId);
-        const validVariants = new Set(
-          (currentLetters ?? [])
-            .map((r) => r.variant as string | null)
-            .filter((v): v is string => !!v)
-        );
-        const { data: stale } = await supabase
-          .from("actions")
-          .select("id, next_letter_variant")
-          .in("inspection_letter_id", prevLetterIds)
-          .not("next_letter_variant", "is", null);
-        const orphanIds = (stale ?? [])
-          .filter(
-            (a) =>
-              a.next_letter_variant &&
-              !validVariants.has(a.next_letter_variant as string)
-          )
-          .map((a) => a.id as string);
-        if (orphanIds.length > 0) {
-          await supabase
-            .from("actions")
-            .update({ next_letter_variant: null })
-            .in("id", orphanIds);
-        }
-      }
-    }
-  }
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }
@@ -1295,7 +1094,7 @@ export async function patchLetterGroup(
 
 type ActionPatchFields = {
   report_segment_id: string | null;
-  next_letter_variant: string | null;
+  next_letter_id: string | null;
   impact_world_status: number;
   impact_demerits: number;
   impact_proletariat: number;
@@ -1442,24 +1241,9 @@ async function ensureLetterVariant(letterId: string): Promise<string> {
 }
 
 /**
- * Public wrapper: promote a letter's variant from null to 'a' if needed, so
- * actions can reference it by `next_letter_variant`. Single-letter groups
- * keep a null variant for display, but picking them as a "next letter"
- * requires a stable variant to point at.
- */
-export async function ensureInspectionLetterVariant(
-  letterId: string
-): Promise<{ variant: string }> {
-  const variant = await ensureLetterVariant(letterId);
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
-  return { variant };
-}
-
-/**
  * Create a new letter in the "next" letter group (by sequence) in the same
- * storyline. Returns the new letter's variant so the caller can set it as
- * `next_letter_variant` on the current action.
+ * storyline. Returns the new letter's id so the caller can set it as the
+ * action's `next_letter_id`.
  */
 export async function createLetterInNextGroup(
   currentGroupId: string
@@ -1489,7 +1273,7 @@ export async function createLetterInNextGroup(
 
 /**
  * Create the next letter group (auto sequence) and a first letter in it.
- * Returns the new letter's variant for the action linkage.
+ * Returns the new letter's id for the action's `next_letter_id` link.
  */
 export async function createNextLetterGroupAndLetter(
   currentGroupId: string
