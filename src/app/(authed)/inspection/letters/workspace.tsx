@@ -2595,7 +2595,7 @@ function LettersWorkspaceInner({
                     {isGhost ? (
                       <div
                         aria-hidden
-                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                        className="h-6 flex-1 rounded-sm bg-accent/10"
                       />
                     ) : (
                       <>
@@ -2778,7 +2778,7 @@ function LettersWorkspaceInner({
                     {isGhost ? (
                       <div
                         aria-hidden
-                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                        className="h-6 flex-1 rounded-sm bg-accent/10"
                       />
                     ) : (
                       <>
@@ -7416,7 +7416,7 @@ function StorylineInspector({
                   {dragIndex === i ? (
                     <div
                       aria-hidden
-                      className="h-5 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                      className="h-5 flex-1 rounded-sm bg-accent/10"
                     />
                   ) : (
                     rowContent
