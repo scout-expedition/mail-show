@@ -3,21 +3,20 @@
 import { createContext, useContext } from "react";
 
 /**
- * Panel-level collapse mode. Two states:
+ * Panel-level collapse mode. Three states:
  *   - "expanded": every block fully visible.
+ *   - "groups":   every condition block stays expanded (the logic-tree
+ *                 skeleton stays visible); every text block collapses to
+ *                 its header/summary.
  *   - "all":      every condition block fully collapsed; nothing inside
  *                 a block renders.
  *
  * The user can also toggle a single block's chevron to override the
- * panel mode for that one block. When any override is set, neither
- * mode button reads as "active" — clicking either of them clears every
+ * panel mode for that one block. When any override is set, no mode
+ * button reads as "active" — clicking any of them clears every
  * override and resets the mode.
- *
- * The "collapse to headers" intermediate mode was prototyped on this
- * branch and reverted; see the followup issue for the design + impl
- * plan we want to revisit later.
  */
-export type CollapseMode = "expanded" | "all";
+export type CollapseMode = "expanded" | "groups" | "all";
 
 export interface CollapseContext {
   mode: CollapseMode;

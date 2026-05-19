@@ -641,12 +641,16 @@ function PreviewSegment({ segment }: { segment: SubstitutionSegment }) {
     return <span className="text-[var(--primary)]">{segment.text}</span>;
   }
   if (segment.kind === "unresolved") {
-    // Literal `@[Name]` token that didn't resolve (unknown name, unset
-    // value, or unresolved aggregate). Yellow warning chrome matches
-    // the unset-input label in the right-hand panel.
+    // Token that didn't resolve (unknown name, unset value, or
+    // unresolved aggregate). Render a muted dashed placeholder pill
+    // naming the variable — keeps the prose readable while flagging
+    // what still needs a value.
     return (
-      <span className="text-amber-300" title="Variable not set">
-        {segment.text}
+      <span
+        className="mx-px inline-flex items-baseline rounded border border-dashed border-border bg-card/40 px-1 align-baseline text-[0.85em] text-muted-foreground"
+        title="Variable not set — pick a value above"
+      >
+        {segment.variableName}
       </span>
     );
   }

@@ -15,6 +15,7 @@ import { parentKey } from "@/lib/endings/block-state";
 import type { EndingVariableValue } from "@/lib/db/types";
 import { addBlock, deleteBlock } from "../_shared/document-actions";
 import { useDrag } from "../_shared/lib/drag";
+import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import { ConditionBlock } from "./condition-block";
 
 type BlockKind = "text" | "result" | "condition";
@@ -97,9 +98,14 @@ export function BlockList({
   rowContext?: boolean;
 }) {
   const drag = useDrag();
+  const collapse = useCollapseCtx();
   const blocks =
     byParent.get(parentKey(parent.parent_block_id, parent.parent_row_id)) ?? [];
   const [pending, startTransition] = useTransition();
+  // "groups" mode renders condition rows as a compact, read-only view —
+  // suppress the block-insertion zones inside them.
+  const insertionDisabled =
+    disableInsertion || (rowContext === true && collapse.mode === "groups");
 
   function handleAdd(kind: BlockKind, beforeBlockId: string | null) {
     if (kind === "text") {
@@ -228,7 +234,7 @@ export function BlockList({
           >
             (no blocks)
           </p>
-        ) : disableInsertion ? null : (
+        ) : insertionDisabled ? null : (
           <InsertionZone
             options={addOptions}
             onAdd={(kind) => handleAdd(kind, null)}
@@ -313,7 +319,7 @@ export function BlockList({
                 chip-empty rows (children won't ever fire), and inside
                 row context once at least one block is already
                 present (only the trailing zone remains useful). */}
-            {!hasResultBlock && !disableInsertion && !rowContext ? (
+            {!hasResultBlock && !insertionDisabled && !rowContext ? (
               <InsertionZone
                 options={addOptions}
                 onAdd={(kind) => handleAdd(kind, b.id)}
@@ -325,7 +331,7 @@ export function BlockList({
         );
       })}
 
-      {hasResultBlock || disableInsertion ? null : blocks.length > 0 ? (
+      {hasResultBlock || insertionDisabled ? null : blocks.length > 0 ? (
         <InsertionZone
           options={addOptions}
           onAdd={(kind) => handleAdd(kind, null)}
