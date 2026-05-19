@@ -3,26 +3,27 @@
 import {
   startTransition,
   useEffect,
+  useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
-import { IconDisplay } from "@/components/icon-display";
-import { IconPickerDialog } from "@/components/icon-picker-dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Globe, Plus } from "lucide-react";
+import { PanelHeader } from "@/components/panel";
 import { useToast } from "@/components/toast";
-import type { IconType } from "@/lib/db/enums";
-import type { Nation } from "@/lib/db/types";
-import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import type { PresenceProfile, PresencePeer } from "@/lib/realtime/presence";
+import { cn } from "@/lib/utils";
+import type { City, Nation } from "@/lib/db/types";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import type { PresencePeer, PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import { deleteNation, patchNation, updateAllNations } from "./actions";
-import { normalizeHex } from "@/lib/color";
-import { useConfirm } from "@/components/confirm-dialog";
+import { IconDisplay } from "@/components/icon-display";
+import type { IconType } from "@/lib/db/enums";
+import { createNation, updateAllNations } from "./actions";
+import { NationInspector } from "./nation-inspector";
 
 function readableOn(hex: string): string {
   const h = hex.replace(/^#/, "");
@@ -37,11 +38,13 @@ function readableOn(hex: string): string {
 
 export function NationsEditor({
   nations,
+  cities,
   currentUserId,
   currentEmail,
   currentProfile,
 }: {
   nations: Nation[];
+  cities: City[];
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -54,19 +57,34 @@ export function NationsEditor({
       profile={currentProfile}
       postgresTables={["nations"]}
     >
-      <NationsEditorInner nations={nations} />
+      <NationsEditorInner nations={nations} cities={cities} />
     </WorkspacePresenceProvider>
   );
 }
 
-function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) {
+/** Resolve the nation a peer currently has open. */
+function peerNationId(peer: PresencePeer): string | null {
+  const fromSelection = peer.selection?.payload?.nationId;
+  if (fromSelection) return fromSelection;
+  if (peer.focus?.table === "nations") return peer.focus.recordId;
+  return null;
+}
+
+function NationsEditorInner({
+  nations: initialNations,
+  cities,
+}: {
+  nations: Nation[];
+  cities: City[];
+}) {
   const router = useRouter();
-  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { peers, onPostgresChanges, setSelection } = usePresenceContext();
   const { toast, toaster } = useToast();
   const [, startReorderTransition] = useTransition();
 
-  // Local mirror of nations, seeded from server props. useEffect reconciles
-  // when the server prop changes (e.g. after a structural revalidate adds a nation).
+  // Local mirror of nations
   const [rows, setRows] = useState<Nation[]>(initialNations);
   useEffect(() => {
     setRows((prev) => {
@@ -84,6 +102,57 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
+  // Selection state
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Two-way URL param sync (?nation=<name>). Matches by name first, falls
+  // back to id for backwards compatibility with old links. URLSearchParams
+  // handles encode/decode of the value transparently — no manual encoding.
+  const appliedParamRef = useRef<string | null>(null);
+  // URL → state
+  useEffect(() => {
+    const param = searchParams.get("nation");
+    if (param === appliedParamRef.current) return;
+    appliedParamRef.current = param;
+    if (param) {
+      const match =
+        rows.find((r) => r.name === param) ??
+        rows.find((r) => r.id === param) ??
+        null;
+      setSelectedId(match?.id ?? null);
+    } else {
+      setSelectedId(null);
+    }
+  }, [searchParams, rows]);
+  // state → URL
+  useEffect(() => {
+    const row = selectedId ? rows.find((r) => r.id === selectedId) : null;
+    const desired = row ? row.name?.trim() || row.id : null;
+    if (desired === appliedParamRef.current) return;
+    appliedParamRef.current = desired;
+    const params = new URLSearchParams(searchParams);
+    if (desired) params.set("nation", desired);
+    else params.delete("nation");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [selectedId, rows, searchParams, pathname, router]);
+
+  // Broadcast selection to peers
+  useEffect(() => {
+    if (selectedId) {
+      setSelection({
+        storylineId: null,
+        groupId: null,
+        letterId: null,
+        segmentId: null,
+        view: "nation",
+        payload: { nationId: selectedId },
+      });
+    } else {
+      setSelection(null);
+    }
+  }, [selectedId, setSelection]);
+
   // postgres_changes handler
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
@@ -96,6 +165,7 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
       } else if (change.eventType === "DELETE" && change.old) {
         const deleted = change.old as unknown as { id: string; updated_by?: string };
         setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        setSelectedId((cur) => (cur === deleted.id ? null : cur));
         const by = deleted.updated_by ?? "Someone";
         toast({
           message: `${by} deleted a nation.`,
@@ -112,6 +182,7 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
     });
   }, [onPostgresChanges, router, toast]);
 
+  // Drag reorder
   function handleDragOver(e: React.DragEvent, overIdx: number) {
     e.preventDefault();
     if (dragIndex === null || dragIndex === overIdx) return;
@@ -126,8 +197,6 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
 
   function handleDragEnd() {
     setDragIndex(null);
-    // Persist the new sort_order via the coarse updateAllNations action.
-    // This is a structural mutation → keeps revalidatePath.
     const fd = new FormData();
     rows.forEach((r, i) => {
       fd.append("ids", r.id);
@@ -143,229 +212,222 @@ function NationsEditorInner({ nations: initialNations }: { nations: Nation[] }) 
     });
   }
 
+  // The inspector has already run deleteNation — reconcile local state.
+  function handleDeleted(id: string) {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+    setSelectedId((cur) => (cur === id ? null : cur));
+  }
+
+  const [creating, startCreate] = useTransition();
+  function handleCreate() {
+    startCreate(async () => {
+      const created = await createNation();
+      setRows((prev) =>
+        prev.some((r) => r.id === created.id) ? prev : [...prev, created]
+      );
+      setSelectedId(created.id);
+    });
+  }
+
+  // Peer rings indexed by nationId
+  const peerRingsByNation = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of peers) {
+      const nid = peerNationId(p);
+      if (!nid) continue;
+      const color = p.profile?.avatarColorHex ?? p.color;
+      const arr = m.get(nid) ?? [];
+      arr.push(color);
+      m.set(nid, arr);
+    }
+    return m;
+  }, [peers]);
+
+  // City count by nation id
+  const cityCountByNation = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of cities) {
+      m.set(c.nation_id, (m.get(c.nation_id) ?? 0) + 1);
+    }
+    return m;
+  }, [cities]);
+
+  // otherNames for the inspector's duplicate detection
+  const otherNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) {
+      if (r.id === selectedId) continue;
+      const k = r.name.trim().toLowerCase();
+      if (k) s.add(k);
+    }
+    return s;
+  }, [rows, selectedId]);
+
+  const nationById = useMemo(
+    () => new Map(rows.map((r) => [r.id, r])),
+    [rows]
+  );
+  const selected = selectedId ? (nationById.get(selectedId) ?? null) : null;
+
+  const panelRef = useRef<HTMLDivElement>(null);
+
   return (
     <>
       {toaster}
+      <div className="flex items-start gap-4">
+        {/* Left list panel */}
+        <div
+          ref={panelRef}
+          className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card"
+        >
+          <PanelHeader
+            title="Nations"
+            icon={
+              <Globe
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
+            }
+            menu={
+              <button
+                type="button"
+                onClick={handleCreate}
+                disabled={creating}
+                aria-label="Add nation"
+                title="Add nation"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                <Plus size={14} aria-hidden />
+              </button>
+            }
+          />
+          {/* Column headers */}
+          <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
+            <span className="w-5 shrink-0" aria-hidden />
+            <span className="w-8 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 font-mono text-xs font-medium text-muted-foreground">
+              Name
+            </span>
+            <span className="w-[60px] shrink-0 text-right font-mono text-xs font-medium text-muted-foreground">
+              Abbr
+            </span>
+            <span className="w-[80px] shrink-0 text-right font-mono text-xs font-medium text-muted-foreground">
+              Cities
+            </span>
+          </div>
 
-      <div className="overflow-hidden rounded-md border border-border bg-card">
-        <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
-          <span />
-          <span />
-          <Label>Name</Label>
-          <Label>Abbr</Label>
-          <span />
+          {rows.map((row, i) => {
+            const peerColors = peerRingsByNation.get(row.id) ?? null;
+            const cityCount = cityCountByNation.get(row.id) ?? 0;
+            const fg = readableOn(row.color_hex);
+
+            // Peer rings: inset box-shadows
+            const boxShadow = peerColors?.length
+              ? peerColors
+                  .map((c, pi) => `inset 0 0 0 ${(pi + 1) * 2}px ${c}`)
+                  .join(", ")
+              : undefined;
+
+            return (
+              <div
+                key={row.id}
+                onDragOver={(e) => handleDragOver(e, i)}
+                onDragEnd={handleDragEnd}
+                style={boxShadow ? { boxShadow } : undefined}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 border-t border-border px-3 py-1.5 text-sm transition-colors first:border-t-0 hover:bg-accent/20 focus:outline-none focus-visible:bg-accent/20",
+                  row.id === selectedId ? "bg-accent/30" : undefined,
+                  dragIndex === i ? "opacity-60" : undefined
+                )}
+                role="button"
+                tabIndex={0}
+                onClick={() =>
+                  setSelectedId((cur) => (cur === row.id ? null : row.id))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedId((cur) => (cur === row.id ? null : row.id));
+                  }
+                }}
+              >
+                {/* Drag handle — stopPropagation so grabbing doesn't toggle selection */}
+                <span
+                  draggable
+                  onDragStart={(e) => {
+                    e.stopPropagation();
+                    setDragIndex(i);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  aria-label="Drag to reorder"
+                  title="Drag to reorder"
+                  className="flex h-8 w-5 shrink-0 cursor-grab items-center justify-center text-muted-foreground active:cursor-grabbing"
+                >
+                  <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+                    <circle cx="2" cy="3" r="1.2" />
+                    <circle cx="8" cy="3" r="1.2" />
+                    <circle cx="2" cy="8" r="1.2" />
+                    <circle cx="8" cy="8" r="1.2" />
+                    <circle cx="2" cy="13" r="1.2" />
+                    <circle cx="8" cy="13" r="1.2" />
+                  </svg>
+                </span>
+
+                {/* Color + icon swatch (32px) */}
+                <span
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border"
+                  style={{ background: row.color_hex, color: fg }}
+                  aria-hidden
+                >
+                  {row.icon_value ? (
+                    <IconDisplay
+                      type={row.icon_type as IconType}
+                      value={row.icon_value}
+                      size={14}
+                    />
+                  ) : (
+                    <span className="font-mono text-[9px] opacity-70">ic</span>
+                  )}
+                </span>
+
+                {/* Name */}
+                <span className="min-w-0 flex-1 truncate">{row.name}</span>
+
+                {/* Abbreviation */}
+                <span className="w-[60px] shrink-0 text-right font-mono text-xs text-muted-foreground">
+                  {row.abbreviation ?? ""}
+                </span>
+
+                {/* City count */}
+                <span className="w-[80px] shrink-0 text-right font-mono text-xs text-muted-foreground">
+                  {cityCount} {cityCount === 1 ? "city" : "cities"}
+                </span>
+              </div>
+            );
+          })}
+
+          {rows.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+              No nations yet.
+            </p>
+          ) : null}
         </div>
-        {rows.map((row, i) => (
-          <div
-            key={row.id}
-            draggable
-            onDragStart={() => setDragIndex(i)}
-            onDragOver={(e) => handleDragOver(e, i)}
-            onDragEnd={handleDragEnd}
-            className={cn(
-              "border-t border-border first:border-t-0",
-              dragIndex === i && "opacity-60"
-            )}
-          >
-            <NationRow
-              row={row}
-              peers={peers}
-              onActivity={pingActivity}
+
+        {/* Right inspector panel */}
+        {selected ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <NationInspector
+              key={selected.id}
+              nation={selected}
+              cities={cities}
+              otherNames={otherNames}
+              onDeleted={handleDeleted}
             />
           </div>
-        ))}
-        {rows.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No nations yet.
-          </p>
         ) : null}
       </div>
-    </>
-  );
-}
-
-function NationRow({
-  row,
-  peers,
-  onActivity,
-}: {
-  row: Nation;
-  peers: PresencePeer[];
-  onActivity: () => void;
-}) {
-  const { setFocus } = usePresenceContext();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const fg = readableOn(row.color_hex);
-  const focusBase = { table: "nations", recordId: row.id };
-
-  const nameField = useInstantField({
-    value: row.name,
-    onCommit: (v) => patchNation(row.id, { name: v }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "name" } : null);
-    },
-    onActivity,
-  });
-
-  const abbreviationField = useInstantField({
-    value: row.abbreviation ?? "",
-    onCommit: (v) => patchNation(row.id, { abbreviation: v || null }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "abbreviation" } : null);
-    },
-    onActivity,
-  });
-
-  const colorField = useInstantField({
-    value: row.color_hex,
-    onCommit: (v) => patchNation(row.id, { color_hex: normalizeHex(v) }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "color_hex" } : null);
-    },
-    onActivity,
-  });
-
-  const iconTypeField = useInstantField({
-    value: row.icon_type,
-    onCommit: (v) => patchNation(row.id, { icon_type: v as IconType }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "icon_type" } : null);
-    },
-    onActivity,
-  });
-
-  const iconValueField = useInstantField({
-    value: row.icon_value ?? "",
-    onCommit: (v) => patchNation(row.id, { icon_value: v || null }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "icon_value" } : null);
-    },
-    onActivity,
-  });
-
-  return (
-    <>
-      <div className="grid grid-cols-[20px_32px_1fr_80px_36px] items-center gap-2 px-3 py-1">
-        <DragHandle />
-        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "icon_value" }}>
-          <div onFocus={iconValueField.onFocus} onBlur={iconValueField.onBlur}>
-            <button
-              type="button"
-              onClick={() => setDialogOpen(true)}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-border"
-              style={{ background: colorField.value, color: fg }}
-              title="Icon and color"
-              aria-label="Edit icon and color"
-            >
-              {iconValueField.value ? (
-                <IconDisplay
-                  type={iconTypeField.value as IconType}
-                  value={iconValueField.value}
-                  size={14}
-                />
-              ) : (
-                <span className="font-mono text-[9px] opacity-70">ic</span>
-              )}
-            </button>
-          </div>
-        </FieldHighlight>
-        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
-          <Input
-            value={nameField.value}
-            onChange={(e) => nameField.set(e.target.value)}
-            onFocus={nameField.onFocus}
-            onBlur={nameField.onBlur}
-            className={cn("h-8", !nameField.value.trim() && "ring-2 ring-destructive")}
-            required
-          />
-        </FieldHighlight>
-        <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "abbreviation" }}>
-          <Input
-            value={abbreviationField.value}
-            onChange={(e) => abbreviationField.set(e.target.value)}
-            onFocus={abbreviationField.onFocus}
-            onBlur={abbreviationField.onBlur}
-            maxLength={1}
-            className="h-8 text-center"
-          />
-        </FieldHighlight>
-        <DeleteX id={row.id} name={row.name} />
-      </div>
-
-      {dialogOpen && (
-        <IconPickerDialog
-          title="Edit icon"
-          initialType={iconTypeField.value as IconType}
-          initialValue={iconValueField.value || null}
-          initialColor={colorField.value}
-          onSave={(p) => {
-            iconTypeField.set(p.type);
-            iconValueField.set(p.value);
-            colorField.set(p.color);
-          }}
-          onClose={() => setDialogOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
-function DragHandle() {
-  return (
-    <span
-      aria-label="Drag to reorder"
-      title="Drag to reorder"
-      className="flex h-8 w-5 shrink-0 cursor-grab items-center justify-center text-muted-foreground active:cursor-grabbing"
-    >
-      <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
-        <circle cx="2" cy="3" r="1.2" />
-        <circle cx="8" cy="3" r="1.2" />
-        <circle cx="2" cy="8" r="1.2" />
-        <circle cx="8" cy="8" r="1.2" />
-        <circle cx="2" cy="13" r="1.2" />
-        <circle cx="8" cy="13" r="1.2" />
-      </svg>
-    </span>
-  );
-}
-
-function DeleteX({ id, name }: { id: string; name: string }) {
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  return (
-    <>
-      <button
-        type="button"
-        aria-label="Delete nation"
-        title="Delete"
-        onClick={async () => {
-          const ok = await confirmDialog({
-            title: "Delete nation?",
-            message: `"${name}" will be permanently removed. This cannot be undone.`,
-            confirmLabel: "Delete",
-            intent: "destructive",
-          });
-          if (!ok) return;
-          const fd = new FormData();
-          fd.append("id", id);
-          await deleteNation(fd);
-        }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-      {confirmDialogEl}
     </>
   );
 }

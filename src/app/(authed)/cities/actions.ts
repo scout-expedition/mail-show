@@ -27,7 +27,7 @@ export async function createCity() {
   if (!nation_id) throw new Error("Create a nation before adding cities.");
   const { error } = await supabase
     .from("cities")
-    .insert({ name: "New city", code: "NEW", nation_id });
+    .insert({ name: "New city", code: "", nation_id });
   if (error) throw new Error(error.message);
   revalidatePath("/cities");
 }
