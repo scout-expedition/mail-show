@@ -13,9 +13,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Source .env.test.local when present (local dev). CI exports the vars
-# directly from `supabase status`, so the file is optional there.
-if [ -f .env.test.local ]; then
+# Source .env.test.local for local dev — but only when SUPABASE_TEST_URL is
+# not already set, so an exported environment (CI) always wins over a
+# possibly-stale local file rather than being silently overridden by it.
+if [ -z "${SUPABASE_TEST_URL:-}" ] && [ -f .env.test.local ]; then
   set -a
   # shellcheck disable=SC1091
   source .env.test.local

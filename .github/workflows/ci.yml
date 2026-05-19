@@ -69,7 +69,10 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned so `supabase status -o json` has a deterministic schema —
+          # the export step below depends on its .API_URL / .SECRET_KEY /
+          # .PUBLISHABLE_KEY keys. Bump deliberately.
+          version: 2.95.4
 
       - run: pnpm install --frozen-lockfile
 
@@ -85,10 +88,15 @@ jobs:
       - name: Export Supabase test env
         run: |
           STATUS="$(supabase status -o json)"
+          # `jq -e` fails this step if a key is missing/null, rather than
+          # exporting an empty value that breaks tests confusingly later.
+          URL="$(echo "$STATUS" | jq -er '.API_URL')"
+          SERVICE_KEY="$(echo "$STATUS" | jq -er '.SECRET_KEY')"
+          ANON_KEY="$(echo "$STATUS" | jq -er '.PUBLISHABLE_KEY')"
           {
-            echo "SUPABASE_TEST_URL=$(echo "$STATUS" | jq -r '.API_URL')"
-            echo "SUPABASE_TEST_SERVICE_KEY=$(echo "$STATUS" | jq -r '.SECRET_KEY')"
-            echo "SUPABASE_TEST_ANON_KEY=$(echo "$STATUS" | jq -r '.PUBLISHABLE_KEY')"
+            echo "SUPABASE_TEST_URL=$URL"
+            echo "SUPABASE_TEST_SERVICE_KEY=$SERVICE_KEY"
+            echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY"
           } >> "$GITHUB_ENV"
 
       - name: Integration tests
