@@ -6,6 +6,13 @@
 
 import type { RuleCondition, RuleContext } from "@/lib/rules/evaluate";
 import type { ActionRow, Nation } from "@/lib/db/types";
+import type { UserAvatarData } from "@/components/user-avatar";
+import type {
+  BlockState,
+  BlockVariableState,
+  ChipState,
+  RowState,
+} from "@/lib/endings/block-state";
 
 export function makeRuleCondition(
   overrides: Partial<RuleCondition> = {}
@@ -54,6 +61,70 @@ export function makeNation(overrides: Partial<Nation> = {}): Nation {
     sort_order: 0,
     icon_type: "lucide",
     icon_value: null,
+    ...overrides,
+  };
+}
+
+export function makeBlockState(
+  overrides: Partial<BlockState> = {}
+): BlockState {
+  return {
+    id: "block-1",
+    document_id: "doc-1",
+    parent_block_id: null,
+    parent_row_id: null,
+    block_type: "text",
+    text: "",
+    result_value: null,
+    summary: "",
+    sort_order: 0,
+    ...overrides,
+  };
+}
+
+export function makeRowState(overrides: Partial<RowState> = {}): RowState {
+  return {
+    id: "row-1",
+    condition_block_id: "block-1",
+    sort_order: 0,
+    ...overrides,
+  };
+}
+
+export function makeBlockVariableState(
+  overrides: Partial<BlockVariableState> = {}
+): BlockVariableState {
+  return {
+    id: "blockvar-1",
+    condition_block_id: "block-1",
+    variable_id: "var-1",
+    sort_order: 0,
+    ...overrides,
+  };
+}
+
+export function makeChipState(overrides: Partial<ChipState> = {}): ChipState {
+  return {
+    id: "chip-1",
+    row_id: "row-1",
+    variable_id: "var-1",
+    operator: "=",
+    text_value_id: null,
+    number_value: null,
+    aggregate_value: null,
+    sort_order: 0,
+    ...overrides,
+  };
+}
+
+export function makeUserAvatarData(
+  overrides: Partial<UserAvatarData> = {}
+): UserAvatarData {
+  return {
+    display_name: null,
+    avatar_icon_type: null,
+    avatar_icon_value: null,
+    avatar_color_hex: null,
     ...overrides,
   };
 }
