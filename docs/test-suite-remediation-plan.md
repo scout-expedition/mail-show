@@ -142,3 +142,26 @@ suite **329/329**.
 duplicate prefix. Fixed independently in PR #67 (renamed both to
 timestamp prefixes per the `CLAUDE.md` convention); my Phase 3 branch
 rebased onto that fix.
+
+### Phase 4 — done (2026-05-19)
+
+Golden-path E2E specs for the two surfaces `testing-protocol.md` names
+("inspection letters: edit + save + reload" and "narrative graph: drag a
+letter group to a new day"). Both pass locally on a clean stack.
+
+- `tests/e2e/_helpers.ts` (new) — `makeAdmin()` + `e2eName()` +
+  `cleanupE2EData()`, mirroring `tests/integration/_helpers.ts` but with a
+  `__E2E__` prefix so the two layers' data can coexist in the local stack.
+- `tests/e2e/inspection-letters.spec.ts` (new) — deep-links via
+  `?letter=Z1-a` (sidesteps the 5-panel slide-advance), edits the Summary
+  field through `useInstantField`'s autosave, asserts DB persistence and a
+  reload re-fetch.
+- `tests/e2e/narrative-graph.spec.ts` (new) — pre-sets
+  `localStorage["graph.editingEnabled"]` via `addInitScript`, drags the
+  letter-group node via xyflow's `.group-drag-handle` from one day-row band
+  to another, asserts `letter_groups.delivery_day_id` flipped in the DB
+  and survives a reload.
+
+E2E selectors prefer ARIA roles / `data-testid`s xyflow already exposes
+over Tailwind class names — same "stable handles" rule
+`knowledge-base/testing/e2e.md` calls out.
