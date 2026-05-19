@@ -4108,6 +4108,9 @@ export function GraphView({
               const ghostTempIds: string[] = [];
               const ghosts: PendingAdd<InspectionLetterView>[] = [];
               for (let i = 1; i <= n; i++) {
+                // Mirror the server's 26-variant cap — never emit a ghost
+                // past 'z' (would render an invalid glyph like "{").
+                if (maxCode + i > 122) break;
                 const tempId = makeGhostId("letter");
                 const variant = String.fromCharCode(maxCode + i);
                 ghostTempIds.push(tempId);

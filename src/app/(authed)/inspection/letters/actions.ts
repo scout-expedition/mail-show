@@ -1046,8 +1046,8 @@ export async function reorderLetterGroups(
 /**
  * Renumber a storyline's letter groups so `sequence` = 1, 2, 3… in their
  * current `sort_order`. Letter / report display IDs follow automatically
- * (the views interpolate `lg.sequence`). Mirrors the new sequence onto each
- * group's report_group `display_order`, which the morning-report views read.
+ * (the views interpolate `lg.sequence`). Delegates to applyLetterGroupSequences
+ * — its RPC applies the change atomically.
  */
 export async function renumberLetterGroupsSequentially(storylineId: string) {
   const supabase = await createSupabaseServerClient();
@@ -1058,35 +1058,11 @@ export async function renumberLetterGroupsSequentially(storylineId: string) {
     .order("sort_order", { ascending: true })
     .order("id", { ascending: true });
   if (error) throw new Error(error.message);
-  const list = rows ?? [];
-  // Pass 1 — park on distinct negatives (UNIQUE(storyline_id, sequence)).
-  for (let i = 0; i < list.length; i++) {
-    const { error: e } = await supabase
-      .from("letter_groups")
-      .update({ sequence: -(i + 1) })
-      .eq("id", list[i].id as string)
-      .eq("storyline_id", storylineId);
-    if (e) throw new Error(e.message);
-  }
-  // Pass 2 — final sequence + mirror to report_groups.display_order.
-  for (let i = 0; i < list.length; i++) {
-    const gid = list[i].id as string;
-    const seq = i + 1;
-    const { error: e } = await supabase
-      .from("letter_groups")
-      .update({ sequence: seq })
-      .eq("id", gid)
-      .eq("storyline_id", storylineId);
-    if (e) throw new Error(e.message);
-    const { error: e2 } = await supabase
-      .from("report_groups")
-      .update({ display_order: seq })
-      .eq("letter_group_id", gid);
-    if (e2) throw new Error(e2.message);
-  }
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
-  revalidatePath(`/inspection/storylines/${storylineId}`);
+  const assignments = (rows ?? []).map((r, i) => ({
+    groupId: r.id as string,
+    newSequence: i + 1,
+  }));
+  await applyLetterGroupSequences(storylineId, assignments);
 }
 
 /**
@@ -1096,28 +1072,18 @@ export async function renumberLetterGroupsSequentially(storylineId: string) {
  */
 export async function renumberInspectionLettersSequentially(groupId: string) {
   const supabase = await createSupabaseServerClient();
-  const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
   const { data: rows, error } = await supabase
     .from("inspection_letters")
-    .select("id, variant")
+    .select("id, variant, piece")
     .eq("letter_group_id", groupId)
     .order("sort_order", { ascending: true })
     .order("id", { ascending: true });
   if (error) throw new Error(error.message);
-  const list = rows ?? [];
-  // Pass 1 — park variant on NULL (NULLs are distinct in the unique index).
-  for (const r of list) {
-    const { error: e } = await supabase
-      .from("inspection_letters")
-      .update({ variant: null })
-      .eq("id", r.id as string);
-    if (e) throw new Error(e.message);
-  }
-  // Pass 2 — assign a, b, c… keeping piece-cluster grouping.
+  // Assign a, b, c… by sort order, keeping piece-cluster grouping (letters
+  // that shared a variant keep sharing one new variant); pieces preserved.
   const remap = new Map<string, string>();
   let nextCode = 97;
-  for (const r of list) {
+  const assignments = (rows ?? []).map((r) => {
     const old = (r.variant ?? null) as string | null;
     let nv: string;
     if (old != null && remap.has(old)) {
@@ -1130,14 +1096,13 @@ export async function renumberInspectionLettersSequentially(groupId: string) {
       nextCode += 1;
       if (old != null) remap.set(old, nv);
     }
-    const { error: e } = await supabase
-      .from("inspection_letters")
-      .update({ variant: nv, updated_by: updatedBy })
-      .eq("id", r.id as string);
-    if (e) throw new Error(e.message);
-  }
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
+    return {
+      letterId: r.id as string,
+      newVariant: nv,
+      newPiece: (r.piece ?? null) as number | null,
+    };
+  });
+  await applyInspectionLetterVariants(groupId, assignments);
 }
 
 /**
@@ -1148,8 +1113,6 @@ export async function renumberReportSegmentsSequentially(
   reportGroupId: string
 ) {
   const supabase = await createSupabaseServerClient();
-  const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
   const { data: rows, error } = await supabase
     .from("report_segments")
     .select("id")
@@ -1157,31 +1120,18 @@ export async function renumberReportSegmentsSequentially(
     .order("sort_order", { ascending: true })
     .order("id", { ascending: true });
   if (error) throw new Error(error.message);
-  const list = rows ?? [];
-  // Pass 1 — park on globally-unique tmp tokens (variant is text NOT NULL).
-  for (const r of list) {
-    const { error: e } = await supabase
-      .from("report_segments")
-      .update({ variant: `tmp-${r.id as string}` })
-      .eq("id", r.id as string);
-    if (e) throw new Error(e.message);
-  }
-  // Pass 2 — assign i, ii, iii…
-  for (let i = 0; i < list.length; i++) {
-    const { error: e } = await supabase
-      .from("report_segments")
-      .update({ variant: toRoman(i + 1), updated_by: updatedBy })
-      .eq("id", list[i].id as string);
-    if (e) throw new Error(e.message);
-  }
-  revalidatePath("/inspection/letters");
-  revalidatePath("/graph");
+  const assignments = (rows ?? []).map((r, i) => ({
+    segmentId: r.id as string,
+    newVariant: toRoman(i + 1),
+  }));
+  await applyReportSegmentVariants(reportGroupId, assignments);
 }
 
 /**
- * Apply a conflict-free set of letter-group sequence edits from the Edit-ID
- * popup. The popup guarantees the final set collides with nothing, but the
- * row-by-row UPDATE still transits invalid states — hence the temp-park.
+ * Apply a conflict-free set of letter-group sequence edits (from the Edit-ID
+ * popup or a renumber). The park → final two-pass that dodges
+ * UNIQUE(storyline_id, sequence) runs inside one transaction in the
+ * `apply_letter_group_sequences` RPC, so it applies all-or-nothing.
  */
 export async function applyLetterGroupSequences(
   storylineId: string,
@@ -1196,40 +1146,23 @@ export async function applyLetterGroupSequences(
     throw new Error("duplicate target sequence numbers");
   }
   const supabase = await createSupabaseServerClient();
-  // Pass 1 — park on distinct negatives.
-  for (let i = 0; i < assignments.length; i++) {
-    const { error } = await supabase
-      .from("letter_groups")
-      .update({ sequence: -(i + 1) })
-      .eq("id", assignments[i].groupId)
-      .eq("storyline_id", storylineId);
-    if (error) throw new Error(error.message);
-  }
-  // Pass 2 — final sequence + mirror to report_groups.display_order.
-  for (const a of assignments) {
-    const { error } = await supabase
-      .from("letter_groups")
-      .update({ sequence: a.newSequence })
-      .eq("id", a.groupId)
-      .eq("storyline_id", storylineId);
-    if (error) throw new Error(error.message);
-    const { error: e2 } = await supabase
-      .from("report_groups")
-      .update({ display_order: a.newSequence })
-      .eq("letter_group_id", a.groupId);
-    if (e2) throw new Error(e2.message);
-  }
+  const { error } = await supabase.rpc("apply_letter_group_sequences", {
+    p_storyline_id: storylineId,
+    p_assignments: assignments,
+  });
+  if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
   revalidatePath(`/inspection/storylines/${storylineId}`);
 }
 
 /**
- * Apply a conflict-free set of inspection-letter variant/piece edits from the
- * Edit-ID popup.
+ * Apply a conflict-free set of inspection-letter variant/piece edits. The
+ * park → final two-pass runs atomically inside the
+ * `apply_inspection_letter_variants` RPC.
  */
 export async function applyInspectionLetterVariants(
-  _groupId: string,
+  groupId: string,
   assignments: Array<{
     letterId: string;
     newVariant: string;
@@ -1243,38 +1176,24 @@ export async function applyInspectionLetterVariants(
   }
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
-  // Pass 1 — park variant + piece on NULL (distinct in the unique index).
-  for (const a of assignments) {
-    const { error } = await supabase
-      .from("inspection_letters")
-      .update({ variant: null, piece: null })
-      .eq("id", a.letterId);
-    if (error) throw new Error(error.message);
-  }
-  // Pass 2 — final.
-  for (const a of assignments) {
-    const { error } = await supabase
-      .from("inspection_letters")
-      .update({
-        variant: a.newVariant,
-        piece: a.newPiece,
-        updated_by: updatedBy,
-      })
-      .eq("id", a.letterId);
-    if (error) throw new Error(error.message);
-  }
+  const { error } = await supabase.rpc("apply_inspection_letter_variants", {
+    p_group_id: groupId,
+    p_assignments: assignments,
+    p_updated_by: userData.user?.email ?? null,
+  });
+  if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }
 
 /**
- * Apply a conflict-free set of report-segment variant edits from the Edit-ID
- * popup. `report_segments.variant` is text NOT NULL, so the park uses
- * `tmp-<id>` tokens rather than NULL.
+ * Apply a conflict-free set of report-segment variant edits. The park →
+ * final two-pass runs atomically inside the `apply_report_segment_variants`
+ * RPC (`report_segments.variant` is text NOT NULL, so it parks on `tmp-<id>`
+ * tokens rather than NULL).
  */
 export async function applyReportSegmentVariants(
-  _reportGroupId: string,
+  reportGroupId: string,
   assignments: Array<{ segmentId: string; newVariant: string }>
 ) {
   if (assignments.length === 0) return;
@@ -1285,23 +1204,12 @@ export async function applyReportSegmentVariants(
   }
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
-  const updatedBy = userData.user?.email ?? null;
-  // Pass 1 — park on globally-unique tmp tokens.
-  for (const a of assignments) {
-    const { error } = await supabase
-      .from("report_segments")
-      .update({ variant: `tmp-${a.segmentId}` })
-      .eq("id", a.segmentId);
-    if (error) throw new Error(error.message);
-  }
-  // Pass 2 — final.
-  for (const a of assignments) {
-    const { error } = await supabase
-      .from("report_segments")
-      .update({ variant: a.newVariant, updated_by: updatedBy })
-      .eq("id", a.segmentId);
-    if (error) throw new Error(error.message);
-  }
+  const { error } = await supabase.rpc("apply_report_segment_variants", {
+    p_report_group_id: reportGroupId,
+    p_assignments: assignments,
+    p_updated_by: userData.user?.email ?? null,
+  });
+  if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }

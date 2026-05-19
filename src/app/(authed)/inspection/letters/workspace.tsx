@@ -747,6 +747,11 @@ function LettersWorkspaceInner({
   const [segmentOrderOverride, setSegmentOrderOverride] = useState<
     string[] | null
   >(null);
+  // Pending requestAnimationFrame handles for the deferred "blank the row"
+  // setState — cancelled on drag end so a stale callback can't re-blank a
+  // row after the drag is over.
+  const dragRafRef = useRef<number | null>(null);
+  const segmentDragRafRef = useRef<number | null>(null);
   // Instant-save reorder: each drop fires the reorder action immediately and
   // the optimistic override array shields the list until the revalidated
   // server order catches up — at which point the override is dropped. The
@@ -2550,7 +2555,10 @@ function LettersWorkspaceInner({
                       // Defer blanking the in-list row by a frame so the
                       // browser captures the drag image (which travels with
                       // the cursor) while the row still has its content.
-                      requestAnimationFrame(() => setDragIndex(i));
+                      dragRafRef.current = requestAnimationFrame(() => {
+                        dragRafRef.current = null;
+                        setDragIndex(i);
+                      });
                     }}
                     onDragOver={(e) => {
                       if (listLocked || dragIndex === null) return;
@@ -2569,6 +2577,12 @@ function LettersWorkspaceInner({
                     }}
                     onDrop={(e) => e.preventDefault()}
                     onDragEnd={() => {
+                      // Cancel a still-pending blank-the-row frame so it
+                      // can't re-blank this row after the drag has ended.
+                      if (dragRafRef.current !== null) {
+                        cancelAnimationFrame(dragRafRef.current);
+                        dragRafRef.current = null;
+                      }
                       setDragIndex(null);
                       if (listLocked || !orderOverride) return;
                       const serverIds = letters.map((x) => x.id);
@@ -2733,7 +2747,10 @@ function LettersWorkspaceInner({
                       // Defer blanking the in-list row by a frame so the
                       // browser captures the drag image (which travels with
                       // the cursor) while the row still has its content.
-                      requestAnimationFrame(() => setSegmentDragIndex(i));
+                      segmentDragRafRef.current = requestAnimationFrame(() => {
+                        segmentDragRafRef.current = null;
+                        setSegmentDragIndex(i);
+                      });
                     }}
                     onDragOver={(e) => {
                       if (segmentListLocked || segmentDragIndex === null)
@@ -2751,6 +2768,10 @@ function LettersWorkspaceInner({
                     }}
                     onDrop={(e) => e.preventDefault()}
                     onDragEnd={() => {
+                      if (segmentDragRafRef.current !== null) {
+                        cancelAnimationFrame(segmentDragRafRef.current);
+                        segmentDragRafRef.current = null;
+                      }
                       setSegmentDragIndex(null);
                       if (segmentListLocked || !segmentOrderOverride) return;
                       const serverIds = segments.map((x) => x.id);
@@ -7097,6 +7118,8 @@ function StorylineInspector({
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const [reorderPending, startReorder] = useTransition();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
+  // Pending rAF handle for the deferred row-blank, cancelled on drag end.
+  const dragRafRef = useRef<number | null>(null);
 
   const viewOrderedGroups = useMemo(() => {
     if (!pendingOrder) return sortedGroups;
@@ -7379,7 +7402,10 @@ function StorylineInspector({
                     // Defer blanking the in-list row by a frame so the
                     // browser captures the drag image (which travels with
                     // the cursor) while the row still has its content.
-                    requestAnimationFrame(() => setDragIndex(i));
+                    dragRafRef.current = requestAnimationFrame(() => {
+                      dragRafRef.current = null;
+                      setDragIndex(i);
+                    });
                   }}
                   onDragOver={(e) => {
                     if (dragIndex === null) return;
@@ -7396,6 +7422,10 @@ function StorylineInspector({
                   }}
                   onDrop={(e) => e.preventDefault()}
                   onDragEnd={() => {
+                    if (dragRafRef.current !== null) {
+                      cancelAnimationFrame(dragRafRef.current);
+                      dragRafRef.current = null;
+                    }
                     setDragIndex(null);
                     if (!pendingOrder) return;
                     const serverIds = sortedGroups.map((x) => x.id);
