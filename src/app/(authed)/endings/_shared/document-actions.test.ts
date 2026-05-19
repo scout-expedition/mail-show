@@ -437,7 +437,10 @@ describe("shared document actions", () => {
         .eq("condition_block_id", condId)
         .order("sort_order");
       expect(rows?.map((r) => r.id)).toEqual([firstRow, secondRow]);
-      expect(rows?.[1].sort_order).toBe(1);
+      // addRow appends at max(sort_order)+1, starting at 1 on an empty block
+      // — the shared `?? 0` convention (see createFrameworkDocument).
+      expect(rows?.[0].sort_order).toBe(1);
+      expect(rows?.[1].sort_order).toBe(2);
     });
 
     it("addChip ties the chip to the row + auto-declares its variable on the parent block", async () => {

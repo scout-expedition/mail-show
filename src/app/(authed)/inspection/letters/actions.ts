@@ -676,6 +676,14 @@ export async function batchMoveToDay(
 
 export async function deleteGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("letter_groups")
+      .update({ updated_by: updatedBy })
+      .eq("id", groupId);
+  }
   // FK cascade handles report_groups, report_segments, inspection_letters,
   // and (transitively) actions tied to this group's letters. Inbound
   // next-letter links auto-null via the next_letter_id FK (ON DELETE SET
@@ -835,12 +843,20 @@ export async function duplicateReportSegment(
 
 export async function deleteInspectionLetter(groupId: string, letterId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data: deleted } = await supabase
     .from("inspection_letters")
     .select("variant")
     .eq("id", letterId)
     .maybeSingle();
   const deletedVariant = (deleted?.variant ?? null) as string | null;
+  if (updatedBy) {
+    await supabase
+      .from("inspection_letters")
+      .update({ updated_by: updatedBy })
+      .eq("id", letterId);
+  }
   // FK cascade on actions.inspection_letter_id removes this letter's own
   // actions; the next_letter_id FK (ON DELETE SET NULL) clears any inbound
   // next-letter links automatically.
@@ -1347,6 +1363,14 @@ export async function createLetterGroupInStoryline(
 
 export async function deleteReportSegment(segmentId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("report_segments")
+      .update({ updated_by: updatedBy })
+      .eq("id", segmentId);
+  }
   const { error } = await supabase
     .from("report_segments")
     .delete()

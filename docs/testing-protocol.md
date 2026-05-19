@@ -19,7 +19,7 @@ writing or asking Claude to write tests. The detailed how-to lives in
 | Layer | Target | Tool | Approx share |
 |---|---|---|---|
 | Unit | Pure functions in `src/lib/**` | Vitest | ~70% |
-| Integration | Server actions + DB views + RLS | Vitest + Supabase preview branch | ~25% |
+| Integration | Server actions + DB views + RLS | Vitest + local Supabase stack | ~25% |
 | E2E | One golden path per editor surface | Playwright | ~5% |
 
 The weights are deliberate. With one developer and a stateful UI, every E2E
@@ -95,8 +95,8 @@ Mock at the system boundary. Trust everything inside it.
 
 - **Mock**: `next/navigation` (`redirect`), `next/cache` (`revalidatePath`),
   outbound HTTP (none today, but if added).
-- **Don't mock**: our own modules, Supabase responses (use a real preview
-  branch), enums, zod schemas, date-fns, react-hook-form.
+- **Don't mock**: our own modules, Supabase responses (use a real local
+  Supabase stack), enums, zod schemas, date-fns, react-hook-form.
 
 If a test forces you to mock four of our own modules, the test is at the wrong
 layer — push it down to a unit test on the dependency, or up to an integration
@@ -104,25 +104,34 @@ test that hits a real DB.
 
 ## Database in integration tests
 
-Integration tests run against a Supabase **preview branch** spun up via the
-Supabase MCP and seeded from `supabase/migrations/*.sql` plus
-`tests/fixtures/seed.sql`. This gives real RLS, real views, real triggers
-without touching prod. The branch is created per CI run (or per local
-`pnpm test:int` invocation) and torn down at the end.
+Integration tests run against a **local Supabase stack**. `supabase start`
+boots Postgres + GoTrue + PostgREST in Docker and applies every
+`supabase/migrations/*.sql` in order, then `supabase/seed.sql` — real RLS,
+real views, real triggers, no cloud project touched. CI boots a fresh stack
+per run; locally you keep one running and `supabase db reset` after a schema
+change. Full setup in `tests/integration/README.md`.
 
-Never point integration tests at the dev DB. Migrations are idempotent-friendly
-but seed data isn't, and a failing test that leaves half-state behind is worse
-than no test.
+Never point integration tests at the dev or prod project —
+`tests/setup.integration.ts` aborts the run if `SUPABASE_TEST_URL` equals
+`NEXT_PUBLIC_SUPABASE_URL`. The `__INT_TEST__` row prefix plus cascade-aware
+cleanup keep a run isolated, but a failing test that leaves half-state behind
+is still far less harmful against a throwaway local stack than a shared DB.
 
 ## Running
 
 ```sh
-pnpm test          # unit only, watchless — what CI runs
+pnpm test          # unit only, watchless
 pnpm test:watch    # unit, watch mode — what you run while coding
-pnpm test:int      # integration; requires SUPABASE_BRANCH_URL in env
-pnpm test:e2e      # Playwright; requires `pnpm dev` running
+pnpm test:int      # integration; needs a local Supabase stack (see above)
+pnpm test:e2e      # Playwright; boots its own server, needs the Supabase stack
 pnpm test:all      # unit + int + e2e
 ```
+
+CI runs all three layers on every PR and on pushes to `main` —
+see `.github/workflows/ci.yml`. `pnpm test:int` and `pnpm test:e2e` read
+`SUPABASE_TEST_URL`, `SUPABASE_TEST_SERVICE_KEY` and `SUPABASE_TEST_ANON_KEY`:
+locally `scripts/test-int.sh` / `scripts/test-e2e.sh` source them from a
+gitignored `.env.test.local`; in CI they are exported from `supabase status`.
 
 After substantive changes, run `pnpm typecheck && pnpm lint && pnpm test`.
 Same muscle memory as before, plus tests.

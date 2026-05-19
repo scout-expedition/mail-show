@@ -20,6 +20,10 @@ import {
 } from "./presence";
 
 type PostgresHandler = (change: PostgresChange) => void;
+type BroadcastHandler = (payload: unknown) => void;
+
+/** Custom broadcast events all presence providers subscribe to. */
+const CUSTOM_BROADCAST_EVENTS = ["row-deleting"];
 
 type PresenceContextValue = {
   /** The local user's currently-focused field, or null. */
@@ -58,6 +62,16 @@ type PresenceContextValue = {
    * registration order. No-op when presence is inactive (no userId/email).
    */
   onPostgresChanges: (handler: PostgresHandler) => () => void;
+  /**
+   * Send a broadcast event on the shared channel. No-op when presence is
+   * inactive or the channel hasn't subscribed yet.
+   */
+  sendBroadcast: (event: string, payload: unknown) => void;
+  /**
+   * Subscribe to a custom broadcast event on the shared channel. Returns an
+   * unregister fn. No-op (never fires) when presence is inactive.
+   */
+  subscribeBroadcast: (event: string, handler: BroadcastHandler) => () => void;
 };
 
 const PresenceContext = createContext<PresenceContextValue>({
@@ -70,6 +84,8 @@ const PresenceContext = createContext<PresenceContextValue>({
   selfPeer: null,
   pingActivity: () => {},
   onPostgresChanges: () => () => {},
+  sendBroadcast: () => {},
+  subscribeBroadcast: () => () => {},
 });
 
 /** Read the current presence + focus context. Safe to call without a Provider —
@@ -152,6 +168,26 @@ function ActivePresenceProvider({
     };
   }, []);
 
+  // Custom broadcast handler registry — same ref-based pattern as postgres handlers.
+  const broadcastHandlersRef = useRef(
+    new Map<string, Set<BroadcastHandler>>()
+  );
+  const subscribeBroadcast = useCallback(
+    (event: string, handler: BroadcastHandler) => {
+      if (!broadcastHandlersRef.current.has(event)) {
+        broadcastHandlersRef.current.set(event, new Set());
+      }
+      broadcastHandlersRef.current.get(event)!.add(handler);
+      return () => {
+        broadcastHandlersRef.current.get(event)?.delete(handler);
+      };
+    },
+    []
+  );
+  const onBroadcast = useCallback((event: string, payload: unknown) => {
+    broadcastHandlersRef.current.get(event)?.forEach((h) => h(payload));
+  }, []);
+
   // Stable identity for the postgres subscription array — `useRealtimeChannel`
   // re-subscribes when the serialized shape changes, so we memo by table list.
   const tablesKey = (postgresTables ?? []).join(",");
@@ -168,12 +204,21 @@ function ActivePresenceProvider({
     }
   }, []);
 
-  const { peers, pingActivity } = usePresence({
+  const { peers, channel, pingActivity } = usePresence({
     name: channelName,
     self: { userId, email, profile, focus, selection },
     postgres,
     onPostgres,
+    broadcastEvents: CUSTOM_BROADCAST_EVENTS,
+    onBroadcast,
   });
+
+  const sendBroadcast = useCallback(
+    (event: string, payload: unknown) => {
+      void channel?.send({ type: "broadcast", event, payload });
+    },
+    [channel]
+  );
 
   // Self color prefers the user's customized `avatarColorHex` (set in
   // /settings) and falls back to the deterministic hash. Peers see the
@@ -208,6 +253,8 @@ function ActivePresenceProvider({
       selfPeer,
       pingActivity,
       onPostgresChanges,
+      sendBroadcast,
+      subscribeBroadcast,
     }),
     [
       focus,
@@ -217,6 +264,8 @@ function ActivePresenceProvider({
       selfPeer,
       pingActivity,
       onPostgresChanges,
+      sendBroadcast,
+      subscribeBroadcast,
     ]
   );
 
@@ -235,6 +284,8 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
   const [selection, setSelection] = useState<PresenceSelection | null>(null);
   const onPostgresChanges = useCallback(() => () => {}, []);
   const pingActivity = useCallback(() => {}, []);
+  const sendBroadcast = useCallback(() => {}, []);
+  const subscribeBroadcast = useCallback(() => () => {}, []);
   const value = useMemo<PresenceContextValue>(
     () => ({
       focus,
@@ -246,8 +297,10 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
       selfPeer: null,
       pingActivity,
       onPostgresChanges,
+      sendBroadcast,
+      subscribeBroadcast,
     }),
-    [focus, selection, pingActivity, onPostgresChanges]
+    [focus, selection, pingActivity, onPostgresChanges, sendBroadcast, subscribeBroadcast]
   );
   return (
     <PresenceContext.Provider value={value}>

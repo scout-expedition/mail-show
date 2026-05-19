@@ -204,27 +204,34 @@ describe("instantFieldReducer — save lifecycle", () => {
     });
   });
 
-  it("saveSuccess leaves state alone if user kept typing during the save", () => {
-    // User typed past 'b' while the save was in flight; localValue is now 'c'
-    // but status is still 'saving' because the dispatch order was:
-    //   saveStart → set("c") → saveSuccess(pending="b"). The user's newer
-    //   value must NOT be silently committed; status stays as-is so the
-    //   hook's next debounced commit can flush 'c'.
+  it("saveSuccess records the committed value but does not settle status when the user kept typing", () => {
+    // User typed past 'b' while the save was in flight; localValue is now 'c'.
+    // The newer value must NOT be silently committed — status stays so the
+    // hook's next debounced commit can flush 'c'. But the committed 'b' MUST
+    // be recorded: its realtime echo is in flight, and the dirty/saving
+    // `remote` branch needs to recognise it as ours rather than stash + replay.
     const beforeSuccess: InstantFieldState<string> = {
       localValue: "c",
       status: "saving",
       pendingRemote: null,
     };
-    const result = instantFieldReducer(beforeSuccess, {
-      type: "saveSuccess",
-      pendingValue: "b",
+    expect(
+      instantFieldReducer(beforeSuccess, {
+        type: "saveSuccess",
+        pendingValue: "b",
+      })
+    ).toEqual({
+      localValue: "c",
+      status: "saving",
+      pendingRemote: null,
+      committedAwaitingRemote: "b",
     });
-    expect(result).toBe(beforeSuccess);
   });
 
-  it("saveSuccess keeps a stashed pendingRemote when the user kept typing", () => {
+  it("saveSuccess keeps a stashed pendingRemote (and records the commit) when the user kept typing", () => {
     // localValue diverged from the committed value, so no transition happens —
-    // the stashed remote must survive for the next saveSuccess.
+    // the stashed remote must survive for the next saveSuccess, and the
+    // committed value is recorded so its own echo isn't mistaken for a peer write.
     const beforeSuccess: InstantFieldState<string> = {
       localValue: "c",
       status: "saving",
@@ -235,7 +242,12 @@ describe("instantFieldReducer — save lifecycle", () => {
         type: "saveSuccess",
         pendingValue: "b",
       })
-    ).toBe(beforeSuccess);
+    ).toEqual({
+      localValue: "c",
+      status: "saving",
+      pendingRemote: { value: "peer" },
+      committedAwaitingRemote: "b",
+    });
   });
 
   it("saveSuccess replays a differing stashed remote on the saving→idle transition", () => {
@@ -322,11 +334,19 @@ describe("instantFieldReducer — committedAwaitingRemote (post-save flicker gua
     ).toEqual(idle("b"));
   });
 
-  it("set() clears the committed flag (user moved on)", () => {
+  it("set() preserves committedAwaitingRemote — the echo is still in flight as the user types on", () => {
+    // The echo of the just-committed 'b' is still arriving. If `set` dropped
+    // the flag, that echo would be stashed mid-edit and later replayed,
+    // clobbering text the user typed after a pause.
     const s = justCommitted("b");
     expect(
       instantFieldReducer(s, { type: "set", value: "c" })
-    ).toEqual(dirty("c"));
+    ).toEqual({
+      localValue: "c",
+      status: "dirty",
+      committedAwaitingRemote: "b",
+      pendingRemote: null,
+    });
   });
 
   it("saveError clears the committed flag", () => {
@@ -359,5 +379,168 @@ describe("instantFieldReducer — value identity", () => {
     expect(
       instantFieldReducer(sav, { type: "remote", value: "x" })
     ).not.toBe(sav);
+  });
+});
+
+describe("instantFieldReducer — settle", () => {
+  it("transitions a non-idle status to idle", () => {
+    expect(instantFieldReducer(dirty("a"), { type: "settle" })).toEqual(
+      idle("a")
+    );
+    expect(instantFieldReducer(saving("a"), { type: "settle" })).toEqual(
+      idle("a")
+    );
+  });
+
+  it("is a no-op (same reference) when already idle", () => {
+    const s = idle("a");
+    expect(instantFieldReducer(s, { type: "settle" })).toBe(s);
+  });
+
+  it("clears a stashed pendingRemote — settling means the field is caught up", () => {
+    const s: InstantFieldState<string> = {
+      localValue: "a",
+      status: "saving",
+      committedAwaitingRemote: null,
+      pendingRemote: { value: "stale" },
+    };
+    expect(instantFieldReducer(s, { type: "settle" })).toEqual(idle("a"));
+  });
+
+  it("does NOT record committedAwaitingRemote — a no-op commit has no echo coming", () => {
+    // If settle recorded a value, the idle-branch guard would wait forever for
+    // an echo that never broadcasts, dropping every genuine peer write.
+    const settled = instantFieldReducer(dirty("a"), { type: "settle" });
+    expect(settled.committedAwaitingRemote ?? null).toBeNull();
+    // A subsequent genuine remote is therefore applied, not dropped.
+    expect(
+      instantFieldReducer(settled, { type: "remote", value: "peer" })
+    ).toEqual(idle("peer"));
+  });
+
+  it("settles a field left stuck dirty after a no-op commit (latent-bug regression)", () => {
+    // saveStart → set("x") → set back to "a" leaves status "dirty" with
+    // localValue == server value. The no-op commitNow dispatches `settle`,
+    // which must clear the spurious dirty state.
+    let s: InstantFieldState<string> = saving("a");
+    s = instantFieldReducer(s, { type: "set", value: "x" });
+    s = instantFieldReducer(s, { type: "set", value: "a" });
+    expect(s.status).toBe("dirty");
+    s = instantFieldReducer(s, { type: "settle" });
+    expect(s.status).toBe("idle");
+  });
+});
+
+describe("instantFieldReducer — self-echo recognition (own committed value)", () => {
+  it("drops a self-echo while dirty instead of stashing it", () => {
+    // committedAwaitingRemote holds our just-committed "ab"; the user has since
+    // typed "abc". The realtime echo of "ab" must be consumed, not stashed —
+    // a stash would be replayed by the next saveSuccess and clobber "abc".
+    const s: InstantFieldState<string> = {
+      localValue: "abc",
+      status: "dirty",
+      committedAwaitingRemote: "ab",
+      pendingRemote: null,
+    };
+    expect(instantFieldReducer(s, { type: "remote", value: "ab" })).toEqual({
+      localValue: "abc",
+      status: "dirty",
+      committedAwaitingRemote: null,
+      pendingRemote: null,
+    });
+  });
+
+  it("drops a self-echo while saving instead of stashing it", () => {
+    const s: InstantFieldState<string> = {
+      localValue: "abc",
+      status: "saving",
+      committedAwaitingRemote: "ab",
+      pendingRemote: null,
+    };
+    expect(instantFieldReducer(s, { type: "remote", value: "ab" })).toEqual({
+      localValue: "abc",
+      status: "saving",
+      committedAwaitingRemote: null,
+      pendingRemote: null,
+    });
+  });
+
+  it("still stashes a genuine peer write — the self-echo check does not over-match", () => {
+    const s: InstantFieldState<string> = {
+      localValue: "abc",
+      status: "dirty",
+      committedAwaitingRemote: "ab",
+      pendingRemote: null,
+    };
+    expect(instantFieldReducer(s, { type: "remote", value: "peer" })).toEqual({
+      localValue: "abc",
+      status: "dirty",
+      committedAwaitingRemote: "ab",
+      pendingRemote: { value: "peer" },
+    });
+  });
+
+  it("recognises a structurally-equal object echo via the caller's equals", () => {
+    // An object-typed echo is a fresh value from the postgres payload — never
+    // Object.is-equal to what we sent. The check must use the caller's equals.
+    type Box = { v: number };
+    const deepEquals = (a: Box, b: Box) => a.v === b.v;
+    const s: InstantFieldState<Box> = {
+      localValue: { v: 3 },
+      status: "dirty",
+      committedAwaitingRemote: { v: 2 },
+      pendingRemote: null,
+    };
+    const echo: Box = { v: 2 }; // distinct object, structurally equal
+    expect(
+      instantFieldReducer(s, { type: "remote", value: echo }, deepEquals)
+    ).toEqual({
+      localValue: { v: 3 },
+      status: "dirty",
+      committedAwaitingRemote: null,
+      pendingRemote: null,
+    });
+  });
+
+  it("regression: text typed after a pause survives the first save's realtime echo", () => {
+    // The full reported bug, replayed at the reducer level. Server value "a".
+    let s: InstantFieldState<string> = idle("a");
+    // 1. type "ab"
+    s = instantFieldReducer(s, { type: "set", value: "ab" });
+    // 2. debounce fires → commit "ab"
+    s = instantFieldReducer(s, { type: "saveStart" });
+    // 3. resume typing "abc" while the save is in flight
+    s = instantFieldReducer(s, { type: "set", value: "abc" });
+    // 4. onCommit("ab") resolves — recorded despite the kept typing
+    s = instantFieldReducer(s, { type: "saveSuccess", pendingValue: "ab" });
+    expect(s.committedAwaitingRemote).toBe("ab");
+    // 5. realtime echo of our own "ab" write arrives → dropped, NOT stashed
+    s = instantFieldReducer(s, { type: "remote", value: "ab" });
+    expect(s.pendingRemote).toBeNull();
+    expect(s.localValue).toBe("abc");
+    // 6. debounce fires again → commit "abc"
+    s = instantFieldReducer(s, { type: "saveStart" });
+    // 7. onCommit("abc") resolves — the text typed after the pause survives
+    s = instantFieldReducer(s, { type: "saveSuccess", pendingValue: "abc" });
+    expect(s.localValue).toBe("abc");
+    expect(s.status).toBe("idle");
+  });
+});
+
+describe("instantFieldReducer — saveSuccess settles a dirty field on the committed value", () => {
+  it("transitions dirty → idle when localValue equals the committed value", () => {
+    // User typed away and back to the committed value during the save; status
+    // is "dirty" but the field has effectively settled, so it must reach idle.
+    expect(
+      instantFieldReducer(dirty("b"), {
+        type: "saveSuccess",
+        pendingValue: "b",
+      })
+    ).toEqual({
+      localValue: "b",
+      status: "idle",
+      committedAwaitingRemote: "b",
+      pendingRemote: null,
+    });
   });
 });

@@ -52,6 +52,14 @@ export type PresenceSelection = {
   groupId: string | null;
   letterId: string | null;
   segmentId: string | null;
+  /**
+   * The specific action selected on the actions panel, when the peer has
+   * one chip selected (the graph surface selects an individual action when
+   * an action chip is clicked). Null when the peer is on the actions panel
+   * without a chip-scoped selection, or on any other panel. Lets the graph
+   * ring the exact action chip instead of falling back to the parent letter.
+   */
+  actionId?: string | null;
   view: string;
   narrow?: boolean;
   /**
@@ -62,6 +70,42 @@ export type PresenceSelection = {
    */
   payload?: Record<string, string | null>;
 };
+
+/**
+ * True when a peer's `focus` (the field they're editing) is consistent with
+ * the panel `view` in their selection chain.
+ *
+ * Focus can go stale: an input stays DOM-focused after the peer navigates to
+ * another panel via a non-focusable control (a plain clickable div fires no
+ * blur), so `focus.table` keeps pointing at the field they left. Location
+ * labels should fall back to the selection chain when focus contradicts the
+ * panel the peer is actually on — otherwise the label lags one navigation
+ * behind (e.g. "Actions" while the peer is already viewing a report).
+ *
+ * Returns true when there's no selection to validate against (focus is then
+ * the only signal available).
+ */
+export function focusMatchesView(
+  focus: PresenceFocus | null,
+  selection: PresenceSelection | null
+): boolean {
+  if (!focus) return false;
+  if (!selection) return true;
+  switch (focus.table) {
+    case "actions":
+      return selection.view === "actions";
+    case "report_segments":
+      return selection.view === "segment" || selection.view === "main";
+    case "inspection_letters":
+      return selection.view === "main";
+    case "letter_groups":
+      return selection.view === "group" || selection.view === "list";
+    case "storylines":
+      return selection.view === "list";
+    default:
+      return true;
+  }
+}
 
 export type PresenceSelf = {
   userId: string;

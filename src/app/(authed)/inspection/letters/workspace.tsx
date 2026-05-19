@@ -100,6 +100,7 @@ import type {
   PresenceProfile,
   PresenceSelection,
 } from "@/lib/realtime/presence";
+import { focusMatchesView } from "@/lib/realtime/presence";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
@@ -471,7 +472,13 @@ function LettersWorkspaceInner({
     setSelection,
     pingActivity,
     onPostgresChanges,
+    sendBroadcast,
+    subscribeBroadcast,
   } = usePresenceContext();
+
+  // Maps row id → deleter email, populated by the broadcast handler before
+  // the DELETE postgres event arrives so the toast can show attribution.
+  const pendingDeletersRef = useRef<Map<string, string>>(new Map());
   const { toast, toaster } = useToast();
 
   // Viewport-mode flag for the slide layout — hoisted before the selection
@@ -718,6 +725,14 @@ function LettersWorkspaceInner({
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     initialSegmentId
   );
+  // The action chip selected on the actions panel — only set in controlled
+  // (graph) mode, where clicking a chip selects one specific action. Flows
+  // into PresenceSelection.actionId so graph peers ring the exact chip
+  // instead of the parent letter. Null on the standalone inspection page,
+  // whose actions panel isn't scoped to a single action.
+  const [selectedActionId, setSelectedActionId] = useState<string | null>(
+    null
+  );
 
   // Latest-selection refs — the postgres_changes handler reads these without
   // re-registering itself on every selection change.
@@ -758,6 +773,18 @@ function LettersWorkspaceInner({
       });
     }, 100);
   }, [router]);
+
+  // Receive "row-deleting" broadcasts from all clients (including self) and
+  // store the deleter email keyed by row id. The DELETE postgres event
+  // arrives shortly after and reads this map for attribution.
+  useEffect(() => {
+    return subscribeBroadcast("row-deleting", (payload) => {
+      const p = payload as { id?: string; by?: string } | undefined;
+      if (p?.id && p?.by) {
+        pendingDeletersRef.current.set(p.id, p.by);
+      }
+    });
+  }, [subscribeBroadcast]);
 
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
@@ -836,9 +863,8 @@ function LettersWorkspaceInner({
         const oldRow = change.old as Record<string, unknown> | undefined;
         const id = oldRow?.id as string | undefined;
         if (!id) return;
-        const deleterEmail =
-          (oldRow?.updated_by as string | undefined) ?? null;
-        const by = deleterEmail ?? "Someone";
+        const by = pendingDeletersRef.current.get(id) ?? "Someone";
+        pendingDeletersRef.current.delete(id);
 
         switch (table) {
           case "inspection_letters":
@@ -996,6 +1022,7 @@ function LettersWorkspaceInner({
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setLetterState(null);
       setView("list");
       return;
@@ -1004,6 +1031,7 @@ function LettersWorkspaceInner({
       setSelectedGroupId(sel.groupId);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setLetterState(null);
       setView("group");
     } else if (sel.kind === "letter") {
@@ -1011,6 +1039,7 @@ function LettersWorkspaceInner({
       const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
       setSelectedId(letterId);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setView("main");
     } else if (sel.kind === "segment") {
       const seg = allSegments.find((s) => s.id === sel.segmentId);
@@ -1018,12 +1047,14 @@ function LettersWorkspaceInner({
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(sel.segmentId);
+      setSelectedActionId(null);
       setView("main");
     } else if (sel.kind === "actions") {
       setSelectedGroupId(sel.groupId);
       const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
       setSelectedId(letterId);
       setSelectedSegmentId(null);
+      setSelectedActionId(sel.actionId ?? null);
       setView("actions");
     }
     // Intentionally only depends on controlledSelection — onSelectionChange
@@ -1057,6 +1088,7 @@ function LettersWorkspaceInner({
           kind: "actions",
           groupId: selectedGroupId,
           variantKey,
+          actionId: selectedActionId ?? undefined,
         });
       } else {
         onSelectionChange({
@@ -1071,9 +1103,11 @@ function LettersWorkspaceInner({
       onSelectionChange({ kind: "group", groupId: selectedGroupId });
     }
     // Intentionally omits onSelectionChange to avoid re-firing on
-    // callback identity churn — see the apply effect above.
+    // callback identity churn — see the apply effect above. selectedActionId
+    // is included so a chip-to-chip switch within the same letter still
+    // consumes the controlled-apply guard.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId, selectedId, selectedSegmentId, view]);
+  }, [selectedGroupId, selectedId, selectedSegmentId, view, selectedActionId]);
 
   // Slot 1 can host either a group or a storyline inspector — mutually
   // exclusive. Selecting a storyline clears any active group and vice versa.
@@ -1141,6 +1175,7 @@ function LettersWorkspaceInner({
       groupId: selectedGroupId,
       letterId: selectedId,
       segmentId: selectedSegmentId,
+      actionId: view === "actions" ? selectedActionId : null,
       view,
       narrow,
     });
@@ -1150,6 +1185,7 @@ function LettersWorkspaceInner({
     selectedGroupId,
     selectedId,
     selectedSegmentId,
+    selectedActionId,
     view,
     narrow,
   ]);
@@ -1449,20 +1485,34 @@ function LettersWorkspaceInner({
   }
 
   /**
-   * Jump from the segment panel to the actions panel for a specific letter
-   * — used by the segment's "Triggers" list. Also switches the group
-   * selection if the trigger lives in a different letter group (e.g. a
-   * sibling storyline's letter pointing at this segment).
+   * Open a letter from the segment panel's "Triggers" list. The letter
+   * opens in the normal letter-detail panel (view "main") — so Back from
+   * there behaves like any other letter, stepping up one panel to the
+   * letter's own group. Switches the group selection when the trigger
+   * lives in a different letter group (e.g. a sibling storyline's letter
+   * pointing at this segment), and hydrates letterState synchronously
+   * (see openLetterForAction) so slot 3 doesn't flash blank for a render.
    */
   function jumpToTrigger(letterId: string) {
-    const target = allLetters.find((l) => l.id === letterId);
-    if (!target) return;
-    if (target.letter_group_id !== selectedGroupId) {
-      setSelectedGroupId(target.letter_group_id);
-    }
-    setSelectedId(letterId);
+    const letter = allLetters.find((l) => l.id === letterId);
+    if (!letter) return;
+    // Stale back-references would otherwise hijack the letter-detail Back
+    // button — clear them so Back steps up to the group as normal.
+    openedNextLetterFromRef.current = null;
+    segmentOpenedFromRef.current = null;
+    const newGroupLetterIds = new Set(
+      allLetters
+        .filter((l) => l.letter_group_id === letter.letter_group_id)
+        .map((l) => l.id)
+    );
+    const newGroupActions = allActions.filter((a) =>
+      newGroupLetterIds.has(a.inspection_letter_id)
+    );
+    setLetterState(toLetterState(letter, newGroupActions, endingAssignments));
+    setSelectedGroupId(letter.letter_group_id);
+    setSelectedId(letter.id);
     setSelectedSegmentId(null);
-    setView("actions");
+    setView("main");
   }
 
   function updateLetter(patch: Partial<LetterState>) {
@@ -1585,6 +1635,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteInspectionLetter(groupId, id);
       if (selectedId === id) {
@@ -1604,6 +1655,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id: groupId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteGroup(groupId);
     });
@@ -1633,7 +1685,12 @@ function LettersWorkspaceInner({
     });
   }
 
+  // Post-confirm delete handler — callers MUST gate this behind a confirm
+  // dialog (LetterSegmentCard does). The row-deleting broadcast is fired
+  // unconditionally here, so calling it without a prior confirm would
+  // poison pendingDeletersRef with an entry for a delete that never lands.
   function handleDeleteSegment(segmentId: string) {
+    sendBroadcast("row-deleting", { id: segmentId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteReportSegment(segmentId);
       setSelectedSegmentId(null);
@@ -1885,7 +1942,10 @@ function LettersWorkspaceInner({
     const all = selfPeer ? [selfPeer, ...peers] : peers;
     for (const peer of all) {
       const label = (() => {
-        if (peer.focus) {
+        // Trust focus only when it agrees with the panel the peer is on —
+        // a stale focused field (e.g. an action input still focused after
+        // navigating to a report) would otherwise mislabel their location.
+        if (peer.focus && focusMatchesView(peer.focus, peer.selection)) {
           const id = peer.focus.recordId;
           switch (peer.focus.table) {
             case "inspection_letters": {
@@ -1927,6 +1987,13 @@ function LettersWorkspaceInner({
             const seg = allSegments.find((x) => x.id === sel.segmentId);
             if (seg?.report_id) return `Report ${seg.report_id}`;
           }
+          // Actions panel — the deepest record is the letter, but the peer
+          // is on the actions list, not the letter form, so label it as
+          // such even when no action field is focused yet.
+          if (sel.view === "actions" && sel.letterId) {
+            const l = allLetters.find((x) => x.id === sel.letterId);
+            if (l?.content_id) return `Actions ${l.content_id}`;
+          }
           if (sel.letterId) {
             const l = allLetters.find((x) => x.id === sel.letterId);
             if (l?.content_id) return `Letter ${l.content_id}`;
@@ -1964,6 +2031,7 @@ function LettersWorkspaceInner({
     groupId: selectedGroupId,
     letterId: selectedId,
     segmentId: selectedSegmentId,
+    actionId: view === "actions" ? selectedActionId : null,
     view,
   };
 
@@ -2539,8 +2607,8 @@ function LettersWorkspaceInner({
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
-                // it toggles the letter off — unless the letter was
-                // opened via an action's "open next letter" arrow, in
+                // it steps up one panel to the group — unless the letter
+                // was opened via an action's "open next letter" arrow, in
                 // which case back returns to the source action panel.
                 if (view === "actions" || view === "segment") {
                   setView("main");
@@ -2578,7 +2646,7 @@ function LettersWorkspaceInner({
                     return;
                   }
                 }
-                selectLetter(letterState.id);
+                goToBreadcrumb("group");
               }}
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
@@ -3032,9 +3100,11 @@ function LetterFieldsCard({
         </div>
       </div>
 
-      {peers.some((p) => p.focus?.recordId === state.id) ? null : (
-        <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={letterView.updated_at}
+        by={letterView.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === state.id)}
+      />
       </div>
     </div>
   );
@@ -3576,9 +3646,11 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      {peers.some((p) => p.focus?.recordId === segment.id) ? null : (
-        <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={segment.updated_at}
+        by={segment.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === segment.id)}
+      />
       </div>
     </div>
   );
@@ -6639,36 +6711,51 @@ const MUTED_ADD_BTN =
 
 
 /**
- * Footer showing when and by whom a record was last updated. Renders nothing
- * if `at` is missing (i.e., the row predates the `updated_by` column).
+ * Footer showing when and by whom a record was last updated. Always renders a
+ * fixed-height slot so the panel bottom stays put when the line appears,
+ * disappears (a peer took the record), or its text changes. `by` (an email)
+ * is resolved to the updater's display name via presence, falling back to the
+ * raw email when no display name is known.
  */
 function LastUpdatedFooter({
   at,
   by,
+  hidden,
 }: {
   at: string | null | undefined;
   by: string | null | undefined;
+  /** Suppress the line without collapsing the reserved space — e.g. a peer
+   *  currently has this record focused. */
+  hidden?: boolean;
 }) {
-  if (!at) return null;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return null;
-  const absolute = date.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-  const relative = formatDistanceToNow(date, { addSuffix: true });
+  const { peers, selfPeer } = usePresenceContext();
+  const date = at ? new Date(at) : null;
+  const valid = date != null && !Number.isNaN(date.getTime());
+
+  // Resolve the updater's email to a display name — self and present peers
+  // carry one; fall back to the email for anyone not currently online.
+  const everyone = selfPeer ? [selfPeer, ...peers] : peers;
+  const name = by
+    ? everyone.find((p) => p.email === by)?.profile?.displayName?.trim() || by
+    : null;
+
+  // Fixed-height slot — keeps the panel bottom stable whether or not the line
+  // shows. `truncate` stops a long name/email from wrapping to a second row.
   return (
-    <p
-      title={absolute}
-      className="mt-3 text-center text-[11px] text-muted-foreground/70"
-    >
-      Last updated {relative}
-      {by ? (
-        <>
-          {" "}by <span className="font-mono">{by}</span>
-        </>
+    <div className="mt-3 h-[16px]">
+      {valid && !hidden ? (
+        <p
+          title={date!.toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+          className="truncate text-center text-[10px] leading-[16px] text-muted-foreground/70"
+        >
+          Last updated {formatDistanceToNow(date!, { addSuffix: true })}
+          {name ? <> by {name}</> : null}
+        </p>
       ) : null}
-    </p>
+    </div>
   );
 }
 

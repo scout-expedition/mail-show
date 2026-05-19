@@ -69,7 +69,9 @@ export function evaluateCondition(cond: RuleCondition, ctx: RuleContext): boolea
       if (cond.reference_type === "true") return bool === true;
       if (cond.reference_type === "false") return bool === false;
       if (str == null) return false;
-      if (cond.reference_type === "number") return /^\d+$/.test(str);
+      // `any_number` is the matrix-facing "is a number" check — VALID_OPERATOR_
+      // REFERENCES pairs `is` with `any_number`, not `number`.
+      if (cond.reference_type === "any_number") return /^\d+$/.test(str);
       if (cond.reference_type === "letter") return /^[A-Za-z]+$/.test(str);
       if (cond.reference_type === "even") {
         const n = Number(str);
