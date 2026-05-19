@@ -2,75 +2,86 @@
 
 import {
   startTransition,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
-import { useConfirm } from "@/components/confirm-dialog";
-import { useToast } from "@/components/toast";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  GHOST_FIELD,
-  MUTED_ADD_BTN,
-  PanelHeader,
-  Spinner,
-} from "@/components/panel";
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Folder,
+  FolderOpen,
+  Hash,
+  Plus,
+} from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { PanelHeader } from "@/components/panel";
+import { useToast } from "@/components/toast";
 import { cn } from "@/lib/utils";
-import { paletteColor } from "@/lib/endings/color-palette";
+import { colorIndexFor, paletteColor } from "@/lib/endings/color-palette";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import type {
   EndingFramework,
   EndingLogicRuleCondition,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
 } from "@/lib/db/types";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
 } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import type { PresencePeer, PresenceProfile } from "@/lib/realtime/presence";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import {
   createEndingVariable,
+  createEndingVariableFolder,
   createEndingVariableValue,
   deleteEndingVariable,
-  deleteEndingVariableValue,
+  deleteEndingVariableFolder,
   patchEndingVariable,
-  patchEndingVariableValue,
+  patchEndingVariableFolder,
 } from "./actions";
+import {
+  VariableInspector,
+  type FolderTreeOption,
+} from "./variable-inspector";
+import { FolderInspector } from "./folder-inspector";
+import { MultiSelectInspector } from "./multi-select-inspector";
 
-type ValueState = { id: string; value: string; sort_order: number };
-
-type VariableState = {
-  id: string;
-  name: string;
-  default_value_id: string | null;
-  sort_order: number;
-  color_index: number;
-  color_hex: string | null;
-  created_at: string;
-  values: ValueState[];
-};
-
-type ViewMode = "grouped" | "list";
-type SortMode = "created_desc" | "alpha_asc";
+type ViewMode = "all" | "by-ending";
+type SortMode = "name" | "created_newest" | "created_oldest";
+type CollapseMode = "expanded" | "collapsed";
 
 const VIEW_KEY = "endings-variables-view";
 const SORT_KEY = "endings-variables-sort";
+const COLLAPSE_KEY = "endings-variables-collapse";
 
 const VAR_TABLE = "ending_variables";
 const VALUE_TABLE = "ending_variable_values";
+const FOLDER_TABLE = "ending_variable_folders";
+
+/** Single, fixed row height across the panel so renaming an item doesn't
+ *  jiggle the layout. 28px ≈ comfortable click target without feeling
+ *  spread out. Use the same height for variable rows, folder rows, By
+ *  Ending panel headers, and the inline rename input. */
+const ROW_HEIGHT_PX = 28;
+const ROW_HEIGHT_CLS = "h-7"; // matches ROW_HEIGHT_PX
+
+export type SelectOptions = { extend?: boolean };
 
 export function VariablesEditor({
   variables,
   values,
+  folders,
   frameworks,
   frameworkVariableRefs,
   logicConditions,
@@ -80,6 +91,7 @@ export function VariablesEditor({
 }: {
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   frameworks: EndingFramework[];
   frameworkVariableRefs: Array<{ framework_id: string; variable_id: string }>;
   logicConditions: Array<Pick<EndingLogicRuleCondition, "variable_id">>;
@@ -93,11 +105,12 @@ export function VariablesEditor({
       userId={currentUserId}
       email={currentEmail}
       profile={currentProfile}
-      postgresTables={[VAR_TABLE, VALUE_TABLE]}
+      postgresTables={[VAR_TABLE, VALUE_TABLE, FOLDER_TABLE]}
     >
       <VariablesEditorInner
         variables={variables}
         values={values}
+        folders={folders}
         frameworks={frameworks}
         frameworkVariableRefs={frameworkVariableRefs}
         logicConditions={logicConditions}
@@ -107,94 +120,58 @@ export function VariablesEditor({
 }
 
 function VariablesEditorInner({
-  variables,
-  values,
+  variables: initialVariables,
+  values: initialValues,
+  folders: initialFolders,
   frameworks,
   frameworkVariableRefs,
   logicConditions,
 }: {
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   frameworks: EndingFramework[];
   frameworkVariableRefs: Array<{ framework_id: string; variable_id: string }>;
   logicConditions: Array<Pick<EndingLogicRuleCondition, "variable_id">>;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
   const { toast, toaster } = useToast();
 
-  const initial = useMemo<VariableState[]>(() => {
-    const byVar = new Map<string, ValueState[]>();
-    for (const v of values) {
-      const list = byVar.get(v.variable_id) ?? [];
-      list.push({ id: v.id, value: v.value, sort_order: v.sort_order });
-      byVar.set(v.variable_id, list);
-    }
-    for (const list of byVar.values()) {
-      list.sort((a, b) => a.sort_order - b.sort_order);
-    }
-    return variables
-      .filter((v) => v.kind === "text")
-      .map((v) => ({
-        id: v.id,
-        name: v.name,
-        default_value_id: v.default_value_id,
-        sort_order: v.sort_order,
-        color_index: v.color_index,
-        color_hex: v.color_hex,
-        created_at: v.created_at,
-        values: byVar.get(v.id) ?? [],
-      }));
-  }, [variables, values]);
+  // Local mirrors. Reconciled from server props (revalidate path) and
+  // patched in-place by realtime postgres_changes below.
+  const [variables, setVariables] = useState<EndingVariable[]>(initialVariables);
+  const [values, setValues] = useState<EndingVariableValue[]>(initialValues);
+  const [folders, setFolders] = useState<EndingVariableFolder[]>(initialFolders);
 
-  // Local mirror — seeded from server props, reconciled by server-prop
-  // changes (structural revalidate on create/delete) AND by postgres_changes
-  // (column-level updates from peer edits). Per-field typed text lives inside
-  // each child VariableCard's useInstantField hooks; the mirror only carries
-  // server-authoritative values.
-  const [rows, setRows] = useState<VariableState[]>(initial);
-
-  // Server-prop reconcile: preserve local order for kept rows; append new
-  // rows; drop deleted rows. Mirrors the cities pattern.
+  // Server-prop reconciliation: preserve local rows already present, append
+  // new ones, drop removed ones.
   useEffect(() => {
-    setRows((prev) => {
-      const prevById = new Map(prev.map((r) => [r.id, r]));
-      const initialIds = new Set(initial.map((r) => r.id));
-      const kept = prev.filter((r) => initialIds.has(r.id));
-      const keptIds = new Set(kept.map((r) => r.id));
-      const additions = initial.filter((s) => !prevById.has(s.id));
-      if (additions.length === 0 && kept.length === prev.length) return prev;
-      return [...kept, ...additions.filter((a) => !keptIds.has(a.id))];
-    });
-  }, [initial]);
+    setVariables((prev) => reconcileById(prev, initialVariables));
+  }, [initialVariables]);
+  useEffect(() => {
+    setValues((prev) => reconcileById(prev, initialValues));
+  }, [initialValues]);
+  useEffect(() => {
+    setFolders((prev) => reconcileById(prev, initialFolders));
+  }, [initialFolders]);
 
-  // postgres_changes handler — merges column-level updates from peers.
-  // INSERT triggers router.refresh() so server-derived joins (variable refs)
-  // recompute. DELETE splices locally so the user doesn't see a phantom row
-  // until the next nav.
+  // Realtime fan-out — variable / value / folder INSERT triggers a refresh
+  // so server-derived joins (framework refs etc.) recompute; UPDATE + DELETE
+  // patch locally to avoid the round-trip.
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table === VAR_TABLE) {
         if (change.eventType === "UPDATE" && change.new) {
           const updated = change.new as unknown as EndingVariable;
           if (updated.kind !== "text") return;
-          setRows((prev) =>
-            prev.map((r) =>
-              r.id === updated.id
-                ? {
-                    ...r,
-                    name: updated.name,
-                    default_value_id: updated.default_value_id,
-                    sort_order: updated.sort_order,
-                    color_index: updated.color_index,
-                    color_hex: updated.color_hex,
-                  }
-                : r
-            )
+          setVariables((prev) =>
+            prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
           );
         } else if (change.eventType === "DELETE" && change.old) {
           const deleted = change.old as unknown as { id: string };
-          setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+          setVariables((prev) => prev.filter((r) => r.id !== deleted.id));
         } else if (change.eventType === "INSERT" && change.new) {
           const inserted = change.new as unknown as EndingVariable;
           if (inserted.kind !== "text") return;
@@ -205,64 +182,198 @@ function VariablesEditorInner({
       if (change.table === VALUE_TABLE) {
         if (change.eventType === "UPDATE" && change.new) {
           const v = change.new as unknown as EndingVariableValue;
-          setRows((prev) =>
-            prev.map((r) =>
-              r.id === v.variable_id
-                ? {
-                    ...r,
-                    values: r.values.map((existing) =>
-                      existing.id === v.id
-                        ? {
-                            ...existing,
-                            value: v.value,
-                            sort_order: v.sort_order,
-                          }
-                        : existing
-                    ),
-                  }
-                : r
-            )
+          setValues((prev) => prev.map((r) => (r.id === v.id ? { ...r, ...v } : r)));
+        } else if (change.eventType === "DELETE" && change.old) {
+          const old = change.old as unknown as { id: string };
+          setValues((prev) => prev.filter((r) => r.id !== old.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const v = change.new as unknown as EndingVariableValue;
+          setValues((prev) => (prev.some((r) => r.id === v.id) ? prev : [...prev, v]));
+        }
+        return;
+      }
+      if (change.table === FOLDER_TABLE) {
+        if (change.eventType === "UPDATE" && change.new) {
+          const f = change.new as unknown as EndingVariableFolder;
+          setFolders((prev) =>
+            prev.map((r) => (r.id === f.id ? { ...r, ...f } : r))
           );
         } else if (change.eventType === "DELETE" && change.old) {
           const old = change.old as unknown as { id: string };
-          setRows((prev) =>
-            prev.map((r) => ({
-              ...r,
-              values: r.values.filter((v) => v.id !== old.id),
-            }))
-          );
+          setFolders((prev) => prev.filter((r) => r.id !== old.id));
         } else if (change.eventType === "INSERT" && change.new) {
-          const v = change.new as unknown as EndingVariableValue;
-          setRows((prev) =>
-            prev.map((r) =>
-              r.id === v.variable_id
-                ? {
-                    ...r,
-                    values: r.values.some((x) => x.id === v.id)
-                      ? r.values
-                      : [
-                          ...r.values,
-                          {
-                            id: v.id,
-                            value: v.value,
-                            sort_order: v.sort_order,
-                          },
-                        ].sort((a, b) => a.sort_order - b.sort_order),
-                  }
-                : r
-            )
-          );
+          startTransition(() => router.refresh());
         }
       }
     });
   }, [onPostgresChanges, router]);
 
-  const [view, setView] = useLocalStorage<ViewMode>(VIEW_KEY, "grouped");
-  const [sort, setSort] = useLocalStorage<SortMode>(SORT_KEY, "created_desc");
-  const [collapsedPanels, setCollapsedPanels] = useState<Set<string>>(
-    () => new Set()
+  const [view, setView] = useLocalStorage<ViewMode>(VIEW_KEY, "all");
+  const [sort, setSort] = useLocalStorage<SortMode>(SORT_KEY, "name");
+  const [collapseMode, setCollapseMode] = useLocalStorage<CollapseMode>(
+    COLLAPSE_KEY,
+    "expanded"
   );
-  const [expandedVars, setExpandedVars] = useState<Set<string>>(() => new Set());
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
+  function applyCollapseMode(mode: CollapseMode) {
+    setCollapseMode(mode);
+    setCollapsedIds(new Set());
+  }
+  function isCollapsedKey(key: string): boolean {
+    const overridden = collapsedIds.has(key);
+    return collapseMode === "collapsed" ? !overridden : overridden;
+  }
+  function toggleCollapsed(key: string) {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // URL deep-link: ?variable=<id> / ?folder=<id> hydrate selection. Only
+  // synced back to the URL when exactly one item is selected.
+  const initialSelectedIds = useMemo(() => {
+    const v = searchParams.get("variable");
+    if (v) return new Set([v]);
+    const f = searchParams.get("folder");
+    if (f) return new Set([f]);
+    return new Set<string>();
+  }, [searchParams]);
+  const [selectedIds, setSelectedIds] =
+    useState<Set<string>>(initialSelectedIds);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+
+  const syncUrl = useCallback(
+    (ids: Set<string>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("variable");
+      params.delete("folder");
+      if (ids.size === 1) {
+        const [only] = Array.from(ids);
+        if (variables.some((v) => v.id === only)) params.set("variable", only);
+        else if (folders.some((f) => f.id === only)) params.set("folder", only);
+      }
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    },
+    [searchParams, router, variables, folders]
+  );
+
+  const handleSelect = useCallback(
+    (id: string, opts?: SelectOptions) => {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (opts?.extend) {
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+        } else {
+          next.clear();
+          next.add(id);
+        }
+        syncUrl(next);
+        return next;
+      });
+    },
+    [syncUrl]
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    syncUrl(new Set());
+  }, [syncUrl]);
+
+  // Derived: text-only variables (number_ref/aggregate slots stay out of
+  // the editor view).
+  const textVariables = useMemo(
+    () => variables.filter((v) => v.kind === "text"),
+    [variables]
+  );
+
+  const valuesByVariable = useMemo(() => {
+    const m = new Map<string, EndingVariableValue[]>();
+    for (const v of values) {
+      const list = m.get(v.variable_id) ?? [];
+      list.push(v);
+      m.set(v.variable_id, list);
+    }
+    return m;
+  }, [values]);
+
+  const childFoldersByParent = useMemo(() => {
+    const m = new Map<string | null, EndingVariableFolder[]>();
+    for (const f of folders) {
+      const key = f.parent_folder_id ?? null;
+      const list = m.get(key) ?? [];
+      list.push(f);
+      m.set(key, list);
+    }
+    for (const list of m.values()) {
+      list.sort(
+        (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+      );
+    }
+    return m;
+  }, [folders]);
+
+  const variablesByFolder = useMemo(() => {
+    const m = new Map<string | null, EndingVariable[]>();
+    for (const v of textVariables) {
+      const key = v.folder_id ?? null;
+      const list = m.get(key) ?? [];
+      list.push(v);
+      m.set(key, list);
+    }
+    return m;
+  }, [textVariables]);
+
+  const sortedVariablesByFolder = useMemo(() => {
+    const m = new Map<string | null, EndingVariable[]>();
+    for (const [k, list] of variablesByFolder) {
+      m.set(k, sortVariables(list, sort));
+    }
+    return m;
+  }, [variablesByFolder, sort]);
+
+  // Indented folder-picker option list. `excludedIds` (and every
+  // descendant of each) is omitted so we can't reparent a folder under
+  // itself.
+  const buildFolderOptions = useCallback(
+    (excludedIds: ReadonlyArray<string>): FolderTreeOption[] => {
+      const excluded = new Set<string>(excludedIds);
+      const queue: string[] = [...excludedIds];
+      while (queue.length > 0) {
+        const next = queue.shift()!;
+        for (const child of childFoldersByParent.get(next) ?? []) {
+          if (!excluded.has(child.id)) {
+            excluded.add(child.id);
+            queue.push(child.id);
+          }
+        }
+      }
+      const out: FolderTreeOption[] = [];
+      function visit(parentId: string | null, depth: number) {
+        const children = childFoldersByParent.get(parentId) ?? [];
+        for (const f of children) {
+          if (excluded.has(f.id)) continue;
+          out.push({
+            id: f.id,
+            label: `${" ".repeat(depth)}${f.name}`,
+          });
+          visit(f.id, depth + 1);
+        }
+      }
+      visit(null, 0);
+      return out;
+    },
+    [childFoldersByParent]
+  );
+
+  const allFolderOptions = useMemo<FolderTreeOption[]>(
+    () => buildFolderOptions([]),
+    [buildFolderOptions]
+  );
 
   const variableRefs = useMemo(() => {
     const byFramework = new Map<string, Set<string>>();
@@ -285,578 +396,1221 @@ function VariablesEditorInner({
     return ids;
   }, [variableRefs]);
 
-  const frameworkPanels = frameworks
-    .map((f) => {
-      const ids = variableRefs.byFramework.get(f.id) ?? new Set<string>();
-      return {
-        key: `framework:${f.id}`,
-        title: `Used in: ${f.name}`,
-        rows: rows.filter((r) => ids.has(r.id)),
-      };
-    })
-    .filter((p) => p.rows.length > 0);
-
-  const logicPanel = {
-    key: "logic",
-    title: "Used in ending logic",
-    rows: rows.filter((r) => variableRefs.logicIds.has(r.id)),
-  };
-
-  const unreferencedPanel = {
-    key: "unreferenced",
-    title: "Unreferenced",
-    rows: rows.filter((r) => !allReferencedIds.has(r.id)),
-  };
-
-  const panels = [
-    ...frameworkPanels,
-    ...(logicPanel.rows.length > 0 ? [logicPanel] : []),
-    unreferencedPanel,
-  ];
-
-  const sortedRows = useMemo(() => {
-    const copy = [...rows];
-    if (sort === "alpha_asc") {
-      copy.sort((a, b) => a.name.localeCompare(b.name));
-    } else {
-      copy.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const byEndingPanels = useMemo(() => {
+    const panels: Array<{
+      key: string;
+      title: string;
+      rows: EndingVariable[];
+    }> = [];
+    for (const fw of frameworks) {
+      const ids = variableRefs.byFramework.get(fw.id) ?? new Set<string>();
+      const rows = textVariables.filter((r) => ids.has(r.id));
+      if (rows.length === 0) continue;
+      panels.push({
+        key: `framework:${fw.id}`,
+        title: fw.name,
+        rows: sortVariables(rows, sort),
+      });
     }
-    return copy;
-  }, [rows, sort]);
-
-  function togglePanel(key: string) {
-    setCollapsedPanels((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+    const logicRows = textVariables.filter((r) =>
+      variableRefs.logicIds.has(r.id)
+    );
+    if (logicRows.length > 0) {
+      panels.push({
+        key: "logic",
+        title: "Ending logic",
+        rows: sortVariables(logicRows, sort),
+      });
+    }
+    const unrefRows = textVariables.filter((r) => !allReferencedIds.has(r.id));
+    panels.push({
+      key: "unreferenced",
+      title: "Unreferenced",
+      rows: sortVariables(unrefRows, sort),
     });
+    return panels;
+  }, [frameworks, variableRefs, textVariables, allReferencedIds, sort]);
+
+  // Optimistic create — client mints the id and inserts into the local
+  // mirror immediately, then fires the server action; on error, rolls back.
+  function handleCreateVariable() {
+    const id = makeUuid();
+    // Pick parent folder from the single-selected item (folder → itself,
+    // variable → its folder); fall back to root.
+    let folderId: string | null = null;
+    if (selectedIds.size === 1) {
+      const [only] = Array.from(selectedIds);
+      if (folders.some((f) => f.id === only)) folderId = only;
+      else folderId = variables.find((v) => v.id === only)?.folder_id ?? null;
+    }
+    const nextSort =
+      textVariables.reduce((m, v) => Math.max(m, v.sort_order), 0) + 1;
+    const optimistic: EndingVariable = {
+      id,
+      name: "New variable",
+      default_value_id: null,
+      sort_order: nextSort,
+      kind: "text",
+      number_ref: null,
+      aggregate_ref: null,
+      color_index: colorIndexFor(id),
+      color_hex: null,
+      folder_id: folderId,
+      created_at: new Date().toISOString(),
+    };
+    setVariables((prev) => [...prev, optimistic]);
+    handleSelect(id);
+    void (async () => {
+      try {
+        await createEndingVariable({ id, folder_id: folderId });
+      } catch (err) {
+        // Roll back the optimistic insert.
+        setVariables((prev) => prev.filter((v) => v.id !== id));
+        const msg = err instanceof Error ? err.message : "Create failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    })();
   }
 
-  function toggleVariable(id: string) {
-    setExpandedVars((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  function handleCreateFolder() {
+    const id = makeUuid();
+    let parentId: string | null = null;
+    if (selectedIds.size === 1) {
+      const [only] = Array.from(selectedIds);
+      if (folders.some((f) => f.id === only)) parentId = only;
+      else parentId = variables.find((v) => v.id === only)?.folder_id ?? null;
+    }
+    const siblings = folders.filter(
+      (f) => (f.parent_folder_id ?? null) === parentId
+    );
+    const nextSort =
+      siblings.reduce((m, f) => Math.max(m, f.sort_order), 0) + 1;
+    const now = new Date().toISOString();
+    const optimistic: EndingVariableFolder = {
+      id,
+      name: "New folder",
+      parent_folder_id: parentId,
+      sort_order: nextSort,
+      created_at: now,
+      updated_at: now,
+    };
+    setFolders((prev) => [...prev, optimistic]);
+    setPinnedId(id);
+    handleSelect(id);
+    void (async () => {
+      try {
+        await createEndingVariableFolder({ id, parent_folder_id: parentId });
+      } catch (err) {
+        setFolders((prev) => prev.filter((f) => f.id !== id));
+        setPinnedId((cur) => (cur === id ? null : cur));
+        const msg = err instanceof Error ? err.message : "Create failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    })();
   }
+
+  // Add-value flow used by the inspector. Optimistically inserts the value
+  // into the editor's local mirror so it appears immediately; reconciles
+  // the name to whatever the server picked (uniqueness rules might bump
+  // "New value" → "New value 2").
+  const handleAddValue = useCallback(
+    async (variableId: string): Promise<string | null> => {
+      const id = makeUuid();
+      const existing = values.filter((v) => v.variable_id === variableId);
+      const nextSort =
+        existing.reduce((m, v) => Math.max(m, v.sort_order), 0) + 1;
+      const optimistic: EndingVariableValue = {
+        id,
+        variable_id: variableId,
+        value: "New value",
+        sort_order: nextSort,
+      };
+      setValues((prev) => [...prev, optimistic]);
+      try {
+        const fd = new FormData();
+        fd.set("variable_id", variableId);
+        fd.set("id", id);
+        const { value: actualValue } = await createEndingVariableValue(fd);
+        if (actualValue !== optimistic.value) {
+          setValues((prev) =>
+            prev.map((v) => (v.id === id ? { ...v, value: actualValue } : v))
+          );
+        }
+        return id;
+      } catch (err) {
+        setValues((prev) => prev.filter((v) => v.id !== id));
+        const msg = err instanceof Error ? err.message : "Create failed.";
+        toast({ message: msg, intent: "destructive" });
+        return null;
+      }
+    },
+    [values, toast]
+  );
+
+  function handleDeleted(_id: string) {
+    clearSelection();
+    setPinnedId(null);
+  }
+
+  // Resolve the single-selection inspector target.
+  const isSingle = selectedIds.size === 1;
+  const isMulti = selectedIds.size > 1;
+  const singleId = isSingle ? Array.from(selectedIds)[0] : null;
+  const selectedVariable =
+    singleId !== null
+      ? textVariables.find((v) => v.id === singleId) ?? null
+      : null;
+  const selectedFolder =
+    singleId !== null
+      ? folders.find((f) => f.id === singleId) ?? null
+      : null;
+
+  // Drop a single-selection id that vanished from the data.
+  useEffect(() => {
+    if (!isSingle || singleId === null) return;
+    if (!selectedVariable && !selectedFolder) {
+      clearSelection();
+    }
+  }, [isSingle, singleId, selectedVariable, selectedFolder, clearSelection]);
+
+  // Counts used by the folder inspector summary.
+  const childCountsByFolder = useMemo(() => {
+    const m = new Map<string, { folders: number; variables: number }>();
+    for (const f of folders) m.set(f.id, { folders: 0, variables: 0 });
+    for (const f of folders) {
+      if (f.parent_folder_id && m.has(f.parent_folder_id)) {
+        m.get(f.parent_folder_id)!.folders += 1;
+      }
+    }
+    for (const v of textVariables) {
+      if (v.folder_id && m.has(v.folder_id)) {
+        m.get(v.folder_id)!.variables += 1;
+      }
+    }
+    return m;
+  }, [folders, textVariables]);
+
+  const handleOnPatchError = useCallback(
+    (msg: string) => toast({ message: msg, intent: "destructive" }),
+    [toast]
+  );
+
+  function handleRenameVariable(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // Optimistic local update so the row reflects the rename instantly,
+    // even before the server echo lands.
+    setVariables((prev) =>
+      prev.map((v) => (v.id === id ? { ...v, name: trimmed } : v))
+    );
+    void (async () => {
+      try {
+        await patchEndingVariable(id, { name: trimmed });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Rename failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    })();
+  }
+
+  function handleRenameFolder(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setFolders((prev) =>
+      prev.map((f) => (f.id === id ? { ...f, name: trimmed } : f))
+    );
+    void (async () => {
+      try {
+        await patchEndingVariableFolder(id, { name: trimmed });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Rename failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    })();
+  }
+
+  // Multi-select bulk move. Cycle protection: if any selected folder is an
+  // ancestor of the destination, refuse the move (the DB trigger is the
+  // backstop but the toast here is friendlier).
+  function isAncestorOrSelf(
+    candidateAncestorId: string,
+    nodeId: string
+  ): boolean {
+    let current: string | null | undefined = nodeId;
+    while (current) {
+      if (current === candidateAncestorId) return true;
+      const parent = folders.find((f) => f.id === current);
+      current = parent?.parent_folder_id ?? null;
+    }
+    return false;
+  }
+
+  async function handleBulkMove(folderId: string | null) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    // Validate cycle safety against any selected folder.
+    if (folderId) {
+      for (const id of ids) {
+        if (folders.some((f) => f.id === id)) {
+          if (isAncestorOrSelf(id, folderId)) {
+            toast({
+              message: `Can't move "${folders.find((f) => f.id === id)?.name ?? "folder"}" into itself or a descendant.`,
+              intent: "destructive",
+            });
+            return;
+          }
+        }
+      }
+    }
+    // Optimistic mirror update.
+    setVariables((prev) =>
+      prev.map((v) =>
+        selectedIds.has(v.id) ? { ...v, folder_id: folderId } : v
+      )
+    );
+    setFolders((prev) =>
+      prev.map((f) =>
+        selectedIds.has(f.id) ? { ...f, parent_folder_id: folderId } : f
+      )
+    );
+    const errs: string[] = [];
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          if (variables.some((v) => v.id === id)) {
+            await patchEndingVariable(id, { folder_id: folderId });
+          } else if (folders.some((f) => f.id === id)) {
+            await patchEndingVariableFolder(id, { parent_folder_id: folderId });
+          }
+        } catch (err) {
+          errs.push(err instanceof Error ? err.message : "Move failed.");
+        }
+      })
+    );
+    if (errs.length > 0) {
+      toast({
+        message: `${errs.length} move${errs.length === 1 ? "" : "s"} failed: ${errs[0]}`,
+        intent: "destructive",
+      });
+      // Trigger a refresh to reconcile against the server.
+      startTransition(() => router.refresh());
+    }
+    // Drop the selection so the inspector returns to the empty state and
+    // the rows visually settle into their new homes.
+    clearSelection();
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const folderIds = ids.filter((id) => folders.some((f) => f.id === id));
+    const variableIds = ids.filter((id) =>
+      variables.some((v) => v.id === id)
+    );
+    // Variables first (no FK from folders to variables), then folders.
+    for (const id of variableIds) {
+      const fd = new FormData();
+      fd.set("id", id);
+      try {
+        await deleteEndingVariable(fd);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Delete failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    }
+    for (const id of folderIds) {
+      const fd = new FormData();
+      fd.set("id", id);
+      try {
+        await deleteEndingVariableFolder(fd);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Delete failed.";
+        toast({ message: msg, intent: "destructive" });
+      }
+    }
+    clearSelection();
+  }
+
+  // Multi-select inspector inputs (counts, folder picker excludes any
+  // selected folder so we don't move INTO ourselves).
+  const multiVariableCount = useMemo(
+    () => Array.from(selectedIds).filter((id) =>
+      variables.some((v) => v.id === id)
+    ).length,
+    [selectedIds, variables]
+  );
+  const multiFolderCount = useMemo(
+    () => Array.from(selectedIds).filter((id) =>
+      folders.some((f) => f.id === id)
+    ).length,
+    [selectedIds, folders]
+  );
+  const multiFolderOptions = useMemo(
+    () =>
+      buildFolderOptions(
+        Array.from(selectedIds).filter((id) =>
+          folders.some((f) => f.id === id)
+        )
+      ),
+    [selectedIds, folders, buildFolderOptions]
+  );
+
+  // Single-selection inspector — exclude the selected folder + descendants
+  // from its parent picker so it can't be set as its own ancestor.
+  const singleFolderOptions = useMemo(
+    () =>
+      selectedFolder
+        ? buildFolderOptions([selectedFolder.id])
+        : buildFolderOptions([]),
+    [selectedFolder, buildFolderOptions]
+  );
 
   return (
     <>
       {toaster}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <div
-            role="tablist"
-            aria-label="View"
-            className="inline-flex rounded-md border border-border bg-card text-xs"
-          >
-            {(
-              [
-                { id: "grouped", label: "Grouped" },
-                { id: "list", label: "List" },
-              ] as const
-            ).map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                role="tab"
-                aria-selected={view === opt.id}
-                onClick={() => setView(opt.id)}
-                className={cn(
-                  "px-3 py-1 transition-colors",
-                  view === opt.id
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/40"
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {view === "list" ? (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              Sort
-              <Select
-                value={sort}
-                onChange={(e) => setSort(e.target.value as SortMode)}
-                className={cn("h-7 w-auto", GHOST_FIELD)}
-              >
-                <option value="created_desc">Created (newest first)</option>
-                <option value="alpha_asc">Name (A → Z)</option>
-              </Select>
-            </label>
-          ) : null}
-        </div>
-      </div>
+      <ControlBar
+        view={view}
+        onView={setView}
+        sort={sort}
+        onSort={setSort}
+        collapseMode={collapseMode}
+        onCollapseMode={applyCollapseMode}
+        onCreateVariable={handleCreateVariable}
+        onCreateFolder={handleCreateFolder}
+      />
 
-      <div className="flex flex-col gap-4">
-        {rows.length === 0 ? (
-          <p className="rounded-md border border-border bg-card px-4 py-6 text-center text-sm text-muted-foreground">
-            No ending variables yet.
-          </p>
-        ) : view === "grouped" ? (
-          panels.map((panel) => (
-            <GroupPanel
-              key={panel.key}
-              title={panel.title}
-              rows={panel.rows}
-              collapsed={collapsedPanels.has(panel.key)}
-              onToggle={() => togglePanel(panel.key)}
-              expandedIds={expandedVars}
-              onToggleVariable={toggleVariable}
+      <div className="flex items-start gap-4">
+        <div className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card">
+          <PanelHeader
+            title="Variables"
+            icon={
+              <Hash
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
+            }
+          />
+          {view === "all" ? (
+            <AllListView
+              folders={folders}
+              childFoldersByParent={childFoldersByParent}
+              sortedVariablesByFolder={sortedVariablesByFolder}
+              isCollapsed={isCollapsedKey}
+              onToggleCollapsed={toggleCollapsed}
+              selectedIds={selectedIds}
+              onSelect={handleSelect}
+              pinnedId={pinnedId}
+              onRenameVariable={handleRenameVariable}
+              onRenameFolder={handleRenameFolder}
+            />
+          ) : (
+            <ByEndingView
+              panels={byEndingPanels}
+              selectedIds={selectedIds}
+              onSelect={handleSelect}
+              isCollapsed={isCollapsedKey}
+              onToggleCollapsed={toggleCollapsed}
+              onRenameVariable={handleRenameVariable}
+            />
+          )}
+        </div>
+
+        {isMulti ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <MultiSelectInspector
+              variableCount={multiVariableCount}
+              folderCount={multiFolderCount}
+              folderOptions={multiFolderOptions}
+              onMove={handleBulkMove}
+              onDelete={handleBulkDelete}
+              onClear={clearSelection}
+            />
+          </div>
+        ) : selectedVariable ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <VariableInspector
+              key={selectedVariable.id}
+              variable={selectedVariable}
+              values={valuesByVariable.get(selectedVariable.id) ?? []}
+              folderOptions={allFolderOptions}
               peers={peers}
               onActivity={pingActivity}
-              onPatchError={(msg) => toast({ message: msg, intent: "destructive" })}
+              onPatchError={handleOnPatchError}
+              onDeleted={handleDeleted}
+              onAddValue={handleAddValue}
             />
-          ))
-        ) : (
-          <ListView
-            rows={sortedRows}
-            expandedIds={expandedVars}
-            onToggleVariable={toggleVariable}
-            peers={peers}
-            onActivity={pingActivity}
-            onPatchError={(msg) => toast({ message: msg, intent: "destructive" })}
-          />
-        )}
-      </div>
-
-      <div className="mt-4 flex justify-center">
-        <form action={createEndingVariable}>
-          <Button type="submit" variant="outline" size="sm">
-            + Variable
-          </Button>
-        </form>
+          </div>
+        ) : selectedFolder ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <FolderInspector
+              key={selectedFolder.id}
+              folder={selectedFolder}
+              folderOptions={singleFolderOptions}
+              childFolderCount={
+                childCountsByFolder.get(selectedFolder.id)?.folders ?? 0
+              }
+              childVariableCount={
+                childCountsByFolder.get(selectedFolder.id)?.variables ?? 0
+              }
+              peers={peers}
+              onActivity={pingActivity}
+              onPatchError={handleOnPatchError}
+              onDeleted={handleDeleted}
+            />
+          </div>
+        ) : null}
       </div>
     </>
   );
 }
 
-function GroupPanel({
-  title,
-  rows,
-  collapsed,
-  onToggle,
-  expandedIds,
-  onToggleVariable,
-  peers,
-  onActivity,
-  onPatchError,
-}: {
-  title: string;
-  rows: VariableState[];
-  collapsed: boolean;
-  onToggle: () => void;
-  expandedIds: Set<string>;
-  onToggleVariable: (id: string) => void;
-  peers: PresencePeer[];
-  onActivity: () => void;
-  onPatchError: (msg: string) => void;
-}) {
-  return (
-    <section className="overflow-hidden rounded-md border border-border bg-card">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        className="flex w-full items-center gap-2 text-left"
-      >
-        <span
-          aria-hidden
-          className="ml-2 inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
-        >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
-        </span>
-        <PanelHeader title={`${title} (${rows.length})`} />
-      </button>
-      {collapsed ? null : (
-        <div className="flex flex-col gap-2 p-3">
-          {rows.length === 0 ? (
-            <p className="rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
-              None.
-            </p>
-          ) : null}
-          {rows.map((row) => (
-            <VariableCard
-              key={row.id}
-              row={row}
-              expanded={expandedIds.has(row.id)}
-              onToggle={() => onToggleVariable(row.id)}
-              peers={peers}
-              onActivity={onActivity}
-              onPatchError={onPatchError}
-            />
-          ))}
-        </div>
-      )}
-    </section>
+function reconcileById<T extends { id: string }>(prev: T[], next: T[]): T[] {
+  const prevById = new Map(prev.map((r) => [r.id, r]));
+  const nextIds = new Set(next.map((r) => r.id));
+  const kept = prev.filter((r) => nextIds.has(r.id));
+  const keptIds = new Set(kept.map((r) => r.id));
+  const additions = next.filter((s) => !prevById.has(s.id) && !keptIds.has(s.id));
+  if (additions.length === 0 && kept.length === prev.length) return prev;
+  return [...kept, ...additions];
+}
+
+function sortVariables(rows: EndingVariable[], mode: SortMode): EndingVariable[] {
+  const copy = [...rows];
+  if (mode === "name") {
+    copy.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (mode === "created_oldest") {
+    copy.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  } else {
+    copy.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  return copy;
+}
+
+/** Client-side UUID for optimistic inserts. crypto.randomUUID is available
+ *  in modern browsers + node 19+; fall back to a non-cryptographic id if a
+ *  legacy runtime is in play (extremely unlikely here). */
+function makeUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Last-resort RFC 4122 v4-ish id without crypto.
+  return "00000000-0000-4000-8000-000000000000".replace(/[0]/g, () =>
+    Math.floor(Math.random() * 16).toString(16)
   );
 }
 
-function ListView({
-  rows,
-  expandedIds,
-  onToggleVariable,
-  peers,
-  onActivity,
-  onPatchError,
+function ControlBar({
+  view,
+  onView,
+  sort,
+  onSort,
+  collapseMode,
+  onCollapseMode,
+  onCreateVariable,
+  onCreateFolder,
 }: {
-  rows: VariableState[];
-  expandedIds: Set<string>;
-  onToggleVariable: (id: string) => void;
-  peers: PresencePeer[];
-  onActivity: () => void;
-  onPatchError: (msg: string) => void;
+  view: ViewMode;
+  onView: (v: ViewMode) => void;
+  sort: SortMode;
+  onSort: (s: SortMode) => void;
+  collapseMode: CollapseMode;
+  onCollapseMode: (c: CollapseMode) => void;
+  onCreateVariable: () => void;
+  onCreateFolder: () => void;
 }) {
   return (
-    <section className="rounded-md border border-border bg-card p-3">
-      <div className="flex flex-col gap-2">
-        {rows.map((row) => (
-          <VariableCard
-            key={row.id}
-            row={row}
-            expanded={expandedIds.has(row.id)}
-            onToggle={() => onToggleVariable(row.id)}
-            peers={peers}
-            onActivity={onActivity}
-            onPatchError={onPatchError}
-          />
-        ))}
+    <div className="mb-4 flex flex-wrap items-center gap-2">
+      <PlusMenu onVariable={onCreateVariable} onFolder={onCreateFolder} />
+      <ViewToggle view={view} onChange={onView} />
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        <CollapseModeToggle mode={collapseMode} onChange={onCollapseMode} />
+        <Label className="ml-1 !text-xs">Sort</Label>
+        <Select
+          value={sort}
+          onChange={(e) => onSort(e.target.value as SortMode)}
+          className="h-8 w-auto"
+        >
+          <option value="name">Name</option>
+          <option value="created_newest">Created (newest)</option>
+          <option value="created_oldest">Created (oldest)</option>
+        </Select>
       </div>
-    </section>
-  );
-}
-
-function VariableCard({
-  row,
-  expanded,
-  onToggle,
-  peers,
-  onActivity,
-  onPatchError,
-}: {
-  row: VariableState;
-  expanded: boolean;
-  onToggle: () => void;
-  peers: PresencePeer[];
-  onActivity: () => void;
-  onPatchError: (msg: string) => void;
-}) {
-  const { setFocus } = usePresenceContext();
-  const [pending, startDeleteTransition] = useTransition();
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-
-  async function commit<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Save failed.";
-      onPatchError(msg);
-      throw err;
-    }
-  }
-
-  const nameField = useInstantField({
-    value: row.name,
-    onCommit: (v) => commit(() => patchEndingVariable(row.id, { name: v })),
-    onFocusChange: (focused) => {
-      setFocus(
-        focused ? { table: VAR_TABLE, recordId: row.id, field: "name" } : null
-      );
-    },
-    onActivity,
-  });
-
-  const defaultField = useInstantField<string | null>({
-    value: row.default_value_id,
-    onCommit: (v) =>
-      commit(() => patchEndingVariable(row.id, { default_value_id: v })),
-    onFocusChange: (focused) => {
-      setFocus(
-        focused
-          ? { table: VAR_TABLE, recordId: row.id, field: "default_value_id" }
-          : null
-      );
-    },
-    onActivity,
-  });
-
-  const colorField = useInstantField<string | null>({
-    value: row.color_hex,
-    onCommit: (v) =>
-      commit(() => patchEndingVariable(row.id, { color_hex: v })),
-    onFocusChange: (focused) => {
-      setFocus(
-        focused ? { table: VAR_TABLE, recordId: row.id, field: "color_hex" } : null
-      );
-    },
-    onActivity,
-  });
-
-  const effectiveColor = colorField.value ?? paletteColor(row.color_index);
-
-  // Force-expand when a peer is focused on any of this row's nested values
-  // so the FieldHighlight rings have an element to render against. Peer
-  // focus on the variable row itself (name/default/color) is always visible
-  // because the row chrome is always rendered.
-  const valueIds = useMemo(
-    () => new Set(row.values.map((v) => v.id)),
-    [row.values]
-  );
-  const peerOnValueHere = peers.some(
-    (p) => p.focus?.table === VALUE_TABLE && p.focus && valueIds.has(p.focus.recordId)
-  );
-  const showValues = expanded || peerOnValueHere;
-
-  async function confirmDeleteVariable() {
-    const ok = await confirmDialog({
-      title: "Delete variable?",
-      message: `"${row.name}" and its values will be permanently removed, along with any ending logic, condition blocks, or letter-action assignments that use them.`,
-      confirmLabel: "Delete",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const fd = new FormData();
-    fd.set("id", row.id);
-    startDeleteTransition(() => deleteEndingVariable(fd));
-  }
-
-  function addValue() {
-    const fd = new FormData();
-    fd.set("variable_id", row.id);
-    startDeleteTransition(() => createEndingVariableValue(fd));
-  }
-
-  return (
-    <div className="rounded-md border border-border bg-background/40">
-      <div className="grid grid-cols-[24px_20px_minmax(0,1fr)_auto_minmax(140px,200px)_28px] items-center gap-2 px-2 py-1.5">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          aria-label={expanded ? "Collapse variable" : "Expand variable"}
-          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/40"
-        >
-          {expanded ? (
-            <ChevronDown size={14} aria-hidden />
-          ) : (
-            <ChevronRight size={14} aria-hidden />
-          )}
-        </button>
-        <FieldHighlight
-          peers={peers}
-          focusKey={{ table: VAR_TABLE, recordId: row.id, field: "color_hex" }}
-        >
-          <label
-            aria-label="Variable color"
-            title="Variable color (used for chips in the frameworks editor)"
-            className="relative inline-flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center"
-          >
-            <span
-              aria-hidden
-              className="block h-4 w-4 rounded-sm border border-border/60"
-              style={{ backgroundColor: effectiveColor }}
-            />
-            <input
-              type="color"
-              value={effectiveColor}
-              onChange={(e) => colorField.set(e.target.value)}
-              onFocus={colorField.onFocus}
-              onBlur={colorField.onBlur}
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            />
-          </label>
-        </FieldHighlight>
-        <FieldHighlight
-          peers={peers}
-          focusKey={{ table: VAR_TABLE, recordId: row.id, field: "name" }}
-        >
-          <Input
-            value={nameField.value}
-            onChange={(e) => nameField.set(e.target.value)}
-            onFocus={nameField.onFocus}
-            onBlur={nameField.onBlur}
-            placeholder="Variable name"
-            className={cn(
-              "h-8 min-w-0 font-medium",
-              GHOST_FIELD,
-              !nameField.value.trim() && "ring-2 ring-destructive",
-              nameField.status === "error" && "ring-2 ring-destructive"
-            )}
-          />
-        </FieldHighlight>
-        <span className="hidden text-xs text-muted-foreground sm:inline">
-          Default
-        </span>
-        <FieldHighlight
-          peers={peers}
-          focusKey={{
-            table: VAR_TABLE,
-            recordId: row.id,
-            field: "default_value_id",
-          }}
-        >
-          <Select
-            value={defaultField.value ?? ""}
-            onChange={(e) => defaultField.set(e.target.value || null)}
-            onFocus={defaultField.onFocus}
-            onBlur={defaultField.onBlur}
-            aria-label="Default value"
-            className={cn("h-8 w-full", GHOST_FIELD)}
-          >
-            <option value="">—</option>
-            {row.values.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.value || "(unnamed)"}
-              </option>
-            ))}
-          </Select>
-        </FieldHighlight>
-        <button
-          type="button"
-          disabled={pending}
-          aria-label="Delete variable"
-          title="Delete variable"
-          onClick={confirmDeleteVariable}
-          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
-        >
-          <Trash2 size={13} aria-hidden />
-        </button>
-      </div>
-
-      {showValues ? (
-        <div className="border-t border-border/40">
-          {colorField.value ? (
-            <div className="flex items-center justify-end px-3 py-1 text-[10px] text-muted-foreground/70">
-              <button
-                type="button"
-                onClick={() => colorField.set(null)}
-                title="Clear custom color (use palette default)"
-                className="uppercase tracking-widest hover:text-foreground"
-              >
-                reset color
-              </button>
-            </div>
-          ) : null}
-          {row.values.length === 0 ? (
-            <p className="px-3 py-3 text-center text-xs text-muted-foreground">
-              No values yet.
-            </p>
-          ) : (
-            row.values.map((val) => (
-              <ValueRow
-                key={val.id}
-                val={val}
-                peers={peers}
-                onActivity={onActivity}
-                onPatchError={onPatchError}
-              />
-            ))
-          )}
-          <div className="flex justify-center border-t border-border/30 bg-muted/5 px-3 py-1.5">
-            <button
-              type="button"
-              onClick={addValue}
-              disabled={pending}
-              className={MUTED_ADD_BTN}
-            >
-              {pending ? (
-                <>
-                  <Spinner />
-                  …
-                </>
-              ) : (
-                "+ Value"
-              )}
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {confirmDialogEl}
     </div>
   );
 }
 
-function ValueRow({
-  val,
-  peers,
-  onActivity,
-  onPatchError,
+function PlusMenu({
+  onVariable,
+  onFolder,
 }: {
-  val: ValueState;
-  peers: PresencePeer[];
-  onActivity: () => void;
-  onPatchError: (msg: string) => void;
+  onVariable: () => void;
+  onFolder: () => void;
 }) {
-  const { setFocus } = usePresenceContext();
-  const [pending, startDeleteTransition] = useTransition();
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(
+    null
+  );
 
-  const valueField = useInstantField({
-    value: val.value,
-    onCommit: async (v) => {
-      try {
-        await patchEndingVariableValue(val.id, { value: v });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Save failed.";
-        onPatchError(msg);
-        throw err;
-      }
-    },
-    onFocusChange: (focused) => {
-      setFocus(
-        focused ? { table: VALUE_TABLE, recordId: val.id, field: "value" } : null
-      );
-    },
-    onActivity,
-  });
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!ref.current) return;
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
 
-  async function confirmDeleteValue() {
-    const ok = await confirmDialog({
-      title: "Delete value?",
-      message: `"${val.value}" will be permanently removed. Column children of condition blocks referencing this value, logic rules, and letter-action assignments will also be removed.`,
-      confirmLabel: "Delete",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const fd = new FormData();
-    fd.set("id", val.id);
-    startDeleteTransition(() => deleteEndingVariableValue(fd));
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current || !menuRef.current) return;
+    const btn = buttonRef.current.getBoundingClientRect();
+    setMenuPos({ top: btn.bottom + 4, left: btn.left });
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Add"
+        title="Add"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Plus size={16} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-50 w-max min-w-[160px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          style={{
+            top: menuPos?.top ?? -9999,
+            left: menuPos?.left ?? -9999,
+            visibility: menuPos ? "visible" : "hidden",
+          }}
+        >
+          <MenuItem
+            icon={<Hash size={12} aria-hidden />}
+            label="New variable"
+            onClick={() => {
+              onVariable();
+              setOpen(false);
+            }}
+          />
+          <MenuItem
+            icon={<Folder size={12} aria-hidden />}
+            label="New folder"
+            onClick={() => {
+              onFolder();
+              setOpen(false);
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MenuItem({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-[11px] tracking-tight text-foreground transition-colors hover:bg-accent/40"
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ViewToggle({
+  view,
+  onChange,
+}: {
+  view: ViewMode;
+  onChange: (v: ViewMode) => void;
+}) {
+  const items: { id: ViewMode; label: string }[] = [
+    { id: "all", label: "All" },
+    { id: "by-ending", label: "By Ending" },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="View"
+      className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-card text-xs"
+    >
+      {items.map((item) => {
+        const active = view === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(item.id)}
+            className={cn(
+              "px-3 transition-colors",
+              active
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground hover:bg-accent/40"
+            )}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function CollapseModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: CollapseMode;
+  onChange: (c: CollapseMode) => void;
+}) {
+  const items: { id: CollapseMode; label: string; icon: React.ReactNode }[] = [
+    {
+      id: "expanded",
+      label: "Expand all",
+      icon: <ChevronsUpDown size={14} aria-hidden />,
+    },
+    {
+      id: "collapsed",
+      label: "Collapse all",
+      icon: <ChevronsDownUp size={14} aria-hidden />,
+    },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="Collapse mode"
+      className="flex h-8 items-center overflow-hidden rounded-md border border-border"
+    >
+      {items.map((item, i) => {
+        const active = mode === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onChange(item.id)}
+            aria-pressed={active}
+            aria-label={item.label}
+            title={item.label}
+            className={cn(
+              "inline-flex h-full w-8 items-center justify-center transition-colors",
+              i > 0 && "border-l border-border",
+              active
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {item.icon}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AllListView({
+  folders,
+  childFoldersByParent,
+  sortedVariablesByFolder,
+  isCollapsed,
+  onToggleCollapsed,
+  selectedIds,
+  onSelect,
+  pinnedId,
+  onRenameVariable,
+  onRenameFolder,
+}: {
+  folders: EndingVariableFolder[];
+  childFoldersByParent: Map<string | null, EndingVariableFolder[]>;
+  sortedVariablesByFolder: Map<string | null, EndingVariable[]>;
+  isCollapsed: (id: string) => boolean;
+  onToggleCollapsed: (id: string) => void;
+  selectedIds: Set<string>;
+  onSelect: (id: string, opts?: SelectOptions) => void;
+  pinnedId: string | null;
+  onRenameVariable: (id: string, name: string) => void;
+  onRenameFolder: (id: string, name: string) => void;
+}) {
+  const rootFolders = childFoldersByParent.get(null) ?? [];
+  const rootVariables = sortedVariablesByFolder.get(null) ?? [];
+
+  if (folders.length === 0 && rootVariables.length === 0) {
+    return (
+      <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+        No variables or folders yet.
+      </p>
+    );
+  }
+
+  const pinnedFolder =
+    pinnedId !== null
+      ? rootFolders.find((f) => f.id === pinnedId) ?? null
+      : null;
+
+  return (
+    <div>
+      {pinnedFolder ? (
+        <FolderBranch
+          key={`pinned-${pinnedFolder.id}`}
+          folder={pinnedFolder}
+          depth={0}
+          childFoldersByParent={childFoldersByParent}
+          sortedVariablesByFolder={sortedVariablesByFolder}
+          isCollapsed={isCollapsed}
+          onToggleCollapsed={onToggleCollapsed}
+          selectedIds={selectedIds}
+          onSelect={onSelect}
+          onRenameVariable={onRenameVariable}
+          onRenameFolder={onRenameFolder}
+        />
+      ) : null}
+      {rootFolders
+        .filter((f) => f.id !== pinnedId)
+        .map((f) => (
+          <FolderBranch
+            key={f.id}
+            folder={f}
+            depth={0}
+            childFoldersByParent={childFoldersByParent}
+            sortedVariablesByFolder={sortedVariablesByFolder}
+            isCollapsed={isCollapsed}
+            onToggleCollapsed={onToggleCollapsed}
+            selectedIds={selectedIds}
+            onSelect={onSelect}
+            onRenameVariable={onRenameVariable}
+            onRenameFolder={onRenameFolder}
+          />
+        ))}
+      {rootVariables.map((v) => (
+        <VariableRow
+          key={v.id}
+          variable={v}
+          depth={0}
+          selected={selectedIds.has(v.id)}
+          onSelect={(opts) => onSelect(v.id, opts)}
+          onRename={(name) => onRenameVariable(v.id, name)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FolderBranch({
+  folder,
+  depth,
+  childFoldersByParent,
+  sortedVariablesByFolder,
+  isCollapsed,
+  onToggleCollapsed,
+  selectedIds,
+  onSelect,
+  onRenameVariable,
+  onRenameFolder,
+}: {
+  folder: EndingVariableFolder;
+  depth: number;
+  childFoldersByParent: Map<string | null, EndingVariableFolder[]>;
+  sortedVariablesByFolder: Map<string | null, EndingVariable[]>;
+  isCollapsed: (id: string) => boolean;
+  onToggleCollapsed: (id: string) => void;
+  selectedIds: Set<string>;
+  onSelect: (id: string, opts?: SelectOptions) => void;
+  onRenameVariable: (id: string, name: string) => void;
+  onRenameFolder: (id: string, name: string) => void;
+}) {
+  const collapsed = isCollapsed(folder.id);
+  const childFolders = childFoldersByParent.get(folder.id) ?? [];
+  const childVariables = sortedVariablesByFolder.get(folder.id) ?? [];
+  const totalChildren = childFolders.length + childVariables.length;
+  return (
+    <>
+      <FolderRow
+        folder={folder}
+        depth={depth}
+        collapsed={collapsed}
+        childCount={totalChildren}
+        selected={selectedIds.has(folder.id)}
+        onSelect={(opts) => onSelect(folder.id, opts)}
+        onToggle={() => onToggleCollapsed(folder.id)}
+        onRename={(name) => onRenameFolder(folder.id, name)}
+      />
+      {collapsed
+        ? null
+        : (
+          <>
+            {childFolders.map((sub) => (
+              <FolderBranch
+                key={sub.id}
+                folder={sub}
+                depth={depth + 1}
+                childFoldersByParent={childFoldersByParent}
+                sortedVariablesByFolder={sortedVariablesByFolder}
+                isCollapsed={isCollapsed}
+                onToggleCollapsed={onToggleCollapsed}
+                selectedIds={selectedIds}
+                onSelect={onSelect}
+                onRenameVariable={onRenameVariable}
+                onRenameFolder={onRenameFolder}
+              />
+            ))}
+            {childVariables.map((v) => (
+              <VariableRow
+                key={v.id}
+                variable={v}
+                depth={depth + 1}
+                selected={selectedIds.has(v.id)}
+                onSelect={(opts) => onSelect(v.id, opts)}
+                onRename={(name) => onRenameVariable(v.id, name)}
+              />
+            ))}
+            {totalChildren === 0 ? (
+              <div
+                className={cn(
+                  "flex items-center border-t border-border text-[11px] italic text-muted-foreground/60",
+                  ROW_HEIGHT_CLS
+                )}
+                style={{ paddingLeft: `${(depth + 1) * 16 + 28}px` }}
+              >
+                empty
+              </div>
+            ) : null}
+          </>
+        )}
+    </>
+  );
+}
+
+function FolderRow({
+  folder,
+  depth,
+  collapsed,
+  childCount,
+  selected,
+  onSelect,
+  onToggle,
+  onRename,
+}: {
+  folder: EndingVariableFolder;
+  depth: number;
+  collapsed: boolean;
+  childCount: number;
+  selected: boolean;
+  onSelect: (opts?: SelectOptions) => void;
+  onToggle: () => void;
+  onRename: (name: string) => void;
+}) {
+  return (
+    <RowShell
+      selected={selected}
+      onSelect={onSelect}
+      paddingLeftPx={depth * 16 + 8}
+    >
+      <span
+        role="button"
+        aria-label={collapsed ? "Expand folder" : "Collapse folder"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent/60"
+      >
+        {collapsed ? (
+          <ChevronRight size={14} aria-hidden />
+        ) : (
+          <ChevronDown size={14} aria-hidden />
+        )}
+      </span>
+      {collapsed ? (
+        <Folder size={13} aria-hidden className="shrink-0 text-muted-foreground" />
+      ) : (
+        <FolderOpen size={13} aria-hidden className="shrink-0 text-muted-foreground" />
+      )}
+      <RenamableLabel
+        value={folder.name}
+        placeholder="Unnamed folder"
+        className="min-w-0 flex-1 truncate font-medium text-foreground/90"
+        onCommit={onRename}
+      />
+      <span className="shrink-0 font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
+        {childCount}
+      </span>
+    </RowShell>
+  );
+}
+
+function VariableRow({
+  variable,
+  depth,
+  selected,
+  onSelect,
+  onRename,
+}: {
+  variable: EndingVariable;
+  depth: number;
+  selected: boolean;
+  onSelect: (opts?: SelectOptions) => void;
+  onRename: (name: string) => void;
+}) {
+  const color = variable.color_hex ?? paletteColor(variable.color_index);
+  return (
+    <RowShell
+      selected={selected}
+      onSelect={onSelect}
+      paddingLeftPx={depth * 16 + 32}
+    >
+      <span
+        aria-hidden
+        className="block h-3 w-3 shrink-0 rounded-sm border border-border/60"
+        style={{ backgroundColor: color }}
+      />
+      <RenamableLabel
+        value={variable.name}
+        placeholder="Unnamed variable"
+        className="min-w-0 flex-1 truncate text-foreground/90"
+        onCommit={onRename}
+      />
+    </RowShell>
+  );
+}
+
+/** A list row chrome shared by folder + variable rows. Single click anywhere
+ *  selects; shift+click extends the multi-selection. Double-click on the
+ *  RenamableLabel enters rename mode. Row height is fixed so the input
+ *  swap doesn't reflow the layout. */
+function RowShell({
+  selected,
+  onSelect,
+  paddingLeftPx,
+  children,
+}: {
+  selected: boolean;
+  onSelect: (opts?: SelectOptions) => void;
+  paddingLeftPx: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={(e) => onSelect({ extend: e.shiftKey })}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect({ extend: e.shiftKey });
+        }
+      }}
+      className={cn(
+        "flex cursor-pointer select-none items-center gap-2 border-t border-border px-3 text-sm transition-colors first:border-t-0 focus:outline-none",
+        ROW_HEIGHT_CLS,
+        // Selected wins over hover. Use solid accent so shift-clicking
+        // multiple rows reads at a glance, even against dark panel chrome.
+        selected
+          ? "bg-accent text-accent-foreground hover:bg-accent focus-visible:bg-accent"
+          : "hover:bg-accent/20 focus-visible:bg-accent/20"
+      )}
+      style={{ paddingLeft: `${paddingLeftPx}px` }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Label that swaps to an inline input on double-click. The input is sized
+ *  to the same height as the row's flex line so the row height stays
+ *  perfectly stable in/out of rename mode. */
+function RenamableLabel({
+  value,
+  placeholder,
+  className,
+  onCommit,
+}: {
+  value: string;
+  placeholder: string;
+  className?: string;
+  onCommit: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  function finish(save: boolean) {
+    setEditing(false);
+    if (save) {
+      const trimmed = draft.trim();
+      if (trimmed && trimmed !== value) onCommit(trimmed);
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => finish(true)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") {
+            e.preventDefault();
+            finish(true);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            finish(false);
+          }
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        style={{ height: `${ROW_HEIGHT_PX - 8}px` }}
+        className={cn(
+          "min-w-0 flex-1 rounded-sm border border-border/60 bg-background/70 px-1 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-accent",
+          className
+        )}
+      />
+    );
   }
 
   return (
-    <div className="grid grid-cols-[1fr_36px] items-center gap-2 border-t border-border/30 px-3 py-1 first:border-t-0">
-      <FieldHighlight
-        peers={peers}
-        focusKey={{ table: VALUE_TABLE, recordId: val.id, field: "value" }}
-      >
-        <Input
-          value={valueField.value}
-          onChange={(e) => valueField.set(e.target.value)}
-          onFocus={valueField.onFocus}
-          onBlur={valueField.onBlur}
-          placeholder="Value"
-          className={cn(
-            "h-8",
-            GHOST_FIELD,
-            !valueField.value.trim() && "ring-2 ring-destructive",
-            valueField.status === "error" && "ring-2 ring-destructive"
-          )}
-        />
-      </FieldHighlight>
-      <button
-        type="button"
-        disabled={pending}
-        aria-label="Delete value"
-        title="Delete value"
-        onClick={confirmDeleteValue}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
-      >
-        <Trash2 size={12} aria-hidden />
-      </button>
-      {confirmDialogEl}
+    <span
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        setEditing(true);
+      }}
+      className={className}
+    >
+      {value || placeholder}
+    </span>
+  );
+}
+
+function ByEndingView({
+  panels,
+  selectedIds,
+  onSelect,
+  isCollapsed,
+  onToggleCollapsed,
+  onRenameVariable,
+}: {
+  panels: Array<{ key: string; title: string; rows: EndingVariable[] }>;
+  selectedIds: Set<string>;
+  onSelect: (id: string, opts?: SelectOptions) => void;
+  isCollapsed: (key: string) => boolean;
+  onToggleCollapsed: (key: string) => void;
+  onRenameVariable: (id: string, name: string) => void;
+}) {
+  if (panels.length === 0) {
+    return (
+      <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+        No variables yet.
+      </p>
+    );
+  }
+  return (
+    <div>
+      {panels.map((panel, idx) => {
+        const collapsed = isCollapsed(panel.key);
+        return (
+          <section key={panel.key}>
+            <button
+              type="button"
+              onClick={() => onToggleCollapsed(panel.key)}
+              aria-expanded={!collapsed}
+              // `first:border-t-0` would always match here (the button is
+              // the first child of its <section>), dropping the divider on
+              // every header. Gate on the panel index instead so we keep
+              // the line between adjacent panels.
+              className={cn(
+                "flex w-full items-center gap-2 bg-muted/20 px-3 text-left transition-colors hover:bg-muted/30",
+                idx > 0 && "border-t border-border",
+                ROW_HEIGHT_CLS
+              )}
+            >
+              <span
+                aria-hidden
+                className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
+              >
+                {collapsed ? (
+                  <ChevronRight size={13} />
+                ) : (
+                  <ChevronDown size={13} />
+                )}
+              </span>
+              <Folder
+                size={12}
+                aria-hidden
+                className="shrink-0 text-muted-foreground"
+              />
+              <span className="min-w-0 flex-1 truncate font-mono text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                {panel.title}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
+                {panel.rows.length}
+              </span>
+            </button>
+            {collapsed
+              ? null
+              : panel.rows.length === 0
+                ? (
+                  <div
+                    className={cn(
+                      "flex items-center border-t border-border px-3 text-xs italic text-muted-foreground/60",
+                      ROW_HEIGHT_CLS
+                    )}
+                    style={{ paddingLeft: `${1 * 16 + 32}px` }}
+                  >
+                    None.
+                  </div>
+                )
+                : panel.rows.map((v) => (
+                    <VariableRow
+                      key={`${panel.key}:${v.id}`}
+                      variable={v}
+                      depth={1}
+                      selected={selectedIds.has(v.id)}
+                      onSelect={(opts) => onSelect(v.id, opts)}
+                      onRename={(name) => onRenameVariable(v.id, name)}
+                    />
+                  ))}
+          </section>
+        );
+      })}
     </div>
   );
 }
