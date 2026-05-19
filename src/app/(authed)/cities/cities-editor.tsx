@@ -1,60 +1,38 @@
 "use client";
 
-import {
-  startTransition,
-  useEffect,
-  useMemo,
-  useState,
-  useTransition,
-} from "react";
-import { useRouter } from "next/navigation";
-import { IconDisplay } from "@/components/icon-display";
-import { Input } from "@/components/ui/input";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Building2, Plus } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
-import { useConfirm } from "@/components/confirm-dialog";
+import { PanelHeader } from "@/components/panel";
+import { NationPill } from "@/components/pills";
 import { useToast } from "@/components/toast";
-import type { City, Nation } from "@/lib/db/types";
-import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import type { PresenceProfile } from "@/lib/realtime/presence";
+import { cn } from "@/lib/utils";
+import type { Citizen, City, Nation } from "@/lib/db/types";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import type { PresencePeer, PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import { deleteCity, patchCity } from "./actions";
+import { createCity } from "./actions";
+import { CityInspector } from "./city-inspector";
 
 type SortMode = "city" | "nation";
-
-/** "ABC DEF" — 3 alnum + single space + 3 alnum, all uppercase, no symbols. */
-function formatCityCode(raw: string): string {
-  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-  if (cleaned.length <= 3) return cleaned;
-  return `${cleaned.slice(0, 3)} ${cleaned.slice(3)}`;
-}
-function isValidCityCode(code: string): boolean {
-  return /^[A-Z0-9]{3} [A-Z0-9]{3}$/.test(code);
-}
-
-function readableOn(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "#ffffff";
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.65 ? "#0b0d10" : "#ffffff";
-}
 
 export function CitiesEditor({
   cities,
   nations,
+  citizens,
   currentUserId,
   currentEmail,
   currentProfile,
 }: {
   cities: City[];
   nations: Nation[];
+  citizens: Citizen[];
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -67,26 +45,34 @@ export function CitiesEditor({
       profile={currentProfile}
       postgresTables={["cities"]}
     >
-      <CitiesEditorInner cities={cities} nations={nations} />
+      <CitiesEditorInner cities={cities} nations={nations} citizens={citizens} />
     </WorkspacePresenceProvider>
   );
+}
+
+/** Resolve the city a peer currently has open. */
+function peerCityId(peer: PresencePeer): string | null {
+  const fromSelection = peer.selection?.payload?.cityId;
+  if (fromSelection) return fromSelection as string;
+  if (peer.focus?.table === "cities") return peer.focus.recordId;
+  return null;
 }
 
 function CitiesEditorInner({
   cities: initialCities,
   nations,
+  citizens,
 }: {
   cities: City[];
   nations: Nation[];
+  citizens: Citizen[];
 }) {
-  const router = useRouter();
-  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { peers, selfPeer, setSelection, onPostgresChanges } =
+    usePresenceContext();
   const { toast, toaster } = useToast();
-  const [, startDeleteTransition] = useTransition();
+  const [, startMutation] = useTransition();
 
-  // Local mirror of cities, seeded from server props. useEffect reconciles
-  // when the server prop changes (e.g. after a structural revalidate adds a city).
-  // Postgres UPDATE/DELETE are handled separately by the postgres_changes handler.
+  // Local mirror of cities, seeded from server props.
   const [rows, setRows] = useState<City[]>(initialCities);
   useEffect(() => {
     setRows((prev) => {
@@ -105,12 +91,101 @@ function CitiesEditorInner({
   const [sortMode, setSortMode] = useState<SortMode>("city");
   const [filterNationId, setFilterNationId] = useState<string>("");
 
-  const nationMap = useMemo(
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Two-way sync between `selectedId` and `?city=<name>` URL param. Matches
+  // by name first, falls back to id for backwards-compat / unnamed rows.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const appliedParamRef = useRef<string | null>(null);
+
+  // URL → state (honor external navigation).
+  useEffect(() => {
+    const param = searchParams.get("city");
+    if (param === appliedParamRef.current) return;
+    appliedParamRef.current = param;
+    if (param) {
+      const match =
+        rows.find((r) => r.name === param) ??
+        rows.find((r) => r.id === param) ??
+        null;
+      setSelectedId(match?.id ?? null);
+    } else {
+      setSelectedId(null);
+    }
+  }, [searchParams, rows]);
+
+  // state → URL (reflect user clicks).
+  useEffect(() => {
+    const row = selectedId ? rows.find((r) => r.id === selectedId) : null;
+    const desired = row ? row.name?.trim() || row.id : null;
+    if (desired === appliedParamRef.current) return;
+    appliedParamRef.current = desired;
+    const params = new URLSearchParams(searchParams);
+    if (desired) params.set("city", desired);
+    else params.delete("city");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [selectedId, rows, searchParams, pathname, router]);
+
+  // Responsive panel width measurement.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [panelWidth, setPanelWidth] = useState(0);
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (typeof w === "number") setPanelWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const nationById = useMemo(
     () => new Map(nations.map((n) => [n.id, n])),
     [nations]
   );
+  const cityById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
 
-  // postgres_changes handler — merges column-level updates into the mirror.
+  // Citizen count per city for list rows.
+  const citizenCountByCity = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of citizens) {
+      if (c.city_id) m.set(c.city_id, (m.get(c.city_id) ?? 0) + 1);
+    }
+    return m;
+  }, [citizens]);
+
+  // Names of every city except the selected one — for duplicate detection.
+  const otherNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) {
+      if (r.id === selectedId) continue;
+      const k = r.name.trim().toLowerCase();
+      if (k) s.add(k);
+    }
+    return s;
+  }, [rows, selectedId]);
+
+  // Broadcast which city the inspector has open.
+  useEffect(() => {
+    if (selectedId) {
+      setSelection({
+        storylineId: null,
+        groupId: null,
+        letterId: null,
+        segmentId: null,
+        view: "city",
+        payload: { cityId: selectedId },
+      });
+    } else {
+      setSelection(null);
+    }
+  }, [selectedId, setSelection]);
+
+  // postgres_changes handler — keep local mirror in sync.
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table !== "cities") return;
@@ -122,99 +197,191 @@ function CitiesEditorInner({
       } else if (change.eventType === "DELETE" && change.old) {
         const deleted = change.old as unknown as { id: string; updated_by?: string };
         setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        setSelectedId((cur) => (cur === deleted.id ? null : cur));
         const by = deleted.updated_by ?? "Someone";
-        toast({
-          message: `${by} deleted a city.`,
-          intent: "destructive",
-        });
+        toast({ message: `${by} deleted a city.`, intent: "destructive" });
       } else if (change.eventType === "INSERT" && change.new) {
         const inserted = change.new as unknown as City;
         setRows((prev) => {
           if (prev.some((r) => r.id === inserted.id)) return prev;
           return [...prev, inserted];
         });
-        // Refresh to re-derive any view-mapped columns via RSC.
-        startTransition(() => router.refresh());
       }
     });
-  }, [onPostgresChanges, router, toast]);
+  }, [onPostgresChanges, toast]);
+
+  // Peer presence rings indexed by city.
+  const peerRingsByCity = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of peers) {
+      const cid = peerCityId(p);
+      if (!cid) continue;
+      const color = p.profile?.avatarColorHex ?? p.color;
+      const arr = m.get(cid) ?? [];
+      arr.push(color);
+      m.set(cid, arr);
+    }
+    return m;
+  }, [peers]);
+
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of peers) {
+      const cid = peerCityId(p);
+      if (!cid) continue;
+      const c = cityById.get(cid);
+      m.set(p.userId, c ? c.name || "New city" : "A city");
+    }
+    return m;
+  }, [peers, cityById]);
+
+  function handleAvatarClick(peer: PresencePeer) {
+    const cid = peerCityId(peer);
+    if (cid && rows.some((r) => r.id === cid)) setSelectedId(cid);
+  }
+
+  function handleCreate() {
+    startMutation(async () => {
+      await createCity();
+      // createCity triggers revalidatePath which updates the server props.
+      // The INSERT postgres_changes will add the new row to the local mirror.
+    });
+  }
+
+  // The inspector has already run deleteCity — just reconcile local state.
+  function handleDeleted(id: string) {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+    setSelectedId((cur) => (cur === id ? null : cur));
+  }
 
   const view = useMemo(() => {
     let list = rows.slice();
     if (filterNationId) list = list.filter((r) => r.nation_id === filterNationId);
     list.sort((a, b) => {
       if (sortMode === "nation") {
-        const an = nationMap.get(a.nation_id)?.name ?? "";
-        const bn = nationMap.get(b.nation_id)?.name ?? "";
+        const an = nationById.get(a.nation_id)?.name ?? "";
+        const bn = nationById.get(b.nation_id)?.name ?? "";
         const byNation = an.localeCompare(bn);
         if (byNation !== 0) return byNation;
       }
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [rows, sortMode, nationMap, filterNationId]);
+  }, [rows, sortMode, filterNationId, nationById]);
+
+  const selected = selectedId ? cityById.get(selectedId) ?? null : null;
+
+  // Whether to show the count column (hide when panel is too narrow).
+  const showCount = panelWidth === 0 || panelWidth >= 380;
 
   return (
     <>
       {toaster}
-      <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-        <Label className="!text-xs">Filter</Label>
-        <Select
-          value={filterNationId}
-          onChange={(e) => setFilterNationId(e.target.value)}
-          className="h-8 w-auto"
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={handleCreate}
+          aria-label="Add city"
+          title="Add city"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <option value="">All nations</option>
-          {nations.map((n) => (
-            <option key={n.id} value={n.id}>
-              {n.name}
-            </option>
-          ))}
-        </Select>
-        <Label className="ml-3 !text-xs">Sort</Label>
-        <Select
-          value={sortMode}
-          onChange={(e) => setSortMode(e.target.value as SortMode)}
-          className="h-8 w-auto"
-        >
-          <option value="city">City name</option>
-          <option value="nation">Nation, then city</option>
-        </Select>
+          <Plus size={16} aria-hidden />
+        </button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {peers.length > 0 ? (
+            <AvatarStack
+              peers={peers}
+              self={selfPeer}
+              peerLocations={peerLocations}
+              onAvatarClick={handleAvatarClick}
+              popupAlign="right"
+            />
+          ) : null}
+          <Label className="!text-xs">Filter</Label>
+          <Select
+            value={filterNationId}
+            onChange={(e) => setFilterNationId(e.target.value)}
+            className="h-8 w-auto"
+          >
+            <option value="">All nations</option>
+            {nations.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name}
+              </option>
+            ))}
+          </Select>
+          <Label className="ml-3 !text-xs">Sort</Label>
+          <Select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+            className="h-8 w-auto"
+          >
+            <option value="city">City name</option>
+            <option value="nation">Nation, then city</option>
+          </Select>
+        </div>
       </div>
 
-      <div className="overflow-hidden rounded-md border border-border bg-card">
-        <div className="grid grid-cols-[32px_1fr_110px_220px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
-          <span />
-          <Label>Name</Label>
-          <Label>Code</Label>
-          <Label>Nation</Label>
-          <span />
+      <div className="flex items-start gap-4">
+        <div
+          ref={panelRef}
+          className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card"
+        >
+          <PanelHeader
+            title="Cities"
+            icon={
+              <Building2
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
+            }
+          />
+          <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
+            <span className="w-8 shrink-0" />
+            <Label className="flex-1">Name</Label>
+            <Label className="w-[110px] shrink-0 font-mono">Code</Label>
+            {showCount ? (
+              <Label className="w-20 shrink-0 text-right">Citizens</Label>
+            ) : null}
+          </div>
+          {view.map((row) => {
+            const nation = nationById.get(row.nation_id) ?? null;
+            const count = citizenCountByCity.get(row.id) ?? 0;
+            const peerColors = peerRingsByCity.get(row.id) ?? null;
+            return (
+              <CityRow
+                key={row.id}
+                row={row}
+                nation={nation}
+                citizenCount={count}
+                selected={row.id === selectedId}
+                showCount={showCount}
+                peerColors={peerColors}
+                onSelect={() =>
+                  setSelectedId((cur) => (cur === row.id ? null : row.id))
+                }
+              />
+            );
+          })}
+          {view.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+              No cities{filterNationId ? " in that nation" : ""} yet.
+            </p>
+          ) : null}
         </div>
-        {view.map((row) => {
-          const n = nationMap.get(row.nation_id);
-          return (
-            <CityRow
-              key={row.id}
-              row={row}
+
+        {selected ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <CityInspector
+              key={selected.id}
+              city={selected}
               nations={nations}
-              nation={n}
-              peers={peers}
-              onActivity={pingActivity}
-              onDelete={() => {
-                startDeleteTransition(async () => {
-                  const fd = new FormData();
-                  fd.append("id", row.id);
-                  await deleteCity(fd);
-                  setRows((prev) => prev.filter((x) => x.id !== row.id));
-                });
-              }}
+              citizens={citizens}
+              otherNames={otherNames}
+              onDeleted={handleDeleted}
             />
-          );
-        })}
-        {view.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No cities{filterNationId ? " in that nation" : ""} yet.
-          </p>
+          </div>
         ) : null}
       </div>
     </>
@@ -223,224 +390,70 @@ function CitiesEditorInner({
 
 function CityRow({
   row,
-  nations,
   nation,
-  peers,
-  onActivity,
-  onDelete,
+  citizenCount,
+  selected,
+  showCount,
+  peerColors,
+  onSelect,
 }: {
   row: City;
-  nations: Nation[];
-  nation: Nation | undefined;
-  peers: ReturnType<typeof usePresenceContext>["peers"];
-  onActivity: () => void;
-  onDelete: () => void;
+  nation: Nation | null;
+  citizenCount: number;
+  selected: boolean;
+  showCount: boolean;
+  peerColors: string[] | null;
+  onSelect: () => void;
 }) {
-  const { setFocus } = usePresenceContext();
-  const [editing, setEditing] = useState(false);
-
-  // Duplicate-code tracking is done at the list level; for instant-save we
-  // validate name non-empty and code format per-field. Full duplicate check
-  // across all rows would require passing the full mirror down — omit for now
-  // and rely on the server action to reject bad writes.
-
-  const nameField = useInstantField({
-    value: row.name,
-    onCommit: (v) => patchCity(row.id, { name: v }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { table: "cities", recordId: row.id, field: "name" } : null);
-    },
-    onActivity,
-  });
-
-  const codeField = useInstantField({
-    value: row.code,
-    onCommit: (v) => patchCity(row.id, { code: v }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { table: "cities", recordId: row.id, field: "code" } : null);
-    },
-    onActivity,
-  });
-
-  const nationField = useInstantField({
-    value: row.nation_id,
-    onCommit: (v) => patchCity(row.id, { nation_id: v }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { table: "cities", recordId: row.id, field: "nation_id" } : null);
-    },
-    onActivity,
-  });
-
-  const codeError = !isValidCityCode(codeField.value);
-
-  // Expand the row to input mode when a peer focuses any field on this row,
-  // so the FieldHighlight rings have an element to render against. Without
-  // this, peer rings can never appear on rows the local user isn't editing.
-  const peerEditingHere = peers.some((p) => p.focus?.recordId === row.id);
-  const showInputs = editing || peerEditingHere;
-
-  function handleBlur(e: React.FocusEvent<HTMLDivElement>) {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-      setEditing(false);
-    }
-  }
-
-  const focusBase = { table: "cities", recordId: row.id };
+  const boxShadow = peerColors?.length
+    ? peerColors
+        .map((c, i) => `inset 0 0 0 ${(i + 1) * 2}px ${c}`)
+        .join(", ")
+    : undefined;
 
   return (
     <div
-      tabIndex={-1}
-      onFocus={() => setEditing(true)}
-      onClick={() => setEditing(true)}
-      onBlur={handleBlur}
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      style={boxShadow ? { boxShadow } : undefined}
       className={cn(
-        "grid cursor-text grid-cols-[32px_1fr_110px_220px_36px] items-center gap-2 border-t border-border px-3 py-1 first:border-t-0",
-        editing && "bg-accent/20"
+        "flex cursor-pointer items-center gap-2 border-t border-border px-3 py-1.5 text-sm transition-colors first:border-t-0 hover:bg-accent/20 focus:outline-none focus-visible:bg-accent/20",
+        selected ? "bg-accent/30" : undefined
       )}
     >
-      <span
-        className="flex h-6 w-6 items-center justify-center rounded"
-        style={{
-          background: nation?.color_hex ?? "var(--muted)",
-          color: nation ? readableOn(nation.color_hex) : undefined,
-        }}
-        title={nation?.name}
-      >
-        {nation?.icon_value ? (
-          <IconDisplay
-            type={nation.icon_type}
-            value={nation.icon_value}
-            size={14}
-          />
-        ) : null}
-      </span>
-      {showInputs ? (
-        <>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
-            <Input
-              value={nameField.value}
-              onChange={(e) => nameField.set(e.target.value)}
-              onFocus={nameField.onFocus}
-              onBlur={nameField.onBlur}
-              className={cn("h-8", !nameField.value.trim() && "ring-2 ring-destructive")}
-              autoFocus={editing}
-              required
-            />
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "code" }}>
-            <Input
-              value={codeField.value}
-              onChange={(e) => codeField.set(formatCityCode(e.target.value))}
-              onFocus={codeField.onFocus}
-              onBlur={codeField.onBlur}
-              placeholder="ABC DEF"
-              maxLength={7}
-              className={cn(
-                "h-8 uppercase tracking-wider",
-                codeError && "ring-2 ring-destructive"
-              )}
-              aria-invalid={codeError}
-            />
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "nation_id" }}>
-            <div
-              onFocus={nationField.onFocus}
-              onBlur={nationField.onBlur}
-            >
-              <Select
-                value={nationField.value}
-                onChange={(e) => nationField.set(e.target.value)}
-                className="h-8"
-              >
-                {nations.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </FieldHighlight>
-        </>
+      {/* Nation chip — passive square showing the nation's icon. */}
+      {nation ? (
+        <NationPill nation={nation} iconOnly className="shrink-0" />
       ) : (
-        <>
-          <ReadCell className={cn(!row.name.trim() && "ring-2 ring-destructive")}>
-            {row.name || <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-          <ReadCell
-            className={cn("font-mono", codeError && "ring-2 ring-destructive")}
-          >
-            {row.code || <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-          <ReadCell>
-            {nation?.name ?? <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-        </>
-      )}
-      <DeleteX name={row.name} onDelete={onDelete} />
-    </div>
-  );
-}
-
-function ReadCell({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "flex h-8 items-center truncate rounded-md px-2 text-sm",
-        className
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
-function DeleteX({
-  name,
-  onDelete,
-}: {
-  name: string;
-  onDelete: () => void;
-}) {
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  return (
-    <>
-      <button
-        type="button"
-        aria-label="Delete city"
-        title="Delete"
-        onClick={async () => {
-          const ok = await confirmDialog({
-            title: "Delete city?",
-            message: `"${name}" will be permanently removed.`,
-            confirmLabel: "Delete",
-            intent: "destructive",
-          });
-          if (!ok) return;
-          onDelete();
-        }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
+        <span
+          className="h-6 w-6 shrink-0 rounded-md bg-muted"
           aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-      {confirmDialogEl}
-    </>
+        />
+      )}
+
+      {/* City name */}
+      <span className="min-w-0 flex-1 truncate">
+        {row.name || <span className="text-muted-foreground">Unnamed city</span>}
+      </span>
+
+      {/* Code */}
+      <span className="w-[110px] shrink-0 truncate font-mono text-xs text-muted-foreground">
+        {row.code || <span className="opacity-50">—</span>}
+      </span>
+
+      {/* Citizen count */}
+      {showCount ? (
+        <span className="w-20 shrink-0 text-right text-xs text-muted-foreground">
+          {citizenCount > 0 ? `${citizenCount} citizen${citizenCount === 1 ? "" : "s"}` : null}
+        </span>
+      ) : null}
+    </div>
   );
 }

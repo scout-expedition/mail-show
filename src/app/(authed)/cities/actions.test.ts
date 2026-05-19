@@ -106,9 +106,12 @@ describe("createCity", () => {
       .eq("nation_id", primaryNationId)
       .eq("name", "New city")
       .single();
+    // PR #70 changed the placeholder code from "NEW" (which fails the
+    // `ABC DEF` format validation the inspector enforces) to "" so the
+    // freshly-created row shows up as "unfilled" rather than invalid.
     expect(data).toEqual({
       name: "New city",
-      code: "NEW",
+      code: "",
       nation_id: primaryNationId,
     });
     expect(revalidatePath).toHaveBeenCalledWith("/cities");

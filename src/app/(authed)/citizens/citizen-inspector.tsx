@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { AlertCircle, Trash2, User } from "lucide-react";
+import { AlertCircle, Star, Trash2, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -398,20 +398,41 @@ export function CitizenInspector({
             </FieldHighlight>
           </FieldCell>
           <FieldCell label="Hero" span={2}>
-            <FieldHighlight peers={peers} focusKey={focusKey("type")}>
-              <label className="flex h-8 items-center px-1">
-                <input
-                  type="checkbox"
-                  checked={typeField.value === "hero"}
-                  onChange={(e) =>
-                    typeField.set(e.target.checked ? "hero" : "npc")
-                  }
-                  onFocus={typeField.onFocus}
-                  onBlur={typeField.onBlur}
-                  aria-label="Hero"
-                  className="h-4 w-4 cursor-pointer accent-primary"
+            <FieldHighlight
+              peers={peers}
+              focusKey={focusKey("type")}
+              className="w-fit"
+            >
+              {/* Toggle styled to match the GHOST_FIELD dropdowns/inputs
+                  alongside it — same h-8, same hover/focus treatment.
+                  Filled star = hero, outline = npc. */}
+              <button
+                type="button"
+                onClick={() =>
+                  typeField.set(
+                    typeField.value === "hero" ? "npc" : "hero"
+                  )
+                }
+                onFocus={typeField.onFocus}
+                onBlur={typeField.onBlur}
+                aria-pressed={typeField.value === "hero"}
+                aria-label="Hero"
+                title={typeField.value === "hero" ? "Hero" : "NPC"}
+                className={cn(
+                  "flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  GHOST_FIELD
+                )}
+              >
+                <Star
+                  size={14}
+                  aria-hidden
+                  className={cn(
+                    typeField.value === "hero"
+                      ? "fill-current text-foreground"
+                      : "text-muted-foreground/40"
+                  )}
                 />
-              </label>
+              </button>
             </FieldHighlight>
           </FieldCell>
 

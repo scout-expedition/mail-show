@@ -4,15 +4,13 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { normalizeHex } from "@/lib/color";
 import type { IconType } from "@/lib/db/enums";
+import type { Nation } from "@/lib/db/types";
 
 /**
  * Narrow per-field patch — called by useInstantField in NationsEditor.
- * Does NOT call revalidatePath; realtime fans out the change to other clients.
- *
- * `icon_type` / `icon_value` stay in the patch shape because the existing UI
- * binds icon inputs through here — but `nations` has no icon columns, so we
- * strip them before the DB write. (Adding the columns to `nations` is a
- * separate migration; until then those fields are accepted but ignored.)
+ * Does NOT call revalidatePath; realtime fans out the change to other
+ * clients. Migration 20260519230000_nations_icon.sql codifies the
+ * icon_type / icon_value columns on `nations` that the UI relies on.
  */
 export async function patchNation(
   id: string,
@@ -26,24 +24,33 @@ export async function patchNation(
   }>
 ) {
   const supabase = await createSupabaseServerClient();
-  // Strip legacy icon fields the table doesn't have.
-  const { icon_type: _it, icon_value: _iv, ...allowed } = patch;
-  void _it;
-  void _iv;
-  const { error } = await supabase
-    .from("nations")
-    .update(allowed)
-    .eq("id", id);
+  const { error } = await supabase.from("nations").update(patch).eq("id", id);
   if (error) throw new Error(error.message);
 }
 
-export async function createNation() {
+export async function createNation(): Promise<Nation> {
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase
+  // Place the new row at the end of the existing sort_order so it doesn't
+  // collide with an existing row that's currently selected/inspected.
+  const { data: maxRow } = await supabase
     .from("nations")
-    .insert({ name: "New nation", color_hex: "#888888" });
+    .select("sort_order")
+    .order("sort_order", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextSortOrder = ((maxRow?.sort_order ?? -1) as number) + 1;
+  const { data, error } = await supabase
+    .from("nations")
+    .insert({
+      name: "New nation",
+      color_hex: "#888888",
+      sort_order: nextSortOrder,
+    })
+    .select("*")
+    .single();
   if (error) throw new Error(error.message);
   revalidatePath("/nations");
+  return data as Nation;
 }
 
 export async function updateAllNations(formData: FormData) {
@@ -52,6 +59,8 @@ export async function updateAllNations(formData: FormData) {
   const names = formData.getAll("names").map(String);
   const abbreviations = formData.getAll("abbreviations").map(String);
   const colors = formData.getAll("colors").map(String);
+  const iconTypes = formData.getAll("icon_types").map(String);
+  const iconValues = formData.getAll("icon_values").map(String);
   const sortOrders = formData.getAll("sort_orders").map(String);
 
   for (let i = 0; i < ids.length; i++) {
@@ -63,6 +72,8 @@ export async function updateAllNations(formData: FormData) {
       name,
       abbreviation: (abbreviations[i] ?? "").trim() || null,
       color_hex: normalizeHex(colors[i] ?? "#888888"),
+      icon_type: (iconTypes[i] as IconType) || ("lucide" as IconType),
+      icon_value: (iconValues[i] ?? "").trim() || null,
       sort_order: Number(sortOrders[i] ?? i),
     };
     const { error } = await supabase
