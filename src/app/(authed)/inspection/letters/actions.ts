@@ -6,27 +6,64 @@ import type { CitizenType, IconType } from "@/lib/db/enums";
 import type { LetterGroup } from "@/lib/db/types";
 
 /**
- * Reassign variants for every letter in a group based on current sort_order.
- * Always 'a', 'b', 'c' ... — the view hides the "/a" suffix when the group
- * has only one letter, so the display stays clean while the underlying
- * variant is stable for action references.
+ * Numbering helpers.
+ *
+ * Display numbers (`letter_groups.sequence`, `inspection_letters.variant` /
+ * `piece`, `report_segments.variant`) are assigned ONCE at creation as the
+ * next value after the highest existing one, and thereafter changed only by
+ * explicit user action (the Edit-ID popup or a "Renumber sequentially"
+ * action). Reorder / move / delete never renumber — they touch `sort_order`
+ * only. These helpers support next-after-highest assignment.
  */
-async function reassignVariants(groupId: string) {
-  const supabase = await createSupabaseServerClient();
-  const { data: rows } = await supabase
-    .from("inspection_letters")
-    .select("id, sort_order")
-    .eq("letter_group_id", groupId)
-    .order("sort_order");
-  const list = rows ?? [];
-  if (list.length === 0) return;
-  for (let i = 0; i < list.length; i++) {
-    const variant = String.fromCharCode(97 + i);
-    await supabase
-      .from("inspection_letters")
-      .update({ variant })
-      .eq("id", list[i].id as string);
+
+/** Lowercase subtractive roman-numeral parser. Inverse of `toRoman`. */
+function fromRoman(s: string): number {
+  const map: Record<string, number> = {
+    i: 1,
+    v: 5,
+    x: 10,
+    l: 50,
+    c: 100,
+    d: 500,
+    m: 1000,
+  };
+  const str = (s ?? "").toLowerCase().trim();
+  let total = 0;
+  for (let i = 0; i < str.length; i++) {
+    const cur = map[str[i]];
+    if (cur == null) return 0;
+    const next = map[str[i + 1]];
+    if (next != null && cur < next) total -= cur;
+    else total += cur;
   }
+  return total;
+}
+
+/**
+ * Given the variants currently present in a group, return `count` consecutive
+ * lowercase letters after the highest one (or starting at 'a' when empty).
+ * Throws past 'z'.
+ */
+function nextVariantAfterHighest(
+  variants: Array<string | null | undefined>,
+  count = 1
+): string[] {
+  let maxCode = 96; // 'a' - 1
+  for (const v of variants) {
+    if (typeof v === "string" && v.length === 1) {
+      const c = v.toLowerCase().charCodeAt(0);
+      if (c >= 97 && c <= 122 && c > maxCode) maxCode = c;
+    }
+  }
+  const out: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const code = maxCode + 1 + i;
+    if (code > 122) {
+      throw new Error("letter group is full — 26 variant letters used");
+    }
+    out.push(String.fromCharCode(code));
+  }
+  return out;
 }
 
 type EndingAssignmentPatch = {
@@ -448,11 +485,13 @@ export async function pinReportSegmentToDay(
 }
 
 /**
- * Move an inspection letter to a different group within the same
- * storyline. Re-slots variants in both groups and renumbers pieces in the
- * old group. Inbound next-letter links are FK-based (`next_letter_id`), so
- * they follow the moved letter automatically. Rejects cross-storyline
- * moves.
+ * Move an inspection letter to a different group within the same storyline.
+ * The moved letter gets the next-after-highest variant in the target group
+ * and its `piece` is cleared (a piece number is meaningless without sibling
+ * pieces sharing a variant). The source group keeps a gap — numbering is
+ * never auto-compacted. Inbound next-letter links are FK-based
+ * (`next_letter_id`), so they follow the moved letter automatically. Rejects
+ * cross-storyline moves.
  */
 export async function moveLetterToGroup(
   letterId: string,
@@ -463,12 +502,11 @@ export async function moveLetterToGroup(
   // Resolve the source letter + groups.
   const { data: letterRow, error: lErr } = await supabase
     .from("inspection_letters")
-    .select("id, letter_group_id, variant")
+    .select("id, letter_group_id")
     .eq("id", letterId)
     .single();
   if (lErr || !letterRow) throw new Error(lErr?.message ?? "letter not found");
   const sourceGroupId = letterRow.letter_group_id as string;
-  const oldVariant = (letterRow.variant as string | null) ?? null;
   if (sourceGroupId === targetGroupId) return;
 
   const { data: groups, error: gErr } = await supabase
@@ -483,38 +521,29 @@ export async function moveLetterToGroup(
     throw new Error("cross-storyline letter move is not supported");
   }
 
-  // Append into target group with a fresh sort_order slot.
+  // Append into the target group with a fresh sort_order slot and the
+  // next-after-highest variant — guaranteed not to collide with the target
+  // group's existing (letter_group_id, variant, piece) rows.
   const { data: targetLetters } = await supabase
     .from("inspection_letters")
-    .select("sort_order")
+    .select("sort_order, variant")
     .eq("letter_group_id", targetGroupId);
   const nextSortOrder =
     Math.max(0, ...((targetLetters ?? []).map((l) => l.sort_order ?? 0))) + 1;
+  const [nextVariant] = nextVariantAfterHighest(
+    (targetLetters ?? []).map((l) => l.variant as string | null)
+  );
 
-  // Null the variant in the same UPDATE so the move never collides with
-  // the (letter_group_id, variant) unique constraint when the target group
-  // already has a letter at the moved letter's old variant. reassignVariants
-  // below repopulates a fresh slot from sort_order. Without this, dragging
-  // a letter back to a group it once lived in fails the constraint and the
-  // drop silently no-ops on revalidation.
   const { error: mErr } = await supabase
     .from("inspection_letters")
     .update({
       letter_group_id: targetGroupId,
       sort_order: nextSortOrder,
-      variant: null,
+      variant: nextVariant,
+      piece: null,
     })
     .eq("id", letterId);
   if (mErr) throw new Error(mErr.message);
-
-  // Re-slot variants in both groups (lowercase a, b, c, … by sort_order).
-  await reassignVariants(sourceGroupId);
-  await reassignVariants(targetGroupId);
-  // Renumber pieces for the old variant in the source group (in case
-  // multiple pieces shared that variant).
-  if (oldVariant) {
-    await reassignPiecesForVariant(sourceGroupId, oldVariant);
-  }
 
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
@@ -706,9 +735,9 @@ export async function createInspectionLetterInGroup(groupId: string) {
 }
 
 /**
- * Create 1..3 letters in a group. When count > 1, variants are assigned the
- * next available lowercase letters (a-z) that are not already used in the
- * group; the first created letter gets the first free letter, etc.
+ * Create 1..3 letters in a group. Each new letter gets the next-after-highest
+ * variant (a, b, c…) and a `sort_order` after the current max — gaps left by
+ * deletes are never reclaimed.
  */
 export async function createInspectionLettersInGroup(
   groupId: string,
@@ -718,30 +747,34 @@ export async function createInspectionLettersInGroup(
   const n = Math.max(1, Math.min(3, count));
   const { data: existing } = await supabase
     .from("inspection_letters")
-    .select("sort_order")
-    .eq("letter_group_id", groupId)
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  const nextStart = (existing?.[0]?.sort_order ?? 0) + 1;
+    .select("sort_order, variant")
+    .eq("letter_group_id", groupId);
+  const nextStart =
+    Math.max(0, ...((existing ?? []).map((l) => Number(l.sort_order ?? 0)))) + 1;
+  const variants = nextVariantAfterHighest(
+    (existing ?? []).map((l) => l.variant as string | null),
+    n
+  );
   const toInsert = Array.from({ length: n }, (_, i) => ({
     letter_group_id: groupId,
     sort_order: nextStart + i,
+    variant: variants[i],
   }));
   const { data, error } = await supabase
     .from("inspection_letters")
     .insert(toInsert)
     .select("id");
   if (error) throw new Error(error.message);
-  await reassignVariants(groupId);
   revalidatePath("/inspection/letters");
   return (data ?? []).map((r) => r.id as string);
 }
 
 /**
  * Create a sibling letter in the same group as `letterId` whose summary /
- * content / sender / receiver / notes / piece / delivery override copies
- * over. The new letter gets a fresh variant via reassignVariants. Returns
- * the new letter id so callers can navigate to it.
+ * content / sender / receiver / notes / delivery override copies over. The
+ * duplicate gets the next-after-highest variant and no `piece` (a fresh
+ * variant has no sibling pieces). Returns the new letter id so callers can
+ * navigate to it.
  */
 export async function duplicateInspectionLetter(
   letterId: string
@@ -750,7 +783,7 @@ export async function duplicateInspectionLetter(
   const { data: src, error: srcErr } = await supabase
     .from("inspection_letters")
     .select(
-      "letter_group_id, piece, delivery_day_override_id, delivery_day_offset, summary, content, sender_citizen_id, receiver_citizen_id, notes"
+      "letter_group_id, delivery_day_override_id, delivery_day_offset, summary, content, sender_citizen_id, receiver_citizen_id, notes"
     )
     .eq("id", letterId)
     .single();
@@ -758,17 +791,20 @@ export async function duplicateInspectionLetter(
   const groupId = src.letter_group_id as string;
   const { data: existing } = await supabase
     .from("inspection_letters")
-    .select("sort_order")
-    .eq("letter_group_id", groupId)
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  const nextSortOrder = (existing?.[0]?.sort_order ?? 0) + 1;
+    .select("sort_order, variant")
+    .eq("letter_group_id", groupId);
+  const nextSortOrder =
+    Math.max(0, ...((existing ?? []).map((l) => Number(l.sort_order ?? 0)))) + 1;
+  const [nextVariant] = nextVariantAfterHighest(
+    (existing ?? []).map((l) => l.variant as string | null)
+  );
   const { data: inserted, error: insErr } = await supabase
     .from("inspection_letters")
     .insert({
       letter_group_id: groupId,
       sort_order: nextSortOrder,
-      piece: src.piece,
+      variant: nextVariant,
+      piece: null,
       delivery_day_override_id: src.delivery_day_override_id,
       delivery_day_offset: src.delivery_day_offset,
       summary: src.summary,
@@ -781,7 +817,6 @@ export async function duplicateInspectionLetter(
     .single();
   if (insErr || !inserted)
     throw new Error(insErr?.message ?? "failed to duplicate letter");
-  await reassignVariants(groupId);
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
   return { newLetterId: inserted.id as string };
@@ -790,7 +825,7 @@ export async function duplicateInspectionLetter(
 /**
  * Create a sibling report segment in the same report_group as
  * `segmentId`, copying its summary / content / delivery override. The new
- * segment gets the next free roman-numeral variant.
+ * segment gets the next-after-highest roman-numeral variant.
  */
 export async function duplicateReportSegment(
   segmentId: string
@@ -809,13 +844,11 @@ export async function duplicateReportSegment(
     .from("report_segments")
     .select("variant, sort_order")
     .eq("report_group_id", reportGroupId);
-  const taken = new Set((existing ?? []).map((r) => r.variant as string));
-  let index = 1;
-  let variant = toRoman(index);
-  while (taken.has(variant)) {
-    index += 1;
-    variant = toRoman(index);
-  }
+  const maxRoman = Math.max(
+    0,
+    ...((existing ?? []).map((r) => fromRoman(r.variant as string)))
+  );
+  const variant = toRoman(maxRoman + 1);
   const nextSortOrder =
     Math.max(0, ...((existing ?? []).map((r) => r.sort_order as number))) + 1;
   const { data: userData } = await supabase.auth.getUser();
@@ -841,16 +874,17 @@ export async function duplicateReportSegment(
   return { newSegmentId: inserted.id as string };
 }
 
-export async function deleteInspectionLetter(groupId: string, letterId: string) {
+export async function deleteInspectionLetter(
+  _groupId: string,
+  letterId: string
+) {
   const supabase = await createSupabaseServerClient();
+  // Stamp updated_by before the delete so peers' deletion toasts can name
+  // the deleter (the row vanishes before realtime sees the new value
+  // otherwise). The variant / piece columns are intentionally left alone —
+  // surviving letters keep their numbers; gaps stay.
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
-  const { data: deleted } = await supabase
-    .from("inspection_letters")
-    .select("variant")
-    .eq("id", letterId)
-    .maybeSingle();
-  const deletedVariant = (deleted?.variant ?? null) as string | null;
   if (updatedBy) {
     await supabase
       .from("inspection_letters")
@@ -859,53 +893,25 @@ export async function deleteInspectionLetter(groupId: string, letterId: string) 
   }
   // FK cascade on actions.inspection_letter_id removes this letter's own
   // actions; the next_letter_id FK (ON DELETE SET NULL) clears any inbound
-  // next-letter links automatically.
+  // next-letter links automatically. The surviving letters keep their
+  // variant / piece numbers — gaps are intentional, never auto-compacted.
   const { error } = await supabase
     .from("inspection_letters")
     .delete()
     .eq("id", letterId);
   if (error) throw new Error(error.message);
-  await reassignVariants(groupId);
-  if (deletedVariant) await reassignPiecesForVariant(groupId, deletedVariant);
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }
 
 /**
- * Renumber pieces for all letters in (groupId, variant). If only one letter
- * remains in that variant cluster, clear its piece. Otherwise assign 1..N by
- * sort_order.
- */
-async function reassignPiecesForVariant(groupId: string, variant: string) {
-  const supabase = await createSupabaseServerClient();
-  const { data: rows } = await supabase
-    .from("inspection_letters")
-    .select("id, sort_order")
-    .eq("letter_group_id", groupId)
-    .eq("variant", variant)
-    .order("sort_order");
-  const list = rows ?? [];
-  if (list.length === 0) return;
-  if (list.length === 1) {
-    await supabase
-      .from("inspection_letters")
-      .update({ piece: null })
-      .eq("id", list[0].id as string);
-    return;
-  }
-  for (let i = 0; i < list.length; i++) {
-    await supabase
-      .from("inspection_letters")
-      .update({ piece: i + 1 })
-      .eq("id", list[i].id as string);
-  }
-}
-
-/**
  * Add a new "piece" to an existing letter: both the source letter and the
  * new letter share the same variant and are numbered consecutively. If the
- * source letter had no variant yet, a variant is assigned so pieces can be
- * referenced. Returns the new letter's id.
+ * source letter had no variant yet, the next-after-highest variant is
+ * assigned so pieces can be referenced. When the source was the only member
+ * of its variant cluster (piece null), it is promoted to piece 1 and the new
+ * letter becomes piece 2; otherwise the new letter gets max(piece) + 1.
+ * Returns the new letter's id.
  */
 export async function addPieceToLetter(
   groupId: string,
@@ -918,32 +924,40 @@ export async function addPieceToLetter(
     .eq("id", letterId)
     .maybeSingle();
   if (!current) throw new Error("Letter not found");
-  let variant = (current.variant ?? null) as string | null;
+
+  const { data: siblings } = await supabase
+    .from("inspection_letters")
+    .select("id, variant, piece")
+    .eq("letter_group_id", groupId);
+  const sibs = siblings ?? [];
 
   // Ensure the source letter has a variant — otherwise we can't group pieces.
+  let variant = (current.variant ?? null) as string | null;
   if (!variant) {
-    // Find an unused single-letter variant in this group.
-    const { data: siblings } = await supabase
-      .from("inspection_letters")
-      .select("variant")
-      .eq("letter_group_id", groupId);
-    const used = new Set(
-      (siblings ?? [])
-        .map((s) => (s.variant ?? null) as string | null)
-        .filter((v): v is string => typeof v === "string")
+    [variant] = nextVariantAfterHighest(
+      sibs.map((s) => s.variant as string | null)
     );
-    variant = "a";
-    for (let c = 97; c <= 122; c++) {
-      const v = String.fromCharCode(c);
-      if (!used.has(v)) {
-        variant = v;
-        break;
-      }
-    }
     await supabase
       .from("inspection_letters")
       .update({ variant })
       .eq("id", letterId);
+  }
+
+  // Determine the new piece number from the current variant cluster.
+  const cluster = sibs.filter(
+    (s) => s.id === letterId || s.variant === variant
+  );
+  let nextPiece: number;
+  if (cluster.length <= 1) {
+    // Source was the lone member — promote it to piece 1, new becomes 2.
+    await supabase
+      .from("inspection_letters")
+      .update({ piece: 1 })
+      .eq("id", letterId);
+    nextPiece = 2;
+  } else {
+    nextPiece =
+      Math.max(0, ...cluster.map((s) => Number(s.piece ?? 0))) + 1;
   }
 
   // Push any existing letter at higher sort_order down by 1 to make room.
@@ -966,6 +980,7 @@ export async function addPieceToLetter(
     .insert({
       letter_group_id: groupId,
       variant,
+      piece: nextPiece,
       sort_order: currentSort + 1,
     })
     .select("id")
@@ -973,14 +988,16 @@ export async function addPieceToLetter(
   if (error) throw new Error(error.message);
   const newLetterId = inserted!.id as string;
 
-  await reassignPiecesForVariant(groupId, variant);
   revalidatePath("/inspection/letters");
   return { newLetterId };
 }
 
-/** Reorder letters by passing the new order of letter ids. */
+/**
+ * Reorder letters within a group. Updates `sort_order` only — variant / piece
+ * numbers are deliberately left alone so display IDs stay stable.
+ */
 export async function reorderInspectionLetters(
-  groupId: string,
+  _groupId: string,
   orderedIds: string[]
 ) {
   const supabase = await createSupabaseServerClient();
@@ -991,24 +1008,22 @@ export async function reorderInspectionLetters(
       .eq("id", orderedIds[i]);
     if (error) throw new Error(error.message);
   }
-  await reassignVariants(groupId);
   revalidatePath("/inspection/letters");
-  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 /**
- * Reorder report segments within a report group, then reassign Roman-numeral
- * variants by new sort order so display IDs (R-W2/i, R-W2/ii…) line up with
- * the user-chosen sequence. Segment IDs are stable, so action references
- * (`report_segment_id`) are unaffected.
+ * Reorder report segments within a report group. Updates `sort_order` only —
+ * the Roman-numeral `variant` is left untouched so display IDs (R-W2/ii…)
+ * stay stable. Use the Edit-ID popup or "Renumber sequentially" to change
+ * variants explicitly.
  */
 export async function reorderReportSegments(orderedIds: string[]) {
   const supabase = await createSupabaseServerClient();
   for (let i = 0; i < orderedIds.length; i++) {
-    const variant = toRoman(i + 1);
     const { error } = await supabase
       .from("report_segments")
-      .update({ sort_order: i + 1, variant })
+      .update({ sort_order: i + 1 })
       .eq("id", orderedIds[i]);
     if (error) throw new Error(error.message);
   }
@@ -1016,7 +1031,10 @@ export async function reorderReportSegments(orderedIds: string[]) {
   revalidatePath("/graph");
 }
 
-/** Reorder letter groups within a storyline by passing the new order of group ids. */
+/**
+ * Reorder letter groups within a storyline. Updates `sort_order` only — the
+ * display-ID `sequence` is left untouched so letter / report IDs stay stable.
+ */
 export async function reorderLetterGroups(
   storylineId: string,
   orderedIds: string[]
@@ -1025,13 +1043,405 @@ export async function reorderLetterGroups(
   for (let i = 0; i < orderedIds.length; i++) {
     const { error } = await supabase
       .from("letter_groups")
-      .update({ sequence: i + 1 })
+      .update({ sort_order: i + 1 })
       .eq("id", orderedIds[i])
       .eq("storyline_id", storylineId);
     if (error) throw new Error(error.message);
   }
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
   revalidatePath(`/inspection/storylines/${storylineId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Explicit renumbering
+//
+// The only paths that change display numbers. Each does a two-pass temp-park
+// (mirroring renumberGenericReportBlocks) so a row-by-row UPDATE never trips a
+// unique constraint mid-flight: pass 1 parks every affected row on a
+// guaranteed-distinct value, pass 2 writes the finals. Non-transactional — a
+// crash between passes leaves rows parked and a re-run self-heals.
+// ---------------------------------------------------------------------------
+
+/**
+ * Renumber a storyline's letter groups so `sequence` = 1, 2, 3… in their
+ * current `sort_order`. Letter / report display IDs follow automatically
+ * (the views interpolate `lg.sequence`). Delegates to applyLetterGroupSequences
+ * — its RPC applies the change atomically.
+ */
+export async function renumberLetterGroupsSequentially(storylineId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: rows, error } = await supabase
+    .from("letter_groups")
+    .select("id")
+    .eq("storyline_id", storylineId)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) throw new Error(error.message);
+  const assignments = (rows ?? []).map((r, i) => ({
+    groupId: r.id as string,
+    newSequence: i + 1,
+  }));
+  await applyLetterGroupSequences(storylineId, assignments);
+}
+
+/**
+ * Renumber a group's letters so `variant` = a, b, c… in their current
+ * `sort_order`. Letters that shared a variant (piece clusters) keep sharing
+ * one new variant, and their `piece` values are preserved.
+ */
+export async function renumberInspectionLettersSequentially(groupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: rows, error } = await supabase
+    .from("inspection_letters")
+    .select("id, variant, piece")
+    .eq("letter_group_id", groupId)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) throw new Error(error.message);
+  // Assign a, b, c… by sort order, keeping piece-cluster grouping (letters
+  // that shared a variant keep sharing one new variant); pieces preserved.
+  const remap = new Map<string, string>();
+  let nextCode = 97;
+  const assignments = (rows ?? []).map((r) => {
+    const old = (r.variant ?? null) as string | null;
+    let nv: string;
+    if (old != null && remap.has(old)) {
+      nv = remap.get(old) as string;
+    } else {
+      if (nextCode > 122) {
+        throw new Error("group has more than 26 distinct variants");
+      }
+      nv = String.fromCharCode(nextCode);
+      nextCode += 1;
+      if (old != null) remap.set(old, nv);
+    }
+    return {
+      letterId: r.id as string,
+      newVariant: nv,
+      newPiece: (r.piece ?? null) as number | null,
+    };
+  });
+  await applyInspectionLetterVariants(groupId, assignments);
+}
+
+/**
+ * Renumber a report group's segments so `variant` = i, ii, iii… in their
+ * current `sort_order`.
+ */
+export async function renumberReportSegmentsSequentially(
+  reportGroupId: string
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: rows, error } = await supabase
+    .from("report_segments")
+    .select("id")
+    .eq("report_group_id", reportGroupId)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) throw new Error(error.message);
+  const assignments = (rows ?? []).map((r, i) => ({
+    segmentId: r.id as string,
+    newVariant: toRoman(i + 1),
+  }));
+  await applyReportSegmentVariants(reportGroupId, assignments);
+}
+
+/**
+ * Apply a conflict-free set of letter-group sequence edits (from the Edit-ID
+ * popup or a renumber). The park → final two-pass that dodges
+ * UNIQUE(storyline_id, sequence) runs inside one transaction in the
+ * `apply_letter_group_sequences` RPC, so it applies all-or-nothing.
+ */
+export async function applyLetterGroupSequences(
+  storylineId: string,
+  assignments: Array<{ groupId: string; newSequence: number }>
+) {
+  if (assignments.length === 0) return;
+  const seqs = assignments.map((a) => a.newSequence);
+  if (seqs.some((s) => !Number.isInteger(s) || s < 1)) {
+    throw new Error("sequence numbers must be positive integers");
+  }
+  if (new Set(seqs).size !== seqs.length) {
+    throw new Error("duplicate target sequence numbers");
+  }
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.rpc("apply_letter_group_sequences", {
+    p_storyline_id: storylineId,
+    p_assignments: assignments,
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  revalidatePath(`/inspection/storylines/${storylineId}`);
+}
+
+/**
+ * Apply a conflict-free set of inspection-letter variant/piece edits. The
+ * park → final two-pass runs atomically inside the
+ * `apply_inspection_letter_variants` RPC.
+ */
+export async function applyInspectionLetterVariants(
+  groupId: string,
+  assignments: Array<{
+    letterId: string;
+    newVariant: string;
+    newPiece: number | null;
+  }>
+) {
+  if (assignments.length === 0) return;
+  const keys = assignments.map((a) => `${a.newVariant}/${a.newPiece ?? ""}`);
+  if (new Set(keys).size !== keys.length) {
+    throw new Error("duplicate target variant/piece");
+  }
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase.rpc("apply_inspection_letter_variants", {
+    p_group_id: groupId,
+    p_assignments: assignments,
+    p_updated_by: userData.user?.email ?? null,
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Apply a conflict-free set of report-segment variant edits. The park →
+ * final two-pass runs atomically inside the `apply_report_segment_variants`
+ * RPC (`report_segments.variant` is text NOT NULL, so it parks on `tmp-<id>`
+ * tokens rather than NULL).
+ */
+export async function applyReportSegmentVariants(
+  reportGroupId: string,
+  assignments: Array<{ segmentId: string; newVariant: string }>
+) {
+  if (assignments.length === 0) return;
+  const vs = assignments.map((a) => a.newVariant);
+  if (vs.some((v) => !v)) throw new Error("variant must not be empty");
+  if (new Set(vs).size !== vs.length) {
+    throw new Error("duplicate target variants");
+  }
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const { error } = await supabase.rpc("apply_report_segment_variants", {
+    p_report_group_id: reportGroupId,
+    p_assignments: assignments,
+    p_updated_by: userData.user?.email ?? null,
+  });
+  if (error) throw new Error(error.message);
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/** Shared chronological comparator builder for the sort-by-day actions. */
+function byDayThenSort(
+  dayNum: Map<string, number>
+): (
+  a: { id: string; sort_order: number | null; dayId: string | null },
+  b: { id: string; sort_order: number | null; dayId: string | null }
+) => number {
+  return (a, b) => {
+    const da = a.dayId ? dayNum.get(a.dayId) ?? Infinity : Infinity;
+    const db = b.dayId ? dayNum.get(b.dayId) ?? Infinity : Infinity;
+    if (da !== db) return da - db;
+    const sa = Number(a.sort_order ?? 0);
+    const sb = Number(b.sort_order ?? 0);
+    if (sa !== sb) return sa - sb;
+    return a.id.localeCompare(b.id);
+  };
+}
+
+async function loadDayNumbers(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>
+): Promise<Map<string, number>> {
+  const { data: days } = await supabase.from("days").select("id, number");
+  return new Map<string, number>(
+    (days ?? []).map((d) => [d.id as string, Number(d.number)])
+  );
+}
+
+/**
+ * Rewrite a storyline's letter-group `sort_order` so the list is ordered by
+ * delivery day. Dateless groups sink to the end keeping their relative order.
+ * Display IDs (`sequence`) are untouched.
+ */
+export async function sortLetterGroupsChronologically(storylineId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: groups, error } = await supabase
+    .from("letter_groups")
+    .select("id, sort_order, delivery_day_id")
+    .eq("storyline_id", storylineId);
+  if (error) throw new Error(error.message);
+  const dayNum = await loadDayNumbers(supabase);
+  const ordered = (groups ?? [])
+    .map((g) => ({
+      id: g.id as string,
+      sort_order: g.sort_order as number | null,
+      dayId: (g.delivery_day_id as string | null) ?? null,
+    }))
+    .sort(byDayThenSort(dayNum));
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("letter_groups")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  revalidatePath(`/inspection/storylines/${storylineId}`);
+}
+
+/**
+ * Rewrite a group's inspection-letter `sort_order` so the list is ordered by
+ * effective delivery day. Variant / piece numbers are untouched.
+ */
+export async function sortInspectionLettersChronologically(groupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: letters, error } = await supabase
+    .from("inspection_letters_view")
+    .select("id, sort_order, effective_day_id")
+    .eq("letter_group_id", groupId);
+  if (error) throw new Error(error.message);
+  const dayNum = await loadDayNumbers(supabase);
+  const ordered = (letters ?? [])
+    .map((l) => ({
+      id: l.id as string,
+      sort_order: l.sort_order as number | null,
+      dayId: (l.effective_day_id as string | null) ?? null,
+    }))
+    .sort(byDayThenSort(dayNum));
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("inspection_letters")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Rewrite a report group's segment `sort_order` so the list is ordered by
+ * effective delivery day. Roman-numeral variants are untouched.
+ */
+export async function sortReportSegmentsChronologically(reportGroupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: segments, error } = await supabase
+    .from("report_segments_view")
+    .select("id, sort_order, effective_day_id")
+    .eq("report_group_id", reportGroupId);
+  if (error) throw new Error(error.message);
+  const dayNum = await loadDayNumbers(supabase);
+  const ordered = (segments ?? [])
+    .map((s) => ({
+      id: s.id as string,
+      sort_order: s.sort_order as number | null,
+      dayId: (s.effective_day_id as string | null) ?? null,
+    }))
+    .sort(byDayThenSort(dayNum));
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("report_segments")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Rewrite a storyline's letter-group `sort_order` so the list is ordered by
+ * display ID (`sequence`). Sequence itself is untouched.
+ */
+export async function sortLetterGroupsById(storylineId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: groups, error } = await supabase
+    .from("letter_groups")
+    .select("id, sequence")
+    .eq("storyline_id", storylineId);
+  if (error) throw new Error(error.message);
+  const ordered = (groups ?? [])
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.sequence ?? 0) - Number(b.sequence ?? 0) ||
+        (a.id as string).localeCompare(b.id as string)
+    );
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("letter_groups")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  revalidatePath(`/inspection/storylines/${storylineId}`);
+}
+
+/**
+ * Rewrite a group's inspection-letter `sort_order` so the list is ordered by
+ * display ID (`variant`, then `piece`). Null variants sink to the end.
+ */
+export async function sortInspectionLettersById(groupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: letters, error } = await supabase
+    .from("inspection_letters")
+    .select("id, variant, piece")
+    .eq("letter_group_id", groupId);
+  if (error) throw new Error(error.message);
+  const ordered = (letters ?? []).slice().sort((a, b) => {
+    const va = (a.variant as string | null) ?? "";
+    const vb = (b.variant as string | null) ?? "";
+    if (va !== vb) {
+      if (va === "") return 1;
+      if (vb === "") return -1;
+      return va.localeCompare(vb);
+    }
+    return Number(a.piece ?? 0) - Number(b.piece ?? 0);
+  });
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("inspection_letters")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Rewrite a report group's segment `sort_order` so the list is ordered by
+ * display ID (the roman-numeral `variant`).
+ */
+export async function sortReportSegmentsById(reportGroupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: segments, error } = await supabase
+    .from("report_segments")
+    .select("id, variant")
+    .eq("report_group_id", reportGroupId);
+  if (error) throw new Error(error.message);
+  const ordered = (segments ?? [])
+    .slice()
+    .sort(
+      (a, b) =>
+        fromRoman(a.variant as string) - fromRoman(b.variant as string) ||
+        (a.id as string).localeCompare(b.id as string)
+    );
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("report_segments")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
 }
 
 // ---------------------------------------------------------------------------
@@ -1303,17 +1713,20 @@ export async function createNextLetterGroupAndLetter(
   if (!cur) throw new Error("Current letter group not found");
   const { data: existing } = await supabase
     .from("letter_groups")
-    .select("sequence")
-    .eq("storyline_id", cur.storyline_id)
-    .order("sequence", { ascending: false })
-    .limit(1);
-  const nextSeq = (existing?.[0]?.sequence ?? 0) + 1;
+    .select("sequence, sort_order")
+    .eq("storyline_id", cur.storyline_id);
+  const nextSeq =
+    Math.max(0, ...((existing ?? []).map((g) => Number(g.sequence ?? 0)))) + 1;
+  const nextSort =
+    Math.max(0, ...((existing ?? []).map((g) => Number(g.sort_order ?? 0)))) +
+    1;
   const { data: newGroup, error } = await supabase
     .from("letter_groups")
     .insert({
       storyline_id: cur.storyline_id,
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
+      sort_order: nextSort,
     })
     .select("id")
     .single();
@@ -1339,17 +1752,20 @@ export async function createLetterGroupInStoryline(
   const supabase = await createSupabaseServerClient();
   const { data: existing } = await supabase
     .from("letter_groups")
-    .select("sequence")
-    .eq("storyline_id", storylineId)
-    .order("sequence", { ascending: false })
-    .limit(1);
-  const nextSeq = (existing?.[0]?.sequence ?? 0) + 1;
+    .select("sequence, sort_order")
+    .eq("storyline_id", storylineId);
+  const nextSeq =
+    Math.max(0, ...((existing ?? []).map((g) => Number(g.sequence ?? 0)))) + 1;
+  const nextSort =
+    Math.max(0, ...((existing ?? []).map((g) => Number(g.sort_order ?? 0)))) +
+    1;
   const { data, error } = await supabase
     .from("letter_groups")
     .insert({
       storyline_id: storylineId,
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
+      sort_order: nextSort,
       delivery_day_id: deliveryDayId,
     })
     .select("*")
@@ -1413,9 +1829,9 @@ function toRoman(n: number): string {
  * `delivery_day_override_id` (typically the day after the inspection letter
  * delivers). Returns the new segment's id for the action linkage.
  *
- * Variant selection: scans existing variants in the report group and picks
- * the first unused lowercase roman numeral (i, ii, iii, …). This fills
- * gaps left by deletes instead of colliding on (report_group_id, variant).
+ * Variant selection: the next lowercase roman numeral after the highest one
+ * already used in the report group (i, ii, iii, …). Gaps left by deletes are
+ * never reclaimed — numbering only grows.
  */
 export async function createReportSegmentForGroup(
   groupId: string,
@@ -1431,23 +1847,23 @@ export async function createReportSegmentForGroup(
 
   const { data: existing } = await supabase
     .from("report_segments")
-    .select("variant")
+    .select("variant, sort_order")
     .eq("report_group_id", rg.id);
-  const taken = new Set((existing ?? []).map((r) => r.variant as string));
-
-  let index = 1;
-  let variant = toRoman(index);
-  while (taken.has(variant)) {
-    index += 1;
-    variant = toRoman(index);
-  }
+  const maxRoman = Math.max(
+    0,
+    ...((existing ?? []).map((r) => fromRoman(r.variant as string)))
+  );
+  const variant = toRoman(maxRoman + 1);
+  const nextSortOrder =
+    Math.max(0, ...((existing ?? []).map((r) => Number(r.sort_order ?? 0)))) +
+    1;
 
   const { data: inserted, error } = await supabase
     .from("report_segments")
     .insert({
       report_group_id: rg.id,
       variant,
-      sort_order: index,
+      sort_order: nextSortOrder,
       delivery_day_override_id: deliveryDayId,
     })
     .select("id")
