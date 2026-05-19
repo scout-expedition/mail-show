@@ -399,3 +399,213 @@ export async function addRuleCondition(
   if (error || !data) throw new Error(`addRuleCondition: ${error?.message}`);
   return data.id as string;
 }
+
+// ---------------------------------------------------------------------------
+// Reference data — nations, cities, citizens. These tables aren't reachable
+// from the storyline cascade, so `cleanupTestData()` doesn't touch them.
+// Tests that seed reference data should call `cleanupReferenceData()` in
+// `beforeAll` and `afterEach`. `supabase/seed.sql` seeds 5 production nations
+// — the `__INT_TEST__` marker keeps test rows clearly distinct from those.
+// ---------------------------------------------------------------------------
+
+/** Insert a test-marked nation. */
+export async function addNation(
+  sb: SupabaseClient,
+  opts: {
+    suffix: string;
+    abbreviation?: string | null;
+    colorHex?: string;
+    sortOrder?: number;
+  }
+): Promise<string> {
+  const { data, error } = await sb
+    .from("nations")
+    .insert({
+      name: testName(opts.suffix),
+      abbreviation: opts.abbreviation ?? null,
+      color_hex: opts.colorHex ?? "#888888",
+      sort_order: opts.sortOrder ?? 9999,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addNation: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Insert a test-marked city. `code` must match /^[A-Z0-9]{3} [A-Z0-9]{3}$/
+ *  — a per-call random token is generated when omitted. */
+export async function addCity(
+  sb: SupabaseClient,
+  opts: { suffix: string; nationId: string; code?: string }
+): Promise<string> {
+  const code =
+    opts.code ??
+    `T${Math.floor(100 + Math.random() * 900)} T${Math.floor(
+      100 + Math.random() * 900
+    )}`;
+  const { data, error } = await sb
+    .from("cities")
+    .insert({
+      name: testName(opts.suffix),
+      code,
+      nation_id: opts.nationId,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addCity: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Insert a test-marked citizen. The test marker rides on `last_name` so
+ *  `cleanupReferenceData()` can find it. */
+export async function addCitizen(
+  sb: SupabaseClient,
+  opts: {
+    suffix: string;
+    type?: "hero" | "npc";
+    firstName?: string;
+    cityId?: string | null;
+    nationId?: string | null;
+    citizenId?: string | null;
+  }
+): Promise<string> {
+  const { data, error } = await sb
+    .from("citizens")
+    .insert({
+      type: opts.type ?? "npc",
+      first_name: opts.firstName ?? "First",
+      last_name: testName(opts.suffix),
+      city_id: opts.cityId ?? null,
+      nation_id: opts.nationId ?? null,
+      citizen_id: opts.citizenId ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addCitizen: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Delete reference-data rows in FK order (citizens → cities → nations).
+ *  Tests own every citizens / cities row (none are seeded), so they're
+ *  wiped wholesale — action-created rows like `"New city"` carry no
+ *  `__INT_TEST__` marker, and leaving them behind FK-pins their test
+ *  nation and breaks the next test's unique-name insert. For nations,
+ *  the 5 seeded production rows from `supabase/seed.sql` are preserved. */
+export async function cleanupReferenceData(sb: SupabaseClient): Promise<void> {
+  await sb
+    .from("citizens")
+    .delete()
+    .neq("id", "00000000-0000-0000-0000-000000000000");
+  await sb
+    .from("cities")
+    .delete()
+    .neq("id", "00000000-0000-0000-0000-000000000000");
+  await sb
+    .from("nations")
+    .delete()
+    .not("name", "in", "(Folos,Emberlyn,Spokgrad,Pelico,Epicenter)");
+}
+
+// ---------------------------------------------------------------------------
+// Action templates, day-report blocks, physical letters — tables not on a
+// storyline cascade either.
+// ---------------------------------------------------------------------------
+
+/** Insert an action template. The `name` carries the `__INT_TEST__` marker. */
+export async function addActionTemplate(
+  sb: SupabaseClient,
+  opts: {
+    suffix?: string;
+    iconType?: string;
+    colorHex?: string;
+    sortOrder?: number;
+    pairedTemplateId?: string | null;
+  } = {}
+): Promise<string> {
+  const { data, error } = await sb
+    .from("action_templates")
+    .insert({
+      name: testName(opts.suffix ?? "tpl"),
+      icon_type: opts.iconType ?? "lucide",
+      color_hex: opts.colorHex ?? "#888888",
+      sort_order: opts.sortOrder ?? 9999,
+      paired_template_id: opts.pairedTemplateId ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addActionTemplate: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Delete every test-marked action_templates row. */
+export async function cleanupActionTemplates(sb: SupabaseClient): Promise<void> {
+  await sb.from("action_templates").delete().like("name", `${TEST_PREFIX}%`);
+}
+
+/** Insert a `kind='generic'` day_report_blocks row. */
+export async function addGenericReportBlock(
+  sb: SupabaseClient,
+  opts: {
+    dayId: string;
+    variant: string;
+    content?: string | null;
+    summary?: string | null;
+    sortOrder?: number;
+  }
+): Promise<string> {
+  const { data, error } = await sb
+    .from("day_report_blocks")
+    .insert({
+      day_id: opts.dayId,
+      kind: "generic",
+      variant: opts.variant,
+      content: opts.content ?? null,
+      summary: opts.summary ?? null,
+      sort_order: opts.sortOrder ?? 0,
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    throw new Error(`addGenericReportBlock: ${error?.message}`);
+  }
+  return data.id as string;
+}
+
+/** Insert a physical_letters row. `letter_id` is auto-generated when
+ *  omitted; matches the action's `randomLetterId()` shape (random 6-digit
+ *  integer). The column is `int`, so a numeric string is also accepted by
+ *  Postgres' implicit cast. */
+export async function addPhysicalLetter(
+  sb: SupabaseClient,
+  opts: {
+    contentRefType: "sorting" | "inspection";
+    contentRefId: string;
+    letterId?: number | string;
+    storageLocation?: string | null;
+    notes?: string | null;
+  }
+): Promise<string> {
+  const letterId = opts.letterId ?? Math.floor(Math.random() * 1_000_000);
+  const { data, error } = await sb
+    .from("physical_letters")
+    .insert({
+      content_ref_type: opts.contentRefType,
+      content_ref_id: opts.contentRefId,
+      letter_id: letterId,
+      storage_location: opts.storageLocation ?? null,
+      notes: opts.notes ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addPhysicalLetter: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Delete every physical_letters row (the table has no test marker;
+ *  tests own all rows on a fresh DB). */
+export async function cleanupPhysicalLetters(sb: SupabaseClient): Promise<void> {
+  await sb
+    .from("physical_letters")
+    .delete()
+    .neq("id", "00000000-0000-0000-0000-000000000000");
+}

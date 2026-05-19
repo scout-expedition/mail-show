@@ -109,7 +109,7 @@ describe("moveLetterToGroup", () => {
     await cleanupTestData(sb);
   });
 
-  it("should move a letter into a sibling group and re-slot variants in both groups", async () => {
+  it("moves a letter to a sibling group: the moved letter gets the next variant in the target, the source keeps its gap", async () => {
     const seed = await seedStoryline(sb, { suffix: "move-sibling", days: 1 });
     const sourceGroup = seed.groupId;
     const { groupId: targetGroup } = await addGroup(sb, {
@@ -138,8 +138,11 @@ describe("moveLetterToGroup", () => {
       .eq("id", letterB)
       .single();
 
+    // Moved letter: next-after-highest variant in the (empty) target → "a".
     expect(movedA).toEqual({ letter_group_id: targetGroup, variant: "a" });
-    expect(remainingB).toEqual({ letter_group_id: sourceGroup, variant: "a" });
+    // Source group is NOT renumbered — letter b keeps its variant (a gap is
+    // left where a used to be). Numbering changes only via explicit actions.
+    expect(remainingB).toEqual({ letter_group_id: sourceGroup, variant: "b" });
 
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
     expect(revalidatePath).toHaveBeenCalledWith("/graph");

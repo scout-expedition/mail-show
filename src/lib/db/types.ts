@@ -90,6 +90,7 @@ export interface LetterGroup {
   name: string;
   notes: string | null;
   sequence: number;
+  sort_order: number;
   delivery_day_id: string | null;
 }
 
