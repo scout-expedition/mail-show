@@ -292,11 +292,14 @@ export function computeFrameworkOptions(
   }
 
   // Walk up the parent-block chain from `result`, collecting variables from
-  // every enclosing condition block (handles nested conditions).
+  // every enclosing condition block (handles nested conditions). The `seen`
+  // set guards against a malformed parent_block_id cycle looping forever.
   function variablesOnPathToResult(resultBlock: EndingBlock): string[] {
     const out: string[] = [];
+    const seen = new Set<string>();
     let cursor = resultBlock.parent_block_id;
-    while (cursor) {
+    while (cursor && !seen.has(cursor)) {
+      seen.add(cursor);
       const ancestor = blockById.get(cursor);
       if (!ancestor) break;
       if (ancestor.block_type === "condition") {

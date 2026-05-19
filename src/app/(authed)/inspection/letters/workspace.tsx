@@ -1664,6 +1664,10 @@ function LettersWorkspaceInner({
     });
   }
 
+  // Post-confirm delete handler — callers MUST gate this behind a confirm
+  // dialog (LetterSegmentCard does). The row-deleting broadcast is fired
+  // unconditionally here, so calling it without a prior confirm would
+  // poison pendingDeletersRef with an entry for a delete that never lands.
   function handleDeleteSegment(segmentId: string) {
     sendBroadcast("row-deleting", { id: segmentId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
