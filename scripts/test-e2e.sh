@@ -13,14 +13,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [ ! -f .env.test.local ]; then
-  echo ".env.test.local missing — see tests/integration/README.md" >&2
-  exit 1
+# Source .env.test.local when present (local dev). CI exports the vars
+# directly from `supabase status`, so the file is optional there.
+if [ -f .env.test.local ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env.test.local
+  set +a
 fi
 
-set -a
-# shellcheck disable=SC1091
-source .env.test.local
-set +a
+if [ -z "${SUPABASE_TEST_URL:-}" ] || [ -z "${SUPABASE_TEST_SERVICE_KEY:-}" ] || [ -z "${SUPABASE_TEST_ANON_KEY:-}" ]; then
+  echo "E2E tests need SUPABASE_TEST_URL + SUPABASE_TEST_SERVICE_KEY + SUPABASE_TEST_ANON_KEY" >&2
+  echo "(in .env.test.local for local dev, or exported in the environment for CI)." >&2
+  echo "See tests/integration/README.md." >&2
+  exit 1
+fi
 
 exec pnpm exec playwright test "$@"

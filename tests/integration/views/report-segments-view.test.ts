@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  addAction,
   addLetters,
   addReportSegment,
   cleanupTestData,
@@ -7,8 +8,10 @@ import {
   seedStoryline,
 } from "../_helpers";
 
-// Pins report_segments_view.report_id and effective_day_id. View definition
-// lives in supabase/migrations/0012_report_segment_summary.sql.
+// Pins report_segments_view.report_id and effective_day_id. The view is
+// recreated across migrations 0012 → 0035 → 0042 (latest): effective_day_id
+// derives from the report's *triggering* letters, falling back to the letter
+// group's delivery day, and is overridden by a segment's own pin.
 
 describe("report_segments_view", () => {
   const sb = makeTestClient();
@@ -81,16 +84,19 @@ describe("report_segments_view", () => {
       expect(data?.effective_day_id).toBe(day9002);
     });
 
-    it("should use min(letter delivery_day_override)+1 when any letter in the group has an override", async () => {
+    it("should use min(triggering letter effective day)+1 when letters trigger the report", async () => {
       // seed: group on day 9000, with extra days 9001, 9002, 9003.
       const seed = await seedStoryline(sb, {
-        suffix: "eff-letter-override",
+        suffix: "eff-letter-trigger",
         days: 4,
       });
       const [, day9001, day9002] = seed.dayIds;
 
-      // Two letters: one on 9002, one on 9001. Min override = 9001 → effective = 9002.
-      await addLetters(sb, {
+      // Two letters pinned to 9002 / 9001, each triggering the report via an
+      // action. effective_day_id derives from the triggering letters only —
+      // migration 0042 dropped the old "every letter in the group" branch.
+      // Min trigger day = 9001 → effective = 9001 + 1 = 9002.
+      const [letterA, letterB] = await addLetters(sb, {
         groupId: seed.groupId,
         count: 2,
         deliveryOverrides: [day9002, day9001],
@@ -100,6 +106,8 @@ describe("report_segments_view", () => {
         reportGroupId: seed.reportGroupId,
         variant: "i",
       });
+      await addAction(sb, { letterId: letterA, reportSegmentId: segId });
+      await addAction(sb, { letterId: letterB, reportSegmentId: segId });
 
       const { data } = await sb
         .from("report_segments_view")

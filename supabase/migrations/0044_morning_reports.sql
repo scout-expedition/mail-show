@@ -1,4 +1,4 @@
--- 0038_morning_reports.sql
+-- 0044_morning_reports.sql
 --
 -- Introduces `day_report_blocks`, the backing table for the Morning Reports
 -- feature. Each row represents one block in a day's morning-report view:
@@ -19,7 +19,7 @@
 -- generic-variant slugs within the same day.
 --
 -- Realtime publication + replica identity are added at the end following
--- the pattern established in 0031, 0034, 0035, 0037.
+-- the pattern established in 0031, 0040, 0041, 0043.
 --
 -- Idempotent: uses CREATE … IF NOT EXISTS, CREATE OR REPLACE, and
 -- DROP … IF EXISTS guards throughout. Policies follow the repo convention:

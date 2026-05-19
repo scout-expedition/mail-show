@@ -48,14 +48,21 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Map our SUPABASE_TEST_* vars into the names the app reads. Next bakes
-    // NEXT_PUBLIC_* at process start, so this must be set before `next dev`
-    // launches.
-    command: `next dev --turbopack -p ${E2E_PORT}`,
+    // Local dev: an on-demand Turbopack server. CI: a prebuilt production
+    // server — the CI workflow runs `next build` first, then `next start`
+    // here. On-demand `next dev` compilation is flake-prone under E2E load.
+    command: process.env.CI
+      ? `next start -p ${E2E_PORT}`
+      : `next dev --turbopack -p ${E2E_PORT}`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
+      // Map our SUPABASE_TEST_* vars into the names the app reads. `next dev`
+      // reads NEXT_PUBLIC_* at process start; for `next start` they were
+      // already baked by `next build` (the CI build step passes them) and
+      // only SUPABASE_SERVICE_ROLE_KEY is needed at runtime — passing all
+      // three is harmless in both modes.
       NEXT_PUBLIC_SUPABASE_URL: supabaseUrl,
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: supabaseAnonKey,
       SUPABASE_SERVICE_ROLE_KEY: supabaseServiceKey,

@@ -59,8 +59,8 @@ To stop the stack: `supabase stop`. Data is preserved across stops; use
 
 Provision via the dashboard (Branches → Create) or the Supabase MCP. Copy the
 branch's API URL + service-role key into `.env.test.local`. Branches require
-a paid plan and ~30-60s to provision, so they're better for CI than for the
-inner dev loop.
+a paid plan and ~30-60s to provision. CI uses Option A (a throwaway local
+stack); a branch is only worth the trouble if you can't run Docker locally.
 
 ## How tests stay isolated
 
@@ -80,8 +80,9 @@ false` (set in `vitest.integration.config.ts`).
 ## Loading env
 
 `pnpm test:int` runs `scripts/test-int.sh`, which sources `.env.test.local`
-before invoking Vitest. No need to export vars manually. Vitest args forward,
-so:
+before invoking Vitest. No need to export vars manually. (CI skips the file
+and exports the `SUPABASE_TEST_*` vars from `supabase status` instead — the
+script accepts either source.) Vitest args forward, so:
 
 ```sh
 pnpm test:int                       # run everything
@@ -89,8 +90,8 @@ pnpm test:int -t "should clear"     # single test
 pnpm test:int --watch               # watch mode
 ```
 
-If `.env.test.local` is missing, the script prints setup instructions and
-exits non-zero.
+If neither `.env.test.local` nor the `SUPABASE_TEST_*` environment vars are
+set, the script prints setup instructions and exits non-zero.
 
 ## What goes here vs. in unit tests
 

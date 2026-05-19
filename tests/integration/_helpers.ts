@@ -264,16 +264,25 @@ export interface ImpactPatch {
   impact_pelico?: number;
 }
 
-/** Insert an action attached to an inspection letter, with impact overrides. */
+/** Insert an action attached to an inspection letter, with impact overrides
+ *  and an optional triggering link to a report segment (sets
+ *  actions.report_segment_id — what report_segments_view reads to find a
+ *  report's triggering letters). */
 export async function addAction(
   sb: SupabaseClient,
-  opts: { letterId: string; name?: string; impacts?: ImpactPatch }
+  opts: {
+    letterId: string;
+    name?: string;
+    impacts?: ImpactPatch;
+    reportSegmentId?: string | null;
+  }
 ): Promise<string> {
   const { data, error } = await sb
     .from("actions")
     .insert({
       inspection_letter_id: opts.letterId,
       name: opts.name ?? "test-action",
+      report_segment_id: opts.reportSegmentId ?? null,
       ...(opts.impacts ?? {}),
     })
     .select("id")
