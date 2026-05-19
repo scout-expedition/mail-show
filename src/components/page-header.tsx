@@ -27,7 +27,8 @@ export function PageHeader({
   presenceOthersOnly?: boolean;
 }) {
   const presenceUser = usePresenceUser();
-  const workInProgress = isWipPath(usePathname());
+  const pathname = usePathname();
+  const workInProgress = isWipPath(pathname);
 
   return (
     <div
