@@ -212,7 +212,7 @@ describe("updateInspectionLetter", () => {
       .single();
     const { data: citizen } = await sb
       .from("citizens")
-      .insert({ name: "__INT_TEST__uil-citizen", nation_id: nation!.id })
+      .insert({ first_name: "__INT_TEST__uil-citizen", nation_id: nation!.id })
       .select("id")
       .single();
     const { data: inserted } = await sb
