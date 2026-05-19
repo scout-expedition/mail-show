@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { evaluateCondition, evaluateRule } from "./evaluate";
 import {
+  VALID_OPERATOR_REFERENCES,
+  type RuleOperator,
+  type RuleReferenceType,
+} from "../db/enums";
+import {
   makeRuleCondition,
   makeRuleContext,
 } from "../../../tests/fixtures/builders";
@@ -214,4 +219,43 @@ describe("evaluateRule", () => {
     ];
     expect(evaluateRule(conditions, "any", ctx)).toBe(false);
   });
+});
+
+describe("VALID_OPERATOR_REFERENCES matrix", () => {
+  // The rule-builder UI only offers the (operator, reference_type) pairs in
+  // VALID_OPERATOR_REFERENCES, and the evaluator must agree with that matrix.
+  // Walk it exhaustively so a pair added to the UI matrix can't ship without
+  // the evaluator handling it — the protocol pins this explicitly.
+  const VALUE_FOR: Record<RuleReferenceType, string | null> = {
+    string: "Alice",
+    number: "42",
+    any_number: null,
+    even: null,
+    odd: null,
+    letter: null,
+    true: null,
+    false: null,
+  };
+
+  for (const [op, referenceTypes] of Object.entries(VALID_OPERATOR_REFERENCES)) {
+    const operator = op as RuleOperator;
+    for (const reference_type of referenceTypes) {
+      it(`should evaluate operator '${operator}' with reference_type '${reference_type}' to a boolean`, () => {
+        // true/false reference types pair with the boolean is_counterfeit
+        // target; the rest compare the string sender_name target.
+        const isBoolean = reference_type === "true" || reference_type === "false";
+        const cond = makeRuleCondition({
+          target: isBoolean ? "is_counterfeit" : "sender_name",
+          operator,
+          reference_type,
+          reference_value: VALUE_FOR[reference_type],
+        });
+        const ctx = makeRuleContext({
+          sender_name: "42",
+          is_counterfeit: true,
+        });
+        expect(typeof evaluateCondition(cond, ctx)).toBe("boolean");
+      });
+    }
+  }
 });
