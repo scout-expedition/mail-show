@@ -555,11 +555,7 @@ function CitizenRow({
           title={row.type === "hero" ? "Hero" : undefined}
         >
           {row.type === "hero" ? (
-            <Star
-              size={14}
-              aria-label="Hero"
-              className="fill-current text-warning"
-            />
+            <Star size={14} aria-label="Hero" className="text-foreground" />
           ) : null}
         </span>
       ) : null}

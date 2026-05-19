@@ -1512,6 +1512,12 @@ export async function updateCitizen(data: {
   citizen_id: string | null;
   city_id: string | null;
   nation_id: string | null;
+  middle_name?: string | null;
+  honorific?: string | null;
+  title?: string | null;
+  suffix?: string | null;
+  name_display_format?: string | null;
+  address_line?: string | null;
 }) {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase
@@ -1522,6 +1528,12 @@ export async function updateCitizen(data: {
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
+      middle_name: data.middle_name?.trim() || null,
+      honorific: data.honorific?.trim() || null,
+      title: data.title?.trim() || null,
+      suffix: data.suffix?.trim() || null,
+      name_display_format: data.name_display_format?.trim() || null,
+      address_line: data.address_line?.trim() || null,
     })
     .eq("id", data.id);
   if (error) throw new Error(error.message);
@@ -1536,6 +1548,12 @@ export async function quickCreateCitizen(data: {
   citizen_id?: string | null;
   city_id?: string | null;
   nation_id?: string | null;
+  middle_name?: string | null;
+  honorific?: string | null;
+  title?: string | null;
+  suffix?: string | null;
+  name_display_format?: string | null;
+  address_line?: string | null;
 }) {
   const supabase = await createSupabaseServerClient();
   const { data: row, error } = await supabase
@@ -1547,8 +1565,14 @@ export async function quickCreateCitizen(data: {
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
+      middle_name: data.middle_name?.trim() || null,
+      honorific: data.honorific?.trim() || null,
+      title: data.title?.trim() || null,
+      suffix: data.suffix?.trim() || null,
+      name_display_format: data.name_display_format?.trim() || null,
+      address_line: data.address_line?.trim() || null,
     })
-    .select("id, first_name, last_name, type, citizen_id, city_id, nation_id")
+    .select("*")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/citizens");

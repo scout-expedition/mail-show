@@ -32,9 +32,20 @@ import {
   generateRandomCitizenId,
   isValidCitizenId,
 } from "@/lib/citizen-id";
-import { citizenFullName } from "@/lib/citizen-name";
+import {
+  citizenDisplayName,
+  citizenFullName,
+  composeCitizenAddress,
+  type AddressLookupLevel,
+} from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
+import {
+  CITIZEN_HONORIFICS,
+  CITIZEN_SUFFIXES,
+  NAME_DISPLAY_FORMATS,
+  NAME_DISPLAY_FORMAT_LABELS,
+} from "@/lib/db/enums";
 import type {
   ActionRow,
   ActionTemplate,
@@ -1646,6 +1657,12 @@ function LettersWorkspaceInner({
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     if (!editingCitizen) return;
     await updateCitizen({ id: editingCitizen.id, ...fields });
@@ -1656,6 +1673,12 @@ function LettersWorkspaceInner({
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     };
     setHeroes((prev) =>
       prev
@@ -1671,6 +1694,12 @@ function LettersWorkspaceInner({
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     const row = await quickCreateCitizen({
       first_name: fields.first_name,
@@ -1679,22 +1708,28 @@ function LettersWorkspaceInner({
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     });
     const created: Citizen = {
       id: row.id,
       first_name: row.first_name,
       last_name: row.last_name,
-      middle_name: null,
-      honorific: null,
-      title: null,
-      suffix: null,
-      name_display_format: null,
-      address_line: null,
+      middle_name: row.middle_name ?? null,
+      honorific: row.honorific ?? null,
+      title: row.title ?? null,
+      suffix: row.suffix ?? null,
+      name_display_format: row.name_display_format ?? null,
+      address_line: row.address_line ?? null,
       type: row.type,
       citizen_id: row.citizen_id,
       nation_id: row.nation_id,
       city_id: row.city_id,
-      notes: null,
+      notes: row.notes ?? null,
     };
     setHeroes((prev) =>
       [...prev, created].sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
@@ -3804,14 +3839,23 @@ function HeroSearch({
             </div>
           ) : null}
         </div>
-        <AddressLine
-          parts={
-            selected && !editing
-              ? addressParts(selected, cities, nations)
-              : { citizenId: null, cityName: null, nation: null }
-          }
-          compact
-        />
+        {selected && !editing ? (
+          <div className="flex flex-col">
+            {composeCitizenAddress(
+              selected,
+              cities.find((c) => c.id === selected.city_id) ?? null,
+              nations.find((n) => n.id === selected.nation_id) ?? null,
+              { lookupLevel: 0 as AddressLookupLevel, hideName: false }
+            ).map((line, i) => (
+              <span
+                key={i}
+                className="block text-[10px] leading-[14px] text-muted-foreground"
+              >
+                {line}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
       {open && !showCitizen ? (
         <div
@@ -3867,7 +3911,7 @@ function HeroSearch({
                   active ? "bg-accent/40" : "hover:bg-accent/40"
                 )}
               >
-                <span className="text-[10px]">{citizenFullName(opt.citizen)}</span>
+                <span className="text-[10px]">{citizenDisplayName(opt.citizen)}</span>
                 <AddressLine parts={parts} compact wrap />
               </button>
             );
@@ -3901,10 +3945,22 @@ function CitizenDialog({
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) => Promise<void>;
 }) {
   const [firstName, setFirstName] = useState(existing?.first_name ?? "");
   const [lastName, setLastName] = useState(existing?.last_name ?? "");
+  const [middleName, setMiddleName] = useState(existing?.middle_name ?? "");
+  const [honorific, setHonorific] = useState(existing?.honorific ?? "");
+  const [jobTitle, setJobTitle] = useState(existing?.title ?? "");
+  const [suffix, setSuffix] = useState(existing?.suffix ?? "");
+  const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
+  const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
   const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
@@ -3961,6 +4017,12 @@ function CitizenDialog({
         citizen_id: citizenId.trim() || null,
         city_id: cityId || null,
         nation_id: nationId || null,
+        middle_name: middleName.trim() || null,
+        honorific: honorific || null,
+        title: jobTitle.trim() || null,
+        suffix: suffix || null,
+        name_display_format: nameDisplayFormat || null,
+        address_line: addressLine.trim() || null,
       });
     });
   }
@@ -3985,7 +4047,21 @@ function CitizenDialog({
           {title}
         </h3>
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3">
+          {/* Row 1: Honorific + First name + Middle name */}
+          <div className="grid grid-cols-[100px_1fr_1fr] gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Honorific</Label>
+              <Select
+                value={honorific}
+                onChange={(e) => setHonorific(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_HONORIFICS.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </Select>
+            </div>
             <div className="flex flex-col gap-1">
               <Label>First name</Label>
               <Input
@@ -3996,6 +4072,17 @@ function CitizenDialog({
               />
             </div>
             <div className="flex flex-col gap-1">
+              <Label>Middle name</Label>
+              <Input
+                value={middleName}
+                onChange={(e) => setMiddleName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+          </div>
+          {/* Row 2: Last name + Suffix */}
+          <div className="grid grid-cols-[1fr_100px] gap-3">
+            <div className="flex flex-col gap-1">
               <Label>Last name</Label>
               <Input
                 value={lastName}
@@ -4003,7 +4090,56 @@ function CitizenDialog({
                 className="h-8"
               />
             </div>
+            <div className="flex flex-col gap-1">
+              <Label>Suffix</Label>
+              <Select
+                value={suffix}
+                onChange={(e) => setSuffix(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_SUFFIXES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </Select>
+            </div>
           </div>
+          {/* Row 3: Title + Name display format */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Title</Label>
+              <Input
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                placeholder="Chief Inspector"
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Name display format</Label>
+              <Select
+                value={nameDisplayFormat}
+                onChange={(e) => setNameDisplayFormat(e.target.value)}
+                className="h-8"
+              >
+                <option value="">First &amp; Last</option>
+                {NAME_DISPLAY_FORMATS.map((f) => (
+                  <option key={f} value={f}>{NAME_DISPLAY_FORMAT_LABELS[f]}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {/* Row 4: Address line / organization */}
+          <div className="flex flex-col gap-1">
+            <Label>Address line / organization</Label>
+            <Input
+              value={addressLine}
+              onChange={(e) => setAddressLine(e.target.value)}
+              placeholder="e.g. Ministry of Posts"
+              className="h-8"
+            />
+          </div>
+          {/* Row 5: Citizen ID */}
           <div className="flex flex-col gap-1">
             <Label>Citizen ID</Label>
             <div className="relative flex items-center">
@@ -4058,6 +4194,7 @@ function CitizenDialog({
               </span>
             )}
           </div>
+          {/* Row 6: City + Nation */}
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <Label>City</Label>

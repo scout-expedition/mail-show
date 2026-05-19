@@ -506,18 +506,19 @@ export function CitizenInspector({
         </div>
 
         {/* Formatted address */}
-        <SectionHeader>Formatted address</SectionHeader>
+        <div className="mt-6 border-t border-border" />
+        <SectionHeader>Formatted Address Preview</SectionHeader>
         <div className="mb-2 flex flex-wrap items-center gap-2">
-          <div className="inline-flex items-center gap-1 rounded-md border border-border bg-card p-0.5">
+          <div className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card p-0.5">
             {LOOKUP_LEVELS.map(({ level, label }) => (
               <button
                 key={level}
                 type="button"
                 onClick={() => setLookupLevel(level)}
                 className={cn(
-                  "rounded px-1.5 py-1 font-mono text-[10px] transition-colors",
+                  "inline-flex h-6 items-center rounded px-1.5 font-mono text-[9px] transition-colors",
                   lookupLevel === level
-                    ? "bg-primary text-primary-foreground"
+                    ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent/40"
                 )}
               >
@@ -556,6 +557,7 @@ export function CitizenInspector({
             <span className="text-muted-foreground">—</span>
           )}
         </div>
+        <div className="mt-6 border-t border-border" />
 
         {/* Inspection letters */}
         <SectionHeader>Inspection letters</SectionHeader>
