@@ -2990,9 +2990,11 @@ function LetterFieldsCard({
         </div>
       </div>
 
-      {peers.some((p) => p.focus?.recordId === state.id) ? null : (
-        <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={letterView.updated_at}
+        by={letterView.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === state.id)}
+      />
       </div>
     </div>
   );
@@ -3534,9 +3536,11 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      {peers.some((p) => p.focus?.recordId === segment.id) ? null : (
-        <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={segment.updated_at}
+        by={segment.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === segment.id)}
+      />
       </div>
     </div>
   );
@@ -6488,36 +6492,51 @@ const MUTED_ADD_BTN =
 
 
 /**
- * Footer showing when and by whom a record was last updated. Renders nothing
- * if `at` is missing (i.e., the row predates the `updated_by` column).
+ * Footer showing when and by whom a record was last updated. Always renders a
+ * fixed-height slot so the panel bottom stays put when the line appears,
+ * disappears (a peer took the record), or its text changes. `by` (an email)
+ * is resolved to the updater's display name via presence, falling back to the
+ * raw email when no display name is known.
  */
 function LastUpdatedFooter({
   at,
   by,
+  hidden,
 }: {
   at: string | null | undefined;
   by: string | null | undefined;
+  /** Suppress the line without collapsing the reserved space — e.g. a peer
+   *  currently has this record focused. */
+  hidden?: boolean;
 }) {
-  if (!at) return null;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return null;
-  const absolute = date.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-  const relative = formatDistanceToNow(date, { addSuffix: true });
+  const { peers, selfPeer } = usePresenceContext();
+  const date = at ? new Date(at) : null;
+  const valid = date != null && !Number.isNaN(date.getTime());
+
+  // Resolve the updater's email to a display name — self and present peers
+  // carry one; fall back to the email for anyone not currently online.
+  const everyone = selfPeer ? [selfPeer, ...peers] : peers;
+  const name = by
+    ? everyone.find((p) => p.email === by)?.profile?.displayName?.trim() || by
+    : null;
+
+  // Fixed-height slot — keeps the panel bottom stable whether or not the line
+  // shows. `truncate` stops a long name/email from wrapping to a second row.
   return (
-    <p
-      title={absolute}
-      className="mt-3 text-center text-[11px] text-muted-foreground/70"
-    >
-      Last updated {relative}
-      {by ? (
-        <>
-          {" "}by <span className="font-mono">{by}</span>
-        </>
+    <div className="mt-3 h-[16px]">
+      {valid && !hidden ? (
+        <p
+          title={date!.toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+          className="truncate text-center text-[10px] leading-[16px] text-muted-foreground/70"
+        >
+          Last updated {formatDistanceToNow(date!, { addSuffix: true })}
+          {name ? <> by {name}</> : null}
+        </p>
       ) : null}
-    </p>
+    </div>
   );
 }
 
