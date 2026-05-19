@@ -11,11 +11,9 @@ import {
 import { useRouter } from "next/navigation";
 import {
   IconArrowBackUp,
-  IconCirclePlusMinus,
-  IconLayoutSidebarLeftExpand,
-  IconLayoutSidebarRightExpand,
-  IconLock,
-  IconLockOpen,
+  IconBolt,
+  IconDragDrop,
+  IconInfoCircle,
 } from "@tabler/icons-react";
 import {
   batchMoveToDay,
@@ -32,6 +30,7 @@ import { PageHeader } from "@/components/page-header";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import {
   DEFAULT_IMPACT_FILTER,
+  type FrameworkOption,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
 import type {
@@ -71,6 +70,7 @@ import type {
   PresenceProfile,
   PresenceSelection,
 } from "@/lib/realtime/presence";
+import { focusMatchesView } from "@/lib/realtime/presence";
 
 /** Tables the presence channel mirrors. Must match the workspace's list so
  *  postgres_changes consumers (the embedded LettersWorkspace) get the same
@@ -104,6 +104,7 @@ type GraphSurfaceProps = {
   cities: City[];
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
+  frameworkOptions: FrameworkOption[];
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -144,12 +145,28 @@ function GraphSurfaceInner({
   cities,
   endingVariables,
   endingValues,
+  frameworkOptions,
   currentUserId,
   currentEmail,
   currentProfile,
 }: GraphSurfaceProps) {
   const router = useRouter();
-  const { peers, selfPeer, selfColor, onPostgresChanges } = usePresenceContext();
+  const { peers, selfPeer, selfColor, onPostgresChanges, sendBroadcast } =
+    usePresenceContext();
+
+  // Before deleting a row from the graph's context menu, broadcast who's
+  // doing it so other clients' DELETE-toast attribution map is populated
+  // (mirrors the inspector's handlers in workspace.tsx). Without this, a
+  // graph-initiated delete shows up as "Someone deleted this".
+  const broadcastRowDeleting = useCallback(
+    (id: string) => {
+      sendBroadcast("row-deleting", {
+        id,
+        by: currentProfile?.displayName ?? currentEmail ?? "Someone",
+      });
+    },
+    [sendBroadcast, currentProfile, currentEmail]
+  );
   // Workspace-stack peers are owned by /graph; AppPresence (othersOnly in
   // PageHeader) filters these userIds so they don't double-render.
   useClaimWorkspacePeers(peers.map((p) => p.userId));
@@ -182,8 +199,11 @@ function GraphSurfaceInner({
       }, 250);
     });
   }, [onPostgresChanges, router]);
+  // Key is suffixed `.v2`: the ImpactFilter shape changed (per-variable map
+  // semantics inverted to an explicit set), so an old persisted value would
+  // be misread. Bumping the key cleanly discards pre-v2 state.
   const [filter, setFilter] = useLocalStorage<ImpactFilter>(
-    "graph.impactFilter",
+    "graph.impactFilter.v2",
     DEFAULT_IMPACT_FILTER
   );
   // Default-locked: graph reads as a static map until the user explicitly
@@ -303,9 +323,9 @@ function GraphSurfaceInner({
 
   // Bucket every peer's avatar color by what they have selected, so the
   // graph can render a peer-colored outer ring on the matching node.
-  // PresenceSelection doesn't carry actionId — peers on the "actions"
-  // panel ring the parent letter (their action focus isn't broadcast
-  // separately).
+  // A peer on the "actions" panel with a specific action chip selected
+  // rings that chip; without one (e.g. an inspection-page peer, whose
+  // actions panel isn't chip-scoped) it falls back to the parent letter.
   const peerRings = useMemo<PeerRingMap>(() => {
     const groups = new Map<string, string[]>();
     const lettersMap = new Map<string, string[]>();
@@ -320,6 +340,10 @@ function GraphSurfaceInner({
         const list = segmentsMap.get(sel.segmentId) ?? [];
         list.push(peerColor);
         segmentsMap.set(sel.segmentId, list);
+      } else if (sel.kind === "actions" && sel.actionId) {
+        const list = actionsMap.get(sel.actionId) ?? [];
+        list.push(peerColor);
+        actionsMap.set(sel.actionId, list);
       } else if (sel.kind === "letter" || sel.kind === "actions") {
         const key = `${sel.groupId}:${sel.variantKey}`;
         const list = lettersMap.get(key) ?? [];
@@ -448,12 +472,12 @@ function GraphSurfaceInner({
               variant="outline"
               size="sm"
               aria-pressed={editingEnabled}
-              aria-label={editingEnabled ? "Lock graph (read-only)" : "Unlock graph (allow edits)"}
-              title={editingEnabled ? "Lock graph (read-only)" : "Unlock graph (allow edits)"}
+              aria-label={editingEnabled ? "Disable drag and drop" : "Enable drag and drop"}
+              title={editingEnabled ? "Disable drag and drop" : "Enable drag and drop"}
               onClick={() => setEditingEnabled((v) => !v)}
               className={editingEnabled ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
             >
-              {editingEnabled ? <IconLockOpen size={16} /> : <IconLock size={16} />}
+              <IconDragDrop size={16} />
             </Button>
             <Button
               type="button"
@@ -465,7 +489,7 @@ function GraphSurfaceInner({
               onClick={() => void handleOverlayToggle()}
               className={overlayOpen ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
             >
-              <IconCirclePlusMinus size={16} />
+              <IconBolt size={16} />
             </Button>
             <Button
               type="button"
@@ -477,11 +501,7 @@ function GraphSurfaceInner({
               onClick={handleInspectorToggle}
               className={inspectorOpen ? "border-primary bg-primary text-primary-foreground [&:hover]:bg-primary/90" : ""}
             >
-              {inspectorOpen ? (
-                <IconLayoutSidebarLeftExpand size={16} />
-              ) : (
-                <IconLayoutSidebarRightExpand size={16} />
-              )}
+              <IconInfoCircle size={16} />
             </Button>
           </div>
         }
@@ -503,6 +523,8 @@ function GraphSurfaceInner({
               segments={segments}
               nations={nations}
               endingAssignments={endingAssignments}
+              endingVariables={endingVariables}
+              endingValues={endingValues}
               impactFilter={filter}
               editingEnabled={editingEnabled}
               recordUndo={recordUndo}
@@ -510,12 +532,15 @@ function GraphSurfaceInner({
               onSelectionChange={handleSelectionChange}
               selfRingColor={selfColor}
               peerRings={peerRings}
+              onRowDeleting={broadcastRowDeleting}
             />
           </div>
           {overlayOpen ? (
             <aside className="w-[380px] shrink-0 lg:w-[420px]">
               <ImpactOverlayPanel
                 nations={nations}
+                endingVariables={endingVariables}
+                frameworkOptions={frameworkOptions}
                 filter={filter}
                 onFilterChange={setFilter}
               />
@@ -626,7 +651,7 @@ function resolvePeerPanel(
   const { letters, letterGroups, segments, storylines, actions } = mirrors;
   const storylineById = new Map(storylines.map((s) => [s.id, s]));
 
-  if (peer.focus) {
+  if (peer.focus && focusMatchesView(peer.focus, peer.selection)) {
     const id = peer.focus.recordId;
     switch (peer.focus.table) {
       case "inspection_letters": {
@@ -667,6 +692,10 @@ function resolvePeerPanel(
     if (sel.segmentId) {
       const seg = segments.find((x) => x.id === sel.segmentId);
       if (seg?.report_id) return `Report ${seg.report_id}`;
+    }
+    if (sel.view === "actions" && sel.letterId) {
+      const l = letters.find((x) => x.id === sel.letterId);
+      if (l?.content_id) return `Actions ${l.content_id}`;
     }
     if (sel.letterId) {
       const l = letters.find((x) => x.id === sel.letterId);
@@ -727,6 +756,7 @@ function graphSelectionToPresence(
     groupId: sel.groupId,
     letterId: letter?.id ?? null,
     segmentId: null,
+    actionId: sel.kind === "actions" ? sel.actionId ?? null : null,
     view: sel.kind === "actions" ? "actions" : "main",
     narrow: true,
   };
@@ -746,7 +776,12 @@ function presenceSelectionToGraph(
     const letter = letters.find((l) => l.id === sel.letterId);
     const variantKey = letter?.variant ?? "";
     return sel.view === "actions"
-      ? { kind: "actions", groupId: sel.groupId, variantKey }
+      ? {
+          kind: "actions",
+          groupId: sel.groupId,
+          variantKey,
+          actionId: sel.actionId ?? undefined,
+        }
       : { kind: "letter", groupId: sel.groupId, variantKey };
   }
   if (sel.groupId) {
