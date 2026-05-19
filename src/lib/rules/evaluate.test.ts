@@ -4,6 +4,7 @@ import {
   VALID_OPERATOR_REFERENCES,
   type RuleOperator,
   type RuleReferenceType,
+  type RuleTarget,
 } from "../db/enums";
 import {
   makeRuleCondition,
@@ -66,8 +67,8 @@ describe("evaluateCondition", () => {
       ["even", "5", false],
       ["odd", "5", true],
       ["odd", "4", false],
-      ["number", "42", true],
-      ["number", "abc", false],
+      ["any_number", "42", true],
+      ["any_number", "abc", false],
       ["letter", "abc", true],
       ["letter", "42", false],
     ] as const)(
@@ -224,38 +225,53 @@ describe("evaluateRule", () => {
 describe("VALID_OPERATOR_REFERENCES matrix", () => {
   // The rule-builder UI only offers the (operator, reference_type) pairs in
   // VALID_OPERATOR_REFERENCES, and the evaluator must agree with that matrix.
-  // Walk it exhaustively so a pair added to the UI matrix can't ship without
-  // the evaluator handling it — the protocol pins this explicitly.
-  const VALUE_FOR: Record<RuleReferenceType, string | null> = {
-    string: "Alice",
-    number: "42",
-    any_number: null,
-    even: null,
-    odd: null,
-    letter: null,
-    true: null,
-    false: null,
-  };
-
-  for (const [op, referenceTypes] of Object.entries(VALID_OPERATOR_REFERENCES)) {
-    const operator = op as RuleOperator;
-    for (const reference_type of referenceTypes) {
-      it(`should evaluate operator '${operator}' with reference_type '${reference_type}' to a boolean`, () => {
-        // true/false reference types pair with the boolean is_counterfeit
-        // target; the rest compare the string sender_name target.
-        const isBoolean = reference_type === "true" || reference_type === "false";
-        const cond = makeRuleCondition({
-          target: isBoolean ? "is_counterfeit" : "sender_name",
-          operator,
-          reference_type,
-          reference_value: VALUE_FOR[reference_type],
-        });
-        const ctx = makeRuleContext({
-          sender_name: "42",
-          is_counterfeit: true,
-        });
-        expect(typeof evaluateCondition(cond, ctx)).toBe("boolean");
-      });
-    }
+  // Each pair gets a representative input + expected result; the completeness
+  // check then fails if the matrix gains a pair with no case here — so the
+  // evaluator can't silently fall out of step with the UI.
+  interface MatrixCase {
+    operator: RuleOperator;
+    reference_type: RuleReferenceType;
+    reference_value: string | null;
+    target?: RuleTarget;
+    ctx: Parameters<typeof makeRuleContext>[0];
+    expected: boolean;
   }
+
+  const CASES: MatrixCase[] = [
+    { operator: "equals", reference_type: "string", reference_value: "Alice", ctx: { sender_name: "Alice" }, expected: true },
+    { operator: "equals", reference_type: "number", reference_value: "42", ctx: { sender_name: "42" }, expected: true },
+    { operator: "contains", reference_type: "string", reference_value: "lic", ctx: { sender_name: "Alice" }, expected: true },
+    { operator: "contains", reference_type: "number", reference_value: "2", ctx: { sender_name: "42" }, expected: true },
+    { operator: "is", reference_type: "any_number", reference_value: null, ctx: { sender_name: "42" }, expected: true },
+    { operator: "is", reference_type: "even", reference_value: null, ctx: { sender_name: "42" }, expected: true },
+    { operator: "is", reference_type: "odd", reference_value: null, ctx: { sender_name: "42" }, expected: false },
+    { operator: "is", reference_type: "letter", reference_value: null, ctx: { sender_name: "42" }, expected: false },
+    { operator: "is", reference_type: "true", reference_value: null, target: "is_counterfeit", ctx: { is_counterfeit: true }, expected: true },
+    { operator: "is", reference_type: "false", reference_value: null, target: "is_counterfeit", ctx: { is_counterfeit: true }, expected: false },
+    { operator: "gt", reference_type: "number", reference_value: "40", ctx: { sender_name: "42" }, expected: true },
+    { operator: "gte", reference_type: "number", reference_value: "42", ctx: { sender_name: "42" }, expected: true },
+    { operator: "lt", reference_type: "number", reference_value: "40", ctx: { sender_name: "42" }, expected: false },
+    { operator: "lte", reference_type: "number", reference_value: "42", ctx: { sender_name: "42" }, expected: true },
+  ];
+
+  it("should carry a representative case for every pair the matrix permits", () => {
+    const matrixPairs = Object.entries(VALID_OPERATOR_REFERENCES)
+      .flatMap(([op, refTypes]) => refTypes.map((rt) => `${op}:${rt}`))
+      .sort();
+    const casePairs = CASES.map((c) => `${c.operator}:${c.reference_type}`).sort();
+    expect(casePairs).toEqual(matrixPairs);
+  });
+
+  it.each(CASES)(
+    "should evaluate '$operator' + '$reference_type' to $expected",
+    ({ operator, reference_type, reference_value, target, ctx, expected }) => {
+      const cond = makeRuleCondition({
+        target: target ?? "sender_name",
+        operator,
+        reference_type,
+        reference_value,
+      });
+      expect(evaluateCondition(cond, makeRuleContext(ctx))).toBe(expected);
+    }
+  );
 });
