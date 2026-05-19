@@ -19,7 +19,7 @@ export default async function NationsPage() {
   const [{ data: nationData }, { data: cityData }] = await Promise.all([
     supabase
       .from("nations")
-      .select("*")
+      .select("id, name, abbreviation, color_hex, sort_order, icon_type, icon_value")
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
     supabase

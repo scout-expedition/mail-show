@@ -326,16 +326,39 @@ function NationChipPicker({
   onChange: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [focusIndex, setFocusIndex] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const current = nations.find((n) => n.id === selectedId) ?? null;
 
+  // When the popover opens, seed focus on the currently-selected nation
+  // (or the first one) and move keyboard focus to that option.
+  useEffect(() => {
+    if (!open) {
+      setFocusIndex(-1);
+      return;
+    }
+    const initialIdx = Math.max(
+      0,
+      nations.findIndex((n) => n.id === selectedId)
+    );
+    setFocusIndex(initialIdx);
+    // Defer until after the popover renders so the ref is wired up.
+    requestAnimationFrame(() => optionRefs.current[initialIdx]?.focus());
+  }, [open, nations, selectedId]);
+
+  // Outside-click + Escape close. Escape also returns focus to the trigger.
   useEffect(() => {
     if (!open) return;
     function onDocPointerDown(e: PointerEvent) {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     }
     document.addEventListener("pointerdown", onDocPointerDown);
     document.addEventListener("keydown", onKey);
@@ -345,16 +368,51 @@ function NationChipPicker({
     };
   }, [open]);
 
+  function handleListboxKey(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (nations.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = focusIndex < nations.length - 1 ? focusIndex + 1 : 0;
+      setFocusIndex(next);
+      optionRefs.current[next]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prev = focusIndex > 0 ? focusIndex - 1 : nations.length - 1;
+      setFocusIndex(prev);
+      optionRefs.current[prev]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setFocusIndex(0);
+      optionRefs.current[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      const last = nations.length - 1;
+      setFocusIndex(last);
+      optionRefs.current[last]?.focus();
+    }
+  }
+
+  function handleTriggerKey(e: React.KeyboardEvent<HTMLButtonElement>) {
+    // ArrowDown / ArrowUp on a closed picker opens it (matches native
+    // <select> behavior + the WAI listbox pattern).
+    if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      setOpen(true);
+    }
+  }
+
   return (
     <div ref={ref} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
+        onKeyDown={handleTriggerKey}
         title={current?.name ?? "Pick nation"}
         aria-label="Pick nation"
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="inline-flex h-8 items-center justify-center rounded-md transition-opacity hover:opacity-90"
+        className="inline-flex h-8 items-center justify-center rounded-md transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {current ? (
           <NationPill nation={current} iconOnly />
@@ -367,20 +425,28 @@ function NationChipPicker({
       {open ? (
         <div
           role="listbox"
-          className="absolute left-0 top-full z-20 mt-1 flex max-h-64 min-w-[10rem] flex-col gap-1 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md"
+          aria-label="Nation"
+          onKeyDown={handleListboxKey}
+          className="absolute left-0 top-full z-20 mt-1 flex max-h-64 min-w-[10rem] flex-col gap-1 overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md focus:outline-none"
         >
-          {nations.map((n) => (
+          {nations.map((n, i) => (
             <button
               key={n.id}
+              ref={(el) => {
+                optionRefs.current[i] = el;
+              }}
               type="button"
               role="option"
+              tabIndex={i === focusIndex ? 0 : -1}
               aria-selected={n.id === selectedId}
               onClick={() => {
                 onChange(n.id);
                 setOpen(false);
+                triggerRef.current?.focus();
               }}
+              onFocus={() => setFocusIndex(i)}
               className={cn(
-                "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-accent",
+                "flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-accent focus:bg-accent focus:outline-none",
                 n.id === selectedId ? "bg-accent/50" : undefined
               )}
             >

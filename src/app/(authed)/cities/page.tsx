@@ -22,8 +22,14 @@ export default async function CitiesPage() {
   };
   const [{ data: cityData }, { data: nationData }, { data: citizenData }] =
     await Promise.all([
-      supabase.from("cities").select("*").order("name"),
-      supabase.from("nations").select("*").order("sort_order"),
+      supabase
+        .from("cities")
+        .select("id, name, code, nation_id")
+        .order("name"),
+      supabase
+        .from("nations")
+        .select("id, name, abbreviation, color_hex, sort_order, icon_type, icon_value")
+        .order("sort_order"),
       supabase
         .from("citizens")
         .select(

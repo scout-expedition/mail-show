@@ -152,10 +152,16 @@ export function NationInspector({
           <OverflowMenu
             items={[
               {
-                label: "Delete nation",
+                // FK from cities.nation_id blocks the delete; surface that
+                // up front instead of failing the server action with a
+                // database error toast.
+                label: nationCities.length
+                  ? `Delete nation (move ${nationCities.length} ${nationCities.length === 1 ? "city" : "cities"} first)`
+                  : "Delete nation",
                 intent: "destructive",
                 icon: <Trash2 size={12} aria-hidden />,
                 onClick: handleDelete,
+                disabled: nationCities.length > 0,
               },
             ]}
           />
