@@ -40,6 +40,16 @@ export function makeAnonClient(): SupabaseClient {
 
 const TEST_PREFIX = "__INT_TEST__";
 
+/**
+ * Floor of the `days.number` range this harness allocates from. `addDay`
+ * defaults its `number` arg into this range; `seedStoryline.dayNumberBase`
+ * defaults here too; `cleanupTestData` sweeps everything ≥ this value. Kept
+ * as a single named constant so changing the range doesn't require touching
+ * every call site (and the cleanup sweep stays in sync with whatever the
+ * builders insert).
+ */
+export const TEST_DAY_NUMBER_MIN = 9000;
+
 /** Marker prepended to every storyline name we seed, so cleanup is safe even
  *  if a previous run aborted mid-test. */
 export function testName(suffix: string): string {
@@ -56,6 +66,13 @@ export async function cleanupTestData(sb: SupabaseClient): Promise<void> {
   await sb.from("playthroughs").delete().like("name", `${TEST_PREFIX}%`);
   await sb.from("storylines").delete().like("name", `${TEST_PREFIX}%`);
   await sb.from("days").delete().like("notes", `${TEST_PREFIX}%`);
+  // Backstop: builders allocate `days.number` from TEST_DAY_NUMBER_MIN up to
+  // dodge seeded prod days, and a few server actions (notably `updateDay`
+  // with blank FormData values) null out the `notes` marker — which makes
+  // the LIKE cleanup miss them and a follow-up `addDay` at the same number
+  // trip the unique constraint. Sweep the whole test number range so re-runs
+  // against the same DB are deterministic.
+  await sb.from("days").delete().gte("number", TEST_DAY_NUMBER_MIN);
 }
 
 export interface SeededStoryline {
@@ -84,7 +101,7 @@ export async function seedStoryline(
 ): Promise<SeededStoryline> {
   const days = opts.days ?? 2;
   const abbreviation = opts.abbreviation ?? "T";
-  const dayBase = opts.dayNumberBase ?? 9000;
+  const dayBase = opts.dayNumberBase ?? TEST_DAY_NUMBER_MIN;
 
   const { data: storyline, error: sErr } = await sb
     .from("storylines")

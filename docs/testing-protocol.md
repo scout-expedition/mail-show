@@ -65,6 +65,13 @@ action-level integration tests that catch ~3x more regressions per line.
 - AppShell, layout, sticky HUD, navigation chrome.
 - React-hook-form internals, zod resolver internals, third-party lib internals.
 - Anything that requires running the dev server inside a unit test.
+- **Realtime + hook wrappers** — `src/lib/realtime/*` (`presence.ts`,
+  `channel.ts`, `avatar-stack.tsx`, `use-flash.ts`, `use-shared-view-state.ts`,
+  `use-instant-field.ts`). They are thin wrappers around Supabase realtime +
+  React effects; testing them in isolation exercises framework internals, not
+  our logic. Their contracts (presence sync, autosave debounce + revalidate)
+  are validated end-to-end by the integration + E2E layers. They show up at 0%
+  in the unit-coverage report on purpose; the floors are calibrated for that.
 
 If you find yourself reaching for a snapshot, write an assertion instead. If
 you can't think of an assertion, the test isn't worth writing.
@@ -135,6 +142,18 @@ gitignored `.env.test.local`; in CI they are exported from `supabase status`.
 
 After substantive changes, run `pnpm typecheck && pnpm lint && pnpm test`.
 Same muscle memory as before, plus tests.
+
+## Coverage
+
+Both Vitest configs enforce regression-ratchet thresholds (provider:
+`@vitest/coverage-v8`). `pnpm test --coverage` gates `src/lib/**` against
+`vitest.config.ts`'s `thresholds`; `pnpm test:int --coverage` gates
+`src/app/**/actions.ts` against `vitest.integration.config.ts`'s. Floors are set
+slightly below the measured baseline — the goal is "don't get worse", not
+"hit a target". When coverage rises meaningfully, raise the floor in the same
+PR; a deliberate drop (deleting a stale module, simplifying logic) is a
+ratchet-down rather than a workaround. Numbers + per-glob breakdown live in
+`docs/testing-inventory.md` so the protocol stays policy-only.
 
 ## When tests fail
 
