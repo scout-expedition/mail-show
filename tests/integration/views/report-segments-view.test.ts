@@ -9,9 +9,10 @@ import {
 } from "../_helpers";
 
 // Pins report_segments_view.report_id and effective_day_id. The view is
-// recreated across migrations 0012 → 0035 → 0042 (latest): effective_day_id
-// derives from the report's *triggering* letters, falling back to the letter
-// group's delivery day, and is overridden by a segment's own pin.
+// rebuilt by the report_segment_delivery_offset then
+// report_segment_default_day_from_group migrations: effective_day_id derives
+// from the report's *triggering* letters, falling back to the letter group's
+// delivery day, and is overridden by a segment's own pin.
 
 describe("report_segments_view", () => {
   const sb = makeTestClient();
@@ -94,8 +95,9 @@ describe("report_segments_view", () => {
 
       // Two letters pinned to 9002 / 9001, each triggering the report via an
       // action. effective_day_id derives from the triggering letters only —
-      // migration 0042 dropped the old "every letter in the group" branch.
-      // Min trigger day = 9001 → effective = 9001 + 1 = 9002.
+      // the report_segment_default_day_from_group migration dropped the old
+      // "every letter in the group" branch. Min trigger day = 9001 →
+      // effective = 9001 + 1 = 9002.
       const [letterA, letterB] = await addLetters(sb, {
         groupId: seed.groupId,
         count: 2,

@@ -54,9 +54,11 @@ CI now runs all three test layers on every PR and on pushes to `main`.
 **Blockers found & fixed during execution:**
 - **Migration prefix collision.** Five duplicate numeric prefixes (`0034`–`0038`)
   broke `supabase db reset` / `supabase start` (the CLI keys migrations by their
-  numeric `version`). Renumbered the order-independent file of each pair to
-  `0040`–`0044`; `supabase db reset` now applies all 44 cleanly. New migrations
-  use timestamp prefixes (`supabase migration new`) — see `CLAUDE.md`.
+  numeric `version`). The order-independent file of each pair was given a
+  timestamp prefix (`20260519181501`–`…505`) — the collision-proof format the
+  Supabase CLI generates for new migrations, and what dodged a fresh collision
+  with `main`'s `0040_updated_by_delete_attribution`. `supabase db reset` now
+  applies every migration cleanly; convention documented in `CLAUDE.md`.
 - **Two stale integration tests** (pre-existing rot, no CI to catch them):
   `report-segments-view` asserted pre-`0036` view behaviour — rewritten to the
   triggering-letter rule (`addAction` helper extended with `reportSegmentId`);

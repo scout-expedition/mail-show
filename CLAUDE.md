@@ -19,7 +19,7 @@ Specifically: middleware was renamed to **proxy** — `src/proxy.ts` is the file
 
 ### Migration naming
 
-Existing migrations are sequential — `0001`–`0044`. **New migrations must use a timestamp prefix**: run `supabase migration new <name>`, which generates `<YYYYMMDDHHMMSS>_<name>.sql`. Timestamps sort lexically after the numeric files and make the prefix collisions that parallel branches used to cause structurally impossible (the duplicate `0034`–`0038` pairs were renumbered to `0040`–`0044` for exactly this reason — the Supabase CLI keys migrations by their numeric `version`, so duplicates break `supabase db reset` / `supabase start`). Apply the full set with `supabase db reset` against the local stack.
+Older migrations use sequential prefixes `0001`–`0040`. **New migrations must use a timestamp prefix**: run `supabase migration new <name>`, which generates `<YYYYMMDDHHMMSS>_<name>.sql`. Timestamps sort lexically after the numeric files and make the prefix collisions that parallel branches used to cause structurally impossible — the Supabase CLI keys migrations by their numeric `version`, so two files sharing a prefix break `supabase db reset` / `supabase start`. The five formerly-duplicated `0034`–`0038` pairs were given timestamp prefixes for exactly this reason. Apply the full set with `supabase db reset` against the local stack.
 
 ## Architecture
 

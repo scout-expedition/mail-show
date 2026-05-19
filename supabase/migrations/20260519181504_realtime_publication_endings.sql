@@ -1,7 +1,7 @@
 -- Wire ending tables into the supabase_realtime publication so browser
 -- clients receive postgres_changes for live collaborative editing on
--- the frameworks + logic + variables surfaces. Mirrors the pattern from
--- 0031 (letters), 0040 (sorting), 0041 (reference data).
+-- the frameworks + logic + variables surfaces. Mirrors the realtime-
+-- publication pattern from 0031 plus the sorting + reference-data ones.
 --
 -- Without this, useInstantField commits land on the server but peers
 -- never see the UPDATE / INSERT / DELETE — the local editor self-echo
