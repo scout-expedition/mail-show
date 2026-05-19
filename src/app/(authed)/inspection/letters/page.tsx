@@ -76,7 +76,7 @@ export default async function InspectionLettersPage({
       .order("piece", { ascending: true, nullsFirst: true }),
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("action_templates").select("*").order("sort_order"),
-    supabase.from("citizens").select("*").eq("type", "hero").order("name"),
+    supabase.from("citizens").select("*").eq("type", "hero").order("last_name").order("first_name"),
     supabase.from("citizens").select("citizen_id").not("citizen_id", "is", null),
     supabase.from("cities").select("*"),
     supabase.from("nations").select("*"),

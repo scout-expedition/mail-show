@@ -71,7 +71,7 @@ export default async function GraphPage() {
     supabase.from("action_templates").select("*").order("sort_order"),
     supabase.from("nations").select("*").order("sort_order"),
     supabase.from("inspection_action_ending_assignments").select("*"),
-    supabase.from("citizens").select("*").eq("type", "hero").order("name"),
+    supabase.from("citizens").select("*").eq("type", "hero").order("last_name").order("first_name"),
     supabase.from("citizens").select("citizen_id").not("citizen_id", "is", null),
     supabase.from("cities").select("*"),
     supabase.from("ending_variables").select("*").order("sort_order"),

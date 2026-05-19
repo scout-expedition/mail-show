@@ -32,8 +32,15 @@ import {
   generateRandomCitizenId,
   isValidCitizenId,
 } from "@/lib/citizen-id";
+import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
+import {
+  CITIZEN_HONORIFICS,
+  CITIZEN_SUFFIXES,
+  NAME_DISPLAY_FORMATS,
+  NAME_DISPLAY_FORMAT_LABELS,
+} from "@/lib/db/enums";
 import type {
   ActionRow,
   ActionTemplate,
@@ -1697,52 +1704,87 @@ function LettersWorkspaceInner({
   const [editingCitizen, setEditingCitizen] = useState<Citizen | null>(null);
 
   async function handleEditCitizen(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     if (!editingCitizen) return;
     await updateCitizen({ id: editingCitizen.id, ...fields });
     const patched: Citizen = {
       ...editingCitizen,
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     };
     setHeroes((prev) =>
       prev
         .map((h) => (h.id === patched.id ? patched : h))
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     setEditingCitizen(null);
   }
 
   async function handleCreateHero(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     const row = await quickCreateCitizen({
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       type: "hero",
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     });
     const created: Citizen = {
       id: row.id,
-      name: row.name,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      middle_name: row.middle_name ?? null,
+      honorific: row.honorific ?? null,
+      title: row.title ?? null,
+      suffix: row.suffix ?? null,
+      name_display_format: row.name_display_format ?? null,
+      address_line: row.address_line ?? null,
       type: row.type,
       citizen_id: row.citizen_id,
       nation_id: row.nation_id,
       city_id: row.city_id,
-      notes: null,
+      notes: row.notes ?? null,
     };
     setHeroes((prev) =>
-      [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
+      [...prev, created].sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     if (heroDialogRole === "sender") {
       updateLetter({ sender_citizen_id: created.id });
@@ -3630,49 +3672,6 @@ function addressParts(
   };
 }
 
-function AddressLine({
-  parts,
-  compact,
-  wrap,
-}: {
-  parts: ReturnType<typeof addressParts>;
-  /** No left padding — the row sits flush with its container. */
-  compact?: boolean;
-  /** Allow the address to wrap to multiple lines instead of truncating. */
-  wrap?: boolean;
-}) {
-  const hasAny = parts.citizenId || parts.cityName || parts.nation;
-  const pieces: React.ReactNode[] = [];
-  if (parts.citizenId)
-    pieces.push(<span key="cid">{parts.citizenId}</span>);
-  if (parts.cityName)
-    pieces.push(<span key="city">{parts.cityName}</span>);
-  if (parts.nation)
-    pieces.push(
-      <span key="nation" style={{ color: parts.nation.color_hex }}>
-        {parts.nation.name}
-      </span>
-    );
-  return (
-    <span
-      className={cn(
-        "block text-[10px] leading-[14px] text-muted-foreground",
-        compact ? null : "pl-3",
-        wrap ? null : "h-[14px] truncate"
-      )}
-    >
-      {hasAny
-        ? pieces.map((el, i) => (
-            <span key={i}>
-              {i > 0 ? <span className="mx-1 opacity-60">·</span> : null}
-              {el}
-            </span>
-          ))
-        : null}
-    </span>
-  );
-}
-
 type HeroOption =
   | { kind: "citizen"; citizen: Citizen }
   | { kind: "create" };
@@ -3708,6 +3707,12 @@ function HeroSearch({
   const selected = heroes.find((h) => h.id === value) ?? null;
   // Display mode: a citizen is committed and we're not mid-search.
   const showCitizen = !!selected && !editing;
+  const selectedCity = selected
+    ? cities.find((c) => c.id === selected.city_id) ?? null
+    : null;
+  const selectedNation = selected
+    ? nations.find((n) => n.id === selected.nation_id) ?? null
+    : null;
 
   // Citizen matches plus the "add new citizen" row, combined into one
   // keyboard-navigable list. The create row leads when the field is
@@ -3715,7 +3720,11 @@ function HeroSearch({
   const options = useMemo<HeroOption[]>(() => {
     const q = query.trim().toLowerCase();
     const citizenOpts: HeroOption[] = (
-      q ? heroes.filter((h) => h.name.toLowerCase().includes(q)) : heroes
+      q
+        ? heroes.filter((h) =>
+            citizenDisplayName(h).toLowerCase().includes(q)
+          )
+        : heroes
     )
       .slice(0, 50)
       .map((c) => ({ kind: "citizen", citizen: c }));
@@ -3811,7 +3820,13 @@ function HeroSearch({
             // While a citizen is on display the input just shows the
             // name and is read-only; searching starts via Delete /
             // ArrowDown.
-            value={selected && !editing ? selected.name : query}
+            value={
+              selected && !editing
+                ? `${citizenDisplayName(selected)}${
+                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                  }`
+                : query
+            }
             readOnly={showCitizen}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -3864,14 +3879,35 @@ function HeroSearch({
             </div>
           ) : null}
         </div>
-        <AddressLine
-          parts={
-            selected && !editing
-              ? addressParts(selected, cities, nations)
-              : { citizenId: null, cityName: null, nation: null }
-          }
-          compact
-        />
+        {/* Address rows — the area always reserves height so the field
+            stays a stable size whether or not a citizen is set. */}
+        <div className="flex min-h-[42px] flex-col">
+          {selected && !editing ? (
+            <>
+              {selected.address_line ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selected.address_line}
+                </span>
+              ) : null}
+              {selectedCity || selectedNation ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity?.name ?? ""}
+                  {selectedCity && selectedNation ? ", " : ""}
+                  {selectedNation ? (
+                    <span style={{ color: selectedNation.color_hex }}>
+                      {selectedNation.name}
+                    </span>
+                  ) : null}
+                </span>
+              ) : null}
+              {selectedCity?.code ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity.code}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
       {open && !showCitizen ? (
         <div
@@ -3927,8 +3963,18 @@ function HeroSearch({
                   active ? "bg-accent/40" : "hover:bg-accent/40"
                 )}
               >
-                <span className="text-[10px]">{opt.citizen.name}</span>
-                <AddressLine parts={parts} compact wrap />
+                <span className="text-[10px]">
+                  {citizenDisplayName(opt.citizen)}
+                </span>
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {parts.cityName ?? ""}
+                  {parts.cityName && parts.nation ? ", " : ""}
+                  {parts.nation ? (
+                    <span style={{ color: parts.nation.color_hex }}>
+                      {parts.nation.name}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
@@ -3956,13 +4002,27 @@ function CitizenDialog({
   allCitizenIds: string[];
   onCancel: () => void;
   onSubmit: (fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) => Promise<void>;
 }) {
-  const [name, setName] = useState(existing?.name ?? "");
+  const [firstName, setFirstName] = useState(existing?.first_name ?? "");
+  const [lastName, setLastName] = useState(existing?.last_name ?? "");
+  const [middleName, setMiddleName] = useState(existing?.middle_name ?? "");
+  const [honorific, setHonorific] = useState(existing?.honorific ?? "");
+  const [jobTitle, setJobTitle] = useState(existing?.title ?? "");
+  const [suffix, setSuffix] = useState(existing?.suffix ?? "");
+  const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
+  const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
   const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
@@ -3999,10 +4059,10 @@ function CitizenDialog({
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
   const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
-  const canSubmit = name.trim().length > 0 && !cidInvalid && !cidDuplicate && !pending;
+  const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
-      ? `Edit citizen · ${existing?.name ?? ""}`
+      ? `Edit citizen · ${existing ? citizenFullName(existing) : ""}`
       : role
         ? `New ${role} · Hero`
         : "New citizen · Hero";
@@ -4014,10 +4074,17 @@ function CitizenDialog({
     if (!canSubmit) return;
     startTransition(async () => {
       await onSubmit({
-        name: name.trim(),
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
         citizen_id: citizenId.trim() || null,
         city_id: cityId || null,
         nation_id: nationId || null,
+        middle_name: middleName.trim() || null,
+        honorific: honorific || null,
+        title: jobTitle.trim() || null,
+        suffix: suffix || null,
+        name_display_format: nameDisplayFormat || null,
+        address_line: addressLine.trim() || null,
       });
     });
   }
@@ -4042,16 +4109,99 @@ function CitizenDialog({
           {title}
         </h3>
         <div className="flex flex-col gap-3">
+          {/* Row 1: Honorific + First name + Middle name */}
+          <div className="grid grid-cols-[100px_1fr_1fr] gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Honorific</Label>
+              <Select
+                value={honorific}
+                onChange={(e) => setHonorific(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_HONORIFICS.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>First name</Label>
+              <Input
+                autoFocus
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Middle name</Label>
+              <Input
+                value={middleName}
+                onChange={(e) => setMiddleName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+          </div>
+          {/* Row 2: Last name + Suffix */}
+          <div className="grid grid-cols-[1fr_100px] gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Last name</Label>
+              <Input
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Suffix</Label>
+              <Select
+                value={suffix}
+                onChange={(e) => setSuffix(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_SUFFIXES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {/* Row 3: Title + Name display format */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Title</Label>
+              <Input
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                placeholder="Chief Inspector"
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Name display format</Label>
+              <Select
+                value={nameDisplayFormat}
+                onChange={(e) => setNameDisplayFormat(e.target.value)}
+                className="h-8"
+              >
+                <option value="">First &amp; Last</option>
+                {NAME_DISPLAY_FORMATS.map((f) => (
+                  <option key={f} value={f}>{NAME_DISPLAY_FORMAT_LABELS[f]}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {/* Row 4: Address line / organization */}
           <div className="flex flex-col gap-1">
-            <Label>Name</Label>
+            <Label>Address line / organization</Label>
             <Input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={addressLine}
+              onChange={(e) => setAddressLine(e.target.value)}
+              placeholder="e.g. Ministry of Posts"
               className="h-8"
-              required
             />
           </div>
+          {/* Row 5: Citizen ID */}
           <div className="flex flex-col gap-1">
             <Label>Citizen ID</Label>
             <div className="relative flex items-center">
@@ -4106,6 +4256,7 @@ function CitizenDialog({
               </span>
             )}
           </div>
+          {/* Row 6: City + Nation */}
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <Label>City</Label>
