@@ -44,10 +44,24 @@ jobs:
         continue-on-error: true
 
       # Unit layer only — server-action + view tests need the DB and run in
-      # the integration-e2e job. Coverage reporting is added in a later phase
-      # once @vitest/coverage-v8 is a dependency.
-      - name: Unit tests
-        run: pnpm test
+      # the integration-e2e job. `--coverage` enforces the regression-ratchet
+      # thresholds defined in vitest.config.ts; updating them is a deliberate
+      # change in a PR, not a default behaviour.
+      - name: Unit tests + coverage
+        run: pnpm test --coverage
+
+      # Persist the HTML report so a failing threshold is debuggable from the
+      # CI run page — open the artifact and the per-file table tells you which
+      # module regressed. Path matches vitest.config.ts `coverage` (default
+      # `./coverage`).
+      - name: Upload unit coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: ignore
 
   integration-e2e:
     name: integration · e2e
@@ -99,8 +113,19 @@ jobs:
             echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY"
           } >> "$GITHUB_ENV"
 
-      - name: Integration tests
-        run: pnpm test:int
+      - name: Integration tests + coverage
+        run: pnpm test:int --coverage
+
+      # Persist the HTML report — vitest.integration.config.ts writes to
+      # `coverage-int/` so it doesn't clobber the unit run's `coverage/`.
+      - name: Upload integration coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-int
+          path: coverage-int/
+          retention-days: 7
+          if-no-files-found: ignore
 
       # E2E runs against a prebuilt production server: playwright.config.ts
       # uses `next start` when CI is set (steadier than on-demand `next dev`

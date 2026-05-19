@@ -1,94 +1,134 @@
 # Testing inventory
 
-Snapshot of every test file in the repo as of 2026-05-08, what it covers, and how to run it. Updated when test layout or runners change — not when individual cases are added.
+Snapshot of the test layout — layer × runner × scope. Per-case detail is **not**
+maintained here; CI coverage is the count-of-record (see "Coverage ratchet"
+below). Updated when test layout, runners, or floors change — not when individual
+cases are added.
 
 ## Layers + runners
 
-| Layer | Runner | Scripts | Where it runs |
-| --- | --- | --- | --- |
-| Unit | `vitest` | `pnpm test`, `pnpm test:watch` | Pure-TS modules, no DB. |
-| Integration | `vitest` (via `scripts/test-int.sh`) | `pnpm test:int` | Hits a real Supabase via service-role; covers SQL CHECKs, RLS, views, server actions. |
-| E2E | Playwright (via `scripts/test-e2e.sh`) | `pnpm test:e2e` | Full browser; auth-state pre-seeded by `tests/e2e/auth.setup.ts` → `tests/e2e/.auth/storage.json`. |
-| All | — | `pnpm test:all` | Runs the three above sequentially. |
+| Layer | Runner | Scripts | Scope | Files |
+| --- | --- | --- | --- | --- |
+| Unit | `vitest run` | `pnpm test`, `pnpm test:watch` | Pure-TS modules in `src/lib/**` + colocated component tests. No DB, no network. | `src/**/*.test.ts(x)` (excluding `src/app/**/*actions.test.ts`) |
+| Integration | `vitest run --config vitest.integration.config.ts` (via `scripts/test-int.sh`) | `pnpm test:int` | Server actions, DB views, RLS, SQL CHECKs. Service-role client against a local Supabase. Files run serially (`fileParallelism: false`) and share one client. | `tests/integration/**/*.test.ts`, `src/app/**/*actions.test.ts` |
+| E2E | Playwright (via `scripts/test-e2e.sh`) | `pnpm test:e2e` | Browser-level golden paths. Auth state pre-seeded by `tests/e2e/auth.setup.ts` → `tests/e2e/.auth/storage.json`; the `chromium` project consumes it via `storageState`. | `tests/e2e/**/*.spec.ts` |
+| All | — | `pnpm test:all` | Runs the three above sequentially. | — |
 
-E2E expects `SUPABASE_TEST_URL` + `SUPABASE_TEST_SERVICE_KEY` and the dev server reachable at the configured URL. Memory note: the Playwright config requires `allowedDevOrigins=127.0.0.1` in `next.config.ts`, otherwise server-action POSTs silently no-op.
+**CI** — `.github/workflows/ci.yml` runs all three layers on every PR and on
+pushes to `main`. The `check` job does typecheck + lint + unit + coverage; a
+combined `integration-e2e` job boots a local Supabase stack
+(`supabase start`) and runs the DB-backed layers + coverage. Node version is
+pinned in `.nvmrc` (24 — the integration suite needs native `WebSocket`, Node 22+).
+Lint and E2E (`tests/e2e/auth-users.spec.ts`) are currently advisory
+(`continue-on-error`); see "Burndown".
 
-**CI** — `.github/workflows/ci.yml` runs all three layers on every PR and on pushes to `main`. The `check` job does typecheck + lint + unit; a combined `integration-e2e` job boots a local Supabase stack (`supabase start`) and runs the DB-backed layers. Repo Node version is pinned in `.nvmrc` (24 — the integration suite needs native `WebSocket`, Node 22+). Lint and E2E are currently advisory in CI (`continue-on-error`) — see Notable gaps.
+**Env requirements** — integration + E2E need `SUPABASE_TEST_URL`,
+`SUPABASE_TEST_SERVICE_KEY`, `SUPABASE_TEST_ANON_KEY` exported (CI writes them
+to `$GITHUB_ENV` from `supabase status -o json`; local dev uses
+`.env.test.local`). Playwright additionally requires
+`next.config.ts → allowedDevOrigins: ["127.0.0.1"]` so server-action POSTs
+aren't silently dropped.
 
-## Unit tests (`pnpm test`)
+## What lives where
 
-### Endings — evaluator + analysis
-- **`src/lib/endings/evaluator.test.ts`** (~85 cases)
-  - `evaluateChip` — text / number_ref / aggregate_ref operators, including class + nation aggregates, ties, missing-input handling.
-  - `evaluateRow` — AND across chips, empty-row contract.
-  - `evaluateFramework` — text + condition rendering, first-match-wins, nested conditions, AND across chips.
-  - `matchingRowsByBlock`, `shadowedRowIds` — pre-shadow vs post-shadow row sets, nested condition scoping, numeric overlap.
-  - `evaluateDocument` — text leaves, result leaves, nested condition+result, empty doc, first-match-wins, cycle guard via `evaluatingDocs`.
-  - `evaluateChip / aggregate tiebreak resolution` — empty doc → false; doc resolves tied option → true; doc returns null / non-tied → false; nation 3-way tie; "tiebreak only fires on tie" pin.
-  - `evaluateFramework` backwards-compat alias parity.
-  - `evaluateDocument set-narrowing` — auto-resolve at size 1, gated removals, every-row evaluation, definite result short-circuits, fallback on empty set, `__random_remaining__` rolls the working set, `set_excludes` semantics.
-  - `evaluateDocumentDetailed` — non-narrowing path returns null pool/sentinel; narrowing path with concrete result returns null pool; narrowing path with `__random_remaining__` returns the post-removal working set as `rollPool` and the literal sentinel as `rollSentinel`; narrowing fallback path with random sentinel returns the surviving working set.
-  - `resolveAggregatesDetailed / nation tiebreak random` — narrowing-mode random sentinel sets `fromRandom: true` + populates `rollPool`; concrete narrowing result keeps `fromRandom: false`; `__remove__:` chain into `__random_remaining__` surfaces the post-removal pool (fewer options than the original tied set).
-- **`src/lib/endings/static-analysis.test.ts`** (~39 cases)
-  - `staticShadowedRows` for text / aggregate / number_ref chips.
-  - `uncoveredAssignmentsByBlock` for text + aggregate (including tie-state behavior under empty / non-empty `tiebreakDocsSummary`).
-  - `uncoveredAssignmentsByBlock` numeric-interval coverage (open / closed bounds, inequality, multi-chip gaps).
-  - `numericRowOverlaps` (partial overlap, full shadow, disjoint, mixed-finite skip).
-  - Cap / status edge cases (`cap_exceeded`, `no_finite_vars`), Phase-6 header-variable enumeration, per-block scoping, determinism.
-- **`src/lib/endings/color-palette.test.ts`** — palette index → color mapping; `colorIndexFor` is deterministic.
+- **`src/lib/**` pure modules** → unit. Anything no-DB, no-network with real
+  branching logic ships with a colocated `*.test.ts`.
+- **`src/app/**/actions.ts` server actions** → integration. `next/cache` +
+  `next/navigation` + `@/lib/supabase/server` are mocked; the action is
+  invoked, the DB mutation is asserted directly via `makeTestClient()`, and
+  the exact `revalidatePath` calls are asserted on the spy. For `patch*`-style
+  instant-save actions that intentionally do not revalidate (realtime fans out
+  the change), assert the no-op contract.
+- **`tests/integration/views/**`** → integration. Postgres view derivations
+  (content IDs, effective day IDs, variable tallies).
+- **`tests/integration/rls.test.ts`** → integration. Anon client must be
+  blocked from protected tables.
+- **`tests/integration/endings_logic_v2_constraints.test.ts`** → integration.
+  Block / row / chip CHECKs + aggregate_ref shape rules.
+- **`tests/e2e/**`** → E2E. Two golden paths (inspection-letters slide,
+  narrative-graph drag) + the smoke / dashboard / auth-users specs.
 
-### Endings — server actions
-- **`src/app/(authed)/endings/_shared/document-actions.test.ts`** (~31 cases)
-  - `createFrameworkDocument`, `renameDocument`, `deleteFrameworkDocument` — happy path + kind-aware rejections.
-  - `addBlock` — text / condition / result / fallback type validation, `result_value` validation per doc kind (framework_selection UUID lookup, class/nation option set, framework rejection).
-  - Rows + chips + header variables (CRUD shape).
-  - Deletes (block / row / chip / header var).
-  - `saveDocument` — UPDATE-only invariant, revalidate calls.
-- **`src/app/(authed)/endings/variables/actions.test.ts`** (~13 cases)
-  - `createEndingVariable` — names "New variable", auto-suffix on collision, ignores number_ref sort_order slots.
-  - `createEndingVariableValue` — rejected on number_ref, accepted on text.
-  - `createEndingVariableInline` — creates variable + first value, sets default; trims whitespace; rejects empty name; rejects empty first value.
-  - `createEndingVariableValueInline` — appends value on a text variable, returns id; uses next sort_order slot; rejects on number_ref; rejects empty value; rejects empty variable_id.
-  - **Gap**: `updateAllEndingVariables` color_hex validation (server-action level) still untested.
+## Coverage ratchet
 
-### Other domains
-- **`src/lib/rules/evaluate.test.ts`** — sorting-rules evaluator (Phase 3 sim): operators (equals / contains / numeric / is-with-reference_type), target_slice scoping, `evaluateRule` composition.
-- **`src/lib/playthrough/variables.test.ts`** — `tallyVariables` impact aggregation, `combined_national` logic.
-- **`src/lib/citizen-id.test.ts`** — `formatCitizenIdInput`, `isValidCitizenId`, `generateRandomCitizenId`.
-- **`src/lib/color.test.ts`** — `normalizeHex` corner cases.
-- **`src/lib/ids.test.ts`** — display-id formatters: `formatInspectionLetterId` (L-W2/b3 with omitted variant/piece), `formatReportId`, `formatSortingLetterId`, `formatRfidPayload`, `randomLetterId`.
-- **`src/lib/letter-groups.test.ts`** — `groupSlug` / `parseGroupSlug` round-trip.
-- **`src/lib/graph-overlay.test.ts`** — `extractActiveImpacts` overlay computation.
-- **`src/lib/db/enums.test.ts`** — random sentinels, `parseRandomSubset` / `formatRandomSubset` parsers.
-- **`src/lib/utils.test.ts`** — `lpad`, `formatSortId`, `parseDurationToSeconds`, `formatDurationMMSS`, `toRoman`.
+`pnpm test --coverage` and `pnpm test:int --coverage` both enforce regression
+thresholds defined in `vitest.config.ts` / `vitest.integration.config.ts`.
+Thresholds are set **slightly below** the measured baseline — the goal is "don't
+get worse", not "hit a target". When coverage rises meaningfully, raise the
+floor in the same PR. Per-glob floors pin the well-tested subdirectories so a
+global average can't mask a regression there.
 
-### Inspection letters
-- **`src/app/(authed)/inspection/letters/actions.test.ts`** (12 cases) — `moveLetterGroupToDay`, `moveLetterToGroup`, `saveGroup`, `moveReportSegmentToDay` (drag + drop server actions for the narrative graph + workspace).
+Provider is `@vitest/coverage-v8`. HTML reports land in `coverage/` (unit) and
+`coverage-int/` (integration); CI uploads both as artifacts. To inspect a
+threshold breach in CI, open the run page → Artifacts → download
+`coverage-unit` or `coverage-int` and open `index.html`.
 
-## Integration tests (`pnpm test:int`)
+| Run | Baseline (stmts / branches / fns / lines) | Floor (stmts / branches / fns / lines) |
+| --- | --- | --- |
+| Unit (`src/lib/**`) | 61.46 / 56.72 / 54.92 / 62.9 | 60 / 55 / 53 / 60 |
+| Integration (`src/app/**/actions.ts`) | 53.8 / 45.79 / 52.71 / 57.64 | 52 / 44 / 50 / 55 |
 
-Each spins up a service-role Supabase client and exercises real Postgres.
+**Per-glob floors (unit)** — set just below the well-covered subdirectories so
+they can't regress quietly. Baselines shown so future reviewers can see the
+headroom at a glance:
 
-- **`tests/integration/endings_logic_v2_constraints.test.ts`** (~37 cases) — `ending_documents` kind + name CHECKs, singleton partial unique, framework name uniqueness; `ending_blocks` block_type CHECK matrix (text / condition / result + fallback shape), parent_block / parent_row co-presence, valid nesting; `ending_condition_row_chips` operator + value-shape constraints; `ending_variables.aggregate_ref` allowed-set + kind/shape rules; positive case for `aggregate_ref = 'nation_tiebreak_set'` (0028); 0029 `color_hex` regex CHECK (accepts valid `#RRGGBB`, accepts null, rejects no-hash / 3-digit shorthand / non-hex chars / color-name strings); seeded "Tiebreak Set" variable present alongside Class + Nation Affinity.
-- **`tests/integration/rls.test.ts`** (4 cases) — anon client cannot read or insert into protected tables (`letter_groups`, `ending_condition_rows`, `ending_condition_row_chips`); service-role sanity check.
-- **`tests/integration/views/inspection-letters-view.test.ts`** (5 cases) — `inspection_letters_view.content_id` formatting (single-letter group hides variant suffix, piece omitted at 0, multi-piece formatting).
-- **`tests/integration/views/report-segments-view.test.ts`** (4 cases) — `report_id` + `effective_day_id` derivation rules.
-- **`tests/integration/views/sorting-letters-view.test.ts`** (2 cases) — `sorting_letters_view.content_id`.
-- **`tests/integration/views/playthrough-variables.test.ts`** (3 cases) — 9-column impact tally + `combined_national` (excludes Epicenter by design).
+| Glob | Baseline (stmts / branches / fns / lines) | Floor (stmts / branches / fns / lines) |
+| --- | --- | --- |
+| `src/lib/rules/**` | 91.93 / 90.62 / 100 / 100 | 88 / 85 / 95 / 95 |
+| `src/lib/endings/**` | 84.53 / 75.82 / 93.93 / 89 | 80 / 72 / 90 / 85 |
+| `src/lib/db/**` | 87.65 / 77.77 / 71.42 / 90 | 85 / 75 / 70 / 85 |
+| `src/lib/auth/**` | 95.94 / 92.59 / 100 / 100 | 90 / 80 / 95 / 95 |
 
-## E2E tests (`pnpm test:e2e`)
+`src/lib/db/**` functions has the tightest margin (71.42 → 70) because
+`enums.ts` carries one untested helper and `days.ts` is a tiny barrel; the
+other lib subdirs have 4–8 points of headroom.
 
-- **`tests/e2e/smoke.spec.ts`** (1 active) — unauthenticated `/` → redirect to `/sign-in`. Drops `storageState` so it tests the proxy bounce specifically.
-- **`tests/e2e/dashboard.spec.ts`** (1 active) — authed user loads `/dashboard` without bouncing. Validates the storageState wiring written by `auth.setup.ts`.
-- **`tests/e2e/endings-frameworks.spec.ts`** (4 cases, **all `test.skip`**) — original v3 frameworks editor flow. Skipped pending the Step 6 rewrite for the unified `ending_documents` schema (see `docs/endings-logic-v2-plan.md`). Restoring this file means rewriting against the new shape, not flipping `.skip` off — the seed hooks still reference dropped tables.
+Integration thresholds are global only — two files (`auth/set-password/actions.ts`,
+`sign-in/actions.ts`) sit at 0% (would need a GoTrue session harness), and the
+giant `inspection/letters/actions.ts` is 13.5% (core flows covered, long tail
+not). Pinning per-file would either get circumvented or be aspirational.
 
-## Notable gaps
+## What we deliberately don't unit-test
 
-(See `docs/endings-logic-v2-plan.md` for context on the open work; these are concrete follow-ups specifically about test coverage.)
+- **`src/lib/realtime/*`** — `presence.ts`, `channel.ts`, `avatar-stack.tsx`,
+  `use-flash.ts`, `use-shared-view-state.ts`, `use-instant-field.ts` are thin
+  wrappers around Supabase realtime + React effects. Testing them in isolation
+  exercises framework internals, not our logic; the contracts they enforce
+  (presence sync, autosave debounce + revalidate) are validated end-to-end via
+  the integration + E2E layers.
+- **`src/lib/supabase/{server,client,middleware}.ts`** — client constructors.
+  All branches are "did the cookie helper get wired" — exercised implicitly
+  every time the integration / E2E suite runs.
+- **`src/lib/local-storage.ts`** — pure SSR-safe shims; covered via the hooks
+  that consume them.
+- **Trivial barrels** — e.g. `endings/frameworks/actions.ts` is a single
+  re-export.
 
-- **`updateAllEndingVariables` color_hex** (server-action level): the action validates `#RRGGBB` and persists, but no unit test pins this end-to-end (DB-level CHECK is covered by the integration suite).
-- **Step 6 — endings E2E rewrite**: the skipped spec needs to be rebuilt for the unified shape (3 logic tabs, persistence, tiebreak resolution end-to-end via framework preview, fallback flows on each fallback-bearing doc).
-- **Playthrough runtime tests**: deferred — the playthrough framework itself isn't built yet, so there's no consumer of `evaluateEnding` to test.
-- **CI advisory gates — burndown pending**. Two layers run in CI but do not yet block merges (`continue-on-error` in `.github/workflows/ci.yml`); each flips to blocking once cleared:
-  - **Lint** — `pnpm lint` carries ~49 pre-existing errors (mostly `react-hooks/*` rules surfaced by the Next 16 upgrade: `set-state-in-effect`, `no-unused-vars`, `react-hooks/refs`, `exhaustive-deps`, …).
-  - **E2E settings management** — `tests/e2e/auth-users.spec.ts` has 3 failing specs (`admin deletes a user` / `sends a password reset` / `sends a magic link`): a user created via the admin API never appears in the `/settings` list, so the row locator times out. Root cause not yet diagnosed — could be a stale selector or a real `/settings` listing bug.
+These show up as 0% in the unit-coverage report on purpose; the floors are
+calibrated to account for them.
+
+## Burndown
+
+CI gates that are advisory today and the bar to flip them blocking:
+
+- **Lint** — `pnpm lint` carries ~49 pre-existing errors (mostly `react-hooks/*`
+  rules surfaced by the Next 16 upgrade: `set-state-in-effect`, `no-unused-vars`,
+  `react-hooks/refs`, `exhaustive-deps`, …). Burn down → drop
+  `continue-on-error` in `.github/workflows/ci.yml`.
+- **E2E settings management** — `tests/e2e/auth-users.spec.ts` has 3 failing
+  specs (`admin deletes a user` / `sends a password reset` / `sends a magic
+  link`): a user created via the admin API never appears in the `/settings`
+  list, so the row locator times out. Root cause not yet diagnosed — could be
+  a stale selector or a real `/settings` listing bug. Fix or quarantine → drop
+  `continue-on-error` on the E2E step.
+
+## Deferred / blocked
+
+- **`tests/e2e/endings-frameworks.spec.ts`** is fully `test.skip` pending the
+  Step 6 rewrite for the unified `ending_documents` schema (see
+  `docs/endings-logic-v2-plan.md`). The seed hooks still reference dropped
+  tables; restoring it means a rewrite, not flipping `.skip` off.
+- **Playthrough runtime tests** — the playthrough framework that consumes
+  `evaluateEnding` isn't built yet; nothing to test end-to-end yet.
+- **`updateAllEndingVariables` color_hex (server-action level)** — the action
+  validates `#RRGGBB` and persists. The DB-level CHECK is covered by the
+  integration suite; the server-action wrapper isn't pinned end-to-end.
