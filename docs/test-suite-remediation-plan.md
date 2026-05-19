@@ -72,3 +72,38 @@ CI now runs all three test layers on every PR and on pushes to `main`.
   created via the admin API never appears in the `/settings` list). E2E step
   runs `continue-on-error`.
 - Both flip to blocking once the debt is cleared.
+
+### Phase 1 — done (2026-05-19)
+
+Pure-logic unit tests; PR #60.
+
+- `src/lib/endings/block-state.test.ts` — all 7 indexers.
+- `src/lib/rules/evaluate.test.ts` — an exhaustive `VALID_OPERATOR_REFERENCES`
+  matrix walk (per-pair expected result + a completeness check).
+- `src/lib/auth/profile.test.ts`, `src/lib/auth/assign-avatar.test.ts`.
+- Builders added to `tests/fixtures/builders.ts`.
+
+**Bug found & fixed:** the strengthened matrix walk caught a live routing
+bug — `is` + `any_number` conditions always evaluated `false` because
+`evaluate.ts` keyed the digit-check to `number` while the UI matrix pairs
+`is` with `any_number`. Fixed in the same PR.
+
+### Phase 2 — done (2026-05-19)
+
+Server-action integration tests, Batch A (the riskiest untested mutations).
+~85 new tests; integration suite 220/220.
+
+- `sorting/rules/actions.test.ts` — letter allocation, `duplicateRule`
+  deep-clone, the "no free letter" throw, `saveRuleAll` / `saveConditions`
+  delete-then-reinsert, the `patchSortingRule` no-revalidate contract.
+- `inspection/storylines/actions.test.ts` — 11 actions: reserved-`D`
+  abbreviation guard, `reorderStorylines` cascade, the `updateLetterGroup`
+  report-group name mirror.
+- `inspection/storylines/[id]/groups/[groupId]/actions.test.ts` — 9 actions
+  (inspection-letter / action / report-segment CRUD).
+- `sorting/letters/actions.test.ts` — sorting-letter CRUD + `patchSortingLetter`.
+- `tests/integration/_helpers.ts` — `addRule` / `addRuleCondition` /
+  `cleanupSortingRules` builders.
+- `knowledge-base/testing/server-actions.md` rewritten — it still described
+  the non-existent "preview branch" harness; now matches the real
+  `_helpers.ts` / `makeTestClient` pattern.
