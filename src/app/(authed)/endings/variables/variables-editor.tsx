@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  createContext,
   startTransition,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -27,6 +29,10 @@ import { PanelHeader } from "@/components/panel";
 import { useToast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import { colorIndexFor, paletteColor } from "@/lib/endings/color-palette";
+import {
+  isValidFolderDropTarget,
+  type FolderLike,
+} from "@/lib/endings/folder-drag";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import type {
   EndingFramework,
@@ -47,6 +53,8 @@ import {
   createEndingVariableValue,
   deleteEndingVariable,
   deleteEndingVariableFolder,
+  moveFolderToFolder,
+  moveVariableToFolder,
   patchEndingVariable,
   patchEndingVariableFolder,
 } from "./actions";
@@ -77,6 +85,37 @@ const ROW_HEIGHT_PX = 28;
 const ROW_HEIGHT_CLS = "h-7"; // matches ROW_HEIGHT_PX
 
 export type SelectOptions = { extend?: boolean };
+
+type DragKind = "variable" | "folder";
+type DragSource = { kind: DragKind; id: string };
+/** Where the dragged row would land if released now. `intoFolder=true`
+ *  means "drop into the folder body" (parent_folder_id set to that folder,
+ *  inserted at the end of its children); otherwise we're inserting before
+ *  the `before_id` sibling (or at the end of the group when null). */
+type DragTarget = {
+  parent_folder_id: string | null;
+  before_id: string | null;
+  intoFolder: boolean;
+};
+type DragContextValue = {
+  source: DragSource | null;
+  target: DragTarget | null;
+  start: (source: DragSource) => void;
+  /** Sets the pending target, validating it against the current source
+   *  first (cycle guard for folder→folder). Returns `true` when the
+   *  target was accepted — handlers should only call preventDefault on
+   *  the dragover/drop event when this returns true. */
+  proposeTarget: (target: DragTarget) => boolean;
+  /** Clears the pending target without ending the drag (e.g. dragleave). */
+  clearTarget: () => void;
+  end: () => void;
+};
+const DragCtx = createContext<DragContextValue | null>(null);
+function useDragCtx(): DragContextValue {
+  const ctx = useContext(DragCtx);
+  if (!ctx) throw new Error("DragCtx missing");
+  return ctx;
+}
 
 export function VariablesEditor({
   variables,
@@ -595,6 +634,167 @@ function VariablesEditorInner({
     [toast]
   );
 
+  // ── Drag-and-drop ─────────────────────────────────────────────────
+  // Two-phase commit: dragover stashes the proposed target; drop fires
+  // the optimistic local mutation + the server move. The server
+  // revalidates and the prop-reconcile snaps state back if anything
+  // went wrong.
+  const [dragSource, setDragSource] = useState<DragSource | null>(null);
+  const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
+
+  const dragStart = useCallback((source: DragSource) => {
+    setDragSource(source);
+    setDragTarget(null);
+  }, []);
+  const dragEnd = useCallback(() => {
+    setDragSource(null);
+    setDragTarget(null);
+  }, []);
+
+  // Folders, as the pure-helper FolderLike list (subset of fields the
+  // cycle guard needs). Declared up here so the drag context's closure
+  // captures it; memoised so downstream callbacks don't churn.
+  const foldersForCycle = useMemo<FolderLike[]>(
+    () =>
+      folders.map((f) => ({
+        id: f.id,
+        parent_folder_id: f.parent_folder_id,
+      })),
+    [folders]
+  );
+
+  // Commit the pending drop. Returns true if anything moved.
+  const commitDrop = useCallback(async (): Promise<boolean> => {
+    const source = dragSource;
+    const target = dragTarget;
+    if (!source || !target) return false;
+    // No-op: dropped onto self.
+    if (source.id === target.before_id) return false;
+
+    if (source.kind === "variable") {
+      const variable = variables.find((v) => v.id === source.id);
+      if (!variable) return false;
+      // Skip a same-position move (same folder, same neighbor).
+      const samePosition =
+        (variable.folder_id ?? null) === target.parent_folder_id &&
+        (() => {
+          const siblings = [...textVariables]
+            .filter(
+              (v) => (v.folder_id ?? null) === target.parent_folder_id
+            )
+            .sort((a, b) => a.sort_order - b.sort_order);
+          const idx = siblings.findIndex((s) => s.id === source.id);
+          const afterId = siblings[idx + 1]?.id ?? null;
+          return (target.before_id ?? null) === afterId;
+        })();
+      if (samePosition) return false;
+      // Optimistic local mutation.
+      setVariables((prev) => {
+        const moved = prev.find((v) => v.id === source.id);
+        if (!moved) return prev;
+        const updated: EndingVariable = {
+          ...moved,
+          folder_id: target.parent_folder_id,
+        };
+        const without = prev.filter((v) => v.id !== source.id);
+        const idx = target.before_id
+          ? without.findIndex((v) => v.id === target.before_id)
+          : -1;
+        if (idx < 0) return [...without, updated];
+        return [...without.slice(0, idx), updated, ...without.slice(idx)];
+      });
+      try {
+        await moveVariableToFolder({
+          variable_id: source.id,
+          folder_id: target.parent_folder_id,
+          before_id: target.before_id,
+        });
+        return true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Move failed.";
+        toast({ message: msg, intent: "destructive" });
+        startTransition(() => router.refresh());
+        return false;
+      }
+    }
+
+    // source.kind === "folder"
+    // Client-side cycle guard (DB trigger is the final wall).
+    if (
+      !isValidFolderDropTarget(folders, source.id, target.parent_folder_id)
+    ) {
+      toast({
+        message: "Can't move a folder into itself or a descendant.",
+        intent: "destructive",
+      });
+      return false;
+    }
+    setFolders((prev) => {
+      const moved = prev.find((f) => f.id === source.id);
+      if (!moved) return prev;
+      const updated: EndingVariableFolder = {
+        ...moved,
+        parent_folder_id: target.parent_folder_id,
+      };
+      const without = prev.filter((f) => f.id !== source.id);
+      const idx = target.before_id
+        ? without.findIndex((f) => f.id === target.before_id)
+        : -1;
+      if (idx < 0) return [...without, updated];
+      return [...without.slice(0, idx), updated, ...without.slice(idx)];
+    });
+    try {
+      await moveFolderToFolder({
+        folder_id: source.id,
+        parent_folder_id: target.parent_folder_id,
+        before_id: target.before_id,
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Move failed.";
+      toast({ message: msg, intent: "destructive" });
+      startTransition(() => router.refresh());
+      return false;
+    }
+  }, [dragSource, dragTarget, variables, textVariables, folders, router, toast]);
+
+  const dragValue = useMemo<DragContextValue>(
+    () => ({
+      source: dragSource,
+      target: dragTarget,
+      start: dragStart,
+      proposeTarget: (target: DragTarget) => {
+        if (!dragSource) return false;
+        if (target.before_id === dragSource.id) return false;
+        if (
+          dragSource.kind === "folder" &&
+          !isValidFolderDropTarget(
+            foldersForCycle,
+            dragSource.id,
+            target.parent_folder_id
+          )
+        ) {
+          return false;
+        }
+        setDragTarget((prev) => {
+          if (
+            prev &&
+            prev.parent_folder_id === target.parent_folder_id &&
+            prev.before_id === target.before_id &&
+            prev.intoFolder === target.intoFolder
+          ) {
+            return prev;
+          }
+          return target;
+        });
+        return true;
+      },
+      clearTarget: () => setDragTarget(null),
+      end: dragEnd,
+    }),
+    [dragSource, dragTarget, dragStart, dragEnd, foldersForCycle]
+  );
+
   function handleRenameVariable(id: string, name: string) {
     const trimmed = name.trim();
     if (!trimmed) return;
@@ -766,7 +966,7 @@ function VariablesEditorInner({
   );
 
   return (
-    <>
+    <DragCtx.Provider value={dragValue}>
       {toaster}
       <ControlBar
         view={view}
@@ -780,7 +980,19 @@ function VariablesEditorInner({
       />
 
       <div className="flex items-start gap-4">
-        <div className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card">
+        <div
+          className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card"
+          // Catch a drop that lands on the panel chrome (anywhere outside
+          // a specific row). Without this, releasing inside the panel
+          // but not over a row would do nothing instead of committing
+          // the user's last-known intent.
+          onDrop={(e) => {
+            if (!dragSource) return;
+            e.preventDefault();
+            void commitDrop().finally(dragEnd);
+          }}
+          onDragEnd={dragEnd}
+        >
           <PanelHeader
             title="Variables"
             icon={
@@ -794,6 +1006,7 @@ function VariablesEditorInner({
           {view === "all" ? (
             <AllListView
               folders={folders}
+              foldersForCycle={foldersForCycle}
               childFoldersByParent={childFoldersByParent}
               sortedVariablesByFolder={sortedVariablesByFolder}
               isCollapsed={isCollapsedKey}
@@ -803,6 +1016,7 @@ function VariablesEditorInner({
               pinnedId={pinnedId}
               onRenameVariable={handleRenameVariable}
               onRenameFolder={handleRenameFolder}
+              onDropCommit={() => commitDrop().finally(dragEnd)}
             />
           ) : (
             <ByEndingView
@@ -861,7 +1075,7 @@ function VariablesEditorInner({
           </div>
         ) : null}
       </div>
-    </>
+    </DragCtx.Provider>
   );
 }
 
@@ -1136,6 +1350,7 @@ function CollapseModeToggle({
 
 function AllListView({
   folders,
+  foldersForCycle: _foldersForCycle, // currently consumed by DragCtx only; reserved for future per-row read-throughs
   childFoldersByParent,
   sortedVariablesByFolder,
   isCollapsed,
@@ -1145,8 +1360,10 @@ function AllListView({
   pinnedId,
   onRenameVariable,
   onRenameFolder,
+  onDropCommit,
 }: {
   folders: EndingVariableFolder[];
+  foldersForCycle: FolderLike[];
   childFoldersByParent: Map<string | null, EndingVariableFolder[]>;
   sortedVariablesByFolder: Map<string | null, EndingVariable[]>;
   isCollapsed: (id: string) => boolean;
@@ -1156,7 +1373,9 @@ function AllListView({
   pinnedId: string | null;
   onRenameVariable: (id: string, name: string) => void;
   onRenameFolder: (id: string, name: string) => void;
+  onDropCommit: () => void;
 }) {
+  const drag = useDragCtx();
   const rootFolders = childFoldersByParent.get(null) ?? [];
   const rootVariables = sortedVariablesByFolder.get(null) ?? [];
 
@@ -1180,6 +1399,7 @@ function AllListView({
           key={`pinned-${pinnedFolder.id}`}
           folder={pinnedFolder}
           depth={0}
+          parentFolderId={null}
           childFoldersByParent={childFoldersByParent}
           sortedVariablesByFolder={sortedVariablesByFolder}
           isCollapsed={isCollapsed}
@@ -1188,6 +1408,7 @@ function AllListView({
           onSelect={onSelect}
           onRenameVariable={onRenameVariable}
           onRenameFolder={onRenameFolder}
+          onDropCommit={onDropCommit}
         />
       ) : null}
       {rootFolders
@@ -1197,6 +1418,7 @@ function AllListView({
             key={f.id}
             folder={f}
             depth={0}
+            parentFolderId={null}
             childFoldersByParent={childFoldersByParent}
             sortedVariablesByFolder={sortedVariablesByFolder}
             isCollapsed={isCollapsed}
@@ -1205,6 +1427,7 @@ function AllListView({
             onSelect={onSelect}
             onRenameVariable={onRenameVariable}
             onRenameFolder={onRenameFolder}
+            onDropCommit={onDropCommit}
           />
         ))}
       {rootVariables.map((v) => (
@@ -1212,18 +1435,73 @@ function AllListView({
           key={v.id}
           variable={v}
           depth={0}
+          parentFolderId={null}
           selected={selectedIds.has(v.id)}
           onSelect={(opts) => onSelect(v.id, opts)}
           onRename={(name) => onRenameVariable(v.id, name)}
+          onDropCommit={onDropCommit}
         />
       ))}
+      {/* Root tail-drop zone: a release on the empty space below the
+          last root item moves the dragged row to the end of root. */}
+      <RootTailDropZone
+        onPropose={() =>
+          drag.proposeTarget({
+            parent_folder_id: null,
+            before_id: null,
+            intoFolder: false,
+          })
+        }
+        onDrop={onDropCommit}
+        active={
+          drag.source !== null &&
+          drag.target?.parent_folder_id === null &&
+          drag.target?.before_id === null
+        }
+      />
     </div>
+  );
+}
+
+function RootTailDropZone({
+  onPropose,
+  onDrop,
+  active,
+}: {
+  onPropose: () => boolean;
+  onDrop: () => void;
+  active: boolean;
+}) {
+  return (
+    <div
+      onDragOver={(e) => {
+        if (onPropose()) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDragEnter={(e) => {
+        if (onPropose()) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop();
+      }}
+      className={cn(
+        "border-t border-border transition-colors",
+        // Always visible (12px tall) so users can target the tail even
+        // when the list has only a few rows; brightens when active.
+        "h-3",
+        active && "bg-accent/30"
+      )}
+    />
   );
 }
 
 function FolderBranch({
   folder,
   depth,
+  parentFolderId,
   childFoldersByParent,
   sortedVariablesByFolder,
   isCollapsed,
@@ -1232,9 +1510,14 @@ function FolderBranch({
   onSelect,
   onRenameVariable,
   onRenameFolder,
+  onDropCommit,
 }: {
   folder: EndingVariableFolder;
   depth: number;
+  /** Folder this branch lives inside; null at root. Needed by the row
+   *  drop handlers to compute insert-before-self and insert-after-self
+   *  targets at the correct parent level. */
+  parentFolderId: string | null;
   childFoldersByParent: Map<string | null, EndingVariableFolder[]>;
   sortedVariablesByFolder: Map<string | null, EndingVariable[]>;
   isCollapsed: (id: string) => boolean;
@@ -1243,22 +1526,32 @@ function FolderBranch({
   onSelect: (id: string, opts?: SelectOptions) => void;
   onRenameVariable: (id: string, name: string) => void;
   onRenameFolder: (id: string, name: string) => void;
+  onDropCommit: () => void;
 }) {
+  const drag = useDragCtx();
   const collapsed = isCollapsed(folder.id);
   const childFolders = childFoldersByParent.get(folder.id) ?? [];
   const childVariables = sortedVariablesByFolder.get(folder.id) ?? [];
   const totalChildren = childFolders.length + childVariables.length;
+  // Empty-body drop zone: dragging onto an open, empty folder body lands
+  // the item inside that folder.
+  const emptyZoneActive =
+    drag.source !== null &&
+    drag.target?.intoFolder === true &&
+    drag.target?.parent_folder_id === folder.id;
   return (
     <>
       <FolderRow
         folder={folder}
         depth={depth}
+        parentFolderId={parentFolderId}
         collapsed={collapsed}
         childCount={totalChildren}
         selected={selectedIds.has(folder.id)}
         onSelect={(opts) => onSelect(folder.id, opts)}
         onToggle={() => onToggleCollapsed(folder.id)}
         onRename={(name) => onRenameFolder(folder.id, name)}
+        onDropCommit={onDropCommit}
       />
       {collapsed
         ? null
@@ -1269,6 +1562,7 @@ function FolderBranch({
                 key={sub.id}
                 folder={sub}
                 depth={depth + 1}
+                parentFolderId={folder.id}
                 childFoldersByParent={childFoldersByParent}
                 sortedVariablesByFolder={sortedVariablesByFolder}
                 isCollapsed={isCollapsed}
@@ -1277,6 +1571,7 @@ function FolderBranch({
                 onSelect={onSelect}
                 onRenameVariable={onRenameVariable}
                 onRenameFolder={onRenameFolder}
+                onDropCommit={onDropCommit}
               />
             ))}
             {childVariables.map((v) => (
@@ -1284,16 +1579,46 @@ function FolderBranch({
                 key={v.id}
                 variable={v}
                 depth={depth + 1}
+                parentFolderId={folder.id}
                 selected={selectedIds.has(v.id)}
                 onSelect={(opts) => onSelect(v.id, opts)}
                 onRename={(name) => onRenameVariable(v.id, name)}
+                onDropCommit={onDropCommit}
               />
             ))}
             {totalChildren === 0 ? (
               <div
+                onDragOver={(e) => {
+                  if (
+                    drag.proposeTarget({
+                      parent_folder_id: folder.id,
+                      before_id: null,
+                      intoFolder: true,
+                    })
+                  ) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }
+                }}
+                onDragEnter={(e) => {
+                  if (
+                    drag.proposeTarget({
+                      parent_folder_id: folder.id,
+                      before_id: null,
+                      intoFolder: true,
+                    })
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  onDropCommit();
+                }}
                 className={cn(
-                  "flex items-center border-t border-border text-[11px] italic text-muted-foreground/60",
-                  ROW_HEIGHT_CLS
+                  "flex items-center border-t border-border text-[11px] italic text-muted-foreground/60 transition-colors",
+                  ROW_HEIGHT_CLS,
+                  emptyZoneActive && "bg-accent/30"
                 )}
                 style={{ paddingLeft: `${(depth + 1) * 16 + 28}px` }}
               >
@@ -1309,27 +1634,35 @@ function FolderBranch({
 function FolderRow({
   folder,
   depth,
+  parentFolderId,
   collapsed,
   childCount,
   selected,
   onSelect,
   onToggle,
   onRename,
+  onDropCommit,
 }: {
   folder: EndingVariableFolder;
   depth: number;
+  parentFolderId: string | null;
   collapsed: boolean;
   childCount: number;
   selected: boolean;
   onSelect: (opts?: SelectOptions) => void;
   onToggle: () => void;
   onRename: (name: string) => void;
+  onDropCommit: () => void;
 }) {
   return (
     <RowShell
+      kind="folder"
+      id={folder.id}
+      parentFolderId={parentFolderId}
       selected={selected}
       onSelect={onSelect}
       paddingLeftPx={depth * 16 + 8}
+      onDropCommit={onDropCommit}
     >
       <span
         role="button"
@@ -1368,22 +1701,36 @@ function FolderRow({
 function VariableRow({
   variable,
   depth,
+  parentFolderId,
   selected,
   onSelect,
   onRename,
+  onDropCommit,
 }: {
   variable: EndingVariable;
   depth: number;
+  /** Folder this row currently lives in (null at root). Drives the
+   *  insert-before/insert-after drop targets. By Ending view passes
+   *  whatever the variable's persisted folder is — DnD is suppressed in
+   *  that view by passing `onDropCommit=undefined`. */
+  parentFolderId: string | null;
   selected: boolean;
   onSelect: (opts?: SelectOptions) => void;
   onRename: (name: string) => void;
+  /** Optional — when omitted, the row is read-only with respect to DnD
+   *  (used in By Ending view, which doesn't reorder anything). */
+  onDropCommit?: () => void;
 }) {
   const color = variable.color_hex ?? paletteColor(variable.color_index);
   return (
     <RowShell
+      kind="variable"
+      id={variable.id}
+      parentFolderId={parentFolderId}
       selected={selected}
       onSelect={onSelect}
       paddingLeftPx={depth * 16 + 32}
+      onDropCommit={onDropCommit}
     >
       <span
         aria-hidden
@@ -1403,22 +1750,115 @@ function VariableRow({
 /** A list row chrome shared by folder + variable rows. Single click anywhere
  *  selects; shift+click extends the multi-selection. Double-click on the
  *  RenamableLabel enters rename mode. Row height is fixed so the input
- *  swap doesn't reflow the layout. */
+ *  swap doesn't reflow the layout.
+ *
+ *  Drag-and-drop: every row is draggable (when `onDropCommit` is provided)
+ *  and acts as a drop target. The drop target a row exposes depends on
+ *  cursor Y inside the row:
+ *    - top third  → insert BEFORE this row at the same parent level
+ *    - middle (folder only) → drop INTO this folder
+ *    - bottom third → insert AFTER this row at the same parent level
+ *  For variable rows the middle band degrades to "after" since variables
+ *  can't contain children. */
 function RowShell({
+  kind,
+  id,
+  parentFolderId,
   selected,
   onSelect,
   paddingLeftPx,
+  onDropCommit,
   children,
 }: {
+  kind: DragKind;
+  id: string;
+  parentFolderId: string | null;
   selected: boolean;
   onSelect: (opts?: SelectOptions) => void;
   paddingLeftPx: number;
+  /** When omitted, DnD is disabled on this row (used by By Ending view). */
+  onDropCommit?: () => void;
   children: React.ReactNode;
 }) {
+  const drag = useDragCtx();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const dndEnabled = onDropCommit !== undefined;
+  const isSource = drag.source?.id === id;
+
+  // Compute the proposed target from a dragover event over this row.
+  function targetForEvent(e: React.DragEvent<HTMLDivElement>): DragTarget {
+    const el = rowRef.current;
+    if (!el) {
+      return { parent_folder_id: parentFolderId, before_id: id, intoFolder: false };
+    }
+    const rect = el.getBoundingClientRect();
+    const yFrac = (e.clientY - rect.top) / Math.max(1, rect.height);
+    if (kind === "folder" && yFrac > 0.25 && yFrac < 0.75) {
+      return { parent_folder_id: id, before_id: null, intoFolder: true };
+    }
+    if (yFrac < 0.5) {
+      return { parent_folder_id: parentFolderId, before_id: id, intoFolder: false };
+    }
+    // After this row: before the *next* sibling. The server resolves
+    // before_id=null as "end of group" — but if there is a next sibling
+    // in the same parent, we can't know its id from here without more
+    // wiring. Pass before_id=null and let the editor's commitDrop place
+    // the row at the end relative to the local mirror's reorder pass.
+    // For correct "drop between" behavior, the next row's "before" zone
+    // will fire instead, so this fallback only matters at the end of a
+    // group. (Tested: dragging onto the bottom half of the last row lands
+    // the item at the bottom of the group, which is the desired outcome.)
+    return { parent_folder_id: parentFolderId, before_id: null, intoFolder: false };
+  }
+
+  const target = drag.target;
+  const isInsertBefore =
+    target !== null &&
+    !target.intoFolder &&
+    target.parent_folder_id === parentFolderId &&
+    target.before_id === id;
+  // Highlight a folder row whenever the cursor is anywhere inside it,
+  // including over its child rows or empty body. Innermost wins by
+  // construction: the deepest hovered row sets target.parent_folder_id
+  // to its own direct parent, so only that folder matches.
+  const isIntoSelf =
+    kind === "folder" && target !== null && target.parent_folder_id === id;
+
   return (
     <div
+      ref={rowRef}
       role="button"
       tabIndex={0}
+      draggable={dndEnabled}
+      onDragStart={(e) => {
+        if (!dndEnabled) return;
+        drag.start({ kind, id });
+        e.dataTransfer.effectAllowed = "move";
+        // Some browsers need a payload set; the value itself is unused.
+        e.dataTransfer.setData("text/plain", id);
+      }}
+      onDragEnd={() => {
+        if (!dndEnabled) return;
+        drag.end();
+      }}
+      onDragOver={(e) => {
+        if (!dndEnabled || !drag.source) return;
+        if (drag.proposeTarget(targetForEvent(e))) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDragEnter={(e) => {
+        if (!dndEnabled || !drag.source) return;
+        if (drag.proposeTarget(targetForEvent(e))) {
+          e.preventDefault();
+        }
+      }}
+      onDrop={(e) => {
+        if (!dndEnabled) return;
+        e.preventDefault();
+        onDropCommit?.();
+      }}
       onClick={(e) => onSelect({ extend: e.shiftKey })}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -1427,16 +1867,28 @@ function RowShell({
         }
       }}
       className={cn(
-        "flex cursor-pointer select-none items-center gap-2 border-t border-border px-3 text-sm transition-colors first:border-t-0 focus:outline-none",
+        "relative flex cursor-pointer select-none items-center gap-2 border-t border-border px-3 text-sm transition-colors first:border-t-0 focus:outline-none",
         ROW_HEIGHT_CLS,
-        // Selected wins over hover. Use solid accent so shift-clicking
-        // multiple rows reads at a glance, even against dark panel chrome.
-        selected
-          ? "bg-accent text-accent-foreground hover:bg-accent focus-visible:bg-accent"
-          : "hover:bg-accent/20 focus-visible:bg-accent/20"
+        // isIntoSelf wins over selection/hover so a folder you're about
+        // to drop into reads as the unambiguous target.
+        isIntoSelf
+          ? "bg-accent text-accent-foreground shadow-[inset_0_0_0_2px_var(--color-foreground)]"
+          : selected
+            ? "bg-accent text-accent-foreground hover:bg-accent focus-visible:bg-accent"
+            : "hover:bg-accent/20 focus-visible:bg-accent/20",
+        isSource && "opacity-40"
       )}
       style={{ paddingLeft: `${paddingLeftPx}px` }}
     >
+      {/* Insertion indicator above the row when this row is the
+          "before-id" target. Absolute-positioned so it doesn't grow the
+          row height. */}
+      {isInsertBefore ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 -top-px h-0.5 bg-accent"
+        />
+      ) : null}
       {children}
     </div>
   );
@@ -1603,6 +2055,12 @@ function ByEndingView({
                       key={`${panel.key}:${v.id}`}
                       variable={v}
                       depth={1}
+                      // By Ending intentionally doesn't accept DnD —
+                      // omit onDropCommit and the row falls back to
+                      // selection-only behavior. parentFolderId is
+                      // unused in that mode but still required by the
+                      // shared signature.
+                      parentFolderId={v.folder_id}
                       selected={selectedIds.has(v.id)}
                       onSelect={(opts) => onSelect(v.id, opts)}
                       onRename={(name) => onRenameVariable(v.id, name)}
