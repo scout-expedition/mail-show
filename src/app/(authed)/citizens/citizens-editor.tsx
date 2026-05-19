@@ -294,7 +294,10 @@ function CitizensEditorInner({
       const cid = peerCitizenId(p);
       if (!cid) continue;
       const c = citizenById.get(cid);
-      m.set(p.userId, c ? citizenFullName(c) || "New citizen" : "A citizen");
+      m.set(
+        p.userId,
+        c ? citizenDisplayName(c) || "New citizen" : "A citizen"
+      );
     }
     return m;
   }, [peers, citizenById]);

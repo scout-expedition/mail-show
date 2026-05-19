@@ -3648,7 +3648,11 @@ function HeroSearch({
   const options = useMemo<HeroOption[]>(() => {
     const q = query.trim().toLowerCase();
     const citizenOpts: HeroOption[] = (
-      q ? heroes.filter((h) => citizenFullName(h).toLowerCase().includes(q)) : heroes
+      q
+        ? heroes.filter((h) =>
+            citizenDisplayName(h).toLowerCase().includes(q)
+          )
+        : heroes
     )
       .slice(0, 50)
       .map((c) => ({ kind: "citizen", citizen: c }));

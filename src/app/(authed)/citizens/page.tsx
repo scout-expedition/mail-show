@@ -91,7 +91,7 @@ export default async function CitizensPage() {
             Tab, comma, or pipe separated. Type is <span className="font-mono">hero</span>{" "}
             or <span className="font-mono">npc</span> (defaults to npc). The name is
             split into first / last name. Nation is auto-filled from the city.
-            Unknown cities are skipped silently.
+            Unrecognized city names are left blank (flagged on the row).
           </p>
           <div className="flex justify-end">
             <Button type="submit" size="sm" variant="secondary">
