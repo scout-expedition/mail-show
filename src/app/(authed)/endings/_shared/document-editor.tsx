@@ -137,6 +137,7 @@ export interface DocumentEditorProps {
     blocks: BlockState[];
     rows: RowState[];
     chips: ChipState[];
+    blockVariables: BlockVariableState[];
     variables: VariableState[];
     referencedVariables: VariableState[];
     values: EndingVariableValue[];
@@ -1162,6 +1163,7 @@ export function DocumentEditor({
       blocks: blockState,
       rows: rowState,
       chips: chipState,
+      blockVariables: blockVariableState,
       variables: variableState,
       referencedVariables,
       values,

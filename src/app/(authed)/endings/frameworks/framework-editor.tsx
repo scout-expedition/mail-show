@@ -110,6 +110,7 @@ export function FrameworkEditor({
           blocks={args.blocks}
           rows={args.rows}
           chips={args.chips}
+          blockVariables={args.blockVariables}
           variables={args.variables}
           referencedVariables={args.referencedVariables}
           values={args.values}

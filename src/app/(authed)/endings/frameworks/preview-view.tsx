@@ -19,15 +19,18 @@ import {
   type EvalInputs,
   type EvalRow,
   type EvalVariable,
+  type PreviewItem,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
 import type { SubstitutionSegment } from "@/lib/endings/text-substitution";
 import type {
   BlockState,
+  BlockVariableState,
   ChipState,
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
+import { VariableChip } from "../_blocks/chip";
 import type { EndingVariableValue, Nation } from "@/lib/db/types";
 import {
   AGGREGATE_OPTIONS_BY_REF,
@@ -41,11 +44,33 @@ import {
   IMPACT_TILE_PRESETS,
 } from "@/components/impact-tile";
 
+// Impact-column buckets — shared by the top "Set variable values" panel
+// and the in-preview pending-block pickers.
+const NATION_IMPACT_COLS = new Set([
+  "folos",
+  "emberlyn",
+  "spokgrad",
+  "pelico",
+  "epicenter",
+]);
+const CLASS_IMPACT_COLS = new Set(["proletariat", "gentry"]);
+const WORLD_IMPACT_COLS = new Set(["world_status", "demerits"]);
+
+type NationLite = Pick<
+  Nation,
+  "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
+>;
+
+function presetFor(v: VariableState) {
+  return v.number_ref ? IMPACT_TILE_PRESETS[v.number_ref] : undefined;
+}
+
 export function PreviewView({
   name,
   blocks,
   rows,
   chips,
+  blockVariables,
   variables,
   referencedVariables,
   values,
@@ -60,6 +85,7 @@ export function PreviewView({
   blocks: BlockState[];
   rows: RowState[];
   chips: ChipState[];
+  blockVariables: BlockVariableState[];
   variables: VariableState[];
   referencedVariables: VariableState[];
   values: EndingVariableValue[];
@@ -229,10 +255,10 @@ export function PreviewView({
     ]
   );
   const evaluation = useMemo(
-    () => evaluateDocumentDetailed(evalInputs),
+    () => evaluateDocumentDetailed(evalInputs, { trackPending: true }),
     [evalInputs]
   );
-  const paragraphs = evaluation.paragraphs;
+  const previewItems: PreviewItem[] = evaluation.previewItems ?? [];
   const paragraphSegments = evaluation.paragraphSegments;
 
   // Names of variables that authored `@[Name]` tokens in the body but
@@ -337,18 +363,6 @@ export function PreviewView({
   // actions page renders: class affinities, nation impacts, and the
   // demerits/world_status pair. Other number_ref variables (custom or
   // unfamiliar columns) fall through to a generic numeric input.
-  const NATION_IMPACT_COLS = useMemo(
-    () => new Set(["folos", "emberlyn", "spokgrad", "pelico", "epicenter"]),
-    []
-  );
-  const CLASS_IMPACT_COLS = useMemo(
-    () => new Set(["proletariat", "gentry"]),
-    []
-  );
-  const WORLD_IMPACT_COLS = useMemo(
-    () => new Set(["world_status", "demerits"]),
-    []
-  );
   const nationByName = useMemo(() => {
     const m = new Map<
       string,
@@ -381,20 +395,51 @@ export function PreviewView({
       // their own input.
     }
     return { text, classImpacts, nationImpacts, worldImpacts, otherNumbers };
-  }, [
-    referencedVariables,
-    CLASS_IMPACT_COLS,
-    NATION_IMPACT_COLS,
-    WORLD_IMPACT_COLS,
-  ]);
+  }, [referencedVariables]);
 
-  const numericValue = (v: VariableState): number =>
-    selections.numbers[v.id] == null ? 0 : (selections.numbers[v.id] as number);
-  const setNumeric = (v: VariableState, n: number) => {
-    onChangeNumber(v.id, n === 0 ? null : n);
-  };
-  const presetFor = (v: VariableState) =>
-    v.number_ref ? IMPACT_TILE_PRESETS[v.number_ref] : undefined;
+  const variableStateById = useMemo(() => {
+    const m = new Map<string, VariableState>();
+    for (const v of variables) m.set(v.id, v);
+    return m;
+  }, [variables]);
+  // Header-declared variables per condition block, sorted, resolved to
+  // VariableState — surfaced as chips on resolved condition headers.
+  const declaredByBlock = useMemo(() => {
+    const m = new Map<string, VariableState[]>();
+    const sorted = [...blockVariables].sort(
+      (a, b) => a.sort_order - b.sort_order
+    );
+    for (const bv of sorted) {
+      const variable = variableStateById.get(bv.variable_id);
+      if (!variable) continue;
+      const list = m.get(bv.condition_block_id);
+      if (list) list.push(variable);
+      else m.set(bv.condition_block_id, [variable]);
+    }
+    return m;
+  }, [blockVariables, variableStateById]);
+  const previewCtx = useMemo<PreviewCtx>(
+    () => ({
+      variableById: variableStateById,
+      declaredByBlock,
+      values,
+      selections,
+      nationByName,
+      flashColors,
+      onChangeText,
+      onChangeNumber,
+    }),
+    [
+      variableStateById,
+      declaredByBlock,
+      values,
+      selections,
+      nationByName,
+      flashColors,
+      onChangeText,
+      onChangeNumber,
+    ]
+  );
 
   const hasAnyImpacts =
     buckets.classImpacts.length > 0 ||
@@ -411,43 +456,14 @@ export function PreviewView({
 
           {buckets.text.length > 0 ? (
             <div className="mb-2 grid gap-2 sm:grid-cols-2">
-              {buckets.text.map((v) => {
-                const isUnresolved = unresolvedVariableNames.has(v.name);
-                return (
-                  <div
-                    key={v.id}
-                    className="grid grid-cols-[1fr_1fr] items-center gap-2"
-                  >
-                    <Label
-                      className={cn(
-                        "!text-xs",
-                        isUnresolved && "text-amber-300"
-                      )}
-                    >
-                      {v.name}
-                    </Label>
-                    <FlashRing color={flashColors[v.id]}>
-                      <Select
-                        aria-label={v.name}
-                        value={selections.textValueIds[v.id] ?? ""}
-                        onChange={(e) =>
-                          onChangeText(v.id, e.target.value || null)
-                        }
-                        className={cn("h-8", GHOST_FIELD)}
-                      >
-                        <option value="">—</option>
-                        {values
-                          .filter((val) => val.variable_id === v.id)
-                          .map((val) => (
-                            <option key={val.id} value={val.id}>
-                              {val.value}
-                            </option>
-                          ))}
-                      </Select>
-                    </FlashRing>
-                  </div>
-                );
-              })}
+              {buckets.text.map((v) => (
+                <VariableInput
+                  key={v.id}
+                  variable={v}
+                  ctx={previewCtx}
+                  unresolved={unresolvedVariableNames.has(v.name)}
+                />
+              ))}
             </div>
           ) : null}
 
@@ -455,69 +471,25 @@ export function PreviewView({
             <div className="flex flex-wrap items-start gap-1.5">
               {buckets.classImpacts.length > 0 ? (
                 <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-                  {buckets.classImpacts.map((v) => {
-                    const preset = presetFor(v);
-                    return (
-                      <FlashRing key={v.id} color={flashColors[v.id]}>
-                        <ImpactTile
-                          label={preset?.label ?? v.name}
-                          icon={preset?.icon}
-                          value={numericValue(v)}
-                          onChange={(n) => setNumeric(v, n)}
-                        />
-                      </FlashRing>
-                    );
-                  })}
+                  {buckets.classImpacts.map((v) => (
+                    <VariableInput key={v.id} variable={v} ctx={previewCtx} />
+                  ))}
                 </div>
               ) : null}
 
               {buckets.nationImpacts.length > 0 ? (
                 <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-                  {buckets.nationImpacts.map((v) => {
-                    const nation = v.number_ref
-                      ? nationByName.get(v.number_ref)
-                      : undefined;
-                    if (!nation) {
-                      const preset = presetFor(v);
-                      return (
-                        <FlashRing key={v.id} color={flashColors[v.id]}>
-                          <ImpactTile
-                            label={preset?.label ?? v.name}
-                            icon={preset?.icon}
-                            value={numericValue(v)}
-                            onChange={(n) => setNumeric(v, n)}
-                          />
-                        </FlashRing>
-                      );
-                    }
-                    return (
-                      <FlashRing key={v.id} color={flashColors[v.id]}>
-                        <NationImpactTile
-                          nation={nation}
-                          value={numericValue(v)}
-                          onChange={(n) => setNumeric(v, n)}
-                        />
-                      </FlashRing>
-                    );
-                  })}
+                  {buckets.nationImpacts.map((v) => (
+                    <VariableInput key={v.id} variable={v} ctx={previewCtx} />
+                  ))}
                 </div>
               ) : null}
 
               {buckets.worldImpacts.length > 0 ? (
                 <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
-                  {buckets.worldImpacts.map((v) => {
-                    const preset = presetFor(v);
-                    return (
-                      <FlashRing key={v.id} color={flashColors[v.id]}>
-                        <ImpactTile
-                          label={preset?.label ?? v.name}
-                          icon={preset?.icon}
-                          value={numericValue(v)}
-                          onChange={(n) => setNumeric(v, n)}
-                        />
-                      </FlashRing>
-                    );
-                  })}
+                  {buckets.worldImpacts.map((v) => (
+                    <VariableInput key={v.id} variable={v} ctx={previewCtx} />
+                  ))}
                 </div>
               ) : null}
             </div>
@@ -526,31 +498,7 @@ export function PreviewView({
           {buckets.otherNumbers.length > 0 ? (
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {buckets.otherNumbers.map((v) => (
-                <div
-                  key={v.id}
-                  className="grid grid-cols-[1fr_1fr] items-center gap-2"
-                >
-                  <Label className="!text-xs">{v.name}</Label>
-                  <FlashRing color={flashColors[v.id]}>
-                    <Input
-                      aria-label={v.name}
-                      type="number"
-                      value={
-                        selections.numbers[v.id] == null
-                          ? ""
-                          : String(selections.numbers[v.id])
-                      }
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        onChangeNumber(
-                          v.id,
-                          raw === "" ? null : Number(raw)
-                        );
-                      }}
-                      className={cn("h-8", GHOST_FIELD)}
-                    />
-                  </FlashRing>
-                </div>
+                <VariableInput key={v.id} variable={v} ctx={previewCtx} />
               ))}
             </div>
           ) : null}
@@ -616,17 +564,13 @@ export function PreviewView({
         <h3 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
           {name || "(unnamed framework)"}
         </h3>
-        {paragraphs.length === 0 ? (
+        {previewItems.length === 0 ? (
           <p className="italic text-muted-foreground/80">
             (no blocks to render)
           </p>
         ) : (
-          paragraphSegments.map((segments, i) => (
-            <p key={i} className="whitespace-pre-wrap">
-              {segments.map((seg, j) => (
-                <PreviewSegment key={j} segment={seg} />
-              ))}
-            </p>
+          previewItems.map((item) => (
+            <PreviewNode key={item.blockId} item={item} ctx={previewCtx} />
           ))
         )}
       </article>
@@ -655,6 +599,250 @@ function PreviewSegment({ segment }: { segment: SubstitutionSegment }) {
     );
   }
   return <>{segment.text}</>;
+}
+
+/** Shared dependencies the recursive preview renderer threads down. */
+type PreviewCtx = {
+  variableById: Map<string, VariableState>;
+  /** Header-declared variables per condition block id. */
+  declaredByBlock: Map<string, VariableState[]>;
+  values: EndingVariableValue[];
+  selections: PreviewSelections;
+  nationByName: Map<string, NationLite>;
+  flashColors: Record<string, string>;
+  onChangeText: (variableId: string, valueId: string | null) => void;
+  onChangeNumber: (variableId: string, value: number | null) => void;
+};
+
+/**
+ * One input control for a single variable — a text dropdown or an
+ * impact tile / numeric field. Shared by the top "Set variable values"
+ * panel and the in-preview pending-block pickers; both call the same
+ * `onChangeText`/`onChangeNumber`, so a value set in either place syncs
+ * everywhere. Renders nothing for an aggregate_ref variable (callers
+ * only ever pass directly-settable text / number_ref variables).
+ */
+function VariableInput({
+  variable,
+  ctx,
+  unresolved,
+}: {
+  variable: VariableState;
+  ctx: PreviewCtx;
+  unresolved?: boolean;
+}) {
+  const { values, selections, nationByName, onChangeText, onChangeNumber } =
+    ctx;
+  const flashColor = ctx.flashColors[variable.id];
+
+  if (variable.kind === "text") {
+    return (
+      <div className="grid grid-cols-[1fr_1fr] items-center gap-2">
+        <Label className={cn("!text-xs", unresolved && "text-amber-300")}>
+          {variable.name}
+        </Label>
+        <FlashRing color={flashColor}>
+          <Select
+            aria-label={variable.name}
+            value={selections.textValueIds[variable.id] ?? ""}
+            onChange={(e) => onChangeText(variable.id, e.target.value || null)}
+            className={cn("h-8", GHOST_FIELD)}
+          >
+            <option value="">—</option>
+            {values
+              .filter((val) => val.variable_id === variable.id)
+              .map((val) => (
+                <option key={val.id} value={val.id}>
+                  {val.value}
+                </option>
+              ))}
+          </Select>
+        </FlashRing>
+      </div>
+    );
+  }
+
+  if (variable.kind === "number_ref" && variable.number_ref) {
+    const col = variable.number_ref;
+    const num = selections.numbers[variable.id] ?? 0;
+    const setNum = (n: number) =>
+      onChangeNumber(variable.id, n === 0 ? null : n);
+    const nation = NATION_IMPACT_COLS.has(col)
+      ? nationByName.get(col)
+      : undefined;
+    if (nation) {
+      return (
+        <FlashRing color={flashColor}>
+          <NationImpactTile nation={nation} value={num} onChange={setNum} />
+        </FlashRing>
+      );
+    }
+    if (
+      CLASS_IMPACT_COLS.has(col) ||
+      WORLD_IMPACT_COLS.has(col) ||
+      NATION_IMPACT_COLS.has(col)
+    ) {
+      const preset = presetFor(variable);
+      return (
+        <FlashRing color={flashColor}>
+          <ImpactTile
+            label={preset?.label ?? variable.name}
+            icon={preset?.icon}
+            value={num}
+            onChange={setNum}
+          />
+        </FlashRing>
+      );
+    }
+    return (
+      <div className="grid grid-cols-[1fr_1fr] items-center gap-2">
+        <Label className="!text-xs">{variable.name}</Label>
+        <FlashRing color={flashColor}>
+          <Input
+            aria-label={variable.name}
+            type="number"
+            value={
+              selections.numbers[variable.id] == null
+                ? ""
+                : String(selections.numbers[variable.id])
+            }
+            onChange={(e) => {
+              const raw = e.target.value;
+              onChangeNumber(variable.id, raw === "" ? null : Number(raw));
+            }}
+            className={cn("h-8", GHOST_FIELD)}
+          />
+        </FlashRing>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/**
+ * A fired text block — bounding card, optional summary line, then the
+ * substituted ending text in a dark inner well. Mirrors the morning
+ * report preview's report card.
+ */
+function TextBlockCard({
+  summary,
+  segments,
+}: {
+  summary: string | null;
+  segments: SubstitutionSegment[];
+}) {
+  return (
+    <div className="rounded-md border border-border bg-card p-3">
+      {summary && summary.trim() ? (
+        <div className="mb-1.5 text-xs text-muted-foreground">{summary}</div>
+      ) : null}
+      <pre className="m-0 min-h-[3rem] whitespace-pre-wrap rounded-md bg-[var(--block-result-bg)] px-3 py-2 font-mono text-sm text-foreground">
+        {segments.map((seg, j) => (
+          <PreviewSegment key={j} segment={seg} />
+        ))}
+      </pre>
+    </div>
+  );
+}
+
+/**
+ * A resolved condition block — its summary as a label, its matched
+ * content indented beneath under a left rule so the document nesting
+ * stays visible.
+ */
+function ConditionGroup({
+  blockId,
+  summary,
+  items,
+  ctx,
+}: {
+  blockId: string;
+  summary: string | null;
+  items: PreviewItem[];
+  ctx: PreviewCtx;
+}) {
+  const declaredVars = ctx.declaredByBlock.get(blockId) ?? [];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {declaredVars.map((v) => (
+          <VariableChip key={v.id} variable={v} />
+        ))}
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          {summary && summary.trim() ? summary : "Condition"}
+        </span>
+      </div>
+      <div className="flex flex-col gap-3 border-l border-border/60 pl-3">
+        {items.map((child) => (
+          <PreviewNode key={child.blockId} item={child} ctx={ctx} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A pending condition block — dashed box with an inline picker for each
+ * variable it's waiting on. Setting one updates the shared selections
+ * (same handlers as the top panel); the picker then drops out and, once
+ * every value resolves, the box is replaced by the block's content.
+ */
+function PendingConditionBox({
+  summary,
+  variableIds,
+  ctx,
+}: {
+  summary: string | null;
+  variableIds: string[];
+  ctx: PreviewCtx;
+}) {
+  const pendingVars = variableIds
+    .map((id) => ctx.variableById.get(id))
+    .filter((v): v is VariableState => Boolean(v));
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-card/40 p-3">
+      <div className="text-xs italic text-muted-foreground/60">
+        {summary && summary.trim() ? `${summary} — ` : ""}
+        Pending: set the values below to preview this section.
+      </div>
+      {pendingVars.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {pendingVars.map((v) => (
+            <VariableInput key={v.id} variable={v} ctx={ctx} />
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs italic text-muted-foreground/50">
+          Set the variables above to preview this section.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Recursive preview-tree renderer — dispatches on item kind. */
+function PreviewNode({ item, ctx }: { item: PreviewItem; ctx: PreviewCtx }) {
+  if (item.kind === "text") {
+    return <TextBlockCard summary={item.summary} segments={item.segments} />;
+  }
+  if (item.kind === "condition") {
+    return (
+      <ConditionGroup
+        blockId={item.blockId}
+        summary={item.summary}
+        items={item.children}
+        ctx={ctx}
+      />
+    );
+  }
+  return (
+    <PendingConditionBox
+      summary={item.summary}
+      variableIds={item.variableIds}
+      ctx={ctx}
+    />
+  );
 }
 
 function chipSummary(
