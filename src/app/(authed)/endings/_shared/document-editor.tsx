@@ -23,12 +23,18 @@ import {
   useTransition,
   type ReactNode,
 } from "react";
-import { ChevronsDownUp, ChevronsUpDown, Eye, Trash2 } from "lucide-react";
+import {
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Eye,
+  ListCollapse,
+  Trash2,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
-import { GHOST_FIELD, PanelHeader } from "@/components/panel";
+import { GHOST_FIELD, OverflowMenu, PanelHeader } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type {
   EndingBlock,
@@ -131,6 +137,7 @@ export interface DocumentEditorProps {
     blocks: BlockState[];
     rows: RowState[];
     chips: ChipState[];
+    blockVariables: BlockVariableState[];
     variables: VariableState[];
     referencedVariables: VariableState[];
     values: EndingVariableValue[];
@@ -342,6 +349,7 @@ export function DocumentEditor({
     try {
       const raw = window.localStorage.getItem(collapseModeStorageKey);
       if (raw === "all") setCollapseModeState("all");
+      else if (raw === "groups") setCollapseModeState("groups");
       else setCollapseModeState("expanded");
     } catch {
       // localStorage unavailable — keep default (expanded).
@@ -1155,6 +1163,7 @@ export function DocumentEditor({
       blocks: blockState,
       rows: rowState,
       chips: chipState,
+      blockVariables: blockVariableState,
       variables: variableState,
       referencedVariables,
       values,
@@ -1173,44 +1182,31 @@ export function DocumentEditor({
     body = (
       <div className="flex flex-col gap-4 p-3">
         {isFramework ? (
-          <div className="flex items-start gap-2">
-            <div className="flex-1">
-              <Label className="!text-xs">Framework name</Label>
-              <FieldHighlight
-                peers={peers}
-                focusKey={{
-                  table: "ending_documents",
-                  recordId: document.id,
-                  field: "name",
-                }}
-                className="mt-1"
-              >
-                <Input
-                  value={nameField.value}
-                  onChange={(e) => nameField.set(e.target.value)}
-                  onFocus={nameField.onFocus}
-                  onBlur={nameField.onBlur}
-                  placeholder="Framework name"
-                  className={cn(
-                    "h-9",
-                    GHOST_FIELD,
-                    nameInvalid && "ring-2 ring-destructive",
-                    nameField.status === "error" && "ring-2 ring-destructive"
-                  )}
-                />
-              </FieldHighlight>
-            </div>
-            {onDeleted ? (
-              <button
-                type="button"
-                aria-label="Delete framework"
-                title="Delete framework"
-                onClick={handleDelete}
-                className="mt-6 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-              >
-                <Trash2 size={14} aria-hidden />
-              </button>
-            ) : null}
+          <div>
+            <Label className="!text-xs">Framework name</Label>
+            <FieldHighlight
+              peers={peers}
+              focusKey={{
+                table: "ending_documents",
+                recordId: document.id,
+                field: "name",
+              }}
+              className="mt-1"
+            >
+              <Input
+                value={nameField.value}
+                onChange={(e) => nameField.set(e.target.value)}
+                onFocus={nameField.onFocus}
+                onBlur={nameField.onBlur}
+                placeholder="Framework name"
+                className={cn(
+                  "h-9",
+                  GHOST_FIELD,
+                  nameInvalid && "ring-2 ring-destructive",
+                  nameField.status === "error" && "ring-2 ring-destructive"
+                )}
+              />
+            </FieldHighlight>
           </div>
         ) : null}
 
@@ -1281,6 +1277,20 @@ export function DocumentEditor({
                 </button>
               </FlashRing>
             ) : null}
+            {onDeleted ? (
+              <OverflowMenu
+                items={[
+                  {
+                    label: "Delete Framework",
+                    intent: "destructive",
+                    icon: <Trash2 size={10} aria-hidden />,
+                    onClick: () => {
+                      void handleDelete();
+                    },
+                  },
+                ]}
+              />
+            ) : null}
           </div>
         }
       />
@@ -1306,11 +1316,16 @@ function CollapseModeToggleGroup({
     icon: React.ReactNode;
   }[] = [
     { id: "expanded", label: "Expand all", icon: <ChevronsUpDown size={14} aria-hidden /> },
+    { id: "groups", label: "Groups only", icon: <ListCollapse size={14} aria-hidden /> },
     { id: "all", label: "Collapse all", icon: <ChevronsDownUp size={14} aria-hidden /> },
   ];
   return (
-    <div role="group" aria-label="Collapse mode" className="flex items-center gap-0.5">
-      {items.map((item) => {
+    <div
+      role="group"
+      aria-label="Collapse mode"
+      className="flex items-center overflow-hidden rounded-md border border-border"
+    >
+      {items.map((item, i) => {
         const active = !dirty && mode === item.id;
         return (
           <button
@@ -1321,10 +1336,11 @@ function CollapseModeToggleGroup({
             aria-label={item.label}
             title={item.label}
             className={cn(
-              "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+              "inline-flex h-6 w-7 items-center justify-center transition-colors",
+              i > 0 && "border-l border-border",
               active
-                ? "bg-accent text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:text-foreground"
             )}
           >
             {item.icon}

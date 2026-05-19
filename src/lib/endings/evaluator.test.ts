@@ -100,13 +100,15 @@ const textBlock = (
   text: string,
   parentBlockId: string | null = null,
   parentRowId: string | null = null,
-  sortOrder = 0
+  sortOrder = 0,
+  summary: string | null = null
 ): EvalBlock => ({
   id,
   parent_block_id: parentBlockId,
   parent_row_id: parentRowId,
   block_type: "text",
   text,
+  summary,
   sort_order: sortOrder,
 });
 
@@ -114,13 +116,15 @@ const condBlock = (
   id: string,
   parentBlockId: string | null = null,
   parentRowId: string | null = null,
-  sortOrder = 0
+  sortOrder = 0,
+  summary: string | null = null
 ): EvalBlock => ({
   id,
   parent_block_id: parentBlockId,
   parent_row_id: parentRowId,
   block_type: "condition",
   text: "",
+  summary,
   sort_order: sortOrder,
 });
 
@@ -129,7 +133,8 @@ const resultBlock = (
   resultValue: string,
   parentBlockId: string | null = null,
   parentRowId: string | null = null,
-  sortOrder = 0
+  sortOrder = 0,
+  summary: string | null = null
 ): EvalBlock => ({
   id,
   parent_block_id: parentBlockId,
@@ -137,6 +142,7 @@ const resultBlock = (
   block_type: "result",
   text: "",
   result_value: resultValue,
+  summary,
   sort_order: sortOrder,
 });
 
@@ -1491,6 +1497,482 @@ describe("evaluateDocumentDetailed", () => {
       expect.arrayContaining(["folos", "emberlyn", "pelico"])
     );
     expect(out.rollPool).toHaveLength(3);
+  });
+});
+
+// ----------------------------------------------------------------------
+// evaluateDocumentDetailed — trackPending: pending-condition placeholders
+// for the framework preview. A condition block whose first non-failing
+// row references an unset variable yields a `pending` PreviewItem.
+// ----------------------------------------------------------------------
+
+describe("evaluateDocumentDetailed — trackPending", () => {
+  it("omits previewItems when trackPending is not set", () => {
+    const out = evaluateDocumentDetailed({
+      blocks: [condBlock("c"), textBlock("t", "Inside", "c", "r")],
+      rows: [row("r", "c")],
+      chips: [textChip("ch", "r", "V", "val-A")],
+      variables: [textVar("V")],
+      selections: EMPTY_SELECTIONS,
+    });
+    expect(out.previewItems).toBeUndefined();
+    expect(out.paragraphs).toEqual([]);
+  });
+
+  it("emits a pending node for a condition block with an unset variable", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), textBlock("t", "Inside", "c", "r")],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "val-A")],
+        variables: [textVar("V", "Performer")],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(out.paragraphs).toEqual([]);
+    expect(out.previewItems).toEqual([
+      { kind: "pending", blockId: "c", summary: null, variableIds: ["V"] },
+    ]);
+  });
+
+  it("replaces the pending node with a condition node once the variable is set", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), textBlock("t", "Inside", "c", "r")],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "val-A")],
+        variables: [textVar("V")],
+        selections: textSelections({ V: "val-A" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.paragraphs).toEqual(["Inside"]);
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "c",
+        summary: null,
+        children: [
+          {
+            kind: "text",
+            blockId: "t",
+            summary: null,
+            segments: [{ kind: "literal", text: "Inside" }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("does not mark pending when an earlier row already matches", () => {
+    // row 1 branches on V1 (set, matches); row 2 branches on V2 (unset).
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("c"),
+          textBlock("t1", "FirstRow", "c", "r1"),
+          textBlock("t2", "SecondRow", "c", "r2"),
+        ],
+        rows: [row("r1", "c", 0), row("r2", "c", 1)],
+        chips: [
+          textChip("ch1", "r1", "V1", "a"),
+          textChip("ch2", "r2", "V2", "b"),
+        ],
+        variables: [textVar("V1"), textVar("V2")],
+        selections: textSelections({ V1: "a" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.paragraphs).toEqual(["FirstRow"]);
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "c",
+        summary: null,
+        children: [
+          {
+            kind: "text",
+            blockId: "t1",
+            summary: null,
+            segments: [{ kind: "literal", text: "FirstRow" }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("scans past a definite-false row to find a pending row", () => {
+    // row 1: V1 set but mismatches → definite false. row 2: V2 unset.
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("c"),
+          textBlock("t1", "FirstRow", "c", "r1"),
+          textBlock("t2", "SecondRow", "c", "r2"),
+        ],
+        rows: [row("r1", "c", 0), row("r2", "c", 1)],
+        chips: [
+          textChip("ch1", "r1", "V1", "a"),
+          textChip("ch2", "r2", "V2", "b"),
+        ],
+        variables: [textVar("V1"), textVar("V2", "Security")],
+        selections: textSelections({ V1: "WRONG" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      { kind: "pending", blockId: "c", summary: null, variableIds: ["V2"] },
+    ]);
+  });
+
+  it("interleaves text and pending nodes in document order", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          textBlock("a", "Alpha", null, null, 0),
+          condBlock("c", null, null, 1),
+          textBlock("z", "Zeta", null, null, 2),
+          textBlock("inside", "Inside", "c", "r"),
+        ],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "v")],
+        variables: [textVar("V", "Var")],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems?.map((it) => it.kind)).toEqual([
+      "text",
+      "pending",
+      "text",
+    ]);
+    expect(out.paragraphs).toEqual(["Alpha", "Zeta"]);
+  });
+
+  it("positions a pending node for a condition block nested inside a fired row", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("outer", null, null, 0),
+          textBlock("ot", "OuterText", "outer", "ro", 0),
+          condBlock("inner", "outer", "ro", 1),
+          textBlock("it", "InnerText", "inner", "ri", 0),
+        ],
+        rows: [row("ro", "outer", 0), row("ri", "inner", 0)],
+        chips: [
+          textChip("c1", "ro", "V1", "a"),
+          textChip("c2", "ri", "V2", "b"),
+        ],
+        variables: [textVar("V1"), textVar("V2", "Inner")],
+        selections: textSelections({ V1: "a" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "outer",
+        summary: null,
+        children: [
+          {
+            kind: "text",
+            blockId: "ot",
+            summary: null,
+            segments: [{ kind: "literal", text: "OuterText" }],
+          },
+          {
+            kind: "pending",
+            blockId: "inner",
+            summary: null,
+            variableIds: ["V2"],
+          },
+        ],
+      },
+    ]);
+    expect(out.paragraphs).toEqual(["OuterText"]);
+  });
+
+  it("nests resolved condition blocks as a tree", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("outer", null, null, 0),
+          condBlock("inner", "outer", "ro", 0),
+          textBlock("t", "Deep", "inner", "ri", 0),
+        ],
+        rows: [row("ro", "outer", 0), row("ri", "inner", 0)],
+        chips: [
+          textChip("c1", "ro", "V1", "a"),
+          textChip("c2", "ri", "V2", "b"),
+        ],
+        variables: [textVar("V1"), textVar("V2")],
+        selections: textSelections({ V1: "a", V2: "b" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "outer",
+        summary: null,
+        children: [
+          {
+            kind: "condition",
+            blockId: "inner",
+            summary: null,
+            children: [
+              {
+                kind: "text",
+                blockId: "t",
+                summary: null,
+                segments: [{ kind: "literal", text: "Deep" }],
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(out.paragraphs).toEqual(["Deep"]);
+  });
+
+  it("emits no condition node when a matched row has no visible content", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), textBlock("t", "   ", "c", "r")],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "v")],
+        variables: [textVar("V")],
+        selections: textSelections({ V: "v" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([]);
+    expect(out.paragraphs).toEqual([]);
+  });
+
+  it("propagates block summaries onto text and condition nodes", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("c", null, null, 0, "Outcome branch"),
+          textBlock("t", "Body", "c", "r", 0, "Victory text"),
+        ],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "v")],
+        variables: [textVar("V")],
+        selections: textSelections({ V: "v" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "c",
+        summary: "Outcome branch",
+        children: [
+          {
+            kind: "text",
+            blockId: "t",
+            summary: "Victory text",
+            segments: [{ kind: "literal", text: "Body" }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("lists distinct unset variable ids, de-duplicated, in first-encountered order", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c")],
+        rows: [row("r1", "c", 0), row("r2", "c", 1)],
+        chips: [
+          textChip("c1", "r1", "A", "x", "=", 0),
+          textChip("c2", "r1", "B", "y", "=", 1),
+          textChip("c3", "r2", "A", "z", "=", 0),
+        ],
+        variables: [textVar("A", "Alpha"), textVar("B", "Beta")],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      { kind: "pending", blockId: "c", summary: null, variableIds: ["A", "B"] },
+    ]);
+  });
+
+  it("expands an aggregate-ref chip to its unset underlying columns", () => {
+    const numberRefByName = new Map([
+      ["proletariat", "var-prol"],
+      ["gentry", "var-gent"],
+    ]);
+    const base = {
+      blocks: [condBlock("c"), textBlock("t", "Win", "c", "r")],
+      rows: [row("r", "c")],
+      chips: [aggChip("ch", "r", "AGG", "proletariat", "top=")],
+      variables: [aggVar("AGG", "class_affinity")],
+    };
+    // No columns set → pending, expanded to both column var ids.
+    const pendingOut = evaluateDocumentDetailed(
+      { ...base, selections: { textValueIds: {}, numbers: {}, numberRefByName } },
+      { trackPending: true }
+    );
+    expect(pendingOut.previewItems).toEqual([
+      {
+        kind: "pending",
+        blockId: "c",
+        summary: null,
+        variableIds: ["var-prol", "var-gent"],
+      },
+    ]);
+    // One column already set → only the still-unset column id is listed.
+    const partialOut = evaluateDocumentDetailed(
+      {
+        ...base,
+        selections: {
+          textValueIds: {},
+          numbers: { "var-prol": 5 },
+          numberRefByName,
+        },
+      },
+      { trackPending: true }
+    );
+    expect(partialOut.previewItems).toEqual([
+      {
+        kind: "pending",
+        blockId: "c",
+        summary: null,
+        variableIds: ["var-gent"],
+      },
+    ]);
+    // Both columns set → block resolves.
+    const resolvedOut = evaluateDocumentDetailed(
+      {
+        ...base,
+        selections: {
+          textValueIds: {},
+          numbers: { "var-prol": 5, "var-gent": 2 },
+          numberRefByName,
+        },
+      },
+      { trackPending: true }
+    );
+    expect(resolvedOut.paragraphs).toEqual(["Win"]);
+  });
+
+  it("wraps a result leaf fired inside a matched condition", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), resultBlock("res", "OUTCOME", "c", "r", 0)],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "v")],
+        variables: [textVar("V")],
+        selections: textSelections({ V: "v" }),
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      {
+        kind: "condition",
+        blockId: "c",
+        summary: null,
+        children: [
+          {
+            kind: "text",
+            blockId: "res",
+            summary: null,
+            segments: [{ kind: "literal", text: "OUTCOME" }],
+          },
+        ],
+      },
+    ]);
+    expect(out.paragraphs).toEqual(["OUTCOME"]);
+  });
+
+  it("does not mark a condition block with no rows or no chips pending", () => {
+    const noRows = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), textBlock("t", "X", "c", "r")],
+        rows: [],
+        chips: [],
+        variables: [],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(noRows.previewItems).toEqual([]);
+
+    const noChips = evaluateDocumentDetailed(
+      {
+        blocks: [condBlock("c"), textBlock("t", "X", "c", "r")],
+        rows: [row("r", "c")],
+        chips: [],
+        variables: [],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(noChips.previewItems).toEqual([]);
+  });
+
+  it("a pending-only document does not fire the fallback block", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [
+          condBlock("c", null, null, 0),
+          textBlock("t", "Inside", "c", "r"),
+          {
+            id: "fb",
+            parent_block_id: null,
+            parent_row_id: null,
+            block_type: "fallback",
+            text: "",
+            result_value: "FALLBACK",
+            sort_order: 999,
+          },
+        ],
+        rows: [row("r", "c")],
+        chips: [textChip("ch", "r", "V", "v")],
+        variables: [textVar("V", "V")],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      { kind: "pending", blockId: "c", summary: null, variableIds: ["V"] },
+    ]);
+    expect(out.paragraphs).toEqual([]);
+  });
+
+  it("emits a result leaf as a text node under trackPending", () => {
+    const out = evaluateDocumentDetailed(
+      {
+        blocks: [resultBlock("res", "proletariat")],
+        rows: [],
+        chips: [],
+        variables: [],
+        selections: EMPTY_SELECTIONS,
+      },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([
+      {
+        kind: "text",
+        blockId: "res",
+        summary: null,
+        segments: [{ kind: "literal", text: "proletariat" }],
+      },
+    ]);
+  });
+
+  it("returns an empty previewItems for a document with no blocks", () => {
+    const out = evaluateDocumentDetailed(
+      { blocks: [], rows: [], chips: [], variables: [], selections: EMPTY_SELECTIONS },
+      { trackPending: true }
+    );
+    expect(out.previewItems).toEqual([]);
+    expect(out.paragraphs).toEqual([]);
   });
 });
 
