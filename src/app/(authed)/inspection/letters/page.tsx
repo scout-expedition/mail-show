@@ -67,20 +67,19 @@ export default async function InspectionLettersPage({
     { data: endingAssignmentData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
-    supabase.from("letter_groups").select("*").order("sequence"),
+    supabase.from("letter_groups").select("*").order("sort_order"),
     supabase.from("days").select("*").order("number"),
     supabase
       .from("inspection_letters_view")
       .select("*")
-      .order("variant", { ascending: true, nullsFirst: true })
-      .order("piece", { ascending: true, nullsFirst: true }),
+      .order("sort_order", { ascending: true }),
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("action_templates").select("*").order("sort_order"),
     supabase.from("citizens").select("*").eq("type", "hero").order("name"),
     supabase.from("citizens").select("citizen_id").not("citizen_id", "is", null),
     supabase.from("cities").select("*"),
     supabase.from("nations").select("*"),
-    supabase.from("report_segments_view").select("*"),
+    supabase.from("report_segments_view").select("*").order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
     supabase.from("inspection_action_ending_assignments").select("*"),

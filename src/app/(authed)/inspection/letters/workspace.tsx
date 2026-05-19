@@ -52,6 +52,9 @@ import type {
 import {
   addActionFromTemplate,
   addPieceToLetter,
+  applyInspectionLetterVariants,
+  applyLetterGroupSequences,
+  applyReportSegmentVariants,
   createInspectionLettersInGroup,
   createLetterGroupInStoryline,
   createLetterInNextGroup,
@@ -69,9 +72,15 @@ import {
   patchLetterGroup,
   patchReportSegment,
   quickCreateCitizen,
+  renumberInspectionLettersSequentially,
+  renumberLetterGroupsSequentially,
+  renumberReportSegmentsSequentially,
   reorderInspectionLetters,
   reorderLetterGroups,
   reorderReportSegments,
+  sortInspectionLettersChronologically,
+  sortLetterGroupsChronologically,
+  sortReportSegmentsChronologically,
   updateCitizen,
 } from "./actions";
 import {
@@ -101,18 +110,24 @@ import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { usePathname, useRouter } from "next/navigation";
 import { groupSlug } from "@/lib/letter-groups";
 import { useConfirm } from "@/components/confirm-dialog";
+import {
+  useRenumberDialog,
+  type RenumberItem,
+} from "@/components/renumber-dialog";
 import { useToast } from "@/components/toast";
 import {
   BookOpen,
+  CalendarClock,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Hash,
+  ListOrdered,
   MailOpen,
   Mails,
   Megaphone,
   MoreVertical,
   Plus,
-  Save,
   Trash2,
 } from "lucide-react";
 import { paletteColor } from "@/lib/endings/color-palette";
@@ -520,6 +535,9 @@ function LettersWorkspaceInner({
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm({
     scoped: true,
   });
+  const { openRenumber, dialog: renumberDialogEl } = useRenumberDialog({
+    scoped: true,
+  });
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -683,6 +701,25 @@ function LettersWorkspaceInner({
   const [segmentOrderOverride, setSegmentOrderOverride] = useState<
     string[] | null
   >(null);
+  // Instant-save reorder: each drop fires the reorder action immediately and
+  // the optimistic override array shields the list until the revalidated
+  // server order catches up — at which point the override is dropped. The
+  // drop happens during render (adjust-state-during-render, same pattern as
+  // the prop mirrors above) so it stays in sync without an effect.
+  if (
+    orderOverride &&
+    orderOverride.length === letters.length &&
+    orderOverride.every((id, i) => id === letters[i]?.id)
+  ) {
+    setOrderOverride(null);
+  }
+  if (
+    segmentOrderOverride &&
+    segmentOrderOverride.length === segments.length &&
+    segmentOrderOverride.every((id, i) => id === segments[i]?.id)
+  ) {
+    setSegmentOrderOverride(null);
+  }
   // Records which surface opened the currently-selected report segment so the
   // segment's back button returns to that surface (actions panel vs. letter
   // group panel) regardless of intermediate state changes.
@@ -1602,6 +1639,155 @@ function LettersWorkspaceInner({
     });
   }
 
+  // --- Edit-ID popup ---
+  async function handleEditGroupId() {
+    if (!group || !currentStoryline) return;
+    const items: RenumberItem[] = allGroups
+      .filter((g) => g.storyline_id === group.storyline_id)
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((g) => ({
+        id: g.id,
+        numberToken: String(g.sequence),
+        name: g.name,
+      }));
+    const result = await openRenumber({
+      kind: "letterGroup",
+      items,
+      targetId: group.id,
+      prefix: currentStoryline.abbreviation ?? "",
+    });
+    if (!result) return;
+    const storylineId = group.storyline_id;
+    startRowAction(async () => {
+      await applyLetterGroupSequences(
+        storylineId,
+        result.edits.map((e) => ({
+          groupId: e.id,
+          newSequence: Number(e.newNumberToken),
+        }))
+      );
+    });
+  }
+
+  async function handleEditLetterId(letterId: string) {
+    if (!group) return;
+    const target = letters.find((l) => l.id === letterId);
+    if (!target || !target.variant) return;
+    // Collapse pieces — one popup row per distinct variant.
+    const byVariant = new Map<string, InspectionLetterView>();
+    for (const l of letters) {
+      if (l.variant && !byVariant.has(l.variant)) byVariant.set(l.variant, l);
+    }
+    const items: RenumberItem[] = Array.from(byVariant.values())
+      .sort((a, b) => (a.variant ?? "").localeCompare(b.variant ?? ""))
+      .map((l) => ({
+        id: l.variant as string,
+        numberToken: l.variant as string,
+        name: l.summary || "(no summary)",
+      }));
+    const result = await openRenumber({
+      kind: "inspectionLetter",
+      items,
+      targetId: target.variant,
+      prefix: `L-${target.storyline_abbreviation}${target.group_sequence}/`,
+    });
+    if (!result) return;
+    // Expand each variant edit across all pieces sharing that old variant.
+    const assignments = result.edits.flatMap((e) =>
+      letters
+        .filter((l) => l.variant === e.id)
+        .map((l) => ({
+          letterId: l.id,
+          newVariant: e.newNumberToken,
+          newPiece: l.piece,
+        }))
+    );
+    const groupId = group.id;
+    startRowAction(async () => {
+      await applyInspectionLetterVariants(groupId, assignments);
+    });
+  }
+
+  async function handleEditSegmentId(segmentId: string) {
+    const target = segments.find((s) => s.id === segmentId);
+    if (!target) return;
+    const reportGroupId = target.report_group_id;
+    const items: RenumberItem[] = segments
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((s) => ({
+        id: s.id,
+        numberToken: s.variant,
+        name: s.summary || "(no summary)",
+      }));
+    const result = await openRenumber({
+      kind: "reportSegment",
+      items,
+      targetId: segmentId,
+      prefix: `R-${target.storyline_abbreviation}${target.group_sequence}/`,
+    });
+    if (!result) return;
+    startRowAction(async () => {
+      await applyReportSegmentVariants(
+        reportGroupId,
+        result.edits.map((e) => ({
+          segmentId: e.id,
+          newVariant: e.newNumberToken,
+        }))
+      );
+    });
+  }
+
+  // --- Renumber / sort-chronologically (letters & report segments) ---
+  async function handleRenumberLetters() {
+    if (!group) return;
+    const ok = await confirmDialog({
+      title: "Renumber letters sequentially?",
+      message:
+        "Every letter's variant in this group will be rewritten to a, b, c… in their current order.",
+      confirmLabel: "Renumber",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await renumberInspectionLettersSequentially(groupId);
+    });
+  }
+
+  function handleSortLettersChronologically() {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await sortInspectionLettersChronologically(groupId);
+    });
+  }
+
+  async function handleRenumberSegments() {
+    const reportGroupId = segments[0]?.report_group_id;
+    if (!reportGroupId) return;
+    const ok = await confirmDialog({
+      title: "Renumber report segments sequentially?",
+      message:
+        "Every report segment's variant in this group will be rewritten to i, ii, iii… in their current order.",
+      confirmLabel: "Renumber",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    startRowAction(async () => {
+      await renumberReportSegmentsSequentially(reportGroupId);
+    });
+  }
+
+  function handleSortSegmentsChronologically() {
+    const reportGroupId = segments[0]?.report_group_id;
+    if (!reportGroupId) return;
+    startRowAction(async () => {
+      await sortReportSegmentsChronologically(reportGroupId);
+    });
+  }
+
   function handleAddAction(templateId: string, includePair = true) {
     if (!group) return;
     const groupId = group.id;
@@ -2141,11 +2327,16 @@ function LettersWorkspaceInner({
             <PanelHeader
               title="Letter Group"
               icon={<Mails size={14} aria-hidden className="text-muted-foreground/70" />}
-              dirty={!!orderOverride}
+              dirty={false}
               showSaved={!!group}
               menu={
                 <OverflowMenu
                   items={[
+                    {
+                      label: "Edit ID",
+                      icon: <Hash size={12} aria-hidden />,
+                      onClick: handleEditGroupId,
+                    },
                     {
                       label: "Delete Letter Group",
                       intent: "destructive",
@@ -2234,36 +2425,41 @@ function LettersWorkspaceInner({
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <ReorderControls
-                  locked={listLocked}
-                  dirty={!!orderOverride}
+                  active={!listLocked}
                   pending={rowPending}
-                  onUnlock={() => setListLocked(false)}
-                  onCancel={() => {
-                    setListLocked(true);
-                    setOrderOverride(null);
-                  }}
-                  onSave={() => {
-                    if (!orderOverride) return;
-                    const final = orderOverride;
-                    const groupId = group.id;
-                    startRowAction(async () => {
-                      await reorderInspectionLetters(groupId, final);
-                      setOrderOverride(null);
+                  onToggle={() => {
+                    if (listLocked) {
+                      setListLocked(false);
+                    } else {
                       setListLocked(true);
-                    });
+                      setOrderOverride(null);
+                      setDragIndex(null);
+                    }
                   }}
                 />
                 <OverflowMenu
-                  items={[1, 2, 3].map((n) => ({
-                    label: n === 1 ? "Letter" : `${n} Letters`,
-                    icon: (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden>+</span>
-                        <MailOpen size={11} aria-hidden />
-                      </span>
-                    ),
-                    onClick: () => handleAddLetters(n),
-                  }))}
+                  items={[
+                    ...[1, 2, 3].map((n) => ({
+                      label: n === 1 ? "Letter" : `${n} Letters`,
+                      icon: (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span aria-hidden>+</span>
+                          <MailOpen size={11} aria-hidden />
+                        </span>
+                      ),
+                      onClick: () => handleAddLetters(n),
+                    })),
+                    {
+                      label: "Renumber letters sequentially",
+                      icon: <ListOrdered size={12} aria-hidden />,
+                      onClick: handleRenumberLetters,
+                    },
+                    {
+                      label: "Sort letters chronologically",
+                      icon: <CalendarClock size={12} aria-hidden />,
+                      onClick: handleSortLettersChronologically,
+                    },
+                  ]}
                 />
               </div>
             </div>
@@ -2275,6 +2471,7 @@ function LettersWorkspaceInner({
                 : letters
               ).map((l, i) => {
                 const active = l.id === selectedId;
+                const isGhost = !listLocked && dragIndex === i;
                 return (
                   <div
                     key={l.id}
@@ -2291,52 +2488,78 @@ function LettersWorkspaceInner({
                       setOrderOverride(next);
                       setDragIndex(i);
                     }}
-                    onDragEnd={() => setDragIndex(null)}
+                    onDragEnd={() => {
+                      setDragIndex(null);
+                      if (listLocked || !orderOverride) return;
+                      const serverIds = letters.map((x) => x.id);
+                      const unchanged =
+                        serverIds.length === orderOverride.length &&
+                        serverIds.every((id, idx) => id === orderOverride[idx]);
+                      if (unchanged) return;
+                      const final = orderOverride;
+                      const groupId = group.id;
+                      startRowAction(async () => {
+                        await reorderInspectionLetters(groupId, final);
+                      });
+                    }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active ? "bg-accent/40" : "hover:bg-accent/15",
+                      isGhost
+                        ? null
+                        : active
+                          ? "bg-accent/40"
+                          : "hover:bg-accent/15",
                       !listLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {!listLocked ? (
-                      <span
+                    {isGhost ? (
+                      <div
                         aria-hidden
-                        className="text-muted-foreground"
-                        title="Drag to reorder"
-                      >
-                        ⋮⋮
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => selectLetter(l.id)}
-                      disabled={!listLocked}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                    >
-                      <InspectionLetterPill
-                        storyline={currentStoryline}
-                        contentId={l.content_id}
+                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs">
-                        {l.summary || (
-                          <span className="text-muted-foreground italic">
-                            (no summary)
+                    ) : (
+                      <>
+                        {!listLocked ? (
+                          <span
+                            aria-hidden
+                            className="text-muted-foreground"
+                            title="Drag to reorder"
+                          >
+                            ⋮⋮
                           </span>
-                        )}
-                      </span>
-                    </button>
-                    {listLocked && active ? (
-                      <button
-                        type="button"
-                        onClick={() => handleAddPiece(l.id)}
-                        disabled={rowPending}
-                        aria-label="Add piece"
-                        title="Add piece"
-                        className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
-                      >
-                        + Piece
-                      </button>
-                    ) : null}
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => selectLetter(l.id)}
+                          disabled={!listLocked}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                        >
+                          <InspectionLetterPill
+                            storyline={currentStoryline}
+                            contentId={l.content_id}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {l.summary || (
+                              <span className="text-muted-foreground italic">
+                                (no summary)
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                        {listLocked && active ? (
+                          <button
+                            type="button"
+                            onClick={() => handleAddPiece(l.id)}
+                            disabled={rowPending}
+                            aria-label="Add piece"
+                            title="Add piece"
+                            className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
+                          >
+                            + Piece
+                          </button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -2360,36 +2583,42 @@ function LettersWorkspaceInner({
               </span>
               <div className="ml-auto flex items-center gap-2">
                 <ReorderControls
-                  locked={segmentListLocked}
-                  dirty={!!segmentOrderOverride}
+                  active={!segmentListLocked}
                   pending={rowPending}
-                  onUnlock={() => setSegmentListLocked(false)}
-                  onCancel={() => {
-                    setSegmentListLocked(true);
-                    setSegmentOrderOverride(null);
-                  }}
-                  onSave={() => {
-                    if (!segmentOrderOverride) return;
-                    const final = segmentOrderOverride;
-                    startRowAction(async () => {
-                      await reorderReportSegments(final);
-                      setSegmentOrderOverride(null);
+                  onToggle={() => {
+                    if (segmentListLocked) {
+                      setSegmentListLocked(false);
+                    } else {
                       setSegmentListLocked(true);
-                    });
+                      setSegmentOrderOverride(null);
+                      setSegmentDragIndex(null);
+                    }
                   }}
                 />
                 <OverflowMenu
-                  items={[1, 2, 3].map((n) => ({
-                    label:
-                      n === 1 ? "Report Segment" : `${n} Report Segments`,
-                    icon: (
-                      <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden>+</span>
-                        <Megaphone size={11} aria-hidden />
-                      </span>
-                    ),
-                    onClick: () => handleAddSegments(n),
-                  }))}
+                  items={[
+                    ...[1, 2, 3].map((n) => ({
+                      label:
+                        n === 1 ? "Report Segment" : `${n} Report Segments`,
+                      icon: (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span aria-hidden>+</span>
+                          <Megaphone size={11} aria-hidden />
+                        </span>
+                      ),
+                      onClick: () => handleAddSegments(n),
+                    })),
+                    {
+                      label: "Renumber report segments sequentially",
+                      icon: <ListOrdered size={12} aria-hidden />,
+                      onClick: handleRenumberSegments,
+                    },
+                    {
+                      label: "Sort report segments chronologically",
+                      icon: <CalendarClock size={12} aria-hidden />,
+                      onClick: handleSortSegmentsChronologically,
+                    },
+                  ]}
                 />
               </div>
             </div>
@@ -2402,6 +2631,7 @@ function LettersWorkspaceInner({
               ).map((seg, i) => {
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
+                const isGhost = !segmentListLocked && segmentDragIndex === i;
                 return (
                   <div
                     key={seg.id}
@@ -2423,42 +2653,69 @@ function LettersWorkspaceInner({
                       setSegmentOrderOverride(next);
                       setSegmentDragIndex(i);
                     }}
-                    onDragEnd={() => setSegmentDragIndex(null)}
+                    onDragEnd={() => {
+                      setSegmentDragIndex(null);
+                      if (segmentListLocked || !segmentOrderOverride) return;
+                      const serverIds = segments.map((x) => x.id);
+                      const unchanged =
+                        serverIds.length === segmentOrderOverride.length &&
+                        serverIds.every(
+                          (id, idx) => id === segmentOrderOverride[idx]
+                        );
+                      if (unchanged) return;
+                      const final = segmentOrderOverride;
+                      startRowAction(async () => {
+                        await reorderReportSegments(final);
+                      });
+                    }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active ? "bg-accent/40" : "hover:bg-accent/15",
+                      isGhost
+                        ? null
+                        : active
+                          ? "bg-accent/40"
+                          : "hover:bg-accent/15",
                       !segmentListLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {!segmentListLocked ? (
-                      <span
+                    {isGhost ? (
+                      <div
                         aria-hidden
-                        className="text-muted-foreground"
-                        title="Drag to reorder"
-                      >
-                        ⋮⋮
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => openSegmentFromGroup(seg.id)}
-                      disabled={!segmentListLocked}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                    >
-                      <ReportSegmentPill
-                        storyline={currentStoryline}
-                        reportId={seg.report_id}
+                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs">
-                        {preview ? (
-                          preview
-                        ) : (
-                          <span className="text-muted-foreground italic">
-                            (empty)
+                    ) : (
+                      <>
+                        {!segmentListLocked ? (
+                          <span
+                            aria-hidden
+                            className="text-muted-foreground"
+                            title="Drag to reorder"
+                          >
+                            ⋮⋮
                           </span>
-                        )}
-                      </span>
-                    </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => openSegmentFromGroup(seg.id)}
+                          disabled={!segmentListLocked}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                        >
+                          <ReportSegmentPill
+                            storyline={currentStoryline}
+                            reportId={seg.report_id}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {preview ? (
+                              preview
+                            ) : (
+                              <span className="text-muted-foreground italic">
+                                (empty)
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -2494,6 +2751,7 @@ function LettersWorkspaceInner({
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
               onDelete={() => handleDeleteLetter(letterState.id)}
+              onEditId={() => handleEditLetterId(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
@@ -2556,6 +2814,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
             />
@@ -2619,6 +2878,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
             />
@@ -2650,6 +2910,7 @@ function LettersWorkspaceInner({
         />
       ) : null}
       {confirmDialogEl}
+      {renumberDialogEl}
       {toaster}
     </div>
   );
@@ -2668,6 +2929,7 @@ function LetterFieldsCard({
   onQuickCreateHero,
   onEditCitizen,
   onDelete,
+  onEditId,
   onBack,
   actionsCount,
   actionsActive,
@@ -2685,6 +2947,8 @@ function LetterFieldsCard({
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
   onDelete: () => void;
+  /** Opens the Edit-ID popup for this letter's variant. */
+  onEditId: () => void;
   /** Called by the back-arrow in the panel header — typically
    * deselects the current letter, dropping the panel view back to
    * the group card. */
@@ -2796,6 +3060,11 @@ function LetterFieldsCard({
         menu={
           <OverflowMenu
             items={[
+              {
+                label: "Edit ID",
+                icon: <Hash size={12} aria-hidden />,
+                onClick: onEditId,
+              },
               {
                 label: "Delete Inspection Letter",
                 intent: "destructive",
@@ -3151,6 +3420,7 @@ function LetterSegmentCard({
   templates,
   onBack,
   onDelete,
+  onEditId,
   onJumpToTrigger,
   onConfirmDialog,
 }: {
@@ -3163,6 +3433,8 @@ function LetterSegmentCard({
   templates: ActionTemplate[];
   onBack: () => void;
   onDelete: (segmentId: string) => void;
+  /** Opens the Edit-ID popup for this report segment's variant. */
+  onEditId: (segmentId: string) => void;
   onJumpToTrigger: (letterId: string) => void;
   onConfirmDialog: (options: {
     title: string;
@@ -3186,16 +3458,8 @@ function LetterSegmentCard({
   // (segment.X), not local edit state — otherwise commitNow's equality
   // check short-circuits the save. See Track B3 lesson in
   // docs/multi-user-collab-plan.md.
-  const variantField = useInstantField<string>({
-    value: segment?.variant ?? "",
-    onCommit: async (next) => {
-      if (!segment) return;
-      const value = next.trim() || segment.variant;
-      await patchReportSegment(segment.id, { variant: value });
-    },
-    onFocusChange: onFocusChangeFor("variant"),
-    onActivity: pingActivity,
-  });
+  // The roman-numeral `variant` is no longer edited inline — it is changed
+  // only through the Edit-ID popup (see the kebab menu).
   const serverOverride: DeliveryOverride =
     segment?.delivery_day_override_id != null
       ? { kind: "absolute", dayId: segment.delivery_day_override_id }
@@ -3358,6 +3622,11 @@ function LetterSegmentCard({
           <OverflowMenu
             items={[
               {
+                label: "Edit ID",
+                icon: <Hash size={12} aria-hidden />,
+                onClick: () => onEditId(segment.id),
+              },
+              {
                 label: "Delete Report Segment",
                 intent: "destructive",
                 icon: <Trash2 size={12} aria-hidden />,
@@ -3385,28 +3654,7 @@ function LetterSegmentCard({
         />
       </div>
       <div className="grid grid-cols-6 gap-3">
-        <div className="col-span-2 flex flex-col gap-1">
-          <Label>Variant</Label>
-          <FieldHighlight peers={peers} focusKey={focusKey("variant")}>
-            <Input
-              value={variantField.value}
-              onChange={(e) =>
-                variantField.set(formatRomanInput(e.target.value))
-              }
-              onFocus={variantField.onFocus}
-              onBlur={variantField.onBlur}
-              placeholder="i"
-              className={cn(
-                "h-8 w-full lowercase",
-                GHOST_FIELD,
-                variantField.value && !isValidRoman(variantField.value)
-                  ? "ring-2 ring-destructive"
-                  : undefined
-              )}
-            />
-          </FieldHighlight>
-        </div>
-        <div className="col-span-2 flex flex-col gap-1">
+        <div className="col-span-3 flex flex-col gap-1">
           <Label>Delivery</Label>
           <div
             className={cn(
@@ -3433,7 +3681,7 @@ function LetterSegmentCard({
                 : "—")}
           </div>
         </div>
-        <div className="col-span-2 flex flex-col gap-1">
+        <div className="col-span-3 flex flex-col gap-1">
           <Label>Delivery override</Label>
           <FieldHighlight
             peers={peers}
@@ -5919,31 +6167,25 @@ function AddActionMenu({
 }
 
 /**
- * Reorder mode controls for a list section header. Locked: shows the
- * reorder icon (clicking enters reorder mode). Unlocked: shows
- * Saved/Unsaved + Save (when dirty) + Cancel — same pattern as panel
- * header SaveRevert but specific to drag-reorder.
+ * Reorder-mode toggle for a list section header. Inactive: shows the reorder
+ * icon (click enters reorder mode). Active: shows the icon highlighted plus a
+ * "Reordering"/"Saving…" label and a spinner while a save is in flight. Each
+ * drop saves instantly — there is no Save/Cancel; clicking again exits.
  */
 function ReorderControls({
-  locked,
-  dirty,
+  active,
   pending,
-  onUnlock,
-  onCancel,
-  onSave,
+  onToggle,
 }: {
-  locked: boolean;
-  dirty: boolean;
+  active: boolean;
   pending: boolean;
-  onUnlock: () => void;
-  onCancel: () => void;
-  onSave: () => void;
+  onToggle: () => void;
 }) {
-  if (locked) {
+  if (!active) {
     return (
       <button
         type="button"
-        onClick={onUnlock}
+        onClick={onToggle}
         title="Reorder"
         aria-label="Reorder"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
@@ -5954,53 +6196,19 @@ function ReorderControls({
   }
   return (
     <div className="flex items-center gap-2">
-      {dirty ? (
-        <span className="font-mono text-[10px] uppercase tracking-widest text-warning">
-          • Unsaved
-        </span>
-      ) : (
-        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-          Reordering
-        </span>
-      )}
+      <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+        {pending ? "Saving…" : "Reordering"}
+      </span>
+      {pending ? <Spinner /> : null}
       <button
         type="button"
-        onClick={onCancel}
-        disabled={pending}
-        aria-label="Cancel reorder"
-        title="Cancel reorder"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+        onClick={onToggle}
+        aria-label="Done reordering"
+        title="Done reordering"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90"
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
+        <ReorderIcon active />
       </button>
-      {dirty ? (
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={pending}
-          aria-label="Save order"
-          title="Save order"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {pending ? (
-            <Spinner />
-          ) : (
-            <Save size={14} aria-hidden />
-          )}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -6521,14 +6729,6 @@ function LastUpdatedFooter({
   );
 }
 
-const ROMAN_RE = /^[ivxlcdm]+$/;
-function formatRomanInput(raw: string): string {
-  return raw.toLowerCase().replace(/[^ivxlcdm]/g, "");
-}
-function isValidRoman(v: string): boolean {
-  return ROMAN_RE.test(v);
-}
-
 function CreatingPill() {
   return (
     <span
@@ -6742,6 +6942,26 @@ function StorylineInspector({
     });
   }
 
+  async function handleRenumberGroups() {
+    const ok = await onConfirmDialog({
+      title: "Renumber groups sequentially?",
+      message:
+        "Every letter group's ID in this storyline will be rewritten to 1, 2, 3… in their current order. Letter and report IDs update to match.",
+      confirmLabel: "Renumber",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    startRowAction(async () => {
+      await renumberLetterGroupsSequentially(storyline.id);
+    });
+  }
+
+  function handleSortGroupsChronologically() {
+    startRowAction(async () => {
+      await sortLetterGroupsChronologically(storyline.id);
+    });
+  }
+
   const letterCountByGroup = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of allLetters)
@@ -6751,34 +6971,33 @@ function StorylineInspector({
   const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
 
   const sortedGroups = useMemo(
-    () => groups.slice().sort((a, b) => a.sequence - b.sequence),
+    () => groups.slice().sort((a, b) => a.sort_order - b.sort_order),
     [groups]
   );
 
-  // --- Reorder mode for the letter-groups list ---
+  // --- Instant-save reorder for the letter-groups list ---
   const [reorderMode, setReorderMode] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
   const [reorderPending, startReorder] = useTransition();
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
-  // If the server group set changes (e.g. a new group was added), reset the
-  // pending order so stale IDs don't leak in.
-  useEffect(() => {
-    if (reorderMode) {
-      setPendingOrder(sortedGroups.map((g) => g.id));
-    } else {
-      setPendingOrder(null);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storyline.id, reorderMode]);
-
   const viewOrderedGroups = useMemo(() => {
-    if (!reorderMode || !pendingOrder) return sortedGroups;
+    if (!pendingOrder) return sortedGroups;
     const byId = new Map(sortedGroups.map((g) => [g.id, g]));
     return pendingOrder
       .map((id) => byId.get(id))
       .filter((g): g is LetterGroup => !!g);
-  }, [reorderMode, pendingOrder, sortedGroups]);
+  }, [pendingOrder, sortedGroups]);
+
+  // Once the revalidated server order matches the optimistic override, drop it
+  // (adjust-state-during-render — no effect needed).
+  if (
+    pendingOrder &&
+    pendingOrder.length === sortedGroups.length &&
+    pendingOrder.every((id, i) => id === sortedGroups[i]?.id)
+  ) {
+    setPendingOrder(null);
+  }
 
   /**
    * Returns the set of group ids whose delivery day is out of monotonic
@@ -6796,39 +7015,12 @@ function StorylineInspector({
     return v;
   }, [viewOrderedGroups, dayById]);
 
-  function beginReorder() {
-    setReorderMode(true);
-    setPendingOrder(sortedGroups.map((g) => g.id));
-  }
-  function cancelReorder() {
-    setReorderMode(false);
-    setPendingOrder(null);
-    setDragIndex(null);
-  }
-  function saveReorder() {
-    if (!pendingOrder) return;
-    const final = pendingOrder;
-    startReorder(async () => {
-      await reorderLetterGroups(storyline.id, final);
-      // Server data flowing back will line up with `final`, so the
-      // dirty check below clears itself naturally.
-      setPendingOrder(final);
-    });
-  }
-
-  // Reorder has unsaved changes when the pending order differs from the
-  // server's current sortedGroups order.
-  const orderDirty =
-    !!pendingOrder &&
-    (pendingOrder.length !== sortedGroups.length ||
-      pendingOrder.some((id, i) => id !== sortedGroups[i]?.id));
-
   return (
     <div className="rounded-md border border-border bg-card">
       <PanelHeader
         title="Storyline"
         icon={<BookOpen size={14} aria-hidden className="text-muted-foreground/70" />}
-        dirty={orderDirty}
+        dirty={false}
         showSaved
         menu={
           groups.length === 0 ? (
@@ -6978,12 +7170,17 @@ function StorylineInspector({
           </span>
           <div className="ml-auto flex items-center gap-2">
             <ReorderControls
-              locked={!reorderMode}
-              dirty={orderDirty}
+              active={reorderMode}
               pending={reorderPending}
-              onUnlock={beginReorder}
-              onCancel={cancelReorder}
-              onSave={saveReorder}
+              onToggle={() => {
+                if (reorderMode) {
+                  setReorderMode(false);
+                  setPendingOrder(null);
+                  setDragIndex(null);
+                } else {
+                  setReorderMode(true);
+                }
+              }}
             />
             <OverflowMenu
               items={[
@@ -6996,6 +7193,16 @@ function StorylineInspector({
                     </span>
                   ),
                   onClick: handleAddGroup,
+                },
+                {
+                  label: "Renumber groups sequentially",
+                  icon: <ListOrdered size={12} aria-hidden />,
+                  onClick: handleRenumberGroups,
+                },
+                {
+                  label: "Sort groups chronologically",
+                  icon: <CalendarClock size={12} aria-hidden />,
+                  onClick: handleSortGroupsChronologically,
                 },
               ]}
             />
@@ -7055,14 +7262,32 @@ function StorylineInspector({
                     setPendingOrder(next);
                     setDragIndex(i);
                   }}
-                  onDragEnd={() => setDragIndex(null)}
+                  onDragEnd={() => {
+                    setDragIndex(null);
+                    if (!pendingOrder) return;
+                    const serverIds = sortedGroups.map((x) => x.id);
+                    const unchanged =
+                      serverIds.length === pendingOrder.length &&
+                      serverIds.every((id, idx) => id === pendingOrder[idx]);
+                    if (unchanged) return;
+                    const final = pendingOrder;
+                    startReorder(async () => {
+                      await reorderLetterGroups(storyline.id, final);
+                    });
+                  }}
                   className={cn(
                     "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
-                    dragIndex === i && "opacity-60",
-                    violates && "bg-destructive/5"
+                    dragIndex !== i && violates && "bg-destructive/5"
                   )}
                 >
-                  {rowContent}
+                  {dragIndex === i ? (
+                    <div
+                      aria-hidden
+                      className="h-5 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                    />
+                  ) : (
+                    rowContent
+                  )}
                 </div>
               );
             }
@@ -7140,7 +7365,8 @@ function StorylinesListPanel({
       arr.push(g);
       m.set(g.storyline_id, arr);
     }
-    for (const arr of m.values()) arr.sort((a, b) => a.sequence - b.sequence);
+    for (const arr of m.values())
+      arr.sort((a, b) => a.sort_order - b.sort_order);
     return m;
   }, [groups]);
 
@@ -7160,13 +7386,13 @@ function StorylinesListPanel({
       arr.push(g);
       m.set(key, arr);
     }
-    // Sort groups within each day by storyline abbreviation then sequence.
+    // Sort groups within each day by storyline abbreviation then sort order.
     for (const arr of m.values()) {
       arr.sort((a, b) => {
         const sa = storylineById.get(a.storyline_id)?.abbreviation ?? "";
         const sb = storylineById.get(b.storyline_id)?.abbreviation ?? "";
         if (sa !== sb) return sa.localeCompare(sb);
-        return a.sequence - b.sequence;
+        return a.sort_order - b.sort_order;
       });
     }
     // Return ordered list of [bucketKey, day|null, groups].

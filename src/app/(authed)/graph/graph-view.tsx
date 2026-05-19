@@ -984,13 +984,13 @@ export function GraphView({
       return cell;
     }
 
-    // Stable group order inside cell: by sequence, then primary instance
+    // Stable group order inside cell: by sort_order, then primary instance
     // first followed by override-day instances. `cell.groupIds` actually
     // holds GROUP INSTANCE node ids ("group:GID" or "group:GID@DAY"), not
     // raw group ids — same key the placement and edge logic looks up.
     const orderedGroups = augmentedLetterGroups
       .slice()
-      .sort((a, b) => a.sequence - b.sequence);
+      .sort((a, b) => a.sort_order - b.sort_order);
     for (const g of orderedGroups) {
       const instances = instancesByGroup.get(g.id) ?? [];
       for (const inst of instances) {
@@ -2577,7 +2577,7 @@ export function GraphView({
         : days.find((d) => d.id === rowId)?.number ?? null;
     const storylineGroups = letterGroups
       .filter((g) => g.storyline_id === storylineId)
-      .sort((a, b) => a.sequence - b.sequence);
+      .sort((a, b) => a.sort_order - b.sort_order);
     const dayNumberById = new Map(days.map((d) => [d.id, d.number]));
 
     let candidates: LetterGroup[];
@@ -2599,7 +2599,7 @@ export function GraphView({
         const maxN = Math.max(...withDay.map((x) => x.n as number));
         candidates = withDay
           .filter((x) => x.n === maxN)
-          .sort((a, b) => a.g.sequence - b.g.sequence)
+          .sort((a, b) => a.g.sort_order - b.g.sort_order)
           .map((x) => x.g);
       }
     }
@@ -2628,6 +2628,10 @@ export function GraphView({
         sameStorylineGroups.length === 0
           ? 1
           : Math.max(...sameStorylineGroups.map((g) => g.sequence)) + 1;
+      const nextSort =
+        sameStorylineGroups.length === 0
+          ? 1
+          : Math.max(...sameStorylineGroups.map((g) => g.sort_order)) + 1;
       const tempId = makeGhostId("group");
       const ghost: LetterGroup = {
         id: tempId,
@@ -2635,6 +2639,7 @@ export function GraphView({
         name: "New Group",
         notes: null,
         sequence: nextSeq,
+        sort_order: nextSort,
         delivery_day_id: targetDayId,
       };
       setPendingAdds((prev) => ({

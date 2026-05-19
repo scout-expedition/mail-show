@@ -48,15 +48,14 @@ export default async function GraphPage() {
     { data: endingValueData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
-    supabase.from("letter_groups").select("*").order("sequence"),
+    supabase.from("letter_groups").select("*").order("sort_order"),
     supabase
       .from("inspection_letters_view")
       .select("*")
-      .order("variant", { ascending: true, nullsFirst: true })
-      .order("piece", { ascending: true, nullsFirst: true }),
+      .order("sort_order", { ascending: true }),
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("days").select("*").order("number"),
-    supabase.from("report_segments_view").select("*"),
+    supabase.from("report_segments_view").select("*").order("sort_order"),
     supabase.from("action_templates").select("*").order("sort_order"),
     supabase.from("nations").select("*").order("sort_order"),
     supabase.from("inspection_action_ending_assignments").select("*"),
