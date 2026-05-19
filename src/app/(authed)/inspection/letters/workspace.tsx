@@ -1478,20 +1478,34 @@ function LettersWorkspaceInner({
   }
 
   /**
-   * Jump from the segment panel to the actions panel for a specific letter
-   * — used by the segment's "Triggers" list. Also switches the group
-   * selection if the trigger lives in a different letter group (e.g. a
-   * sibling storyline's letter pointing at this segment).
+   * Open a letter from the segment panel's "Triggers" list. The letter
+   * opens in the normal letter-detail panel (view "main") — so Back from
+   * there behaves like any other letter, stepping up one panel to the
+   * letter's own group. Switches the group selection when the trigger
+   * lives in a different letter group (e.g. a sibling storyline's letter
+   * pointing at this segment), and hydrates letterState synchronously
+   * (see openLetterForAction) so slot 3 doesn't flash blank for a render.
    */
   function jumpToTrigger(letterId: string) {
-    const target = allLetters.find((l) => l.id === letterId);
-    if (!target) return;
-    if (target.letter_group_id !== selectedGroupId) {
-      setSelectedGroupId(target.letter_group_id);
-    }
-    setSelectedId(letterId);
+    const letter = allLetters.find((l) => l.id === letterId);
+    if (!letter) return;
+    // Stale back-references would otherwise hijack the letter-detail Back
+    // button — clear them so Back steps up to the group as normal.
+    openedNextLetterFromRef.current = null;
+    segmentOpenedFromRef.current = null;
+    const newGroupLetterIds = new Set(
+      allLetters
+        .filter((l) => l.letter_group_id === letter.letter_group_id)
+        .map((l) => l.id)
+    );
+    const newGroupActions = allActions.filter((a) =>
+      newGroupLetterIds.has(a.inspection_letter_id)
+    );
+    setLetterState(toLetterState(letter, newGroupActions, endingAssignments));
+    setSelectedGroupId(letter.letter_group_id);
+    setSelectedId(letter.id);
     setSelectedSegmentId(null);
-    setView("actions");
+    setView("main");
   }
 
   function updateLetter(patch: Partial<LetterState>) {
@@ -2551,8 +2565,8 @@ function LettersWorkspaceInner({
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
-                // it toggles the letter off — unless the letter was
-                // opened via an action's "open next letter" arrow, in
+                // it steps up one panel to the group — unless the letter
+                // was opened via an action's "open next letter" arrow, in
                 // which case back returns to the source action panel.
                 if (view === "actions" || view === "segment") {
                   setView("main");
@@ -2590,7 +2604,7 @@ function LettersWorkspaceInner({
                     return;
                   }
                 }
-                selectLetter(letterState.id);
+                goToBreadcrumb("group");
               }}
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
