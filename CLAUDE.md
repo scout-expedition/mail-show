@@ -15,6 +15,11 @@ Specifically: middleware was renamed to **proxy** — `src/proxy.ts` is the file
 - `pnpm lint` — eslint (flat config in `eslint.config.mjs`).
 - `pnpm build` — production build.
 - `pnpm db:migrate` — applies every `supabase/migrations/*.sql` in lexical order against `DATABASE_URL`, then runs `supabase/seed.sql` if present. Migrations are intentionally minimal: no history table, no rollback. Each is written to be idempotent-friendly (creates types/tables that don't exist), so running the script repeatedly is safe. For one-off changes prefer the Supabase SQL editor or the Supabase MCP and check the resulting SQL into `supabase/migrations/`.
+- `pnpm test` / `pnpm test:int` / `pnpm test:e2e` — unit / integration (server actions, DB views, RLS) / Playwright E2E. Integration + E2E need a local Supabase stack (`supabase start`). CI (`.github/workflows/ci.yml`) runs all three on every PR and on pushes to `main`. Policy + how-to: `docs/testing-protocol.md`.
+
+### Migration naming
+
+Older migrations use sequential prefixes `0001`–`0040`. **New migrations must use a timestamp prefix**: run `supabase migration new <name>`, which generates `<YYYYMMDDHHMMSS>_<name>.sql`. Timestamps sort lexically after the numeric files and make the prefix collisions that parallel branches used to cause structurally impossible — the Supabase CLI keys migrations by their numeric `version`, so two files sharing a prefix break `supabase db reset` / `supabase start`. The five formerly-duplicated `0034`–`0038` pairs were given timestamp prefixes for exactly this reason. Apply the full set with `supabase db reset` against the local stack.
 
 ## Architecture
 

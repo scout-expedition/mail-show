@@ -13,6 +13,8 @@ Snapshot of every test file in the repo as of 2026-05-08, what it covers, and ho
 
 E2E expects `SUPABASE_TEST_URL` + `SUPABASE_TEST_SERVICE_KEY` and the dev server reachable at the configured URL. Memory note: the Playwright config requires `allowedDevOrigins=127.0.0.1` in `next.config.ts`, otherwise server-action POSTs silently no-op.
 
+**CI** — `.github/workflows/ci.yml` runs all three layers on every PR and on pushes to `main`. The `check` job does typecheck + lint + unit; a combined `integration-e2e` job boots a local Supabase stack (`supabase start`) and runs the DB-backed layers. Repo Node version is pinned in `.nvmrc` (24 — the integration suite needs native `WebSocket`, Node 22+). Lint and E2E are currently advisory in CI (`continue-on-error`) — see Notable gaps.
+
 ## Unit tests (`pnpm test`)
 
 ### Endings — evaluator + analysis
@@ -87,3 +89,6 @@ Each spins up a service-role Supabase client and exercises real Postgres.
 - **`updateAllEndingVariables` color_hex** (server-action level): the action validates `#RRGGBB` and persists, but no unit test pins this end-to-end (DB-level CHECK is covered by the integration suite).
 - **Step 6 — endings E2E rewrite**: the skipped spec needs to be rebuilt for the unified shape (3 logic tabs, persistence, tiebreak resolution end-to-end via framework preview, fallback flows on each fallback-bearing doc).
 - **Playthrough runtime tests**: deferred — the playthrough framework itself isn't built yet, so there's no consumer of `evaluateEnding` to test.
+- **CI advisory gates — burndown pending**. Two layers run in CI but do not yet block merges (`continue-on-error` in `.github/workflows/ci.yml`); each flips to blocking once cleared:
+  - **Lint** — `pnpm lint` carries ~49 pre-existing errors (mostly `react-hooks/*` rules surfaced by the Next 16 upgrade: `set-state-in-effect`, `no-unused-vars`, `react-hooks/refs`, `exhaustive-deps`, …).
+  - **E2E settings management** — `tests/e2e/auth-users.spec.ts` has 3 failing specs (`admin deletes a user` / `sends a password reset` / `sends a magic link`): a user created via the admin API never appears in the `/settings` list, so the row locator times out. Root cause not yet diagnosed — could be a stale selector or a real `/settings` listing bug.

@@ -4,9 +4,10 @@ import path from "node:path";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
-// Integration tests: server actions, DB views, RLS. Run against a Supabase
-// preview branch (see knowledge-base/testing/server-actions.md). Requires
-// SUPABASE_TEST_BRANCH_URL and SUPABASE_TEST_SERVICE_KEY in env.
+// Integration tests: server actions, DB views, RLS. Run against a local
+// Supabase stack (`supabase start`); see tests/integration/README.md and
+// knowledge-base/testing/server-actions.md. Requires SUPABASE_TEST_URL and
+// SUPABASE_TEST_SERVICE_KEY in env (scripts/test-int.sh sources them).
 export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(root, "src") },
