@@ -33,6 +33,8 @@ import type {
   ActionRow,
   ActionTemplate,
   Day,
+  EndingVariable,
+  EndingVariableValue,
   InspectionActionEndingAssignment,
   InspectionLetterView,
   LetterGroup,
@@ -42,7 +44,10 @@ import type {
 } from "@/lib/db/types";
 import {
   extractActiveImpacts,
+  extractActiveVariables,
+  VAR_CHIP_W,
   type ActiveImpact,
+  type ActiveVariable,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
 import {
@@ -139,6 +144,8 @@ type Props = {
   segments: ReportSegmentView[];
   nations: Nation[];
   endingAssignments: InspectionActionEndingAssignment[];
+  endingVariables: EndingVariable[];
+  endingValues: EndingVariableValue[];
   impactFilter: ImpactFilter;
   /**
    * When false, the graph is locked: nodes don't drag, edges don't
@@ -170,6 +177,13 @@ type Props = {
    *   • actions: keyed by actionId
    */
   peerRings?: PeerRingMap;
+  /**
+   * Called with a row id just before a context-menu delete dispatches its
+   * server action. The surface broadcasts a "row-deleting" presence event
+   * so peers' DELETE toasts can attribute the delete to this user instead
+   * of falling back to "Someone".
+   */
+  onRowDeleting?: (id: string) => void;
 };
 
 export type PeerRingMap = {
@@ -185,10 +199,10 @@ export type PeerRingMap = {
 // ------------------------------------------------------------------
 const GUTTER_W = 44; // left gutter for day labels
 const HEADER_H = 33; // top header for storyline labels — visually matches the inspector PanelHeader (the panel's min-h-10 plus border-b reads thicker than its CSS height because of the body bg contrast; the scrim's bg-card/80 has no such contrast, so a smaller height matches the perceived weight)
-const CELL_GAP = 60; // gap between sibling groups/reports inside a cell — matches VARIANT_GAP so reports and letter variants use the same horizontal pitch within a row
+const CELL_GAP = 88; // gap between sibling groups/reports inside a cell — matches VARIANT_GAP so reports and letter variants use the same horizontal pitch within a row
 const CELL_VGAP = 40; // vertical gap between reports half and groups half
 const ROW_TOP_PAD = 56;
-const ROW_BOTTOM_PAD = 32;
+const ROW_BOTTOM_PAD = 76; // band below the groups where action chips + impact/variable overlays sit — wide enough for stacked overlay chips
 const MIN_ROW_CONTENT_H = 80;
 
 // Storyline columns size to their content; this is the floor.
@@ -202,7 +216,7 @@ const GROUP_PAD_LEADING = 56; // horizontal padding inside the group outline
 const GROUP_PAD_TRAILING = 56;
 const GROUP_PAD_TOP = 20; // vertical padding inside the group outline
 const GROUP_PAD_BOTTOM = 14;
-const VARIANT_GAP = 60; // horizontal gap between sibling variants in a group — wide enough that impact-overlay badges between adjacent variants don't collide
+const VARIANT_GAP = 88; // horizontal gap between sibling variants in a group — wide enough that impact-overlay badges + variable chips between adjacent variants don't collide
 
 // Card geometry — must match the PillCard layout in components/pills.tsx.
 const PILL_H = 24; // h-6
@@ -255,11 +269,14 @@ export function badgeColsFor(n: number): number {
 /**
  * Horizontal extent of the badge stack drawn to the RIGHT of the chip, in
  * px. World status and demerits share a top row; class and nation
- * affinities wrap beneath at badgeColsFor(). The stack width is the widest
- * row.
+ * affinities wrap beneath at badgeColsFor(); variable chips wrap in a row
+ * below those. The stack width is the widest row.
  */
-function badgeStackExtentRight(impacts: ActiveImpact[]): number {
-  if (impacts.length === 0) return 0;
+function badgeStackExtentRight(
+  impacts: ActiveImpact[],
+  variables: ActiveVariable[]
+): number {
+  if (impacts.length === 0 && variables.length === 0) return 0;
   const worldCount = impacts.filter((i) => i.key.startsWith("world:")).length;
   const others = impacts.length - worldCount;
   const worldRowW =
@@ -271,7 +288,15 @@ function badgeStackExtentRight(impacts: ActiveImpact[]): number {
     otherCols > 0
       ? otherCols * BADGE_W + Math.max(0, otherCols - 1) * BADGE_H_GAP
       : 0;
-  const rowW = Math.max(worldRowW, othersRowW);
+  const varCols =
+    variables.length === 0
+      ? 0
+      : Math.min(variables.length, badgeColsFor(variables.length));
+  const varRowW =
+    varCols > 0
+      ? varCols * VAR_CHIP_W + Math.max(0, varCols - 1) * BADGE_H_GAP
+      : 0;
+  const rowW = Math.max(worldRowW, othersRowW, varRowW);
   return rowW > 0 ? CHIP_TO_BADGES_GAP + rowW : 0;
 }
 
@@ -451,6 +476,8 @@ export function GraphView({
   segments,
   nations,
   endingAssignments,
+  endingVariables,
+  endingValues,
   impactFilter,
   editingEnabled = false,
   recordUndo,
@@ -458,6 +485,7 @@ export function GraphView({
   onSelectionChange,
   selfRingColor = null,
   peerRings,
+  onRowDeleting,
 }: Props) {
   // Fallback empty maps so call sites don't crash when presence is
   // disabled or when no peers are co-selecting any nodes.
@@ -1471,11 +1499,6 @@ export function GraphView({
     };
     const candidates: Candidate[] = [];
 
-    // Set of action ids that set at least one ending variable. Used to paint
-    // an indicator on the chip when the ending overlay is on.
-    const endingActionIds = new Set<string>();
-    for (const ea of endingAssignments) endingActionIds.add(ea.action_id);
-
     for (const a of actions) {
       const src = letterIndex.get(a.inspection_letter_id);
       if (!src) continue;
@@ -1662,6 +1685,7 @@ export function GraphView({
       preferredX: number;
       chipX: number;
       impacts: ActiveImpact[];
+      variables: ActiveVariable[];
       // Left-half siblings render their impact-overlay badges to the
       // LEFT of the chip; right-half siblings to the RIGHT. With 4
       // chips, indices 0–1 are left-side, 2–3 are right-side.
@@ -1720,18 +1744,28 @@ export function GraphView({
         const impacts = isLetterSource
           ? extractActiveImpacts(c.action, impactFilter, nations)
           : [];
+        const variables = isLetterSource
+          ? extractActiveVariables(
+              c.action.id,
+              impactFilter,
+              endingAssignments,
+              endingVariables,
+              endingValues
+            )
+          : [];
         // Left-half siblings push their badge stack outward (left of the
         // chip); right-half siblings push outward to the right. With one
         // chip, default to right.
         const badgeSide: "left" | "right" =
           N >= 2 && i < Math.ceil(N / 2) ? "left" : "right";
-        const stackWidth = badgeStackExtentRight(impacts);
+        const stackWidth = badgeStackExtentRight(impacts, variables);
         placements.push({
           candidate: c,
           chipY,
           preferredX: x,
           chipX: x,
           impacts,
+          variables,
           badgeSide,
           extentLeft: badgeSide === "left" ? stackWidth : 0,
           extentRight: badgeSide === "right" ? stackWidth : 0,
@@ -2046,15 +2080,6 @@ export function GraphView({
       // Arrowhead always matches the line that draws into it — no
       // override for converging targets or muted segment-source lines.
       const arrowColor = color;
-      // Ending marker only on chips leading OUT of a letter (same rule as
-      // impact badges) so the segment → next-letter follow-up doesn't
-      // duplicate the indicator.
-      const isLetterSource = c.source.startsWith("letter:");
-      const hasEnding =
-        impactFilter.masterEnabled !== false &&
-        impactFilter.showEndings &&
-        isLetterSource &&
-        endingActionIds.has(c.action.id);
       // Each chip click selects the action (panel opens to the source
       // letter's actions view, scrolled to this action). Resolve the source
       // letter's group + variant so the selection carries that breadcrumb.
@@ -2144,10 +2169,10 @@ export function GraphView({
           chipY: p.chipY,
           terminator: c.terminator,
           impacts: p.impacts,
+          variables: p.variables,
           badgeSide: p.badgeSide,
           targetXOffset,
           sourceXOffset: sourceXOffsetByEdgeId.get(c.id) ?? 0,
-          hasEnding,
           selected: chipSelected,
           selfRingColor: chipSelected ? selfRingColor ?? undefined : undefined,
           peerRingColors: peerActions?.get(c.action.id),
@@ -2284,6 +2309,8 @@ export function GraphView({
     segments,
     nations,
     endingAssignments,
+    endingVariables,
+    endingValues,
     impactFilter,
     selection,
     select,
@@ -3945,6 +3972,7 @@ export function GraphView({
                     intent: "destructive",
                   });
                   if (!ok) return;
+                  onRowDeleting?.(letter.id);
                   markPendingDelete("letters", letter.id);
                   await deleteInspectionLetter(parsed.groupId, letter.id);
                   if (
@@ -4053,6 +4081,7 @@ export function GraphView({
                         intent: "destructive",
                       });
                       if (!ok) return;
+                      onRowDeleting?.(segId);
                       markPendingDelete("segments", segId);
                       await deleteReportSegment(segId);
                       if (
@@ -4187,6 +4216,7 @@ export function GraphView({
                         intent: "destructive",
                       });
                       if (!ok) return;
+                      onRowDeleting?.(gid);
                       markPendingDelete("groups", gid);
                       await deleteGroup(gid);
                       if (

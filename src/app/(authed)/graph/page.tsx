@@ -5,6 +5,11 @@ import type {
   Citizen,
   City,
   Day,
+  EndingBlock,
+  EndingConditionBlockVariable,
+  EndingConditionRow,
+  EndingConditionRowChip,
+  EndingDocument,
   EndingVariable,
   EndingVariableValue,
   InspectionActionEndingAssignment,
@@ -15,6 +20,7 @@ import type {
   Storyline,
 } from "@/lib/db/types";
 import { profileFromMetadata } from "@/lib/auth/profile";
+import { computeFrameworkOptions } from "@/lib/graph-overlay";
 import { GraphSurface } from "./graph-surface";
 import { sweepOrphanActionRefs } from "../inspection/letters/actions";
 
@@ -46,6 +52,11 @@ export default async function GraphPage() {
     { data: citiesData },
     { data: endingVarData },
     { data: endingValueData },
+    { data: frameworkDocData },
+    { data: endingBlockData },
+    { data: endingRowData },
+    { data: endingChipData },
+    { data: endingBlockVarData },
   ] = await Promise.all([
     supabase.from("storylines").select("*").order("sort_order"),
     supabase.from("letter_groups").select("*").order("sequence"),
@@ -65,6 +76,21 @@ export default async function GraphPage() {
     supabase.from("cities").select("*"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    // Ending documents + their condition logic — feeds the impact overlay's
+    // Endings dropdown (framework → referenced variable set). All kinds are
+    // loaded so the `framework_selection` logic doc is available alongside
+    // the `framework` docs.
+    supabase.from("ending_documents").select("*").order("sort_order"),
+    supabase.from("ending_blocks").select("*").order("sort_order"),
+    supabase.from("ending_condition_rows").select("*").order("sort_order"),
+    supabase
+      .from("ending_condition_row_chips")
+      .select("*")
+      .order("sort_order"),
+    supabase
+      .from("ending_condition_block_variables")
+      .select("*")
+      .order("sort_order"),
   ]);
   const storylines = (sData ?? []) as Storyline[];
   const letterGroups = (gData ?? []) as LetterGroup[];
@@ -84,6 +110,15 @@ export default async function GraphPage() {
   const cities = (citiesData ?? []) as City[];
   const endingVariables = (endingVarData ?? []) as EndingVariable[];
   const endingValues = (endingValueData ?? []) as EndingVariableValue[];
+  const endingDocs = (frameworkDocData ?? []) as EndingDocument[];
+  const frameworkOptions = computeFrameworkOptions(
+    endingDocs.filter((d) => d.kind === "framework"),
+    (endingBlockData ?? []) as EndingBlock[],
+    (endingRowData ?? []) as EndingConditionRow[],
+    (endingChipData ?? []) as EndingConditionRowChip[],
+    (endingBlockVarData ?? []) as EndingConditionBlockVariable[],
+    endingDocs.find((d) => d.kind === "framework_selection")?.id ?? null
+  );
 
   return (
     <GraphSurface
@@ -101,6 +136,7 @@ export default async function GraphPage() {
       cities={cities}
       endingVariables={endingVariables}
       endingValues={endingValues}
+      frameworkOptions={frameworkOptions}
       currentUserId={currentUserId}
       currentEmail={currentEmail}
       currentProfile={presenceProfile}
