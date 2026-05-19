@@ -2497,16 +2497,19 @@ function LettersWorkspaceInner({
                 : letters
               ).map((l, i) => {
                 const active = l.id === selectedId;
-                const isGhost = !listLocked && dragIndex === i;
                 return (
                   <div
                     key={l.id}
                     draggable={!listLocked}
-                    onDragStart={() => setDragIndex(i)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      setDragIndex(i);
+                    }}
                     onDragOver={(e) => {
                       if (listLocked || dragIndex === null || dragIndex === i)
                         return;
                       e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
                       const current = orderOverride ?? letters.map((x) => x.id);
                       const next = current.slice();
                       const [moved] = next.splice(dragIndex, 1);
@@ -2514,6 +2517,7 @@ function LettersWorkspaceInner({
                       setOrderOverride(next);
                       setDragIndex(i);
                     }}
+                    onDrop={(e) => e.preventDefault()}
                     onDragEnd={() => {
                       setDragIndex(null);
                       if (listLocked || !orderOverride) return;
@@ -2530,62 +2534,49 @@ function LettersWorkspaceInner({
                     }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      isGhost
-                        ? null
-                        : active
-                          ? "bg-accent/40"
-                          : "hover:bg-accent/15",
+                      active ? "bg-accent/40" : "hover:bg-accent/15",
                       !listLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {isGhost ? (
-                      <div
+                    {!listLocked ? (
+                      <span
                         aria-hidden
-                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                        className="text-muted-foreground"
+                        title="Drag to reorder"
+                      >
+                        ⋮⋮
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => selectLetter(l.id)}
+                      disabled={!listLocked}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                    >
+                      <InspectionLetterPill
+                        storyline={currentStoryline}
+                        contentId={l.content_id}
                       />
-                    ) : (
-                      <>
-                        {!listLocked ? (
-                          <span
-                            aria-hidden
-                            className="text-muted-foreground"
-                            title="Drag to reorder"
-                          >
-                            ⋮⋮
+                      <span className="min-w-0 flex-1 truncate text-xs">
+                        {l.summary || (
+                          <span className="text-muted-foreground italic">
+                            (no summary)
                           </span>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => selectLetter(l.id)}
-                          disabled={!listLocked}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                        >
-                          <InspectionLetterPill
-                            storyline={currentStoryline}
-                            contentId={l.content_id}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-xs">
-                            {l.summary || (
-                              <span className="text-muted-foreground italic">
-                                (no summary)
-                              </span>
-                            )}
-                          </span>
-                        </button>
-                        {listLocked && active ? (
-                          <button
-                            type="button"
-                            onClick={() => handleAddPiece(l.id)}
-                            disabled={rowPending}
-                            aria-label="Add piece"
-                            title="Add piece"
-                            className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
-                          >
-                            + Piece
-                          </button>
-                        ) : null}
-                      </>
-                    )}
+                        )}
+                      </span>
+                    </button>
+                    {listLocked && active ? (
+                      <button
+                        type="button"
+                        onClick={() => handleAddPiece(l.id)}
+                        disabled={rowPending}
+                        aria-label="Add piece"
+                        title="Add piece"
+                        className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
+                      >
+                        + Piece
+                      </button>
+                    ) : null}
                   </div>
                 );
               })}
@@ -2664,12 +2655,14 @@ function LettersWorkspaceInner({
               ).map((seg, i) => {
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
-                const isGhost = !segmentListLocked && segmentDragIndex === i;
                 return (
                   <div
                     key={seg.id}
                     draggable={!segmentListLocked}
-                    onDragStart={() => setSegmentDragIndex(i)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      setSegmentDragIndex(i);
+                    }}
                     onDragOver={(e) => {
                       if (
                         segmentListLocked ||
@@ -2678,6 +2671,7 @@ function LettersWorkspaceInner({
                       )
                         return;
                       e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
                       const current =
                         segmentOrderOverride ?? segments.map((x) => x.id);
                       const next = current.slice();
@@ -2686,6 +2680,7 @@ function LettersWorkspaceInner({
                       setSegmentOrderOverride(next);
                       setSegmentDragIndex(i);
                     }}
+                    onDrop={(e) => e.preventDefault()}
                     onDragEnd={() => {
                       setSegmentDragIndex(null);
                       if (segmentListLocked || !segmentOrderOverride) return;
@@ -2703,52 +2698,39 @@ function LettersWorkspaceInner({
                     }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      isGhost
-                        ? null
-                        : active
-                          ? "bg-accent/40"
-                          : "hover:bg-accent/15",
+                      active ? "bg-accent/40" : "hover:bg-accent/15",
                       !segmentListLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {isGhost ? (
-                      <div
+                    {!segmentListLocked ? (
+                      <span
                         aria-hidden
-                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                        className="text-muted-foreground"
+                        title="Drag to reorder"
+                      >
+                        ⋮⋮
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => openSegmentFromGroup(seg.id)}
+                      disabled={!segmentListLocked}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                    >
+                      <ReportSegmentPill
+                        storyline={currentStoryline}
+                        reportId={seg.report_id}
                       />
-                    ) : (
-                      <>
-                        {!segmentListLocked ? (
-                          <span
-                            aria-hidden
-                            className="text-muted-foreground"
-                            title="Drag to reorder"
-                          >
-                            ⋮⋮
+                      <span className="min-w-0 flex-1 truncate text-xs">
+                        {preview ? (
+                          preview
+                        ) : (
+                          <span className="text-muted-foreground italic">
+                            (empty)
                           </span>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => openSegmentFromGroup(seg.id)}
-                          disabled={!segmentListLocked}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                        >
-                          <ReportSegmentPill
-                            storyline={currentStoryline}
-                            reportId={seg.report_id}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-xs">
-                            {preview ? (
-                              preview
-                            ) : (
-                              <span className="text-muted-foreground italic">
-                                (empty)
-                              </span>
-                            )}
-                          </span>
-                        </button>
-                      </>
-                    )}
+                        )}
+                      </span>
+                    </button>
                   </div>
                 );
               })}
@@ -7306,10 +7288,14 @@ function StorylineInspector({
                 <div
                   key={g.id}
                   draggable
-                  onDragStart={() => setDragIndex(i)}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragIndex(i);
+                  }}
                   onDragOver={(e) => {
                     if (dragIndex === null || dragIndex === i) return;
                     e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
                     const current =
                       pendingOrder ?? sortedGroups.map((x) => x.id);
                     const next = current.slice();
@@ -7318,6 +7304,7 @@ function StorylineInspector({
                     setPendingOrder(next);
                     setDragIndex(i);
                   }}
+                  onDrop={(e) => e.preventDefault()}
                   onDragEnd={() => {
                     setDragIndex(null);
                     if (!pendingOrder) return;
@@ -7333,17 +7320,10 @@ function StorylineInspector({
                   }}
                   className={cn(
                     "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
-                    dragIndex !== i && violates && "bg-destructive/5"
+                    violates && "bg-destructive/5"
                   )}
                 >
-                  {dragIndex === i ? (
-                    <div
-                      aria-hidden
-                      className="h-5 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
-                    />
-                  ) : (
-                    rowContent
-                  )}
+                  {rowContent}
                 </div>
               );
             }
