@@ -569,6 +569,49 @@ function LettersWorkspaceInner({
         : ([] as ReportSegmentView[]),
     [allSegments, group]
   );
+  const dayById = useMemo(
+    () => new Map(days.map((d) => [d.id, d])),
+    [days]
+  );
+
+  /**
+   * Delivery pill for a letter / report row: a signed relative offset from
+   * the group's delivery day (e.g. "+1"), or the absolute day's identifier
+   * when the row carries an absolute delivery override.
+   */
+  function deliveryBadge(
+    overrideId: string | null,
+    effectiveId: string | null
+  ): ReactNode {
+    if (overrideId) {
+      const d = dayById.get(overrideId);
+      return (
+        <Badge variant="muted" className="shrink-0">
+          {d?.identifier ?? "?"}
+        </Badge>
+      );
+    }
+    const groupDay = group?.delivery_day_id
+      ? dayById.get(group.delivery_day_id)
+      : null;
+    const eff = effectiveId ? dayById.get(effectiveId) : null;
+    if (eff && groupDay) {
+      const delta = eff.number - groupDay.number;
+      return (
+        <Badge variant="muted" className="shrink-0">
+          {delta >= 0 ? `+${delta}` : `${delta}`}
+        </Badge>
+      );
+    }
+    if (eff) {
+      return (
+        <Badge variant="muted" className="shrink-0">
+          {eff.identifier}
+        </Badge>
+      );
+    }
+    return null;
+  }
 
   // The next letter group by storyline sequence. Used ONLY to choose
   // between the dropdown's "+ Letter" (create into this group) and
@@ -2497,6 +2540,7 @@ function LettersWorkspaceInner({
                 : letters
               ).map((l, i) => {
                 const active = l.id === selectedId;
+                const isGhost = !listLocked && dragIndex === i;
                 return (
                   <div
                     key={l.id}
@@ -2506,10 +2550,13 @@ function LettersWorkspaceInner({
                       setDragIndex(i);
                     }}
                     onDragOver={(e) => {
-                      if (listLocked || dragIndex === null || dragIndex === i)
-                        return;
+                      if (listLocked || dragIndex === null) return;
+                      // preventDefault + dropEffect always (even over the
+                      // dragged row's own slot) so the release counts as a
+                      // valid "move" drop and the browser plays no snap-back.
                       e.preventDefault();
                       e.dataTransfer.dropEffect = "move";
+                      if (dragIndex === i) return;
                       const current = orderOverride ?? letters.map((x) => x.id);
                       const next = current.slice();
                       const [moved] = next.splice(dragIndex, 1);
@@ -2534,49 +2581,66 @@ function LettersWorkspaceInner({
                     }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active ? "bg-accent/40" : "hover:bg-accent/15",
+                      isGhost
+                        ? null
+                        : active
+                          ? "bg-accent/40"
+                          : "hover:bg-accent/15",
                       !listLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {!listLocked ? (
-                      <span
+                    {isGhost ? (
+                      <div
                         aria-hidden
-                        className="text-muted-foreground"
-                        title="Drag to reorder"
-                      >
-                        ⋮⋮
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => selectLetter(l.id)}
-                      disabled={!listLocked}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                    >
-                      <InspectionLetterPill
-                        storyline={currentStoryline}
-                        contentId={l.content_id}
+                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs">
-                        {l.summary || (
-                          <span className="text-muted-foreground italic">
-                            (no summary)
+                    ) : (
+                      <>
+                        {!listLocked ? (
+                          <span
+                            aria-hidden
+                            className="text-muted-foreground"
+                            title="Drag to reorder"
+                          >
+                            ⋮⋮
                           </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => selectLetter(l.id)}
+                          disabled={!listLocked}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                        >
+                          <InspectionLetterPill
+                            storyline={currentStoryline}
+                            contentId={l.content_id}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {l.summary || (
+                              <span className="text-muted-foreground italic">
+                                (no summary)
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                        {deliveryBadge(
+                          l.delivery_day_override_id,
+                          l.effective_day_id
                         )}
-                      </span>
-                    </button>
-                    {listLocked && active ? (
-                      <button
-                        type="button"
-                        onClick={() => handleAddPiece(l.id)}
-                        disabled={rowPending}
-                        aria-label="Add piece"
-                        title="Add piece"
-                        className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
-                      >
-                        + Piece
-                      </button>
-                    ) : null}
+                        {listLocked && active ? (
+                          <button
+                            type="button"
+                            onClick={() => handleAddPiece(l.id)}
+                            disabled={rowPending}
+                            aria-label="Add piece"
+                            title="Add piece"
+                            className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
+                          >
+                            + Piece
+                          </button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -2655,6 +2719,8 @@ function LettersWorkspaceInner({
               ).map((seg, i) => {
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
+                const isGhost =
+                  !segmentListLocked && segmentDragIndex === i;
                 return (
                   <div
                     key={seg.id}
@@ -2664,14 +2730,11 @@ function LettersWorkspaceInner({
                       setSegmentDragIndex(i);
                     }}
                     onDragOver={(e) => {
-                      if (
-                        segmentListLocked ||
-                        segmentDragIndex === null ||
-                        segmentDragIndex === i
-                      )
+                      if (segmentListLocked || segmentDragIndex === null)
                         return;
                       e.preventDefault();
                       e.dataTransfer.dropEffect = "move";
+                      if (segmentDragIndex === i) return;
                       const current =
                         segmentOrderOverride ?? segments.map((x) => x.id);
                       const next = current.slice();
@@ -2698,39 +2761,56 @@ function LettersWorkspaceInner({
                     }}
                     className={cn(
                       "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      active ? "bg-accent/40" : "hover:bg-accent/15",
+                      isGhost
+                        ? null
+                        : active
+                          ? "bg-accent/40"
+                          : "hover:bg-accent/15",
                       !segmentListLocked && "cursor-grab active:cursor-grabbing"
                     )}
                   >
-                    {!segmentListLocked ? (
-                      <span
+                    {isGhost ? (
+                      <div
                         aria-hidden
-                        className="text-muted-foreground"
-                        title="Drag to reorder"
-                      >
-                        ⋮⋮
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => openSegmentFromGroup(seg.id)}
-                      disabled={!segmentListLocked}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                    >
-                      <ReportSegmentPill
-                        storyline={currentStoryline}
-                        reportId={seg.report_id}
+                        className="h-6 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
                       />
-                      <span className="min-w-0 flex-1 truncate text-xs">
-                        {preview ? (
-                          preview
-                        ) : (
-                          <span className="text-muted-foreground italic">
-                            (empty)
+                    ) : (
+                      <>
+                        {!segmentListLocked ? (
+                          <span
+                            aria-hidden
+                            className="text-muted-foreground"
+                            title="Drag to reorder"
+                          >
+                            ⋮⋮
                           </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => openSegmentFromGroup(seg.id)}
+                          disabled={!segmentListLocked}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                        >
+                          <ReportSegmentPill
+                            storyline={currentStoryline}
+                            reportId={seg.report_id}
+                          />
+                          <span className="min-w-0 flex-1 truncate text-xs">
+                            {preview ? (
+                              preview
+                            ) : (
+                              <span className="text-muted-foreground italic">
+                                (empty)
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                        {deliveryBadge(
+                          seg.delivery_day_override_id,
+                          seg.effective_day_id
                         )}
-                      </span>
-                    </button>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -7293,9 +7373,10 @@ function StorylineInspector({
                     setDragIndex(i);
                   }}
                   onDragOver={(e) => {
-                    if (dragIndex === null || dragIndex === i) return;
+                    if (dragIndex === null) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = "move";
+                    if (dragIndex === i) return;
                     const current =
                       pendingOrder ?? sortedGroups.map((x) => x.id);
                     const next = current.slice();
@@ -7320,10 +7401,17 @@ function StorylineInspector({
                   }}
                   className={cn(
                     "flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0",
-                    violates && "bg-destructive/5"
+                    dragIndex !== i && violates && "bg-destructive/5"
                   )}
                 >
-                  {rowContent}
+                  {dragIndex === i ? (
+                    <div
+                      aria-hidden
+                      className="h-5 flex-1 rounded-sm border border-dashed border-border bg-accent/10"
+                    />
+                  ) : (
+                    rowContent
+                  )}
                 </div>
               );
             }
