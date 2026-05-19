@@ -8,6 +8,11 @@ import type { IconType } from "@/lib/db/enums";
 /**
  * Narrow per-field patch — called by useInstantField in NationsEditor.
  * Does NOT call revalidatePath; realtime fans out the change to other clients.
+ *
+ * `icon_type` / `icon_value` stay in the patch shape because the existing UI
+ * binds icon inputs through here — but `nations` has no icon columns, so we
+ * strip them before the DB write. (Adding the columns to `nations` is a
+ * separate migration; until then those fields are accepted but ignored.)
  */
 export async function patchNation(
   id: string,
@@ -21,7 +26,14 @@ export async function patchNation(
   }>
 ) {
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.from("nations").update(patch).eq("id", id);
+  // Strip legacy icon fields the table doesn't have.
+  const { icon_type: _it, icon_value: _iv, ...allowed } = patch;
+  void _it;
+  void _iv;
+  const { error } = await supabase
+    .from("nations")
+    .update(allowed)
+    .eq("id", id);
   if (error) throw new Error(error.message);
 }
 
@@ -40,8 +52,6 @@ export async function updateAllNations(formData: FormData) {
   const names = formData.getAll("names").map(String);
   const abbreviations = formData.getAll("abbreviations").map(String);
   const colors = formData.getAll("colors").map(String);
-  const iconTypes = formData.getAll("icon_types").map(String);
-  const iconValues = formData.getAll("icon_values").map(String);
   const sortOrders = formData.getAll("sort_orders").map(String);
 
   for (let i = 0; i < ids.length; i++) {
@@ -53,8 +63,6 @@ export async function updateAllNations(formData: FormData) {
       name,
       abbreviation: (abbreviations[i] ?? "").trim() || null,
       color_hex: normalizeHex(colors[i] ?? "#888888"),
-      icon_type: (iconTypes[i] as IconType) || ("lucide" as IconType),
-      icon_value: (iconValues[i] ?? "").trim() || null,
       sort_order: Number(sortOrders[i] ?? i),
     };
     const { error } = await supabase

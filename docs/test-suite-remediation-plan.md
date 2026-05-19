@@ -107,3 +107,38 @@ Server-action integration tests, Batch A (the riskiest untested mutations).
 - `knowledge-base/testing/server-actions.md` rewritten — it still described
   the non-existent "preview branch" harness; now matches the real
   `_helpers.ts` / `makeTestClient` pattern.
+
+### Phase 3 — done (2026-05-19)
+
+Server-action integration tests, Batches B–D. ~110 new tests; integration
+suite **329/329**.
+
+- New test files (9): `inspection/actions`, `top-of-day/morning-reports`,
+  `days`, `playthroughs`, `citizens`, `cities`, `nations`, `physical`,
+  `settings`. (`endings/frameworks/actions.ts` is a pure re-export of
+  `_shared/document-actions.ts`, already covered by
+  `document-actions.test.ts` — skipped.)
+- `tests/integration/_helpers.ts` — six new builders + cleanups:
+  `addNation`, `addCity`, `addCitizen`, `cleanupReferenceData`,
+  `addActionTemplate`, `cleanupActionTemplates`, `addGenericReportBlock`,
+  `addPhysicalLetter`, `cleanupPhysicalLetters`. `cleanupReferenceData`
+  wipes all citizens / cities (action-created rows carry no test marker)
+  and preserves the 5 seeded production nations.
+
+**Bugs found & fixed (surfaced by the new tests):**
+- `updateDay` wrote `name: nilStr(formData.get("name"))` to a `days.name`
+  column that doesn't exist — every save would 500 via PostgREST. Payload
+  key dropped.
+- `updateAllNations` wrote `icon_type` / `icon_value` to columns that
+  don't exist on `nations` (the same bug shape). Payload keys dropped;
+  `patchNation` still accepts them in its shape so the existing UI binding
+  type-checks, but strips them before the DB write (a proper migration to
+  give nations icon columns is the right long-term fix; tracked as
+  follow-up).
+
+**Migration-collision note.** Two new `0040_*` migrations had landed on
+`main` after Phase 0 (`0040_citizen_structured_name.sql`,
+`0040_letter_group_sort_order.sql`) — `supabase db reset` errored on the
+duplicate prefix. Fixed independently in PR #67 (renamed both to
+timestamp prefixes per the `CLAUDE.md` convention); my Phase 3 branch
+rebased onto that fix.
