@@ -40,7 +40,15 @@ export interface City {
 export interface Citizen {
   id: string;
   type: CitizenType;
-  name: string;
+  first_name: string;
+  last_name: string;
+  middle_name: string | null;
+  honorific: string | null;
+  title: string | null;
+  suffix: string | null;
+  /** null / "" = "First & Last" (default). See NAME_DISPLAY_FORMATS. */
+  name_display_format: string | null;
+  address_line: string | null;
   citizen_id: string | null;
   nation_id: string | null;
   city_id: string | null;

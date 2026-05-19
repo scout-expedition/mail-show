@@ -4,8 +4,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { profileFromMetadata } from "@/lib/auth/profile";
-import type { Citizen, City, Nation } from "@/lib/db/types";
-import { bulkCreateCitizens, createCitizen } from "./actions";
+import type {
+  Citizen,
+  City,
+  InspectionLetterView,
+  Nation,
+  SortingLetterView,
+  Storyline,
+} from "@/lib/db/types";
+import { bulkCreateCitizens } from "./actions";
 import { CitizensEditor } from "./citizens-editor";
 
 export default async function CitizensPage() {
@@ -20,15 +27,31 @@ export default async function CitizensPage() {
     avatarIconValue: meProfile.avatar_icon_value,
     avatarColorHex: meProfile.avatar_color_hex,
   };
-  const [{ data: citizenData }, { data: nationData }, { data: cityData }] =
-    await Promise.all([
-      supabase.from("citizens").select("*").order("name"),
-      supabase.from("nations").select("*").order("sort_order"),
-      supabase.from("cities").select("*").order("name"),
-    ]);
+  const [
+    { data: citizenData },
+    { data: nationData },
+    { data: cityData },
+    { data: storylineData },
+    { data: inspectionLetterData },
+    { data: sortingLetterData },
+  ] = await Promise.all([
+    supabase
+      .from("citizens")
+      .select("*")
+      .order("last_name")
+      .order("first_name"),
+    supabase.from("nations").select("*").order("sort_order"),
+    supabase.from("cities").select("*").order("name"),
+    supabase.from("storylines").select("*").order("sort_order"),
+    supabase.from("inspection_letters_view").select("*"),
+    supabase.from("sorting_letters_view").select("*"),
+  ]);
   const citizens = (citizenData ?? []) as Citizen[];
   const nations = (nationData ?? []) as Nation[];
   const cities = (cityData ?? []) as City[];
+  const storylines = (storylineData ?? []) as Storyline[];
+  const inspectionLetters = (inspectionLetterData ?? []) as InspectionLetterView[];
+  const sortingLetters = (sortingLetterData ?? []) as SortingLetterView[];
 
   return (
     <div>
@@ -41,18 +64,13 @@ export default async function CitizensPage() {
         citizens={citizens}
         cities={cities}
         nations={nations}
+        storylines={storylines}
+        inspectionLetters={inspectionLetters}
+        sortingLetters={sortingLetters}
         currentUserId={currentUserId}
         currentEmail={currentEmail}
         currentProfile={presenceProfile}
       />
-
-      <div className="mt-4 flex justify-center">
-        <form action={createCitizen}>
-          <Button type="submit" variant="outline" size="sm">
-            + Citizen
-          </Button>
-        </form>
-      </div>
 
       <details className="mt-10">
         <summary className="cursor-pointer font-mono text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground">
@@ -71,8 +89,9 @@ export default async function CitizensPage() {
           />
           <p className="text-xs text-muted-foreground">
             Tab, comma, or pipe separated. Type is <span className="font-mono">hero</span>{" "}
-            or <span className="font-mono">npc</span> (defaults to npc). Nation is
-            auto-filled from the city. Unknown cities are skipped silently.
+            or <span className="font-mono">npc</span> (defaults to npc). The name is
+            split into first / last name. Nation is auto-filled from the city.
+            Unknown cities are skipped silently.
           </p>
           <div className="flex justify-end">
             <Button type="submit" size="sm" variant="secondary">

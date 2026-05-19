@@ -1507,7 +1507,8 @@ export async function createNextDayAndReportSegment(
 
 export async function updateCitizen(data: {
   id: string;
-  name: string;
+  first_name: string;
+  last_name: string;
   citizen_id: string | null;
   city_id: string | null;
   nation_id: string | null;
@@ -1516,7 +1517,8 @@ export async function updateCitizen(data: {
   const { error } = await supabase
     .from("citizens")
     .update({
-      name: data.name.trim(),
+      first_name: data.first_name.trim(),
+      last_name: data.last_name.trim(),
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
@@ -1528,7 +1530,8 @@ export async function updateCitizen(data: {
 }
 
 export async function quickCreateCitizen(data: {
-  name: string;
+  first_name: string;
+  last_name: string;
   type: CitizenType;
   citizen_id?: string | null;
   city_id?: string | null;
@@ -1538,13 +1541,14 @@ export async function quickCreateCitizen(data: {
   const { data: row, error } = await supabase
     .from("citizens")
     .insert({
-      name: data.name.trim(),
+      first_name: data.first_name.trim(),
+      last_name: data.last_name.trim(),
       type: data.type,
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
     })
-    .select("id, name, type, citizen_id, city_id, nation_id")
+    .select("id, first_name, last_name, type, citizen_id, city_id, nation_id")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/citizens");

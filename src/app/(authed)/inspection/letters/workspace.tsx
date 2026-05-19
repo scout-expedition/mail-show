@@ -32,6 +32,7 @@ import {
   generateRandomCitizenId,
   isValidCitizenId,
 } from "@/lib/citizen-id";
+import { citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import type {
@@ -1640,7 +1641,8 @@ function LettersWorkspaceInner({
   const [editingCitizen, setEditingCitizen] = useState<Citizen | null>(null);
 
   async function handleEditCitizen(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
@@ -1649,7 +1651,8 @@ function LettersWorkspaceInner({
     await updateCitizen({ id: editingCitizen.id, ...fields });
     const patched: Citizen = {
       ...editingCitizen,
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
@@ -1657,19 +1660,21 @@ function LettersWorkspaceInner({
     setHeroes((prev) =>
       prev
         .map((h) => (h.id === patched.id ? patched : h))
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     setEditingCitizen(null);
   }
 
   async function handleCreateHero(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
   }) {
     const row = await quickCreateCitizen({
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       type: "hero",
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
@@ -1677,7 +1682,14 @@ function LettersWorkspaceInner({
     });
     const created: Citizen = {
       id: row.id,
-      name: row.name,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      middle_name: null,
+      honorific: null,
+      title: null,
+      suffix: null,
+      name_display_format: null,
+      address_line: null,
       type: row.type,
       citizen_id: row.citizen_id,
       nation_id: row.nation_id,
@@ -1685,7 +1697,7 @@ function LettersWorkspaceInner({
       notes: null,
     };
     setHeroes((prev) =>
-      [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
+      [...prev, created].sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     if (heroDialogRole === "sender") {
       updateLetter({ sender_citizen_id: created.id });
@@ -3643,7 +3655,7 @@ function HeroSearch({
   const options = useMemo<HeroOption[]>(() => {
     const q = query.trim().toLowerCase();
     const citizenOpts: HeroOption[] = (
-      q ? heroes.filter((h) => h.name.toLowerCase().includes(q)) : heroes
+      q ? heroes.filter((h) => citizenFullName(h).toLowerCase().includes(q)) : heroes
     )
       .slice(0, 50)
       .map((c) => ({ kind: "citizen", citizen: c }));
@@ -3739,7 +3751,7 @@ function HeroSearch({
             // While a citizen is on display the input just shows the
             // name and is read-only; searching starts via Delete /
             // ArrowDown.
-            value={selected && !editing ? selected.name : query}
+            value={selected && !editing ? citizenFullName(selected) : query}
             readOnly={showCitizen}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -3855,7 +3867,7 @@ function HeroSearch({
                   active ? "bg-accent/40" : "hover:bg-accent/40"
                 )}
               >
-                <span className="text-[10px]">{opt.citizen.name}</span>
+                <span className="text-[10px]">{citizenFullName(opt.citizen)}</span>
                 <AddressLine parts={parts} compact wrap />
               </button>
             );
@@ -3884,13 +3896,15 @@ function CitizenDialog({
   allCitizenIds: string[];
   onCancel: () => void;
   onSubmit: (fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
   }) => Promise<void>;
 }) {
-  const [name, setName] = useState(existing?.name ?? "");
+  const [firstName, setFirstName] = useState(existing?.first_name ?? "");
+  const [lastName, setLastName] = useState(existing?.last_name ?? "");
   const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
@@ -3927,10 +3941,10 @@ function CitizenDialog({
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
   const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
-  const canSubmit = name.trim().length > 0 && !cidInvalid && !cidDuplicate && !pending;
+  const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
-      ? `Edit citizen · ${existing?.name ?? ""}`
+      ? `Edit citizen · ${existing ? citizenFullName(existing) : ""}`
       : role
         ? `New ${role} · Hero`
         : "New citizen · Hero";
@@ -3942,7 +3956,8 @@ function CitizenDialog({
     if (!canSubmit) return;
     startTransition(async () => {
       await onSubmit({
-        name: name.trim(),
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
         citizen_id: citizenId.trim() || null,
         city_id: cityId || null,
         nation_id: nationId || null,
@@ -3970,15 +3985,24 @@ function CitizenDialog({
           {title}
         </h3>
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <Label>Name</Label>
-            <Input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="h-8"
-              required
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>First name</Label>
+              <Input
+                autoFocus
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Last name</Label>
+              <Input
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                className="h-8"
+              />
+            </div>
           </div>
           <div className="flex flex-col gap-1">
             <Label>Citizen ID</Label>
