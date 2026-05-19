@@ -1,7 +1,9 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { AppPresence } from "@/components/app-presence";
 import { usePresenceUser } from "@/components/presence-user-context";
+import { isWipPath } from "@/lib/wip-pages";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({
@@ -25,6 +27,7 @@ export function PageHeader({
   presenceOthersOnly?: boolean;
 }) {
   const presenceUser = usePresenceUser();
+  const workInProgress = isWipPath(usePathname());
 
   return (
     <div
@@ -36,9 +39,16 @@ export function PageHeader({
       <div className="flex items-end gap-3">
         {leading ? <div className="flex items-center pb-1">{leading}</div> : null}
         <div className="flex flex-col gap-1">
-          <h1 className="font-mono text-2xl font-semibold tracking-tight">
-            {title}
-          </h1>
+          <div className="flex items-baseline gap-2">
+            <h1 className="font-mono text-2xl font-semibold tracking-tight">
+              {title}
+            </h1>
+            {workInProgress ? (
+              <span className="text-sm italic text-warning/70">
+                (Work in progress)
+              </span>
+            ) : null}
+          </div>
           {description ? (
             <p className="text-sm text-muted-foreground">{description}</p>
           ) : null}
