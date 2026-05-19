@@ -78,8 +78,11 @@ import {
   reorderInspectionLetters,
   reorderLetterGroups,
   reorderReportSegments,
+  sortInspectionLettersById,
   sortInspectionLettersChronologically,
+  sortLetterGroupsById,
   sortLetterGroupsChronologically,
+  sortReportSegmentsById,
   sortReportSegmentsChronologically,
   updateCitizen,
 } from "./actions";
@@ -116,13 +119,13 @@ import {
 } from "@/components/renumber-dialog";
 import { useToast } from "@/components/toast";
 import {
+  ArrowDownWideNarrow,
   BookOpen,
-  CalendarClock,
+  Calendar,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Hash,
-  ListOrdered,
   MailOpen,
   Mails,
   Megaphone,
@@ -1764,6 +1767,14 @@ function LettersWorkspaceInner({
     });
   }
 
+  function handleSortLettersById() {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await sortInspectionLettersById(groupId);
+    });
+  }
+
   async function handleRenumberSegments() {
     const reportGroupId = segments[0]?.report_group_id;
     if (!reportGroupId) return;
@@ -1785,6 +1796,14 @@ function LettersWorkspaceInner({
     if (!reportGroupId) return;
     startRowAction(async () => {
       await sortReportSegmentsChronologically(reportGroupId);
+    });
+  }
+
+  function handleSortSegmentsById() {
+    const reportGroupId = segments[0]?.report_group_id;
+    if (!reportGroupId) return;
+    startRowAction(async () => {
+      await sortReportSegmentsById(reportGroupId);
     });
   }
 
@@ -2449,15 +2468,22 @@ function LettersWorkspaceInner({
                       ),
                       onClick: () => handleAddLetters(n),
                     })),
+                    { separator: true },
                     {
-                      label: "Renumber letters sequentially",
-                      icon: <ListOrdered size={12} aria-hidden />,
-                      onClick: handleRenumberLetters,
+                      label: "Sort by Day",
+                      icon: <Calendar size={12} aria-hidden />,
+                      onClick: handleSortLettersChronologically,
                     },
                     {
-                      label: "Sort letters chronologically",
-                      icon: <CalendarClock size={12} aria-hidden />,
-                      onClick: handleSortLettersChronologically,
+                      label: "Sort by ID",
+                      icon: <Hash size={12} aria-hidden />,
+                      onClick: handleSortLettersById,
+                    },
+                    { separator: true },
+                    {
+                      label: "Renumber Letters",
+                      icon: <ArrowDownWideNarrow size={12} aria-hidden />,
+                      onClick: handleRenumberLetters,
                     },
                   ]}
                 />
@@ -2608,15 +2634,22 @@ function LettersWorkspaceInner({
                       ),
                       onClick: () => handleAddSegments(n),
                     })),
+                    { separator: true },
                     {
-                      label: "Renumber report segments sequentially",
-                      icon: <ListOrdered size={12} aria-hidden />,
-                      onClick: handleRenumberSegments,
+                      label: "Sort by Day",
+                      icon: <Calendar size={12} aria-hidden />,
+                      onClick: handleSortSegmentsChronologically,
                     },
                     {
-                      label: "Sort report segments chronologically",
-                      icon: <CalendarClock size={12} aria-hidden />,
-                      onClick: handleSortSegmentsChronologically,
+                      label: "Sort by ID",
+                      icon: <Hash size={12} aria-hidden />,
+                      onClick: handleSortSegmentsById,
+                    },
+                    { separator: true },
+                    {
+                      label: "Renumber Report Segments",
+                      icon: <ArrowDownWideNarrow size={12} aria-hidden />,
+                      onClick: handleRenumberSegments,
                     },
                   ]}
                 />
@@ -6561,7 +6594,7 @@ function PanelHeader({
 }
 
 type OverflowMenuItem = {
-  label: string;
+  label?: string;
   onClick?: () => void;
   intent?: "default" | "destructive";
   icon?: React.ReactNode;
@@ -6569,6 +6602,8 @@ type OverflowMenuItem = {
    * onClick. The submenu replaces the current items with a Back row at
    * the top. */
   submenu?: OverflowMenuItem[];
+  /** Renders a thin divider line instead of a clickable row. */
+  separator?: boolean;
 };
 
 function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
@@ -6629,38 +6664,46 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
               Back
             </button>
           ) : null}
-          {currentItems.map((item, i) => (
-            <button
-              key={i}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                if (item.submenu) {
-                  setPath((p) => [...p, i]);
-                  return;
-                }
-                item.onClick?.();
-                setOpen(false);
-                setPath([]);
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
-                item.intent === "destructive"
-                  ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                  : "text-foreground hover:bg-accent/40"
-              )}
-            >
-              {item.icon}
-              <span className="flex-1">{item.label}</span>
-              {item.submenu ? (
-                <ChevronRight
-                  size={11}
-                  aria-hidden
-                  className="text-muted-foreground"
-                />
-              ) : null}
-            </button>
-          ))}
+          {currentItems.map((item, i) =>
+            item.separator ? (
+              <div
+                key={i}
+                role="separator"
+                className="my-1 border-t border-border"
+              />
+            ) : (
+              <button
+                key={i}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  if (item.submenu) {
+                    setPath((p) => [...p, i]);
+                    return;
+                  }
+                  item.onClick?.();
+                  setOpen(false);
+                  setPath([]);
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                  item.intent === "destructive"
+                    ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                    : "text-foreground hover:bg-accent/40"
+                )}
+              >
+                {item.icon}
+                <span className="flex-1">{item.label}</span>
+                {item.submenu ? (
+                  <ChevronRight
+                    size={11}
+                    aria-hidden
+                    className="text-muted-foreground"
+                  />
+                ) : null}
+              </button>
+            )
+          )}
         </div>
       ) : null}
     </div>
@@ -6962,6 +7005,12 @@ function StorylineInspector({
     });
   }
 
+  function handleSortGroupsById() {
+    startRowAction(async () => {
+      await sortLetterGroupsById(storyline.id);
+    });
+  }
+
   const letterCountByGroup = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of allLetters)
@@ -7194,15 +7243,22 @@ function StorylineInspector({
                   ),
                   onClick: handleAddGroup,
                 },
+                { separator: true },
                 {
-                  label: "Renumber groups sequentially",
-                  icon: <ListOrdered size={12} aria-hidden />,
-                  onClick: handleRenumberGroups,
+                  label: "Sort by Day",
+                  icon: <Calendar size={12} aria-hidden />,
+                  onClick: handleSortGroupsChronologically,
                 },
                 {
-                  label: "Sort groups chronologically",
-                  icon: <CalendarClock size={12} aria-hidden />,
-                  onClick: handleSortGroupsChronologically,
+                  label: "Sort by ID",
+                  icon: <Hash size={12} aria-hidden />,
+                  onClick: handleSortGroupsById,
+                },
+                { separator: true },
+                {
+                  label: "Renumber Groups",
+                  icon: <ArrowDownWideNarrow size={12} aria-hidden />,
+                  onClick: handleRenumberGroups,
                 },
               ]}
             />

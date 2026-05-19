@@ -1425,6 +1425,97 @@ export async function sortReportSegmentsChronologically(reportGroupId: string) {
   revalidatePath("/graph");
 }
 
+/**
+ * Rewrite a storyline's letter-group `sort_order` so the list is ordered by
+ * display ID (`sequence`). Sequence itself is untouched.
+ */
+export async function sortLetterGroupsById(storylineId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: groups, error } = await supabase
+    .from("letter_groups")
+    .select("id, sequence")
+    .eq("storyline_id", storylineId);
+  if (error) throw new Error(error.message);
+  const ordered = (groups ?? [])
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(a.sequence ?? 0) - Number(b.sequence ?? 0) ||
+        (a.id as string).localeCompare(b.id as string)
+    );
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("letter_groups")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+  revalidatePath(`/inspection/storylines/${storylineId}`);
+}
+
+/**
+ * Rewrite a group's inspection-letter `sort_order` so the list is ordered by
+ * display ID (`variant`, then `piece`). Null variants sink to the end.
+ */
+export async function sortInspectionLettersById(groupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: letters, error } = await supabase
+    .from("inspection_letters")
+    .select("id, variant, piece")
+    .eq("letter_group_id", groupId);
+  if (error) throw new Error(error.message);
+  const ordered = (letters ?? []).slice().sort((a, b) => {
+    const va = (a.variant as string | null) ?? "";
+    const vb = (b.variant as string | null) ?? "";
+    if (va !== vb) {
+      if (va === "") return 1;
+      if (vb === "") return -1;
+      return va.localeCompare(vb);
+    }
+    return Number(a.piece ?? 0) - Number(b.piece ?? 0);
+  });
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("inspection_letters")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Rewrite a report group's segment `sort_order` so the list is ordered by
+ * display ID (the roman-numeral `variant`).
+ */
+export async function sortReportSegmentsById(reportGroupId: string) {
+  const supabase = await createSupabaseServerClient();
+  const { data: segments, error } = await supabase
+    .from("report_segments")
+    .select("id, variant")
+    .eq("report_group_id", reportGroupId);
+  if (error) throw new Error(error.message);
+  const ordered = (segments ?? [])
+    .slice()
+    .sort(
+      (a, b) =>
+        fromRoman(a.variant as string) - fromRoman(b.variant as string) ||
+        (a.id as string).localeCompare(b.id as string)
+    );
+  for (let i = 0; i < ordered.length; i++) {
+    const { error: e } = await supabase
+      .from("report_segments")
+      .update({ sort_order: i + 1 })
+      .eq("id", ordered[i].id as string);
+    if (e) throw new Error(e.message);
+  }
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
 // ---------------------------------------------------------------------------
 // Narrow patch actions
 //

@@ -416,7 +416,7 @@ export function useRenumberDialog(options?: { scoped?: boolean }): {
                   ) : null}
                   <NumberDropdown
                     value={row.draftInt}
-                    placeholder={row.origin === "target" ? "#" : seqHint}
+                    placeholder={seqHint}
                     options={optionList}
                     occupied={occupied}
                     invalid={status.invalidIds.has(row.id)}
