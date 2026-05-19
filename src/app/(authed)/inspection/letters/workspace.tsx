@@ -32,12 +32,7 @@ import {
   generateRandomCitizenId,
   isValidCitizenId,
 } from "@/lib/citizen-id";
-import {
-  citizenDisplayName,
-  citizenFullName,
-  composeCitizenAddress,
-  type AddressLookupLevel,
-} from "@/lib/citizen-name";
+import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
 import {
@@ -3605,49 +3600,6 @@ function addressParts(
   };
 }
 
-function AddressLine({
-  parts,
-  compact,
-  wrap,
-}: {
-  parts: ReturnType<typeof addressParts>;
-  /** No left padding — the row sits flush with its container. */
-  compact?: boolean;
-  /** Allow the address to wrap to multiple lines instead of truncating. */
-  wrap?: boolean;
-}) {
-  const hasAny = parts.citizenId || parts.cityName || parts.nation;
-  const pieces: React.ReactNode[] = [];
-  if (parts.citizenId)
-    pieces.push(<span key="cid">{parts.citizenId}</span>);
-  if (parts.cityName)
-    pieces.push(<span key="city">{parts.cityName}</span>);
-  if (parts.nation)
-    pieces.push(
-      <span key="nation" style={{ color: parts.nation.color_hex }}>
-        {parts.nation.name}
-      </span>
-    );
-  return (
-    <span
-      className={cn(
-        "block text-[10px] leading-[14px] text-muted-foreground",
-        compact ? null : "pl-3",
-        wrap ? null : "h-[14px] truncate"
-      )}
-    >
-      {hasAny
-        ? pieces.map((el, i) => (
-            <span key={i}>
-              {i > 0 ? <span className="mx-1 opacity-60">·</span> : null}
-              {el}
-            </span>
-          ))
-        : null}
-    </span>
-  );
-}
-
 type HeroOption =
   | { kind: "citizen"; citizen: Citizen }
   | { kind: "create" };
@@ -3683,6 +3635,12 @@ function HeroSearch({
   const selected = heroes.find((h) => h.id === value) ?? null;
   // Display mode: a citizen is committed and we're not mid-search.
   const showCitizen = !!selected && !editing;
+  const selectedCity = selected
+    ? cities.find((c) => c.id === selected.city_id) ?? null
+    : null;
+  const selectedNation = selected
+    ? nations.find((n) => n.id === selected.nation_id) ?? null
+    : null;
 
   // Citizen matches plus the "add new citizen" row, combined into one
   // keyboard-navigable list. The create row leads when the field is
@@ -3786,7 +3744,13 @@ function HeroSearch({
             // While a citizen is on display the input just shows the
             // name and is read-only; searching starts via Delete /
             // ArrowDown.
-            value={selected && !editing ? citizenFullName(selected) : query}
+            value={
+              selected && !editing
+                ? `${citizenDisplayName(selected)}${
+                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                  }`
+                : query
+            }
             readOnly={showCitizen}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -3839,23 +3803,35 @@ function HeroSearch({
             </div>
           ) : null}
         </div>
-        {selected && !editing ? (
-          <div className="flex flex-col">
-            {composeCitizenAddress(
-              selected,
-              cities.find((c) => c.id === selected.city_id) ?? null,
-              nations.find((n) => n.id === selected.nation_id) ?? null,
-              { lookupLevel: 0 as AddressLookupLevel, hideName: false }
-            ).map((line, i) => (
-              <span
-                key={i}
-                className="block text-[10px] leading-[14px] text-muted-foreground"
-              >
-                {line}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        {/* Address rows — the area always reserves height so the field
+            stays a stable size whether or not a citizen is set. */}
+        <div className="flex min-h-[42px] flex-col">
+          {selected && !editing ? (
+            <>
+              {selected.address_line ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selected.address_line}
+                </span>
+              ) : null}
+              {selectedCity || selectedNation ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity?.name ?? ""}
+                  {selectedCity && selectedNation ? ", " : ""}
+                  {selectedNation ? (
+                    <span style={{ color: selectedNation.color_hex }}>
+                      {selectedNation.name}
+                    </span>
+                  ) : null}
+                </span>
+              ) : null}
+              {selectedCity?.code ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity.code}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
       {open && !showCitizen ? (
         <div
@@ -3911,8 +3887,18 @@ function HeroSearch({
                   active ? "bg-accent/40" : "hover:bg-accent/40"
                 )}
               >
-                <span className="text-[10px]">{citizenDisplayName(opt.citizen)}</span>
-                <AddressLine parts={parts} compact wrap />
+                <span className="text-[10px]">
+                  {citizenDisplayName(opt.citizen)}
+                </span>
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {parts.cityName ?? ""}
+                  {parts.cityName && parts.nation ? ", " : ""}
+                  {parts.nation ? (
+                    <span style={{ color: parts.nation.color_hex }}>
+                      {parts.nation.name}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}

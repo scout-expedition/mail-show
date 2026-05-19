@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { AlertCircle, Eye, EyeOff, Trash2, User } from "lucide-react";
+import { AlertCircle, Trash2, User } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -506,7 +506,7 @@ export function CitizenInspector({
         </div>
 
         {/* Formatted address */}
-        <div className="mt-6 border-t border-border" />
+        <div className="h-2" aria-hidden />
         <SectionHeader>Formatted Address Preview</SectionHeader>
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <div className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-card p-0.5">
@@ -516,7 +516,7 @@ export function CitizenInspector({
                 type="button"
                 onClick={() => setLookupLevel(level)}
                 className={cn(
-                  "inline-flex h-6 items-center rounded px-1.5 font-mono text-[9px] transition-colors",
+                  "inline-flex h-6 items-center rounded px-1.5 font-mono !text-[9px] transition-colors",
                   lookupLevel === level
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent/40"
@@ -526,38 +526,31 @@ export function CitizenInspector({
               </button>
             ))}
           </div>
-          <div className="ml-1 flex items-center gap-1.5">
-            <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/60">
-              Name
-            </span>
+          <div className="inline-flex h-7 items-center rounded-md border border-border bg-card p-0.5">
             <button
               type="button"
               onClick={() => setHideName((h) => !h)}
-              aria-pressed={hideName}
+              aria-pressed={!hideName}
               title={hideName ? "Show name" : "Hide name"}
               className={cn(
-                "inline-flex h-7 w-7 items-center justify-center rounded-md border border-border transition-colors",
-                hideName
+                "inline-flex h-6 items-center rounded px-1.5 font-mono !text-[9px] transition-colors",
+                !hideName
                   ? "bg-accent text-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  : "text-muted-foreground hover:bg-accent/40"
               )}
             >
-              {hideName ? (
-                <EyeOff size={14} aria-hidden />
-              ) : (
-                <Eye size={14} aria-hidden />
-              )}
+              Name
             </button>
           </div>
         </div>
-        <div className="rounded-md border border-border bg-black/20 p-3 font-mono text-xs leading-relaxed">
+        <div className="min-h-[6.5rem] rounded-md border border-border bg-black/20 p-3 font-mono text-xs leading-relaxed">
           {addressLines.length > 0 ? (
             addressLines.map((line, i) => <div key={i}>{line}</div>)
           ) : (
             <span className="text-muted-foreground">—</span>
           )}
         </div>
-        <div className="mt-6 border-t border-border" />
+        <div className="h-2" aria-hidden />
 
         {/* Inspection letters */}
         <SectionHeader>Inspection letters</SectionHeader>
