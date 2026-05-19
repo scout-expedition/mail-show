@@ -4,45 +4,31 @@ import {
   startTransition,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   useTransition,
 } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { ConditionDescription } from "@/components/condition-description";
-import { useConfirm } from "@/components/confirm-dialog";
+import { cn } from "@/lib/utils";
 import { useToast } from "@/components/toast";
-import {
-  ConditionBuilderInline,
-  type BuilderCondition,
-} from "@/components/condition-builder";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { MUTED_ADD_BTN, Spinner } from "@/components/panel";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
 } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
 import type {
+  City,
   Day,
+  Nation,
   SortingRule,
   SortingRuleCondition,
 } from "@/lib/db/types";
-import type { RuleMatchMode } from "@/lib/db/enums";
-import {
-  deleteRule,
-  duplicateRule,
-  patchSortingRule,
-  saveConditions,
-} from "./actions";
+import { createRule } from "./actions";
+import { RulePill } from "./rule-pill";
+import { RulePanel } from "./rule-panel";
 
 const POSTGRES_TABLES = ["sorting_rules", "sorting_rule_conditions"];
 
@@ -52,6 +38,9 @@ export function RulesList({
   rules,
   conditionsByRule,
   days,
+  nations,
+  cities,
+  initialSelectedRuleId,
   currentUserId,
   currentEmail,
   currentProfile,
@@ -59,6 +48,9 @@ export function RulesList({
   rules: SortingRule[];
   conditionsByRule: Record<string, SortingRuleCondition[]>;
   days: Day[];
+  nations: Nation[];
+  cities: City[];
+  initialSelectedRuleId: string | null;
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -71,28 +63,38 @@ export function RulesList({
       profile={currentProfile}
       postgresTables={POSTGRES_TABLES}
     >
-      <RulesListInner
+      <RulesWorkspace
         rules={rules}
         conditionsByRule={conditionsByRule}
         days={days}
+        nations={nations}
+        cities={cities}
+        initialSelectedRuleId={initialSelectedRuleId}
       />
     </WorkspacePresenceProvider>
   );
 }
 
-// ─── Inner component ─────────────────────────────────────────────────────────
+// ─── Two-pane workspace: rules list (left) + inspection panel (right) ────────
 
-function RulesListInner({
+function RulesWorkspace({
   rules: rulesProp,
   conditionsByRule: conditionsByRuleProp,
   days,
+  nations,
+  cities,
+  initialSelectedRuleId,
 }: {
   rules: SortingRule[];
   conditionsByRule: Record<string, SortingRuleCondition[]>;
   days: Day[];
+  nations: Nation[];
+  cities: City[];
+  initialSelectedRuleId: string | null;
 }) {
   const router = useRouter();
-  const { peers, onPostgresChanges } = usePresenceContext();
+  const pathname = usePathname();
+  const { onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
 
   // Mirror rules + conditions so postgres_changes fans out without reload.
@@ -110,7 +112,19 @@ function RulesListInner({
     setConditionsByRule(conditionsByRuleProp);
   }
 
-  const [openIds, setOpenIds] = useState<Set<string>>(new Set());
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(
+    initialSelectedRuleId
+  );
+  const selectedRule = rules.find((r) => r.id === selectedRuleId) ?? null;
+
+  // Keep ?rule=<letter> in sync with the selection (and with letter renames).
+  useEffect(() => {
+    const rule = rules.find((r) => r.id === selectedRuleId);
+    const target = rule
+      ? `${pathname}?rule=${encodeURIComponent(rule.letter)}`
+      : pathname;
+    router.replace(target, { scroll: false });
+  }, [selectedRuleId, rules, pathname, router]);
 
   // Debounced router.refresh for INSERT events (view-derived columns need RSC).
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,8 +163,12 @@ function RulesListInner({
             delete next[id];
             return next;
           });
+          setSelectedRuleId((cur) => (cur === id ? null : cur));
           const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
-          toast({ intent: "destructive", message: `${by} deleted a sorting rule` });
+          toast({
+            intent: "destructive",
+            message: `${by} deleted a sorting rule`,
+          });
           return;
         }
         if (eventType === "INSERT") {
@@ -185,418 +203,100 @@ function RulesListInner({
     });
   }, [onPostgresChanges, toast, scheduleRefresh]);
 
-  const allOpen = rules.length > 0 && openIds.size === rules.length;
-
-  function toggle(id: string) {
-    setOpenIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+  const [creating, startCreate] = useTransition();
+  function handleCreate() {
+    startCreate(async () => {
+      const res = await createRule();
+      setSelectedRuleId(res.id);
     });
-  }
-  function toggleAll() {
-    if (allOpen) setOpenIds(new Set());
-    else setOpenIds(new Set(rules.map((r) => r.id)));
   }
 
   return (
     <>
       {toaster}
-      <div className="flex flex-col gap-2 font-mono">
-        {rules.length > 0 ? (
-          <div className="mb-1 flex items-center justify-end">
-            <Button type="button" variant="ghost" size="sm" onClick={toggleAll}>
-              {allOpen ? "Collapse all" : "Expand all"}
-            </Button>
-          </div>
-        ) : null}
+      <div className="flex gap-3">
+        {/* List pane — fixed width, doesn't reflow when the panel opens/closes */}
+        <div className="flex w-80 shrink-0 flex-col gap-2">
+          {rules.map((r) => (
+            <RuleListRow
+              key={r.id}
+              rule={r}
+              selected={r.id === selectedRuleId}
+              onSelect={() => setSelectedRuleId(r.id)}
+            />
+          ))}
+          {rules.length === 0 ? (
+            <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+              No rules yet.
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleCreate}
+            disabled={creating || rules.length >= 26}
+            className={cn(MUTED_ADD_BTN, "mt-1 self-start")}
+          >
+            {creating ? <Spinner /> : <span aria-hidden>+</span>}
+            Rule
+          </button>
+        </div>
 
-        {rules.map((r) => (
-          <RuleRow
-            key={r.id}
-            rule={r}
-            conditions={conditionsByRule[r.id] ?? []}
-            days={days}
-            peers={peers}
-            open={openIds.has(r.id)}
-            onToggle={() => toggle(r.id)}
-          />
-        ))}
-        {rules.length === 0 ? (
-          <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-            No rules yet.
-          </p>
-        ) : null}
+        {/* Panel pane — blank until a rule is selected */}
+        <div className="min-w-0 flex-1">
+          {selectedRule ? (
+            <RulePanel
+              key={selectedRule.id}
+              rule={selectedRule}
+              conditions={conditionsByRule[selectedRule.id] ?? []}
+              days={days}
+              nations={nations}
+              cities={cities}
+              allRules={rules}
+              onClose={() => setSelectedRuleId(null)}
+              onSelectRule={(id) => setSelectedRuleId(id)}
+            />
+          ) : null}
+        </div>
       </div>
     </>
   );
 }
 
-// ─── Per-rule row with instant-save scalar fields ─────────────────────────────
+// ─── List row ────────────────────────────────────────────────────────────────
 
-function toBuilderConditions(
-  conditions: SortingRuleCondition[]
-): BuilderCondition[] {
-  return conditions.map((c) => ({
-    target: c.target,
-    target_slice: c.target_slice,
-    operator: c.operator,
-    reference_type: c.reference_type,
-    reference_value: c.reference_value,
-  }));
-}
-
-function RuleRow({
+function RuleListRow({
   rule,
-  conditions,
-  days,
-  peers,
-  open,
-  onToggle,
+  selected,
+  onSelect,
 }: {
   rule: SortingRule;
-  conditions: SortingRuleCondition[];
-  days: Day[];
-  peers: ReturnType<typeof usePresenceContext>["peers"];
-  open: boolean;
-  onToggle: () => void;
+  selected: boolean;
+  onSelect: () => void;
 }) {
-  const [duplicating, startDuplicate] = useTransition();
-  const [savingConditions, startSaveConditions] = useTransition();
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  const { setFocus, pingActivity } = usePresenceContext();
-
-  // ── Conditions: still structural (delete+insert), keep manual save ──
-  // Track local conditions state separately from the instant-save scalar fields.
-  const [builderConds, setBuilderConds] = useState<BuilderCondition[]>(() =>
-    toBuilderConditions(conditions)
-  );
-  const [matchMode, setMatchMode] = useState<RuleMatchMode>(rule.match_mode);
-  const [condsDirty, setCondsDirty] = useState(false);
-
-  // Sync builder conditions when conditions prop changes and user hasn't edited.
-  const condServerKey = useMemo(
-    () =>
-      JSON.stringify(
-        conditions.map((c) => [
-          c.target,
-          c.target_slice,
-          c.operator,
-          c.reference_type,
-          c.reference_value,
-        ])
-      ),
-    [conditions]
-  );
-  const [lastCondKey, setLastCondKey] = useState(condServerKey);
-  if (!condsDirty && lastCondKey !== condServerKey) {
-    setBuilderConds(toBuilderConditions(conditions));
-    setMatchMode(rule.match_mode);
-    setLastCondKey(condServerKey);
-  }
-
-  // Resync matchMode independently when a peer changes only match_mode (without
-  // touching conditions, which would change condServerKey). Safe when the user
-  // hasn't dirtied the condition block — condsDirty=false implies the local
-  // matchMode was never locally edited, so it equals the last-seen server value
-  // and resyncing cannot clobber an in-progress edit.
-  const [lastSeenMatchMode, setLastSeenMatchMode] = useState(rule.match_mode);
-  if (!condsDirty && lastSeenMatchMode !== rule.match_mode) {
-    setMatchMode(rule.match_mode);
-    setLastSeenMatchMode(rule.match_mode);
-  }
-
-  function makeFocusKey(field: string): PresenceFocus {
-    return { table: "sorting_rules", recordId: rule.id, field };
-  }
-
-  // ── Instant-save scalar fields ──
-
-  const letterField = useInstantField<string>({
-    value: rule.letter,
-    onCommit: (v) => patchSortingRule(rule.id, { letter: v }),
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("letter") : null),
-    onActivity: pingActivity,
-  });
-
-  const slotField = useInstantField<string>({
-    value: rule.destination_slot != null ? String(rule.destination_slot) : "",
-    onCommit: (v) => {
-      const n = v.trim() === "" ? null : Number(v);
-      return patchSortingRule(rule.id, {
-        destination_slot: Number.isFinite(n) ? (n as number) : null,
-      });
-    },
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("destination_slot") : null),
-    onActivity: pingActivity,
-  });
-
-  const dayField = useInstantField<string>({
-    value: rule.day_implemented_id ?? "",
-    onCommit: (v) =>
-      patchSortingRule(rule.id, { day_implemented_id: v.trim() || null }),
-    onFocusChange: (focused) =>
-      setFocus(focused ? makeFocusKey("day_implemented_id") : null),
-    onActivity: pingActivity,
-  });
-
-  const storageField = useInstantField<string>({
-    value: rule.storage_location ?? "",
-    onCommit: (v) =>
-      patchSortingRule(rule.id, { storage_location: v.trim() || null }),
-    onFocusChange: (focused) =>
-      setFocus(focused ? makeFocusKey("storage_location") : null),
-    onActivity: pingActivity,
-  });
-
-  const summaryField = useInstantField<string>({
-    value: rule.summary ?? "",
-    onCommit: (v) => patchSortingRule(rule.id, { summary: v.trim() || null }),
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("summary") : null),
-    onActivity: pingActivity,
-  });
-
-  function handleDuplicate(e: React.MouseEvent | React.KeyboardEvent) {
-    e.stopPropagation();
-    const fd = new FormData();
-    fd.append("id", rule.id);
-    startDuplicate(async () => {
-      await duplicateRule(fd);
-    });
-  }
-
-  async function handleDelete() {
-    const ok = await confirmDialog({
-      title: "Delete rule?",
-      message: `RR-${rule.letter} will be permanently removed.`,
-      confirmLabel: "Delete",
-      intent: "destructive",
-    });
-    if (!ok) return;
-    const fd = new FormData();
-    fd.append("id", rule.id);
-    startSaveConditions(async () => {
-      await deleteRule(fd);
-    });
-  }
-
-  function handleSaveConditions() {
-    startSaveConditions(async () => {
-      await saveConditions(
-        rule.id,
-        builderConds.map((c, i) => ({ ...c, position: i + 1 })),
-        matchMode
-      );
-      setCondsDirty(false);
-    });
-  }
-
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-accent/40">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between gap-4 px-3 py-1.5 text-left hover:bg-accent/60"
-        aria-expanded={open}
-      >
-        <div className="flex items-center gap-2">
-          <span
-            className="relative flex h-6 w-6 shrink-0 items-center justify-center font-mono text-xs"
-            aria-label={`Rule ${rule.letter}`}
-          >
-            <svg
-              viewBox="0 0 24 24"
-              className="absolute inset-0 h-full w-full text-muted-foreground"
-              fill="currentColor"
-              aria-hidden
-            >
-              <polygon points="12,2 22.46,9.6 18.47,21.9 5.53,21.9 1.54,9.6" />
-            </svg>
-            <span className="relative text-background">{rule.letter}</span>
-          </span>
-          <span className="text-sm">
-            {rule.summary ?? <span className="text-muted-foreground">—</span>}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          {rule.destination_slot ? (
-            <Badge variant="muted">slot {rule.destination_slot}</Badge>
-          ) : null}
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={handleDuplicate}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") handleDuplicate(e);
-            }}
-            aria-label="Duplicate rule"
-            title="Duplicate"
-            aria-disabled={duplicating}
-            className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-accent hover:text-foreground"
-          >
-            <DuplicateIcon />
-          </span>
-          <span aria-hidden className={open ? "rotate-90" : ""}>
-            ›
-          </span>
-        </div>
-      </button>
-
-      {open ? (
-        <div className="flex flex-col gap-3 border-t border-border bg-card px-3 py-3">
-          <div className="grid grid-cols-12 gap-2">
-            <div className="col-span-1 flex flex-col gap-1">
-              <Label>Letter</Label>
-              <FieldHighlight peers={peers} focusKey={makeFocusKey("letter")}>
-                <Input
-                  value={letterField.value}
-                  onChange={(e) => {
-                    letterField.set(
-                      e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1)
-                    );
-                  }}
-                  onFocus={letterField.onFocus}
-                  onBlur={letterField.onBlur}
-                  maxLength={1}
-                  className="h-8 text-center uppercase"
-                />
-              </FieldHighlight>
-            </div>
-            <div className="col-span-1 flex flex-col gap-1">
-              <Label>Slot</Label>
-              <FieldHighlight peers={peers} focusKey={makeFocusKey("destination_slot")}>
-                <Input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={slotField.value}
-                  onChange={(e) => slotField.set(e.target.value)}
-                  onFocus={slotField.onFocus}
-                  onBlur={slotField.onBlur}
-                  className="h-8"
-                />
-              </FieldHighlight>
-            </div>
-            <div className="col-span-4 flex flex-col gap-1">
-              <Label>Day implemented</Label>
-              <FieldHighlight peers={peers} focusKey={makeFocusKey("day_implemented_id")}>
-                <div onFocus={dayField.onFocus} onBlur={dayField.onBlur}>
-                  <Select
-                    value={dayField.value}
-                    onChange={(e) => dayField.set(e.target.value)}
-                    className="h-8"
-                  >
-                    <option value="">—</option>
-                    {days.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.identifier}
-                        {d.name ? ` — ${d.name}` : ""}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              </FieldHighlight>
-            </div>
-            <div className="col-span-6 flex flex-col gap-1">
-              <Label>Storage location</Label>
-              <FieldHighlight peers={peers} focusKey={makeFocusKey("storage_location")}>
-                <Input
-                  value={storageField.value}
-                  onChange={(e) => storageField.set(e.target.value)}
-                  onFocus={storageField.onFocus}
-                  onBlur={storageField.onBlur}
-                  placeholder="e.g. Yellow Bin"
-                  className="h-8"
-                />
-              </FieldHighlight>
-            </div>
-            <div className="col-span-12 flex flex-col gap-1">
-              <Label>Summary</Label>
-              <FieldHighlight peers={peers} focusKey={makeFocusKey("summary")}>
-                <Textarea
-                  value={summaryField.value}
-                  onChange={(e) => summaryField.set(e.target.value)}
-                  onFocus={summaryField.onFocus}
-                  onBlur={summaryField.onBlur}
-                  rows={2}
-                />
-              </FieldHighlight>
-            </div>
-          </div>
-
-          {/* Conditions: structural mutation — keep explicit save */}
-          <ConditionBuilderInline
-            conditions={builderConds}
-            matchMode={matchMode}
-            onChange={(next, mode) => {
-              setBuilderConds(next);
-              if (mode) setMatchMode(mode);
-              setCondsDirty(true);
-            }}
-          />
-
-          {/* Read-only description of saved conditions */}
-          {conditions.length > 0 ? (
-            <div className="flex flex-col gap-1 rounded-md border border-dashed border-border p-2">
-              {conditions.map((c, i) => (
-                <div
-                  key={c.id}
-                  className="flex flex-wrap items-center gap-1.5"
-                >
-                  <ConditionDescription c={c} />
-                  {i < conditions.length - 1 ? (
-                    <Badge className="border-transparent bg-transparent text-muted-foreground lowercase">
-                      {rule.match_mode === "all" ? "and" : "and/or"}
-                    </Badge>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="flex items-center justify-between">
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={savingConditions}
-            >
-              Delete rule
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              onClick={handleSaveConditions}
-              disabled={savingConditions || !condsDirty}
-              variant={condsDirty ? "default" : "secondary"}
-            >
-              {savingConditions ? "Saving…" : "Save conditions"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      {confirmDialogEl}
-    </div>
-  );
-}
-
-function DuplicateIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={selected || undefined}
+      className={cn(
+        "flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left transition-colors",
+        selected ? "bg-accent/70 ring-1 ring-border" : "bg-accent/40 hover:bg-accent/60"
+      )}
     >
-      <rect x="9" y="9" width="11" height="11" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
+      <span className="flex min-w-0 items-center gap-2">
+        <RulePill letter={rule.letter} />
+        <span className="truncate text-sm">
+          {rule.summary ?? <span className="text-muted-foreground">—</span>}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+        {rule.routes_to_reporting ? (
+          <Badge variant="muted">reporting</Badge>
+        ) : rule.destination_slot ? (
+          <Badge variant="muted">slot {rule.destination_slot}</Badge>
+        ) : null}
+        <span aria-hidden>›</span>
+      </span>
+    </button>
   );
 }

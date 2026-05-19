@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   RuleMatchMode,
@@ -11,25 +10,25 @@ import type {
   RuleTargetSlice,
 } from "@/lib/db/enums";
 
-function nilStr(v: FormDataEntryValue | null): string | null {
-  const s = String(v ?? "").trim();
-  return s === "" ? null : s;
-}
-
-export async function createRule() {
-  const supabase = await createSupabaseServerClient();
-  const { data: existing } = await supabase
-    .from("sorting_rules")
-    .select("letter");
-  const used = new Set((existing ?? []).map((r) => r.letter));
-  let letter = "A";
+/** Lowest unused rule letter A–Z, or null when all 26 are taken. */
+function nextFreeLetter(used: Set<string>): string | null {
   for (let c = 65; c <= 90; c++) {
     const ch = String.fromCharCode(c);
-    if (!used.has(ch)) {
-      letter = ch;
-      break;
-    }
+    if (!used.has(ch)) return ch;
   }
+  return null;
+}
+
+/**
+ * Create a rule with the next free letter. Returns the new row's id + letter so
+ * the caller can select it; does not redirect (the page is a two-pane SPA-ish
+ * workspace).
+ */
+export async function createRule(): Promise<{ id: string; letter: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: existing } = await supabase.from("sorting_rules").select("letter");
+  const letter = nextFreeLetter(new Set((existing ?? []).map((r) => r.letter)));
+  if (!letter) throw new Error("No free rule letter (A-Z) available.");
   const { data, error } = await supabase
     .from("sorting_rules")
     .insert({ letter, match_mode: "all" as RuleMatchMode })
@@ -37,31 +36,13 @@ export async function createRule() {
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/sorting/rules");
-  redirect(`/sorting/rules/${data!.id}`);
+  return { id: data!.id, letter };
 }
 
-export async function updateRule(formData: FormData) {
-  const supabase = await createSupabaseServerClient();
-  const id = String(formData.get("id") ?? "");
-  if (!id) return;
-  const payload = {
-    letter: String(formData.get("letter") ?? "")
-      .trim()
-      .toUpperCase()
-      .charAt(0),
-    storage_location: nilStr(formData.get("storage_location")),
-    summary: nilStr(formData.get("summary")),
-    day_implemented_id: nilStr(formData.get("day_implemented_id")),
-    destination_slot: Number(formData.get("destination_slot") ?? 0) || null,
-    match_mode: String(formData.get("match_mode") ?? "all") as RuleMatchMode,
-  };
-  const { error } = await supabase.from("sorting_rules").update(payload).eq("id", id);
-  if (error) throw new Error(error.message);
-  revalidatePath(`/sorting/rules/${id}`);
-  revalidatePath(`/sorting/rules`);
-}
-
-export async function duplicateRule(formData: FormData) {
+/** Clone a rule (scalar fields + every condition) under the next free letter. */
+export async function duplicateRule(
+  formData: FormData
+): Promise<{ id: string } | void> {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
@@ -73,18 +54,8 @@ export async function duplicateRule(formData: FormData) {
     .maybeSingle();
   if (!source) return;
 
-  const { data: existing } = await supabase
-    .from("sorting_rules")
-    .select("letter");
-  const used = new Set((existing ?? []).map((r) => r.letter));
-  let letter = "";
-  for (let c = 65; c <= 90; c++) {
-    const ch = String.fromCharCode(c);
-    if (!used.has(ch)) {
-      letter = ch;
-      break;
-    }
-  }
+  const { data: existing } = await supabase.from("sorting_rules").select("letter");
+  const letter = nextFreeLetter(new Set((existing ?? []).map((r) => r.letter)));
   if (!letter) throw new Error("No free rule letter (A-Z) available.");
 
   const { data: inserted, error } = await supabase
@@ -94,7 +65,9 @@ export async function duplicateRule(formData: FormData) {
       storage_location: source.storage_location,
       summary: source.summary,
       day_implemented_id: source.day_implemented_id,
+      day_cancelled_id: source.day_cancelled_id,
       destination_slot: source.destination_slot,
+      routes_to_reporting: source.routes_to_reporting,
       match_mode: source.match_mode,
     })
     .select("id")
@@ -107,25 +80,26 @@ export async function duplicateRule(formData: FormData) {
     .eq("rule_id", id)
     .order("position");
   if (conditions && conditions.length > 0) {
-    const { error: cErr } = await supabase
-      .from("sorting_rule_conditions")
-      .insert(
-        conditions.map((c) => ({
-          rule_id: inserted!.id,
-          position: c.position,
-          target: c.target,
-          target_slice: c.target_slice,
-          operator: c.operator,
-          reference_value: c.reference_value,
-          reference_type: c.reference_type,
-        }))
-      );
+    const { error: cErr } = await supabase.from("sorting_rule_conditions").insert(
+      conditions.map((c) => ({
+        rule_id: inserted!.id,
+        position: c.position,
+        target: c.target,
+        target_slice: c.target_slice,
+        operator: c.operator,
+        reference_value: c.reference_value,
+        reference_type: c.reference_type,
+      }))
+    );
     if (cErr) throw new Error(cErr.message);
   }
 
   revalidatePath("/sorting/rules");
+  return { id: inserted!.id };
 }
 
+/** Delete a rule (conditions cascade). Revalidates rather than redirecting so
+ *  the workspace's realtime channel survives; the caller closes the panel. */
 export async function deleteRule(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
@@ -133,65 +107,20 @@ export async function deleteRule(formData: FormData) {
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
   if (updatedBy) {
-    await supabase.from("sorting_rules").update({ updated_by: updatedBy }).eq("id", id);
+    await supabase
+      .from("sorting_rules")
+      .update({ updated_by: updatedBy })
+      .eq("id", id);
   }
   const { error } = await supabase.from("sorting_rules").delete().eq("id", id);
   if (error) throw new Error(error.message);
-  redirect("/sorting/rules");
-}
-
-export async function saveRuleAll(data: {
-  id: string;
-  letter: string;
-  destination_slot: number | null;
-  day_implemented_id: string | null;
-  storage_location: string | null;
-  summary: string | null;
-  match_mode: RuleMatchMode;
-  conditions: Array<{
-    target: RuleTarget;
-    target_slice: RuleTargetSlice;
-    operator: RuleOperator;
-    reference_type: RuleReferenceType;
-    reference_value: string | null;
-  }>;
-}) {
-  const supabase = await createSupabaseServerClient();
-  const { error: rErr } = await supabase
-    .from("sorting_rules")
-    .update({
-      letter: data.letter,
-      destination_slot: data.destination_slot,
-      day_implemented_id: data.day_implemented_id,
-      storage_location: data.storage_location,
-      summary: data.summary,
-      match_mode: data.match_mode,
-    })
-    .eq("id", data.id);
-  if (rErr) throw new Error(rErr.message);
-
-  const { error: delErr } = await supabase
-    .from("sorting_rule_conditions")
-    .delete()
-    .eq("rule_id", data.id);
-  if (delErr) throw new Error(delErr.message);
-  if (data.conditions.length > 0) {
-    const rows = data.conditions.map((c, i) => ({
-      rule_id: data.id,
-      position: i + 1,
-      ...c,
-    }));
-    const { error } = await supabase
-      .from("sorting_rule_conditions")
-      .insert(rows);
-    if (error) throw new Error(error.message);
-  }
   revalidatePath("/sorting/rules");
 }
 
 /**
  * Narrow per-field patch for instant-save. Does NOT call revalidatePath —
- * realtime fans out the change to all subscribed clients.
+ * realtime fans out the change to all subscribed clients. A unique-violation
+ * on `letter` is surfaced as a friendly message so the field can revert.
  */
 export async function patchSortingRule(
   id: string,
@@ -200,7 +129,9 @@ export async function patchSortingRule(
     storage_location: string | null;
     summary: string | null;
     day_implemented_id: string | null;
+    day_cancelled_id: string | null;
     destination_slot: number | null;
+    routes_to_reporting: boolean;
     match_mode: RuleMatchMode;
   }>
 ) {
@@ -209,7 +140,12 @@ export async function patchSortingRule(
     .from("sorting_rules")
     .update(patch)
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (/unique/i.test(error.message)) {
+      throw new Error("That Rule ID is already in use.");
+    }
+    throw new Error(error.message);
+  }
 }
 
 /**
@@ -252,6 +188,5 @@ export async function saveConditions(
       .eq("id", ruleId);
     if (error) throw new Error(error.message);
   }
-  revalidatePath(`/sorting/rules/${ruleId}`);
-  revalidatePath(`/sorting/rules`);
+  revalidatePath("/sorting/rules");
 }
