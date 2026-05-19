@@ -149,7 +149,8 @@ function RulesListInner({
             delete next[id];
             return next;
           });
-          toast({ intent: "destructive", message: "Someone deleted a sorting rule" });
+          const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
+          toast({ intent: "destructive", message: `${by} deleted a sorting rule` });
           return;
         }
         if (eventType === "INSERT") {

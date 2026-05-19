@@ -124,7 +124,8 @@ function SortingLettersEditorInner({
         const id = oldRow?.id as string | undefined;
         if (!id) return;
         setLetters((prev) => prev.filter((r) => r.id !== id));
-        toast({ intent: "destructive", message: "Someone deleted a sorting letter" });
+        const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
+        toast({ intent: "destructive", message: `${by} deleted a sorting letter` });
         return;
       }
 

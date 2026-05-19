@@ -1,25 +1,39 @@
 "use client";
 
-import { IconCirclePlusMinus, IconTagsFilled, IconTagsOff } from "@tabler/icons-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  IconCirclePlusMinus,
+  IconRestore,
+  IconTagsFilled,
+  IconTagsOff,
+} from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { IconDisplay } from "@/components/icon-display";
 import { PanelHeader } from "@/components/panel";
-import type { Nation } from "@/lib/db/types";
+import type { EndingVariable, Nation } from "@/lib/db/types";
 import type { IconType } from "@/lib/db/enums";
+import { paletteColor } from "@/lib/endings/color-palette";
+import { filterVariables } from "@/components/variable-picker/variable-filter";
+import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 import {
   DEFAULT_IMPACT_FILTER,
   IMPACT_CLASSES,
   IMPACT_WORLD,
   NATION_IMPACT_KEYS,
+  type FrameworkOption,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
 
 export function ImpactOverlayPanel({
   nations,
+  endingVariables,
+  frameworkOptions,
   filter,
   onFilterChange,
 }: {
   nations: Nation[];
+  endingVariables: EndingVariable[];
+  frameworkOptions: FrameworkOption[];
   filter: ImpactFilter;
   onFilterChange: (next: ImpactFilter | ((prev: ImpactFilter) => ImpactFilter)) => void;
 }) {
@@ -28,6 +42,54 @@ export function ImpactOverlayPanel({
   );
   // Treat missing/legacy field as enabled.
   const masterOn = filter.masterEnabled !== false;
+  // Persisted filters from before per-variable toggles have no `variables`
+  // map; a missing map (and missing keys) means all-visible.
+  const variableFilter = filter.variables ?? {};
+  const orderedVariables = [...endingVariables].sort(
+    (a, b) => a.sort_order - b.sort_order
+  );
+  // Currently-shown variable ids, in sort order.
+  const selectedVariableIds = orderedVariables
+    .filter((ev) => variableFilter[ev.id] === true)
+    .map((ev) => ev.id);
+
+  // Apply an ending framework as a preset: turn the Variables section on and
+  // show exactly the variables that framework's logic references. The empty
+  // selection just drops the preset link — the shown variables are kept so
+  // the user can keep hand-editing them.
+  function applyFramework(frameworkId: string | null) {
+    onFilterChange((prev) => {
+      if (!frameworkId) {
+        return { ...prev, endingFrameworkId: null };
+      }
+      const framework = frameworkOptions.find((f) => f.id === frameworkId);
+      const refs = framework?.variableIds ?? [];
+      return {
+        ...prev,
+        endingFrameworkId: frameworkId,
+        showVariables: true,
+        variables: Object.fromEntries(refs.map((id) => [id, true])),
+      };
+    });
+  }
+
+  // Manual add/remove of a variable. Clears `endingFrameworkId` — once the
+  // shown set is hand-edited it no longer matches a framework preset, so the
+  // dropdown reverts to its placeholder.
+  function addVariable(id: string) {
+    onFilterChange((prev) => ({
+      ...prev,
+      endingFrameworkId: null,
+      variables: { ...(prev.variables ?? {}), [id]: true },
+    }));
+  }
+  function removeVariable(id: string) {
+    onFilterChange((prev) => {
+      const next = { ...(prev.variables ?? {}) };
+      delete next[id];
+      return { ...prev, endingFrameworkId: null, variables: next };
+    });
+  }
 
   return (
     <div className="rounded-md border border-border bg-card">
@@ -41,12 +103,32 @@ export function ImpactOverlayPanel({
           />
         }
         menu={
-          <VisibilitySwitch
-            checked={masterOn}
-            onChange={(v) =>
-              onFilterChange((prev) => ({ ...prev, masterEnabled: v }))
-            }
-          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="Reset overlays"
+              title="Reset overlays"
+              onClick={() =>
+                // Reset every overlay to its default, but leave the
+                // Variables section's own on/off state where the user
+                // had it — reset clears the shown variables, it doesn't
+                // collapse the section.
+                onFilterChange((prev) => ({
+                  ...DEFAULT_IMPACT_FILTER,
+                  showVariables: prev.showVariables,
+                }))
+              }
+              className="text-muted-foreground/70 transition-colors hover:text-foreground"
+            >
+              <IconRestore size={13} aria-hidden />
+            </button>
+            <VisibilitySwitch
+              checked={masterOn}
+              onChange={(v) =>
+                onFilterChange((prev) => ({ ...prev, masterEnabled: v }))
+              }
+            />
+          </div>
         }
       />
       <div
@@ -165,23 +247,66 @@ export function ImpactOverlayPanel({
           />
         </SectionBox>
 
-        <SectionBox
-          label="Endings"
-          visible={filter.showEndings}
-          onVisibilityChange={(v) =>
-            onFilterChange((prev) => ({ ...prev, showEndings: v }))
-          }
-        />
-
-        <div className="flex justify-end pt-1">
-          <button
-            type="button"
-            className="text-[10px] text-muted-foreground hover:text-foreground"
-            onClick={() => onFilterChange(DEFAULT_IMPACT_FILTER)}
-          >
-            Reset all
-          </button>
+        <div className="rounded-md border border-border bg-card">
+          <div className="flex items-center gap-1.5 px-3 py-2">
+            <span className="flex-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Endings
+            </span>
+            <select
+              aria-label="Show variables for an ending framework"
+              value={filter.endingFrameworkId ?? ""}
+              onChange={(e) => applyFramework(e.target.value || null)}
+              className="h-6 max-w-[170px] rounded border border-border bg-black/30 px-1.5 text-[10px] text-foreground outline-none focus-visible:border-ring"
+            >
+              <option value="">No framework</option>
+              {frameworkOptions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
+        <SectionBox
+          label="Variables"
+          visible={filter.showVariables}
+          onVisibilityChange={(v) =>
+            onFilterChange((prev) => ({ ...prev, showVariables: v }))
+          }
+          onAll={
+            orderedVariables.length > 0
+              ? (v) =>
+                  onFilterChange((prev) => ({
+                    ...prev,
+                    endingFrameworkId: null,
+                    variables: v
+                      ? Object.fromEntries(
+                          orderedVariables.map((ev) => [ev.id, true])
+                        )
+                      : {},
+                  }))
+              : undefined
+          }
+          allOn={
+            orderedVariables.length > 0 &&
+            orderedVariables.every((ev) => variableFilter[ev.id] === true)
+          }
+          allOff={selectedVariableIds.length === 0}
+        >
+          {orderedVariables.length > 0 ? (
+            <VariableSearchAdd
+              variables={orderedVariables}
+              selectedIds={selectedVariableIds}
+              onAdd={addVariable}
+              onRemove={removeVariable}
+            />
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              No ending variables yet.
+            </p>
+          )}
+        </SectionBox>
       </div>
     </div>
   );
@@ -299,25 +424,173 @@ function VariableToggle({
   item: VariableItem;
   onToggle: (v: boolean) => void;
 }) {
+  // Pill toggle — matches the endings logic preview toggles (rounded-full,
+  // bordered, the variable color only tinting the border + icon when on).
   return (
     <button
       type="button"
       onClick={() => onToggle(!item.checked)}
+      aria-pressed={item.checked}
       className={cn(
-        "flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs transition-colors",
         item.checked
-          ? "border-current"
-          : "border-border text-muted-foreground"
+          ? "border-foreground/40 bg-foreground/10 text-foreground"
+          : "border-border/40 bg-transparent text-muted-foreground/70 hover:text-foreground"
       )}
-      style={
-        item.checked
-          ? { color: item.color, background: `${item.color}18` }
-          : undefined
-      }
+      style={item.checked ? { borderColor: item.color } : undefined}
     >
-      <IconDisplay type={item.iconType} value={item.iconValue} size={13} />
+      <span
+        className={cn(
+          "flex h-4 w-4 items-center justify-center transition-opacity",
+          item.checked ? "opacity-100" : "opacity-40"
+        )}
+        style={{ color: item.color }}
+      >
+        {item.iconValue ? (
+          <IconDisplay type={item.iconType} value={item.iconValue} size={12} />
+        ) : (
+          // Ending variables carry no icon — show a color dot instead.
+          <span
+            className="h-2 w-2 rounded-full"
+            style={{ backgroundColor: item.color }}
+          />
+        )}
+      </span>
       {item.label}
     </button>
+  );
+}
+
+/**
+ * Search-to-add variable picker for the Variables overlay section. Replaces
+ * a flat pill grid (hard to parse with many variables): the user types to
+ * find a variable and picks it; shown variables render as removable chips
+ * above the input.
+ */
+function VariableSearchAdd({
+  variables,
+  selectedIds,
+  onAdd,
+  onRemove,
+}: {
+  variables: EndingVariable[];
+  selectedIds: string[];
+  onAdd: (id: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const byId = new Map(variables.map((v) => [v.id, v]));
+  const selectedSet = new Set(selectedIds);
+  const addable = variables.filter((v) => !selectedSet.has(v.id));
+  const filtered = filterVariables(addable, query);
+  const selectedVars = selectedIds
+    .map((id) => byId.get(id))
+    .filter((v): v is EndingVariable => !!v);
+
+  // Outside-click closes the results list.
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  function commit(id: string) {
+    onAdd(id);
+    setQuery("");
+    setActiveIndex(0);
+    // Stay open so several variables can be added in a row.
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {selectedVars.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {selectedVars.map((v) => {
+            const color = v.color_hex ?? paletteColor(v.color_index);
+            return (
+              <span
+                key={v.id}
+                className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] text-foreground"
+                style={{ borderColor: color }}
+              >
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="max-w-[120px] truncate">{v.name}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemove(v.id)}
+                  aria-label={`Hide ${v.name}`}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-[10px] text-muted-foreground">
+          No variables shown — search to add.
+        </p>
+      )}
+      <div ref={wrapRef} className="relative">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActiveIndex(0);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActiveIndex((i) => Math.min(i + 1, filtered.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActiveIndex((i) => Math.max(i - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const v = filtered[activeIndex];
+              if (v) commit(v.id);
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+          placeholder="Search variables to add…"
+          aria-label="Search variables to add"
+          className="w-full rounded border border-border bg-black/30 px-2 py-1 text-[10px] text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring"
+        />
+        {open && addable.length > 0 ? (
+          <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-44 overflow-auto rounded-md border border-border bg-popover shadow-lg">
+            {filtered.length > 0 ? (
+              <VariableOptionList
+                filtered={filtered}
+                activeIndex={activeIndex}
+                onChangeActiveIndex={setActiveIndex}
+                onCommit={(v) => commit(v.id)}
+                ariaLabel="Add variable"
+                className="w-full"
+              />
+            ) : (
+              <p className="px-2 py-2 text-[10px] text-muted-foreground">
+                No matching variables.
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

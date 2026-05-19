@@ -12,7 +12,11 @@ import {
 import { IconDisplay } from "@/components/icon-display";
 import { readableOnHex } from "@/components/pills";
 import type { IconType } from "@/lib/db/enums";
-import type { ActiveImpact } from "@/lib/graph-overlay";
+import {
+  VAR_CHIP_W,
+  type ActiveImpact,
+  type ActiveVariable,
+} from "@/lib/graph-overlay";
 
 export type ActionIconEdgeData = {
   color: string;
@@ -34,6 +38,9 @@ export type ActionIconEdgeData = {
   terminator?: "arrow" | "circle";
   /** Optional impact badges shown beside the chip when the overlay is on. */
   impacts?: ActiveImpact[];
+  /** Ending-variable chips (name stacked over value) shown beneath the impact
+   *  badges when the Variables overlay is on. */
+  variables?: ActiveVariable[];
   /** Which side of the chip the impact badges stack on. Defaults to "right". */
   badgeSide?: "left" | "right";
   /** Horizontal nudge applied to the path's target endpoint so converging
@@ -43,8 +50,6 @@ export type ActionIconEdgeData = {
    * spread sn-edge departures across a report's bottom edge so each
    * outgoing line aligns with the matching action's arrival on top. */
   sourceXOffset?: number;
-  /** True when this action sets an ending variable and the ending overlay is on. */
-  hasEnding?: boolean;
   /** True when this chip is the active inspector selection. */
   selected?: boolean;
   /** Avatar color used for the self-selection ring. Falls back to var(--ring). */
@@ -199,34 +204,50 @@ function ActionIconEdgeComponent({
       : null;
 
   const hasImpacts = !hideChip && !!(d.impacts && d.impacts.length > 0);
+  const hasVariables = !hideChip && !!(d.variables && d.variables.length > 0);
+  // When the local user has this action selected, ring its overlay chips in
+  // the same avatar color as the chip — so the impact badges + variable
+  // chips read as part of the selection, not just the chip itself.
+  const overlayRingColor = d.selected
+    ? d.selfRingColor ?? "var(--ring)"
+    : undefined;
   const badgeSide = d.badgeSide ?? "right";
   const badgeAnchorX =
     badgeSide === "right"
       ? chipX + CHIP_PX / 2 + CHIP_TO_BADGES_GAP_PX
       : chipX - CHIP_PX / 2 - CHIP_TO_BADGES_GAP_PX;
 
-  // Selection halo: when the action is selected, paint a wider, partly
-  // transparent stroke beneath each segment in the user's avatar color
-  // so the line itself reads as selected — mirrors the ring around the
-  // chip. Falls back to `var(--ring)` when no avatar color is wired.
-  const haloColor = d.selfRingColor ?? "var(--ring)";
-  const haloStyle = {
-    stroke: haloColor,
-    strokeWidth: 5,
-    opacity: 0.55,
-  };
+  // Selection halos: paint a wider, partly transparent stroke beneath each
+  // segment in every selecting user's avatar color so the connector lines
+  // read as selected — mirrors the concentric rings around the chip. The
+  // local user (when selected) is the innermost band; peers stack outward.
   const selected = !!d.selected;
+  const haloRings: string[] = [];
+  if (selected) haloRings.push(d.selfRingColor ?? "var(--ring)");
+  for (const c of d.peerRingColors ?? []) haloRings.push(c);
+  // Widest first so the narrower inner bands paint on top of it.
+  const haloLayers = haloRings
+    .map((color, i) => ({ color, width: 5 + i * 3 }))
+    .reverse();
+  const haloPaths = ([single, path1, path2].filter(Boolean) as string[]).map(
+    (p, i) => ({ p, key: i })
+  );
   return (
     <>
-      {selected && single ? (
-        <BaseEdge id={`${id}-halo-s`} path={single} style={haloStyle} />
-      ) : null}
-      {selected && path1 ? (
-        <BaseEdge id={`${id}-halo-a`} path={path1} style={haloStyle} />
-      ) : null}
-      {selected && path2 ? (
-        <BaseEdge id={`${id}-halo-b`} path={path2} style={haloStyle} />
-      ) : null}
+      {haloLayers.flatMap((layer, li) =>
+        haloPaths.map(({ p, key }) => (
+          <BaseEdge
+            key={`halo-${li}-${key}`}
+            id={`${id}-halo-${li}-${key}`}
+            path={p}
+            style={{
+              stroke: layer.color,
+              strokeWidth: layer.width,
+              opacity: 0.55,
+            }}
+          />
+        ))
+      )}
       {single ? (
         <BaseEdge
           id={`${id}-s`}
@@ -326,18 +347,9 @@ function ActionIconEdgeComponent({
                 {d.actionName.slice(0, 1).toUpperCase()}
               </span>
             )}
-            {d.hasEnding ? (
-              <span
-                aria-label="Sets an ending variable"
-                title="Sets an ending variable"
-                className="absolute -right-1 -top-1 inline-flex h-3 w-3 items-center justify-center rounded-full bg-amber-400 text-[8px] font-semibold leading-none text-black"
-              >
-                <IconDisplay type="tabler" value="IconFlag" size={8} />
-              </span>
-            ) : null}
           </button>
         </div>
-        {hasImpacts ? (
+        {hasImpacts || hasVariables ? (
           <div
             className="nodrag nopan"
             style={{
@@ -350,10 +362,26 @@ function ActionIconEdgeComponent({
               zIndex: 10,
             }}
           >
-            <BadgeStack
-              impacts={d.impacts as ActiveImpact[]}
-              align={badgeSide === "left" ? "end" : "start"}
-            />
+            <div
+              className={`flex flex-col gap-[3px] ${badgeSide === "left" ? "items-end" : "items-start"}`}
+            >
+              {hasImpacts ? (
+                <BadgeStack
+                  impacts={d.impacts as ActiveImpact[]}
+                  align={badgeSide === "left" ? "end" : "start"}
+                  onSelect={d.onSelect}
+                  ringColor={overlayRingColor}
+                />
+              ) : null}
+              {hasVariables ? (
+                <VariableChipStack
+                  variables={d.variables as ActiveVariable[]}
+                  align={badgeSide === "left" ? "end" : "start"}
+                  onSelect={d.onSelect}
+                  ringColor={overlayRingColor}
+                />
+              ) : null}
+            </div>
           </div>
         ) : null}
       </EdgeLabelRenderer>
@@ -370,9 +398,16 @@ function ActionIconEdgeComponent({
 function BadgeStack({
   impacts,
   align = "start",
+  onSelect,
+  ringColor,
 }: {
   impacts: ActiveImpact[];
   align?: "start" | "end";
+  /** Opens the inspector for the parent action — wired to every badge. */
+  onSelect?: () => void;
+  /** Avatar-color ring drawn on each badge while the parent action is the
+   *  local user's selection. */
+  ringColor?: string;
 }) {
   const world = impacts.filter((i) => i.key.startsWith("world:"));
   const others = impacts.filter((i) => !i.key.startsWith("world:"));
@@ -384,7 +419,12 @@ function BadgeStack({
       {world.length > 0 ? (
         <div className={`flex flex-row gap-[2px] ${rowJustify}`}>
           {world.map((imp) => (
-            <ImpactBadge key={imp.key} impact={imp} />
+            <ImpactBadge
+              key={imp.key}
+              impact={imp}
+              onSelect={onSelect}
+              ringColor={ringColor}
+            />
           ))}
         </div>
       ) : null}
@@ -394,7 +434,12 @@ function BadgeStack({
           style={{ maxWidth: otherMaxW }}
         >
           {others.map((imp) => (
-            <ImpactBadge key={imp.key} impact={imp} />
+            <ImpactBadge
+              key={imp.key}
+              impact={imp}
+              onSelect={onSelect}
+              ringColor={ringColor}
+            />
           ))}
         </div>
       ) : null}
@@ -402,13 +447,130 @@ function BadgeStack({
   );
 }
 
-function ImpactBadge({ impact }: { impact: ActiveImpact }) {
+/**
+ * Variable chips wrap in a row beneath the impact badges — 2 per row for ≤4,
+ * 3 per row otherwise (same wrap rule as the impact badges).
+ */
+function VariableChipStack({
+  variables,
+  align = "start",
+  onSelect,
+  ringColor,
+}: {
+  variables: ActiveVariable[];
+  align?: "start" | "end";
+  onSelect?: () => void;
+  ringColor?: string;
+}) {
+  const cols = Math.min(variables.length, variables.length <= 4 ? 2 : 3);
+  const maxW = cols * VAR_CHIP_W + Math.max(0, cols - 1) * 2;
+  const rowJustify = align === "end" ? "justify-end" : "justify-start";
+  return (
+    <div
+      className={`flex flex-row flex-wrap gap-[2px] ${rowJustify}`}
+      style={{ maxWidth: maxW }}
+    >
+      {variables.map((v) => (
+        <VariableChip
+          key={v.key}
+          variable={v}
+          onSelect={onSelect}
+          ringColor={ringColor}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Click handlers shared by every overlay chip — clicking opens the
+ *  inspector for the parent action; the pointerdown stop keeps the click
+ *  from starting a graph pan. */
+function chipSelectProps(onSelect?: () => void) {
+  return {
+    onClick: onSelect,
+    onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+    style: {
+      pointerEvents: (onSelect ? "auto" : "none") as "auto" | "none",
+      cursor: onSelect ? "pointer" : "default",
+    },
+  };
+}
+
+/**
+ * A single ending-variable chip — the variable name stacked above its
+ * assigned value (the inspector's action panel shows the two side by side;
+ * the graph stacks them so the chip stays narrow). Name segment is filled
+ * with the variable color; value segment sits on a dark fill. Each segment
+ * wraps to at most two lines before truncating with an ellipsis.
+ */
+function VariableChip({
+  variable,
+  onSelect,
+  ringColor,
+}: {
+  variable: ActiveVariable;
+  onSelect?: () => void;
+  ringColor?: string;
+}) {
+  const sel = chipSelectProps(onSelect);
+  return (
+    <button
+      type="button"
+      onClick={sel.onClick}
+      onPointerDown={sel.onPointerDown}
+      className="flex flex-col overflow-hidden rounded-sm border text-center font-mono uppercase"
+      style={{
+        borderColor: variable.color,
+        width: VAR_CHIP_W,
+        ...sel.style,
+        ...(ringColor
+          ? { boxShadow: `0 0 0 1px var(--background), 0 0 0 3px ${ringColor}` }
+          : null),
+      }}
+      title={`${variable.name} = ${variable.valueLabel}`}
+    >
+      <span
+        className="line-clamp-2 px-0.5 py-px text-[7px] leading-[8px]"
+        style={{
+          backgroundColor: variable.color,
+          color: readableOnHex(variable.color),
+        }}
+      >
+        {variable.name}
+      </span>
+      <span className="line-clamp-2 bg-background/85 px-0.5 py-px text-[9px] leading-[10px] text-foreground">
+        {variable.valueLabel}
+      </span>
+    </button>
+  );
+}
+
+function ImpactBadge({
+  impact,
+  onSelect,
+  ringColor,
+}: {
+  impact: ActiveImpact;
+  onSelect?: () => void;
+  ringColor?: string;
+}) {
   const sign = impact.value > 0 ? "+" : "";
   const valueColor = impact.valueColor ?? impact.color;
+  const sel = chipSelectProps(onSelect);
   return (
-    <span
+    <button
+      type="button"
+      onClick={sel.onClick}
+      onPointerDown={sel.onPointerDown}
       className="inline-flex h-4 items-center gap-0.5 rounded-sm border bg-background/70 px-1 font-mono text-[10px] leading-none tabular-nums"
-      style={{ borderColor: impact.color, color: impact.color }}
+      style={{
+        borderColor: impact.color,
+        color: impact.color,
+        ...sel.style,
+        ...(ringColor
+          ? { boxShadow: `0 0 0 1px var(--background), 0 0 0 3px ${ringColor}` }
+          : null),
+      }}
       title={`${impact.label} ${sign}${impact.value}`}
     >
       {impact.iconValue ? (
@@ -422,7 +584,7 @@ function ImpactBadge({ impact }: { impact: ActiveImpact }) {
         {sign}
         {impact.value}
       </span>
-    </span>
+    </button>
   );
 }
 
