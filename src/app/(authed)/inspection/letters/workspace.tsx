@@ -464,7 +464,13 @@ function LettersWorkspaceInner({
     setSelection,
     pingActivity,
     onPostgresChanges,
+    sendBroadcast,
+    subscribeBroadcast,
   } = usePresenceContext();
+
+  // Maps row id → deleter email, populated by the broadcast handler before
+  // the DELETE postgres event arrives so the toast can show attribution.
+  const pendingDeletersRef = useRef<Map<string, string>>(new Map());
   const { toast, toaster } = useToast();
 
   // Viewport-mode flag for the slide layout — hoisted before the selection
@@ -752,6 +758,18 @@ function LettersWorkspaceInner({
     }, 100);
   }, [router]);
 
+  // Receive "row-deleting" broadcasts from all clients (including self) and
+  // store the deleter email keyed by row id. The DELETE postgres event
+  // arrives shortly after and reads this map for attribution.
+  useEffect(() => {
+    return subscribeBroadcast("row-deleting", (payload) => {
+      const p = payload as { id?: string; by?: string } | undefined;
+      if (p?.id && p?.by) {
+        pendingDeletersRef.current.set(p.id, p.by);
+      }
+    });
+  }, [subscribeBroadcast]);
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       const { table, eventType } = change;
@@ -829,9 +847,8 @@ function LettersWorkspaceInner({
         const oldRow = change.old as Record<string, unknown> | undefined;
         const id = oldRow?.id as string | undefined;
         if (!id) return;
-        const deleterEmail =
-          (oldRow?.updated_by as string | undefined) ?? null;
-        const by = deleterEmail ?? "Someone";
+        const by = pendingDeletersRef.current.get(id) ?? "Someone";
+        pendingDeletersRef.current.delete(id);
 
         switch (table) {
           case "inspection_letters":
@@ -1578,6 +1595,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteInspectionLetter(groupId, id);
       if (selectedId === id) {
@@ -1597,6 +1615,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id: groupId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteGroup(groupId);
     });
@@ -1627,6 +1646,7 @@ function LettersWorkspaceInner({
   }
 
   function handleDeleteSegment(segmentId: string) {
+    sendBroadcast("row-deleting", { id: segmentId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteReportSegment(segmentId);
       setSelectedSegmentId(null);

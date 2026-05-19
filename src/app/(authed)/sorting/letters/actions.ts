@@ -121,6 +121,11 @@ export async function deleteSortingLetter(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase.from("sorting_letters").update({ updated_by: updatedBy }).eq("id", id);
+  }
   const { error } = await supabase.from("sorting_letters").delete().eq("id", id);
   if (error) throw new Error(error.message);
   redirect("/sorting/letters");
