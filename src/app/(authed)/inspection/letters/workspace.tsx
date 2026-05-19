@@ -2547,7 +2547,10 @@ function LettersWorkspaceInner({
                     draggable={!listLocked}
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = "move";
-                      setDragIndex(i);
+                      // Defer blanking the in-list row by a frame so the
+                      // browser captures the drag image (which travels with
+                      // the cursor) while the row still has its content.
+                      requestAnimationFrame(() => setDragIndex(i));
                     }}
                     onDragOver={(e) => {
                       if (listLocked || dragIndex === null) return;
@@ -2727,7 +2730,10 @@ function LettersWorkspaceInner({
                     draggable={!segmentListLocked}
                     onDragStart={(e) => {
                       e.dataTransfer.effectAllowed = "move";
-                      setSegmentDragIndex(i);
+                      // Defer blanking the in-list row by a frame so the
+                      // browser captures the drag image (which travels with
+                      // the cursor) while the row still has its content.
+                      requestAnimationFrame(() => setSegmentDragIndex(i));
                     }}
                     onDragOver={(e) => {
                       if (segmentListLocked || segmentDragIndex === null)
@@ -7370,7 +7376,10 @@ function StorylineInspector({
                   draggable
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = "move";
-                    setDragIndex(i);
+                    // Defer blanking the in-list row by a frame so the
+                    // browser captures the drag image (which travels with
+                    // the cursor) while the row still has its content.
+                    requestAnimationFrame(() => setDragIndex(i));
                   }}
                   onDragOver={(e) => {
                     if (dragIndex === null) return;
