@@ -705,6 +705,14 @@ export async function batchMoveToDay(
 
 export async function deleteGroup(groupId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("letter_groups")
+      .update({ updated_by: updatedBy })
+      .eq("id", groupId);
+  }
   // FK cascade handles report_groups, report_segments, inspection_letters,
   // and (transitively) actions tied to this group's letters. Inbound
   // next-letter links auto-null via the next_letter_id FK (ON DELETE SET
@@ -871,6 +879,18 @@ export async function deleteInspectionLetter(
   letterId: string
 ) {
   const supabase = await createSupabaseServerClient();
+  // Stamp updated_by before the delete so peers' deletion toasts can name
+  // the deleter (the row vanishes before realtime sees the new value
+  // otherwise). The variant / piece columns are intentionally left alone —
+  // surviving letters keep their numbers; gaps stay.
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("inspection_letters")
+      .update({ updated_by: updatedBy })
+      .eq("id", letterId);
+  }
   // FK cascade on actions.inspection_letter_id removes this letter's own
   // actions; the next_letter_id FK (ON DELETE SET NULL) clears any inbound
   // next-letter links automatically. The surviving letters keep their
@@ -1759,6 +1779,14 @@ export async function createLetterGroupInStoryline(
 
 export async function deleteReportSegment(segmentId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("report_segments")
+      .update({ updated_by: updatedBy })
+      .eq("id", segmentId);
+  }
   const { error } = await supabase
     .from("report_segments")
     .delete()
@@ -1919,19 +1947,33 @@ export async function createNextDayAndReportSegment(
 
 export async function updateCitizen(data: {
   id: string;
-  name: string;
+  first_name: string;
+  last_name: string;
   citizen_id: string | null;
   city_id: string | null;
   nation_id: string | null;
+  middle_name?: string | null;
+  honorific?: string | null;
+  title?: string | null;
+  suffix?: string | null;
+  name_display_format?: string | null;
+  address_line?: string | null;
 }) {
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase
     .from("citizens")
     .update({
-      name: data.name.trim(),
+      first_name: data.first_name.trim(),
+      last_name: data.last_name.trim(),
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
+      middle_name: data.middle_name?.trim() || null,
+      honorific: data.honorific?.trim() || null,
+      title: data.title?.trim() || null,
+      suffix: data.suffix?.trim() || null,
+      name_display_format: data.name_display_format?.trim() || null,
+      address_line: data.address_line?.trim() || null,
     })
     .eq("id", data.id);
   if (error) throw new Error(error.message);
@@ -1940,23 +1982,37 @@ export async function updateCitizen(data: {
 }
 
 export async function quickCreateCitizen(data: {
-  name: string;
+  first_name: string;
+  last_name: string;
   type: CitizenType;
   citizen_id?: string | null;
   city_id?: string | null;
   nation_id?: string | null;
+  middle_name?: string | null;
+  honorific?: string | null;
+  title?: string | null;
+  suffix?: string | null;
+  name_display_format?: string | null;
+  address_line?: string | null;
 }) {
   const supabase = await createSupabaseServerClient();
   const { data: row, error } = await supabase
     .from("citizens")
     .insert({
-      name: data.name.trim(),
+      first_name: data.first_name.trim(),
+      last_name: data.last_name.trim(),
       type: data.type,
       citizen_id: data.citizen_id?.trim() || null,
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
+      middle_name: data.middle_name?.trim() || null,
+      honorific: data.honorific?.trim() || null,
+      title: data.title?.trim() || null,
+      suffix: data.suffix?.trim() || null,
+      name_display_format: data.name_display_format?.trim() || null,
+      address_line: data.address_line?.trim() || null,
     })
-    .select("id, name, type, citizen_id, city_id, nation_id")
+    .select("*")
     .single();
   if (error) throw new Error(error.message);
   revalidatePath("/citizens");

@@ -32,8 +32,15 @@ import {
   generateRandomCitizenId,
   isValidCitizenId,
 } from "@/lib/citizen-id";
+import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
 import type { IconType } from "@/lib/db/enums";
+import {
+  CITIZEN_HONORIFICS,
+  CITIZEN_SUFFIXES,
+  NAME_DISPLAY_FORMATS,
+  NAME_DISPLAY_FORMAT_LABELS,
+} from "@/lib/db/enums";
 import type {
   ActionRow,
   ActionTemplate,
@@ -105,6 +112,7 @@ import type {
   PresenceProfile,
   PresenceSelection,
 } from "@/lib/realtime/presence";
+import { focusMatchesView } from "@/lib/realtime/presence";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
@@ -482,7 +490,13 @@ function LettersWorkspaceInner({
     setSelection,
     pingActivity,
     onPostgresChanges,
+    sendBroadcast,
+    subscribeBroadcast,
   } = usePresenceContext();
+
+  // Maps row id → deleter email, populated by the broadcast handler before
+  // the DELETE postgres event arrives so the toast can show attribution.
+  const pendingDeletersRef = useRef<Map<string, string>>(new Map());
   const { toast, toaster } = useToast();
 
   // Viewport-mode flag for the slide layout — hoisted before the selection
@@ -799,6 +813,14 @@ function LettersWorkspaceInner({
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     initialSegmentId
   );
+  // The action chip selected on the actions panel — only set in controlled
+  // (graph) mode, where clicking a chip selects one specific action. Flows
+  // into PresenceSelection.actionId so graph peers ring the exact chip
+  // instead of the parent letter. Null on the standalone inspection page,
+  // whose actions panel isn't scoped to a single action.
+  const [selectedActionId, setSelectedActionId] = useState<string | null>(
+    null
+  );
 
   // Latest-selection refs — the postgres_changes handler reads these without
   // re-registering itself on every selection change.
@@ -839,6 +861,18 @@ function LettersWorkspaceInner({
       });
     }, 100);
   }, [router]);
+
+  // Receive "row-deleting" broadcasts from all clients (including self) and
+  // store the deleter email keyed by row id. The DELETE postgres event
+  // arrives shortly after and reads this map for attribution.
+  useEffect(() => {
+    return subscribeBroadcast("row-deleting", (payload) => {
+      const p = payload as { id?: string; by?: string } | undefined;
+      if (p?.id && p?.by) {
+        pendingDeletersRef.current.set(p.id, p.by);
+      }
+    });
+  }, [subscribeBroadcast]);
 
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
@@ -917,9 +951,8 @@ function LettersWorkspaceInner({
         const oldRow = change.old as Record<string, unknown> | undefined;
         const id = oldRow?.id as string | undefined;
         if (!id) return;
-        const deleterEmail =
-          (oldRow?.updated_by as string | undefined) ?? null;
-        const by = deleterEmail ?? "Someone";
+        const by = pendingDeletersRef.current.get(id) ?? "Someone";
+        pendingDeletersRef.current.delete(id);
 
         switch (table) {
           case "inspection_letters":
@@ -1077,6 +1110,7 @@ function LettersWorkspaceInner({
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setLetterState(null);
       setView("list");
       return;
@@ -1085,6 +1119,7 @@ function LettersWorkspaceInner({
       setSelectedGroupId(sel.groupId);
       setSelectedId(null);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setLetterState(null);
       setView("group");
     } else if (sel.kind === "letter") {
@@ -1092,6 +1127,7 @@ function LettersWorkspaceInner({
       const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
       setSelectedId(letterId);
       setSelectedSegmentId(null);
+      setSelectedActionId(null);
       setView("main");
     } else if (sel.kind === "segment") {
       const seg = allSegments.find((s) => s.id === sel.segmentId);
@@ -1099,12 +1135,14 @@ function LettersWorkspaceInner({
       setSelectedId(null);
       setLetterState(null);
       setSelectedSegmentId(sel.segmentId);
+      setSelectedActionId(null);
       setView("main");
     } else if (sel.kind === "actions") {
       setSelectedGroupId(sel.groupId);
       const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
       setSelectedId(letterId);
       setSelectedSegmentId(null);
+      setSelectedActionId(sel.actionId ?? null);
       setView("actions");
     }
     // Intentionally only depends on controlledSelection — onSelectionChange
@@ -1138,6 +1176,7 @@ function LettersWorkspaceInner({
           kind: "actions",
           groupId: selectedGroupId,
           variantKey,
+          actionId: selectedActionId ?? undefined,
         });
       } else {
         onSelectionChange({
@@ -1152,9 +1191,11 @@ function LettersWorkspaceInner({
       onSelectionChange({ kind: "group", groupId: selectedGroupId });
     }
     // Intentionally omits onSelectionChange to avoid re-firing on
-    // callback identity churn — see the apply effect above.
+    // callback identity churn — see the apply effect above. selectedActionId
+    // is included so a chip-to-chip switch within the same letter still
+    // consumes the controlled-apply guard.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedGroupId, selectedId, selectedSegmentId, view]);
+  }, [selectedGroupId, selectedId, selectedSegmentId, view, selectedActionId]);
 
   // Slot 1 can host either a group or a storyline inspector — mutually
   // exclusive. Selecting a storyline clears any active group and vice versa.
@@ -1222,6 +1263,7 @@ function LettersWorkspaceInner({
       groupId: selectedGroupId,
       letterId: selectedId,
       segmentId: selectedSegmentId,
+      actionId: view === "actions" ? selectedActionId : null,
       view,
       narrow,
     });
@@ -1231,6 +1273,7 @@ function LettersWorkspaceInner({
     selectedGroupId,
     selectedId,
     selectedSegmentId,
+    selectedActionId,
     view,
     narrow,
   ]);
@@ -1530,20 +1573,34 @@ function LettersWorkspaceInner({
   }
 
   /**
-   * Jump from the segment panel to the actions panel for a specific letter
-   * — used by the segment's "Triggers" list. Also switches the group
-   * selection if the trigger lives in a different letter group (e.g. a
-   * sibling storyline's letter pointing at this segment).
+   * Open a letter from the segment panel's "Triggers" list. The letter
+   * opens in the normal letter-detail panel (view "main") — so Back from
+   * there behaves like any other letter, stepping up one panel to the
+   * letter's own group. Switches the group selection when the trigger
+   * lives in a different letter group (e.g. a sibling storyline's letter
+   * pointing at this segment), and hydrates letterState synchronously
+   * (see openLetterForAction) so slot 3 doesn't flash blank for a render.
    */
   function jumpToTrigger(letterId: string) {
-    const target = allLetters.find((l) => l.id === letterId);
-    if (!target) return;
-    if (target.letter_group_id !== selectedGroupId) {
-      setSelectedGroupId(target.letter_group_id);
-    }
-    setSelectedId(letterId);
+    const letter = allLetters.find((l) => l.id === letterId);
+    if (!letter) return;
+    // Stale back-references would otherwise hijack the letter-detail Back
+    // button — clear them so Back steps up to the group as normal.
+    openedNextLetterFromRef.current = null;
+    segmentOpenedFromRef.current = null;
+    const newGroupLetterIds = new Set(
+      allLetters
+        .filter((l) => l.letter_group_id === letter.letter_group_id)
+        .map((l) => l.id)
+    );
+    const newGroupActions = allActions.filter((a) =>
+      newGroupLetterIds.has(a.inspection_letter_id)
+    );
+    setLetterState(toLetterState(letter, newGroupActions, endingAssignments));
+    setSelectedGroupId(letter.letter_group_id);
+    setSelectedId(letter.id);
     setSelectedSegmentId(null);
-    setView("actions");
+    setView("main");
   }
 
   function updateLetter(patch: Partial<LetterState>) {
@@ -1666,6 +1723,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteInspectionLetter(groupId, id);
       if (selectedId === id) {
@@ -1685,6 +1743,7 @@ function LettersWorkspaceInner({
       intent: "destructive",
     });
     if (!ok) return;
+    sendBroadcast("row-deleting", { id: groupId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteGroup(groupId);
     });
@@ -1879,7 +1938,12 @@ function LettersWorkspaceInner({
     });
   }
 
+  // Post-confirm delete handler — callers MUST gate this behind a confirm
+  // dialog (LetterSegmentCard does). The row-deleting broadcast is fired
+  // unconditionally here, so calling it without a prior confirm would
+  // poison pendingDeletersRef with an entry for a delete that never lands.
   function handleDeleteSegment(segmentId: string) {
+    sendBroadcast("row-deleting", { id: segmentId, by: presenceUser?.profile?.displayName ?? presenceUser?.email ?? "Someone" });
     startRowAction(async () => {
       await deleteReportSegment(segmentId);
       setSelectedSegmentId(null);
@@ -1893,52 +1957,87 @@ function LettersWorkspaceInner({
   const [editingCitizen, setEditingCitizen] = useState<Citizen | null>(null);
 
   async function handleEditCitizen(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     if (!editingCitizen) return;
     await updateCitizen({ id: editingCitizen.id, ...fields });
     const patched: Citizen = {
       ...editingCitizen,
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     };
     setHeroes((prev) =>
       prev
         .map((h) => (h.id === patched.id ? patched : h))
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     setEditingCitizen(null);
   }
 
   async function handleCreateHero(fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) {
     const row = await quickCreateCitizen({
-      name: fields.name,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
       type: "hero",
       citizen_id: fields.citizen_id,
       city_id: fields.city_id,
       nation_id: fields.nation_id,
+      middle_name: fields.middle_name,
+      honorific: fields.honorific,
+      title: fields.title,
+      suffix: fields.suffix,
+      name_display_format: fields.name_display_format,
+      address_line: fields.address_line,
     });
     const created: Citizen = {
       id: row.id,
-      name: row.name,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      middle_name: row.middle_name ?? null,
+      honorific: row.honorific ?? null,
+      title: row.title ?? null,
+      suffix: row.suffix ?? null,
+      name_display_format: row.name_display_format ?? null,
+      address_line: row.address_line ?? null,
       type: row.type,
       citizen_id: row.citizen_id,
       nation_id: row.nation_id,
       city_id: row.city_id,
-      notes: null,
+      notes: row.notes ?? null,
     };
     setHeroes((prev) =>
-      [...prev, created].sort((a, b) => a.name.localeCompare(b.name))
+      [...prev, created].sort((a, b) => citizenFullName(a).localeCompare(citizenFullName(b)))
     );
     if (heroDialogRole === "sender") {
       updateLetter({ sender_citizen_id: created.id });
@@ -2096,7 +2195,10 @@ function LettersWorkspaceInner({
     const all = selfPeer ? [selfPeer, ...peers] : peers;
     for (const peer of all) {
       const label = (() => {
-        if (peer.focus) {
+        // Trust focus only when it agrees with the panel the peer is on —
+        // a stale focused field (e.g. an action input still focused after
+        // navigating to a report) would otherwise mislabel their location.
+        if (peer.focus && focusMatchesView(peer.focus, peer.selection)) {
           const id = peer.focus.recordId;
           switch (peer.focus.table) {
             case "inspection_letters": {
@@ -2138,6 +2240,13 @@ function LettersWorkspaceInner({
             const seg = allSegments.find((x) => x.id === sel.segmentId);
             if (seg?.report_id) return `Report ${seg.report_id}`;
           }
+          // Actions panel — the deepest record is the letter, but the peer
+          // is on the actions list, not the letter form, so label it as
+          // such even when no action field is focused yet.
+          if (sel.view === "actions" && sel.letterId) {
+            const l = allLetters.find((x) => x.id === sel.letterId);
+            if (l?.content_id) return `Actions ${l.content_id}`;
+          }
           if (sel.letterId) {
             const l = allLetters.find((x) => x.id === sel.letterId);
             if (l?.content_id) return `Letter ${l.content_id}`;
@@ -2175,6 +2284,7 @@ function LettersWorkspaceInner({
     groupId: selectedGroupId,
     letterId: selectedId,
     segmentId: selectedSegmentId,
+    actionId: view === "actions" ? selectedActionId : null,
     view,
   };
 
@@ -2877,8 +2987,8 @@ function LettersWorkspaceInner({
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
-                // it toggles the letter off — unless the letter was
-                // opened via an action's "open next letter" arrow, in
+                // it steps up one panel to the group — unless the letter
+                // was opened via an action's "open next letter" arrow, in
                 // which case back returns to the source action panel.
                 if (view === "actions" || view === "segment") {
                   setView("main");
@@ -2916,7 +3026,7 @@ function LettersWorkspaceInner({
                     return;
                   }
                 }
-                selectLetter(letterState.id);
+                goToBreadcrumb("group");
               }}
               actionsCount={letterState.actions.length}
               actionsActive={view === "actions"}
@@ -3381,9 +3491,11 @@ function LetterFieldsCard({
         </div>
       </div>
 
-      {peers.some((p) => p.focus?.recordId === state.id) ? null : (
-        <LastUpdatedFooter at={letterView.updated_at} by={letterView.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={letterView.updated_at}
+        by={letterView.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === state.id)}
+      />
       </div>
     </div>
   );
@@ -3904,9 +4016,11 @@ function LetterSegmentCard({
           </div>
         </div>
       ) : null}
-      {peers.some((p) => p.focus?.recordId === segment.id) ? null : (
-        <LastUpdatedFooter at={segment.updated_at} by={segment.updated_by} />
-      )}
+      <LastUpdatedFooter
+        at={segment.updated_at}
+        by={segment.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === segment.id)}
+      />
       </div>
     </div>
   );
@@ -3926,49 +4040,6 @@ function addressParts(
     cityName: city?.name ?? null,
     nation,
   };
-}
-
-function AddressLine({
-  parts,
-  compact,
-  wrap,
-}: {
-  parts: ReturnType<typeof addressParts>;
-  /** No left padding — the row sits flush with its container. */
-  compact?: boolean;
-  /** Allow the address to wrap to multiple lines instead of truncating. */
-  wrap?: boolean;
-}) {
-  const hasAny = parts.citizenId || parts.cityName || parts.nation;
-  const pieces: React.ReactNode[] = [];
-  if (parts.citizenId)
-    pieces.push(<span key="cid">{parts.citizenId}</span>);
-  if (parts.cityName)
-    pieces.push(<span key="city">{parts.cityName}</span>);
-  if (parts.nation)
-    pieces.push(
-      <span key="nation" style={{ color: parts.nation.color_hex }}>
-        {parts.nation.name}
-      </span>
-    );
-  return (
-    <span
-      className={cn(
-        "block text-[10px] leading-[14px] text-muted-foreground",
-        compact ? null : "pl-3",
-        wrap ? null : "h-[14px] truncate"
-      )}
-    >
-      {hasAny
-        ? pieces.map((el, i) => (
-            <span key={i}>
-              {i > 0 ? <span className="mx-1 opacity-60">·</span> : null}
-              {el}
-            </span>
-          ))
-        : null}
-    </span>
-  );
 }
 
 type HeroOption =
@@ -4006,6 +4077,12 @@ function HeroSearch({
   const selected = heroes.find((h) => h.id === value) ?? null;
   // Display mode: a citizen is committed and we're not mid-search.
   const showCitizen = !!selected && !editing;
+  const selectedCity = selected
+    ? cities.find((c) => c.id === selected.city_id) ?? null
+    : null;
+  const selectedNation = selected
+    ? nations.find((n) => n.id === selected.nation_id) ?? null
+    : null;
 
   // Citizen matches plus the "add new citizen" row, combined into one
   // keyboard-navigable list. The create row leads when the field is
@@ -4013,7 +4090,11 @@ function HeroSearch({
   const options = useMemo<HeroOption[]>(() => {
     const q = query.trim().toLowerCase();
     const citizenOpts: HeroOption[] = (
-      q ? heroes.filter((h) => h.name.toLowerCase().includes(q)) : heroes
+      q
+        ? heroes.filter((h) =>
+            citizenDisplayName(h).toLowerCase().includes(q)
+          )
+        : heroes
     )
       .slice(0, 50)
       .map((c) => ({ kind: "citizen", citizen: c }));
@@ -4109,7 +4190,13 @@ function HeroSearch({
             // While a citizen is on display the input just shows the
             // name and is read-only; searching starts via Delete /
             // ArrowDown.
-            value={selected && !editing ? selected.name : query}
+            value={
+              selected && !editing
+                ? `${citizenDisplayName(selected)}${
+                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                  }`
+                : query
+            }
             readOnly={showCitizen}
             onChange={(e) => {
               setQuery(e.target.value);
@@ -4162,14 +4249,35 @@ function HeroSearch({
             </div>
           ) : null}
         </div>
-        <AddressLine
-          parts={
-            selected && !editing
-              ? addressParts(selected, cities, nations)
-              : { citizenId: null, cityName: null, nation: null }
-          }
-          compact
-        />
+        {/* Address rows — the area always reserves height so the field
+            stays a stable size whether or not a citizen is set. */}
+        <div className="flex min-h-[42px] flex-col">
+          {selected && !editing ? (
+            <>
+              {selected.address_line ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selected.address_line}
+                </span>
+              ) : null}
+              {selectedCity || selectedNation ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity?.name ?? ""}
+                  {selectedCity && selectedNation ? ", " : ""}
+                  {selectedNation ? (
+                    <span style={{ color: selectedNation.color_hex }}>
+                      {selectedNation.name}
+                    </span>
+                  ) : null}
+                </span>
+              ) : null}
+              {selectedCity?.code ? (
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {selectedCity.code}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
       {open && !showCitizen ? (
         <div
@@ -4225,8 +4333,18 @@ function HeroSearch({
                   active ? "bg-accent/40" : "hover:bg-accent/40"
                 )}
               >
-                <span className="text-[10px]">{opt.citizen.name}</span>
-                <AddressLine parts={parts} compact wrap />
+                <span className="text-[10px]">
+                  {citizenDisplayName(opt.citizen)}
+                </span>
+                <span className="block text-[10px] leading-[14px] text-muted-foreground">
+                  {parts.cityName ?? ""}
+                  {parts.cityName && parts.nation ? ", " : ""}
+                  {parts.nation ? (
+                    <span style={{ color: parts.nation.color_hex }}>
+                      {parts.nation.name}
+                    </span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
@@ -4254,13 +4372,27 @@ function CitizenDialog({
   allCitizenIds: string[];
   onCancel: () => void;
   onSubmit: (fields: {
-    name: string;
+    first_name: string;
+    last_name: string;
     citizen_id: string | null;
     city_id: string | null;
     nation_id: string | null;
+    middle_name: string | null;
+    honorific: string | null;
+    title: string | null;
+    suffix: string | null;
+    name_display_format: string | null;
+    address_line: string | null;
   }) => Promise<void>;
 }) {
-  const [name, setName] = useState(existing?.name ?? "");
+  const [firstName, setFirstName] = useState(existing?.first_name ?? "");
+  const [lastName, setLastName] = useState(existing?.last_name ?? "");
+  const [middleName, setMiddleName] = useState(existing?.middle_name ?? "");
+  const [honorific, setHonorific] = useState(existing?.honorific ?? "");
+  const [jobTitle, setJobTitle] = useState(existing?.title ?? "");
+  const [suffix, setSuffix] = useState(existing?.suffix ?? "");
+  const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
+  const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
   const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
@@ -4297,10 +4429,10 @@ function CitizenDialog({
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
   const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
-  const canSubmit = name.trim().length > 0 && !cidInvalid && !cidDuplicate && !pending;
+  const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
-      ? `Edit citizen · ${existing?.name ?? ""}`
+      ? `Edit citizen · ${existing ? citizenFullName(existing) : ""}`
       : role
         ? `New ${role} · Hero`
         : "New citizen · Hero";
@@ -4312,10 +4444,17 @@ function CitizenDialog({
     if (!canSubmit) return;
     startTransition(async () => {
       await onSubmit({
-        name: name.trim(),
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
         citizen_id: citizenId.trim() || null,
         city_id: cityId || null,
         nation_id: nationId || null,
+        middle_name: middleName.trim() || null,
+        honorific: honorific || null,
+        title: jobTitle.trim() || null,
+        suffix: suffix || null,
+        name_display_format: nameDisplayFormat || null,
+        address_line: addressLine.trim() || null,
       });
     });
   }
@@ -4340,16 +4479,99 @@ function CitizenDialog({
           {title}
         </h3>
         <div className="flex flex-col gap-3">
+          {/* Row 1: Honorific + First name + Middle name */}
+          <div className="grid grid-cols-[100px_1fr_1fr] gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Honorific</Label>
+              <Select
+                value={honorific}
+                onChange={(e) => setHonorific(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_HONORIFICS.map((h) => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>First name</Label>
+              <Input
+                autoFocus
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Middle name</Label>
+              <Input
+                value={middleName}
+                onChange={(e) => setMiddleName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+          </div>
+          {/* Row 2: Last name + Suffix */}
+          <div className="grid grid-cols-[1fr_100px] gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Last name</Label>
+              <Input
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Suffix</Label>
+              <Select
+                value={suffix}
+                onChange={(e) => setSuffix(e.target.value)}
+                className="h-8"
+              >
+                <option value="">—</option>
+                {CITIZEN_SUFFIXES.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {/* Row 3: Title + Name display format */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Title</Label>
+              <Input
+                value={jobTitle}
+                onChange={(e) => setJobTitle(e.target.value)}
+                placeholder="Chief Inspector"
+                className="h-8"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Name display format</Label>
+              <Select
+                value={nameDisplayFormat}
+                onChange={(e) => setNameDisplayFormat(e.target.value)}
+                className="h-8"
+              >
+                <option value="">First &amp; Last</option>
+                {NAME_DISPLAY_FORMATS.map((f) => (
+                  <option key={f} value={f}>{NAME_DISPLAY_FORMAT_LABELS[f]}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+          {/* Row 4: Address line / organization */}
           <div className="flex flex-col gap-1">
-            <Label>Name</Label>
+            <Label>Address line / organization</Label>
             <Input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
+              value={addressLine}
+              onChange={(e) => setAddressLine(e.target.value)}
+              placeholder="e.g. Ministry of Posts"
               className="h-8"
-              required
             />
           </div>
+          {/* Row 5: Citizen ID */}
           <div className="flex flex-col gap-1">
             <Label>Citizen ID</Label>
             <div className="relative flex items-center">
@@ -4404,6 +4626,7 @@ function CitizenDialog({
               </span>
             )}
           </div>
+          {/* Row 6: City + Nation */}
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
               <Label>City</Label>
@@ -6828,36 +7051,51 @@ const MUTED_ADD_BTN =
 
 
 /**
- * Footer showing when and by whom a record was last updated. Renders nothing
- * if `at` is missing (i.e., the row predates the `updated_by` column).
+ * Footer showing when and by whom a record was last updated. Always renders a
+ * fixed-height slot so the panel bottom stays put when the line appears,
+ * disappears (a peer took the record), or its text changes. `by` (an email)
+ * is resolved to the updater's display name via presence, falling back to the
+ * raw email when no display name is known.
  */
 function LastUpdatedFooter({
   at,
   by,
+  hidden,
 }: {
   at: string | null | undefined;
   by: string | null | undefined;
+  /** Suppress the line without collapsing the reserved space — e.g. a peer
+   *  currently has this record focused. */
+  hidden?: boolean;
 }) {
-  if (!at) return null;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return null;
-  const absolute = date.toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-  const relative = formatDistanceToNow(date, { addSuffix: true });
+  const { peers, selfPeer } = usePresenceContext();
+  const date = at ? new Date(at) : null;
+  const valid = date != null && !Number.isNaN(date.getTime());
+
+  // Resolve the updater's email to a display name — self and present peers
+  // carry one; fall back to the email for anyone not currently online.
+  const everyone = selfPeer ? [selfPeer, ...peers] : peers;
+  const name = by
+    ? everyone.find((p) => p.email === by)?.profile?.displayName?.trim() || by
+    : null;
+
+  // Fixed-height slot — keeps the panel bottom stable whether or not the line
+  // shows. `truncate` stops a long name/email from wrapping to a second row.
   return (
-    <p
-      title={absolute}
-      className="mt-3 text-center text-[11px] text-muted-foreground/70"
-    >
-      Last updated {relative}
-      {by ? (
-        <>
-          {" "}by <span className="font-mono">{by}</span>
-        </>
+    <div className="mt-3 h-[16px]">
+      {valid && !hidden ? (
+        <p
+          title={date!.toLocaleString(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+          className="truncate text-center text-[10px] leading-[16px] text-muted-foreground/70"
+        >
+          Last updated {formatDistanceToNow(date!, { addSuffix: true })}
+          {name ? <> by {name}</> : null}
+        </p>
       ) : null}
-    </p>
+    </div>
   );
 }
 

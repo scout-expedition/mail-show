@@ -120,10 +120,11 @@ function CitiesEditorInner({
           prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
         );
       } else if (change.eventType === "DELETE" && change.old) {
-        const deleted = change.old as unknown as { id: string };
+        const deleted = change.old as unknown as { id: string; updated_by?: string };
         setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        const by = deleted.updated_by ?? "Someone";
         toast({
-          message: "A city was deleted by another user.",
+          message: `${by} deleted a city.`,
           intent: "destructive",
         });
       } else if (change.eventType === "INSERT" && change.new) {

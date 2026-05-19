@@ -51,6 +51,13 @@ export interface EvalBlock {
    * surfaces switch over in later steps.
    */
   result_value?: string | null;
+  /**
+   * Authoring summary label. Optional so the runtime/test `EvalBlock`
+   * literals (which omit it) keep compiling; the preview's
+   * `blocks as EvalBlock[]` cast carries the real `BlockState.summary`
+   * through, which the preview tree surfaces on each item.
+   */
+  summary?: string | null;
   sort_order: number;
 }
 
@@ -728,6 +735,60 @@ function evaluateDocumentInternal(
  * `rollPoolForSentinel`); the narrowing path returns the final
  * working-set snapshot from inside the evaluator.
  */
+/** A fired text block in the preview tree. */
+export interface PreviewTextItem {
+  kind: "text";
+  /** Source `ending_blocks.id` — used as the React key. */
+  blockId: string;
+  /** Authoring summary of the text block; null when blank. */
+  summary: string | null;
+  /** Substituted text body as typed segments (literal / resolved value
+   *  / unresolved `@[Name]`). */
+  segments: SubstitutionSegment[];
+}
+
+/**
+ * A pending condition block — its first non-failing row references an
+ * unset variable, so its outcome can't be computed yet. Carries the ids
+ * of the directly-settable variables it's waiting on (aggregate chips
+ * expanded to their underlying impact-column variables) so the preview
+ * can render an inline picker per id.
+ */
+export interface PreviewPendingItem {
+  kind: "pending";
+  /** Source condition `ending_blocks.id` — the React key. */
+  blockId: string;
+  /** Authoring summary of the condition block; null when blank. */
+  summary: string | null;
+  /** Unset, directly-settable variable ids (text / number_ref). */
+  variableIds: string[];
+}
+
+/**
+ * A resolved condition block — its matched row's content, nested. The
+ * preview indents `children` beneath the block's summary so document
+ * structure stays visible.
+ */
+export interface PreviewConditionItem {
+  kind: "condition";
+  /** Source condition `ending_blocks.id` — the React key. */
+  blockId: string;
+  /** Authoring summary of the condition block; null when blank. */
+  summary: string | null;
+  /** Rendered preview tree of the matched row's child blocks. */
+  children: PreviewItem[];
+}
+
+/**
+ * One node of the preview tree. Produced only when
+ * `evaluateDocumentDetailed` is called with `{ trackPending: true }`;
+ * `condition` nodes nest their matched content via `children`.
+ */
+export type PreviewItem =
+  | PreviewTextItem
+  | PreviewPendingItem
+  | PreviewConditionItem;
+
 export interface DocumentEvaluation {
   paragraphs: string[];
   /** Parallel to `paragraphs`. Typed segments behind each paragraph
@@ -739,11 +800,15 @@ export interface DocumentEvaluation {
   paragraphSegments: SubstitutionSegment[][];
   rollSentinel: string | null;
   rollPool: string[] | null;
+  /** Present only when called with `{ trackPending: true }`. The preview
+   *  tree — fired text, pending-condition, and resolved-condition nodes
+   *  in document order. Undefined for every other caller. */
+  previewItems?: PreviewItem[];
 }
 
 export function evaluateDocumentDetailed(
   input: EvalInputs,
-  options?: { initialTiebreakSet?: readonly string[] }
+  options?: { initialTiebreakSet?: readonly string[]; trackPending?: boolean }
 ): DocumentEvaluation {
   return evaluateDocumentDetailedInternal(input, new Set(), options);
 }
@@ -751,8 +816,9 @@ export function evaluateDocumentDetailed(
 function evaluateDocumentDetailedInternal(
   input: EvalInputs,
   evaluatingDocs: Set<EndingLogicKind>,
-  options?: { initialTiebreakSet?: readonly string[] }
+  options?: { initialTiebreakSet?: readonly string[]; trackPending?: boolean }
 ): DocumentEvaluation {
+  const trackPending = options?.trackPending ?? false;
   if (options?.initialTiebreakSet) {
     const narrow = evaluateNarrowing(
       input,
@@ -768,28 +834,69 @@ function evaluateDocumentDetailedInternal(
       ]),
       rollSentinel: narrow.rollSentinel,
       rollPool: narrow.rollPool,
+      // Narrowing docs never produce pending markers — mirror the
+      // paragraphs as text items so a trackPending caller still gets a
+      // consistent stream.
+      ...(trackPending
+        ? {
+            previewItems: paragraphs.map(
+              (p, i): PreviewItem => ({
+                kind: "text",
+                blockId: `narrow:${i}`,
+                summary: null,
+                segments: [{ kind: "literal", text: p }],
+              })
+            ),
+          }
+        : {}),
     };
   }
   const indexes = buildIndexes(input);
   const root = indexes.byParent.get(parentKey(null, null)) ?? [];
-  const result = renderBlocks(root, indexes, input.selections, evaluatingDocs);
-  if (result.paragraphs.length > 0) {
+  const result = renderBlocks(
+    root,
+    indexes,
+    input.selections,
+    evaluatingDocs,
+    trackPending
+  );
+  // A document whose only content is a pending condition block has zero
+  // paragraphs but a non-empty previewItems — it must NOT fall through
+  // to the fallback block.
+  const hasPreviewContent =
+    result.paragraphs.length > 0 ||
+    (trackPending && (result.previewItems?.length ?? 0) > 0);
+  if (hasPreviewContent) {
     return {
       paragraphs: result.paragraphs,
       paragraphSegments: result.paragraphSegments,
       rollSentinel: null,
       rollPool: null,
+      ...(trackPending ? { previewItems: result.previewItems ?? [] } : {}),
     };
   }
   const fallback = root.find((b) => b.block_type === "fallback");
   if (fallback?.result_value != null && fallback.result_value !== "") {
+    const seg: SubstitutionSegment[] = [
+      { kind: "literal", text: fallback.result_value },
+    ];
     return {
       paragraphs: [fallback.result_value],
-      paragraphSegments: [
-        [{ kind: "literal" as const, text: fallback.result_value }],
-      ],
+      paragraphSegments: [seg],
       rollSentinel: null,
       rollPool: null,
+      ...(trackPending
+        ? {
+            previewItems: [
+              {
+                kind: "text" as const,
+                blockId: fallback.id,
+                summary: fallback.summary ?? null,
+                segments: seg,
+              },
+            ],
+          }
+        : {}),
     };
   }
   return {
@@ -797,6 +904,7 @@ function evaluateDocumentDetailedInternal(
     paragraphSegments: [],
     rollSentinel: null,
     rollPool: null,
+    ...(trackPending ? { previewItems: [] } : {}),
   };
 }
 
@@ -961,16 +1069,166 @@ interface RenderResult {
   /** A `result` leaf fired in this subtree; the caller should stop
    *  walking later siblings as well. */
   stopped: boolean;
+  /** Populated only when renderBlocks runs with trackPending = true —
+   *  the preview tree (text / pending / condition nodes). */
+  previewItems?: PreviewItem[];
+}
+
+/**
+ * True when `variable` has a usable value under `selections`. Mirrors
+ * the "no fall-through" rules in `evaluateChip`: text needs a chosen
+ * value id; number_ref needs a number; aggregate_ref needs every
+ * underlying impact column populated. `nation_tiebreak_set` has no
+ * score columns — its chips evaluate to a definite (false) result
+ * outside narrowing mode, so it counts as "set" (never pending).
+ */
+function isVariableSet(
+  variable: EvalVariable,
+  selections: PreviewSelections
+): boolean {
+  switch (variable.kind) {
+    case "text":
+      return selections.textValueIds[variable.id] != null;
+    case "number_ref":
+      return selections.numbers[variable.id] != null;
+    case "aggregate_ref": {
+      const ref = variable.aggregate_ref;
+      if (ref == null) return false;
+      if (ref === "nation_tiebreak_set") return true;
+      const sref: ScoringAggregateRef = ref;
+      const cols = AGGREGATE_OPTIONS_BY_REF[sref];
+      if (!cols || cols.length === 0) return false;
+      const numberRefByName = selections.numberRefByName;
+      if (!numberRefByName) return false;
+      for (const col of cols) {
+        const vid = numberRefByName.get(col);
+        if (vid == null) return false;
+        if (selections.numbers[vid] == null) return false;
+      }
+      return true;
+    }
+  }
+}
+
+/**
+ * Three-valued evaluation of one condition row, for preview pending
+ * detection:
+ *   - "false":   a chip on a *set* variable fails — the row is a
+ *                definite non-match (AND short-circuits).
+ *   - "unknown": no chip is a definite false, but ≥1 chip is on a
+ *                variable with no value set yet.
+ *   - "true":    every chip is on a set variable and all pass.
+ * A zero-chip row is "false" — it has no condition to satisfy.
+ */
+function rowPendingVerdict(
+  rowChips: EvalChip[],
+  variableById: Map<string, EvalVariable>,
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind>
+): "true" | "false" | "unknown" {
+  if (rowChips.length === 0) return "false";
+  let sawUnknown = false;
+  for (const chip of rowChips) {
+    const variable = variableById.get(chip.variable_id);
+    // Unknown variable id — runtime `evaluateRow` treats this as a hard
+    // false; mirror that (a definite non-match, not pending).
+    if (!variable) return "false";
+    if (!isVariableSet(variable, selections)) {
+      sawUnknown = true;
+      continue;
+    }
+    if (!evaluateChip(chip, variable, selections, evaluatingDocs)) {
+      return "false";
+    }
+  }
+  return sawUnknown ? "unknown" : "true";
+}
+
+/**
+ * Decide whether a condition block is "pending" in the preview — its
+ * outcome can't be computed because a needed variable is unset.
+ *
+ * Walks the block's rows in document order (first-match-wins aware):
+ * the first row that isn't already a definite "false" decides it — an
+ * "unknown" row makes the block pending; a "true" row resolves it
+ * normally (no placeholder, even if a *later* row references an unset
+ * variable).
+ *
+ * When pending, `variableIds` lists the distinct unset, directly-
+ * settable variables the block's chips reference — an `aggregate_ref`
+ * chip is expanded to its still-unset underlying impact-column
+ * `number_ref` variables so the preview can render a real inline
+ * picker per id.
+ */
+function detectPendingBlock(
+  blockId: string,
+  indexes: Indexes,
+  selections: PreviewSelections,
+  evaluatingDocs: Set<EndingLogicKind>
+): { isPending: boolean; variableIds: string[] } {
+  const rows = indexes.rowsByBlock.get(blockId) ?? [];
+  let isPending = false;
+  for (const row of rows) {
+    const chips = indexes.chipsByRow.get(row.id) ?? [];
+    const verdict = rowPendingVerdict(
+      chips,
+      indexes.variableById,
+      selections,
+      evaluatingDocs
+    );
+    if (verdict === "true") return { isPending: false, variableIds: [] };
+    if (verdict === "unknown") {
+      isPending = true;
+      break;
+    }
+    // "false" — keep scanning later rows.
+  }
+  if (!isPending) return { isPending: false, variableIds: [] };
+  const variableIds: string[] = [];
+  const seen = new Set<string>();
+  const add = (id: string) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    variableIds.push(id);
+  };
+  for (const row of rows) {
+    for (const chip of indexes.chipsByRow.get(row.id) ?? []) {
+      const variable = indexes.variableById.get(chip.variable_id);
+      if (!variable || isVariableSet(variable, selections)) continue;
+      if (variable.kind === "aggregate_ref") {
+        // Expand to the still-unset underlying impact columns — those
+        // are the directly-settable variables a picker can offer.
+        const ref = variable.aggregate_ref;
+        if (ref == null || ref === "nation_tiebreak_set") continue;
+        const sref: ScoringAggregateRef = ref;
+        const cols = AGGREGATE_OPTIONS_BY_REF[sref];
+        const numberRefByName = selections.numberRefByName;
+        if (!cols || !numberRefByName) continue;
+        for (const col of cols) {
+          const vid = numberRefByName.get(col);
+          if (vid == null) continue;
+          if (selections.numbers[vid] == null) add(vid);
+        }
+        continue;
+      }
+      add(variable.id);
+    }
+  }
+  return { isPending: true, variableIds };
 }
 
 function renderBlocks(
   blocks: EvalBlock[],
   indexes: Indexes,
   selections: PreviewSelections,
-  evaluatingDocs: Set<EndingLogicKind>
+  evaluatingDocs: Set<EndingLogicKind>,
+  trackPending: boolean
 ): RenderResult {
   const out: string[] = [];
   const outSegments: SubstitutionSegment[][] = [];
+  // Preview stream — assembled only when trackPending is on. Interleaves
+  // fired text with pending-condition markers in document order.
+  const items: PreviewItem[] | undefined = trackPending ? [] : undefined;
   for (const b of blocks) {
     if (b.block_type === "text") {
       const trimmed = b.text.trim();
@@ -980,8 +1238,15 @@ function renderBlocks(
           selections,
           valuesById: indexes.valuesById,
         });
-        out.push(segments.map((s) => s.text).join(""));
+        const joined = segments.map((s) => s.text).join("");
+        out.push(joined);
         outSegments.push(segments);
+        items?.push({
+          kind: "text",
+          blockId: b.id,
+          summary: b.summary ?? null,
+          segments,
+        });
       }
       continue;
     }
@@ -990,9 +1255,23 @@ function renderBlocks(
       // and signal the caller to stop walking later siblings.
       if (b.result_value != null) {
         out.push(b.result_value);
-        outSegments.push([{ kind: "literal", text: b.result_value }]);
+        const seg: SubstitutionSegment[] = [
+          { kind: "literal", text: b.result_value },
+        ];
+        outSegments.push(seg);
+        items?.push({
+          kind: "text",
+          blockId: b.id,
+          summary: b.summary ?? null,
+          segments: seg,
+        });
       }
-      return { paragraphs: out, paragraphSegments: outSegments, stopped: true };
+      return {
+        paragraphs: out,
+        paragraphSegments: outSegments,
+        stopped: true,
+        previewItems: items,
+      };
     }
     if (b.block_type === "fallback") {
       // Fallback blocks fire only if the rest of the walk produced
@@ -1001,6 +1280,26 @@ function renderBlocks(
     }
     // Condition block: first-match-wins across rows.
     const rows = indexes.rowsByBlock.get(b.id) ?? [];
+    // Preview-only: a condition block whose first non-failing row can't
+    // be evaluated yet (a chip on an unset variable) renders a pending
+    // placeholder instead of walking its rows.
+    if (trackPending) {
+      const pending = detectPendingBlock(
+        b.id,
+        indexes,
+        selections,
+        evaluatingDocs
+      );
+      if (pending.isPending) {
+        items!.push({
+          kind: "pending",
+          blockId: b.id,
+          summary: b.summary ?? null,
+          variableIds: pending.variableIds,
+        });
+        continue;
+      }
+    }
     for (const row of rows) {
       const chips = indexes.chipsByRow.get(row.id) ?? [];
       if (
@@ -1013,16 +1312,41 @@ function renderBlocks(
         children,
         indexes,
         selections,
-        evaluatingDocs
+        evaluatingDocs,
+        trackPending
       );
       out.push(...childRender.paragraphs);
       outSegments.push(...childRender.paragraphSegments);
+      // Wrap the matched row's preview tree in one condition node so the
+      // preview can show the nesting. `[]` is truthy — guard on length;
+      // a matched-but-empty branch emits no node.
+      if (items) {
+        const childItems = childRender.previewItems ?? [];
+        if (childItems.length > 0) {
+          items.push({
+            kind: "condition",
+            blockId: b.id,
+            summary: b.summary ?? null,
+            children: childItems,
+          });
+        }
+      }
       if (childRender.stopped)
-        return { paragraphs: out, paragraphSegments: outSegments, stopped: true };
+        return {
+          paragraphs: out,
+          paragraphSegments: outSegments,
+          stopped: true,
+          previewItems: items,
+        };
       break; // first match wins
     }
   }
-  return { paragraphs: out, paragraphSegments: outSegments, stopped: false };
+  return {
+    paragraphs: out,
+    paragraphSegments: outSegments,
+    stopped: false,
+    previewItems: items,
+  };
 }
 
 /**

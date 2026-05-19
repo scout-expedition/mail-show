@@ -25,6 +25,7 @@ import {
   Variable,
 } from "lucide-react";
 import { IconBolt, IconMailOpened } from "@tabler/icons-react";
+import { WIP_PATHS } from "@/lib/wip-pages";
 import { cn } from "@/lib/utils";
 
 type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
@@ -195,6 +196,7 @@ export function Nav() {
                 const active =
                   pathname === item.href ||
                   pathname.startsWith(item.href + "/");
+                const wip = WIP_PATHS.has(item.href);
                 const Icon = item.icon;
                 return (
                   <Link
@@ -207,7 +209,9 @@ export function Nav() {
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                       active
                         ? "bg-accent text-accent-foreground"
-                        : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                        : wip
+                          ? "text-muted-foreground/55 hover:bg-accent/60 hover:text-foreground"
+                          : "text-foreground/80 hover:bg-accent/60 hover:text-foreground"
                     )}
                   >
                     <Icon className="h-4 w-4" />

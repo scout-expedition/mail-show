@@ -6,6 +6,39 @@ export type IconType = (typeof ICON_TYPES)[number];
 export const CITIZEN_TYPES = ["hero", "npc"] as const;
 export type CitizenType = (typeof CITIZEN_TYPES)[number];
 
+/** Optional honorific shown before a citizen's name in a formatted address. */
+export const CITIZEN_HONORIFICS = [
+  "Mr.",
+  "Ms.",
+  "Mrs.",
+  "Dr.",
+  "Prof.",
+  "Honorable",
+] as const;
+export type CitizenHonorific = (typeof CITIZEN_HONORIFICS)[number];
+
+/** Optional generational/credential suffix shown after a citizen's name. */
+export const CITIZEN_SUFFIXES = [
+  "Sr.",
+  "Jr.",
+  "III",
+  "IV",
+  "PhD",
+  "Esq.",
+] as const;
+export type CitizenSuffix = (typeof CITIZEN_SUFFIXES)[number];
+
+/**
+ * How a citizen's name renders in a formatted address. A null/empty stored
+ * value is the default — "First & Last" (full first name + last name).
+ */
+export const NAME_DISPLAY_FORMATS = ["first_initial", "last_only"] as const;
+export type NameDisplayFormat = (typeof NAME_DISPLAY_FORMATS)[number];
+export const NAME_DISPLAY_FORMAT_LABELS: Record<NameDisplayFormat, string> = {
+  first_initial: "First Initial",
+  last_only: "Last Only",
+};
+
 export const DAYS_OF_WEEK = [
   "monday",
   "tuesday",

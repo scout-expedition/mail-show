@@ -1,81 +1,68 @@
 "use client";
 
-import {
-  startTransition,
-  useEffect,
-  useMemo,
-  useState,
-  useTransition,
-} from "react";
-import { useRouter } from "next/navigation";
-import { Input } from "@/components/ui/input";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { AlertCircle, Plus, Star, Users } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { CITIZEN_TYPES, type CitizenType } from "@/lib/db/enums";
-import {
-  formatCitizenIdInput,
-  generateRandomCitizenId,
-  isValidCitizenId,
-} from "@/lib/citizen-id";
-import { cn } from "@/lib/utils";
-import { useConfirm } from "@/components/confirm-dialog";
+import { PanelHeader } from "@/components/panel";
+import { readableOnHex } from "@/components/pills";
 import { useToast } from "@/components/toast";
-import type { Citizen, City, Nation } from "@/lib/db/types";
-import { WorkspacePresenceProvider, usePresenceContext } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
-import type { PresenceProfile, PresencePeer } from "@/lib/realtime/presence";
+import { cn } from "@/lib/utils";
+import type {
+  Citizen,
+  City,
+  InspectionLetterView,
+  Nation,
+  SortingLetterView,
+  Storyline,
+} from "@/lib/db/types";
+import {
+  citizenDisplayName,
+  citizenFullName,
+  citizenIssues,
+  citizenSortKey,
+} from "@/lib/citizen-name";
+import {
+  WorkspacePresenceProvider,
+  usePresenceContext,
+} from "@/lib/realtime/presence-context";
+import { AvatarStack } from "@/lib/realtime/avatar-stack";
+import type { PresencePeer, PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import { deleteCitizen, patchCitizen } from "./actions";
+import { createCitizen } from "./actions";
+import { CitizenInspector } from "./citizen-inspector";
 
 type SortMode = "name" | "type" | "nation";
 type TypeFilter = "all" | "hero" | "npc";
 
-type RowValidation = {
-  missingType: boolean;
-  missingName: boolean;
-  missingCitizenId: boolean;
-  missingCityId: boolean;
-  missingNationId: boolean;
-  badCitizenIdFormat: boolean;
-  duplicateCitizenId: boolean;
+/** Which columns are visible at the panel's current width. Columns drop, as
+ *  the panel narrows, in the order Nation → Citizen ID → City → Hero; Name
+ *  always survives. When Nation is dropped, City takes on its nation color. */
+type ColLayout = {
+  hero: boolean;
+  citizenId: boolean;
+  city: boolean;
+  nation: boolean;
+  cityAsPill: boolean;
 };
 
-function validateRow(r: Citizen, duplicateIds: Set<string>): RowValidation {
-  const missingType = false; // DB always has a type (hero | npc)
-  const missingName = !r.name.trim();
-  const cid = (r.citizen_id ?? "").trim();
-  const missingCitizenId = !cid;
-  const missingCityId = !r.city_id;
-  const missingNationId = !r.nation_id;
-  const badCitizenIdFormat = cid.length > 0 && !isValidCitizenId(cid);
-  const duplicateCitizenId = cid.length > 0 && duplicateIds.has(cid);
-  return {
-    missingType,
-    missingName,
-    missingCitizenId,
-    missingCityId,
-    missingNationId,
-    badCitizenIdFormat,
-    duplicateCitizenId,
-  };
-}
-
-function readableOn(hex: string): string {
-  const h = hex.replace(/^#/, "");
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) return "#ffffff";
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.65 ? "#0b0d10" : "#ffffff";
+function columnsForWidth(width: number): ColLayout {
+  // width 0 = not yet measured — show everything to avoid a drop-in flash.
+  const measured = width > 0;
+  const nation = !measured || width >= 620;
+  const citizenId = !measured || width >= 500;
+  const city = !measured || width >= 380;
+  const hero = !measured || width >= 280;
+  return { hero, citizenId, city, nation, cityAsPill: !nation && city };
 }
 
 export function CitizensEditor({
   citizens,
   cities,
   nations,
+  storylines,
+  inspectionLetters,
+  sortingLetters,
   currentUserId,
   currentEmail,
   currentProfile,
@@ -83,6 +70,9 @@ export function CitizensEditor({
   citizens: Citizen[];
   cities: City[];
   nations: Nation[];
+  storylines: Storyline[];
+  inspectionLetters: InspectionLetterView[];
+  sortingLetters: SortingLetterView[];
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -95,27 +85,55 @@ export function CitizensEditor({
       profile={currentProfile}
       postgresTables={["citizens"]}
     >
-      <CitizensEditorInner citizens={citizens} cities={cities} nations={nations} />
+      <CitizensEditorInner
+        citizens={citizens}
+        cities={cities}
+        nations={nations}
+        storylines={storylines}
+        inspectionLetters={inspectionLetters}
+        sortingLetters={sortingLetters}
+      />
     </WorkspacePresenceProvider>
   );
+}
+
+/** Resolve the citizen a peer currently has open — the inspector selection
+ *  (carried in selection.payload.citizenId) takes precedence over a bare
+ *  field focus. */
+function peerCitizenId(peer: PresencePeer): string | null {
+  const fromSelection = peer.selection?.payload?.citizenId;
+  if (fromSelection) return fromSelection;
+  if (peer.focus?.table === "citizens") return peer.focus.recordId;
+  return null;
+}
+
+function citizenNameKey(c: Citizen): string {
+  return citizenFullName(c).trim().toLowerCase();
 }
 
 function CitizensEditorInner({
   citizens: initialCitizens,
   cities,
   nations,
+  storylines,
+  inspectionLetters,
+  sortingLetters,
 }: {
   citizens: Citizen[];
   cities: City[];
   nations: Nation[];
+  storylines: Storyline[];
+  inspectionLetters: InspectionLetterView[];
+  sortingLetters: SortingLetterView[];
 }) {
-  const router = useRouter();
-  const { peers, onPostgresChanges, pingActivity } = usePresenceContext();
+  const { peers, selfPeer, setSelection, onPostgresChanges } =
+    usePresenceContext();
   const { toast, toaster } = useToast();
-  const [, startDeleteTransition] = useTransition();
+  const [, startMutation] = useTransition();
 
-  // Local mirror of citizens, seeded from server props. useEffect reconciles
-  // when the server prop changes (e.g. after a structural revalidate adds a citizen).
+  // Local mirror of citizens, seeded from server props. The useEffect
+  // reconciles when the server prop changes (e.g. after a bulk-paste
+  // revalidate adds rows).
   const [rows, setRows] = useState<Citizen[]>(initialCitizens);
   useEffect(() => {
     setRows((prev) => {
@@ -135,23 +153,35 @@ function CitizensEditorInner({
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [nationFilter, setNationFilter] = useState<string>("");
 
-  const cityById = useMemo(() => new Map(cities.map((c) => [c.id, c])), [cities]);
+  // The inspector's open citizen + the row pinned to the top of the list
+  // (a freshly created citizen stays on top while it remains selected).
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+
+  // Responsive column layout, driven by the list panel's measured width.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [panelWidth, setPanelWidth] = useState(0);
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (typeof w === "number") setPanelWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const cols = useMemo(() => columnsForWidth(panelWidth), [panelWidth]);
+
   const nationById = useMemo(
     () => new Map(nations.map((n) => [n.id, n])),
     [nations]
   );
-
-  const duplicateIds = useMemo(() => {
-    const seen = new Map<string, number>();
-    for (const r of rows) {
-      const k = (r.citizen_id ?? "").trim();
-      if (!k) continue;
-      seen.set(k, (seen.get(k) ?? 0) + 1);
-    }
-    const dupes = new Set<string>();
-    for (const [k, n] of seen) if (n > 1) dupes.add(k);
-    return dupes;
-  }, [rows]);
+  const cityById = useMemo(() => new Map(cities.map((c) => [c.id, c])), [cities]);
+  const citizenById = useMemo(
+    () => new Map(rows.map((r) => [r.id, r])),
+    [rows]
+  );
 
   const allCitizenIds = useMemo(() => {
     const s = new Set<string>();
@@ -162,7 +192,62 @@ function CitizensEditorInner({
     return s;
   }, [rows]);
 
-  // postgres_changes handler
+  // Names / citizen IDs that appear on more than one citizen — used to flag
+  // duplicates in the list.
+  const { dupNames, dupIds } = useMemo(() => {
+    const nameCount = new Map<string, number>();
+    const idCount = new Map<string, number>();
+    for (const r of rows) {
+      const n = citizenNameKey(r);
+      if (n) nameCount.set(n, (nameCount.get(n) ?? 0) + 1);
+      const i = (r.citizen_id ?? "").trim();
+      if (i) idCount.set(i, (idCount.get(i) ?? 0) + 1);
+    }
+    const dn = new Set<string>();
+    for (const [k, v] of nameCount) if (v > 1) dn.add(k);
+    const di = new Set<string>();
+    for (const [k, v] of idCount) if (v > 1) di.add(k);
+    return { dupNames: dn, dupIds: di };
+  }, [rows]);
+
+  // Names / IDs of every citizen *except* the selected one — lets the
+  // inspector duplicate-check its live (in-progress) values.
+  const { otherNames, otherIds } = useMemo(() => {
+    const n = new Set<string>();
+    const i = new Set<string>();
+    for (const r of rows) {
+      if (r.id === selectedId) continue;
+      const nn = citizenNameKey(r);
+      if (nn) n.add(nn);
+      const ii = (r.citizen_id ?? "").trim();
+      if (ii) i.add(ii);
+    }
+    return { otherNames: n, otherIds: i };
+  }, [rows, selectedId]);
+
+  // Broadcast which citizen the inspector has open so peers can ring the row
+  // and jump to it. Cleared when the inspector closes.
+  useEffect(() => {
+    if (selectedId) {
+      setSelection({
+        storylineId: null,
+        groupId: null,
+        letterId: null,
+        segmentId: null,
+        view: "citizen",
+        payload: { citizenId: selectedId },
+      });
+    } else {
+      setSelection(null);
+    }
+  }, [selectedId, setSelection]);
+
+  // The pin holds the freshly created citizen at the top of the list while it
+  // stays selected — selecting another row (or closing the inspector / a
+  // reload) drops it and the row re-sorts into place.
+  const activePinnedId = pinnedId && pinnedId === selectedId ? pinnedId : null;
+
+  // postgres_changes handler — keep the local mirror in sync with peers.
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table !== "citizens") return;
@@ -172,10 +257,12 @@ function CitizensEditorInner({
           prev.map((r) => (r.id === updated.id ? { ...r, ...updated } : r))
         );
       } else if (change.eventType === "DELETE" && change.old) {
-        const deleted = change.old as unknown as { id: string };
+        const deleted = change.old as unknown as { id: string; updated_by?: string };
         setRows((prev) => prev.filter((r) => r.id !== deleted.id));
+        setSelectedId((cur) => (cur === deleted.id ? null : cur));
+        const by = deleted.updated_by ?? "Someone";
         toast({
-          message: "A citizen was deleted by another user.",
+          message: `${by} deleted a citizen.`,
           intent: "destructive",
         });
       } else if (change.eventType === "INSERT" && change.new) {
@@ -184,10 +271,59 @@ function CitizensEditorInner({
           if (prev.some((r) => r.id === inserted.id)) return prev;
           return [...prev, inserted];
         });
-        startTransition(() => router.refresh());
       }
     });
-  }, [onPostgresChanges, router, toast]);
+  }, [onPostgresChanges, toast]);
+
+  // Peer presence indexed by the citizen each peer has open.
+  const peerRingsByCitizen = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of peers) {
+      const cid = peerCitizenId(p);
+      if (!cid) continue;
+      const color = p.profile?.avatarColorHex ?? p.color;
+      const arr = m.get(cid) ?? [];
+      arr.push(color);
+      m.set(cid, arr);
+    }
+    return m;
+  }, [peers]);
+
+  const peerLocations = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of peers) {
+      const cid = peerCitizenId(p);
+      if (!cid) continue;
+      const c = citizenById.get(cid);
+      m.set(
+        p.userId,
+        c ? citizenDisplayName(c) || "New citizen" : "A citizen"
+      );
+    }
+    return m;
+  }, [peers, citizenById]);
+
+  function handleAvatarClick(peer: PresencePeer) {
+    const cid = peerCitizenId(peer);
+    if (cid && rows.some((r) => r.id === cid)) setSelectedId(cid);
+  }
+
+  function handleCreate() {
+    startMutation(async () => {
+      const created = await createCitizen();
+      setRows((prev) =>
+        prev.some((r) => r.id === created.id) ? prev : [created, ...prev]
+      );
+      setPinnedId(created.id);
+      setSelectedId(created.id);
+    });
+  }
+
+  // The inspector has already run deleteCitizen — just reconcile local state.
+  function handleDeleted(id: string) {
+    setRows((prev) => prev.filter((r) => r.id !== id));
+    setSelectedId((cur) => (cur === id ? null : cur));
+  }
 
   const view = useMemo(() => {
     let list = rows.slice();
@@ -199,9 +335,9 @@ function CitizensEditorInner({
     }
     list.sort((a, b) => {
       if (sortMode === "type") {
-        const order: Record<string, number> = { hero: 0, npc: 1, "": 2 };
-        const ta = order[a.type] ?? 3;
-        const tb = order[b.type] ?? 3;
+        const order: Record<string, number> = { hero: 0, npc: 1 };
+        const ta = order[a.type] ?? 2;
+        const tb = order[b.type] ?? 2;
         if (ta !== tb) return ta - tb;
       }
       if (sortMode === "nation") {
@@ -210,527 +346,301 @@ function CitizensEditorInner({
         const byNation = an.localeCompare(bn);
         if (byNation !== 0) return byNation;
       }
-      return a.name.localeCompare(b.name);
+      return citizenSortKey(a).localeCompare(citizenSortKey(b));
     });
+    // A freshly created citizen stays at the top, bypassing filters + sort,
+    // until it is deselected.
+    if (activePinnedId) {
+      const idx = list.findIndex((r) => r.id === activePinnedId);
+      if (idx > 0) {
+        const [p] = list.splice(idx, 1);
+        list.unshift(p);
+      } else if (idx < 0) {
+        const pinned = rows.find((r) => r.id === activePinnedId);
+        if (pinned) list.unshift(pinned);
+      }
+    }
     return list;
-  }, [rows, typeFilter, nationFilter, sortMode, nationById]);
+  }, [rows, typeFilter, nationFilter, sortMode, nationById, activePinnedId]);
+
+  const selected = selectedId ? citizenById.get(selectedId) ?? null : null;
 
   return (
     <>
       {toaster}
-      <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-        <Label className="!text-xs">Type</Label>
-        <Select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-          className="h-8 w-auto"
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={handleCreate}
+          aria-label="Add citizen"
+          title="Add citizen"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          <option value="all">All</option>
-          <option value="hero">Hero</option>
-          <option value="npc">NPC</option>
-        </Select>
-        <Label className="ml-3 !text-xs">Nation</Label>
-        <Select
-          value={nationFilter}
-          onChange={(e) => setNationFilter(e.target.value)}
-          className="h-8 w-auto"
-        >
-          <option value="">All</option>
-          {nations.map((n) => (
-            <option key={n.id} value={n.id}>
-              {n.name}
-            </option>
-          ))}
-        </Select>
-        <Label className="ml-3 !text-xs">Sort</Label>
-        <Select
-          value={sortMode}
-          onChange={(e) => setSortMode(e.target.value as SortMode)}
-          className="h-8 w-auto"
-        >
-          <option value="name">Name</option>
-          <option value="type">Type, then name</option>
-          <option value="nation">Nation, then name</option>
-        </Select>
+          <Plus size={16} aria-hidden />
+        </button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {peers.length > 0 ? (
+            <AvatarStack
+              peers={peers}
+              self={selfPeer}
+              peerLocations={peerLocations}
+              onAvatarClick={handleAvatarClick}
+              popupAlign="right"
+            />
+          ) : null}
+          <Label className="!text-xs">Type</Label>
+          <Select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+            className="h-8 w-auto"
+          >
+            <option value="all">All</option>
+            <option value="hero">Hero</option>
+            <option value="npc">NPC</option>
+          </Select>
+          <Label className="ml-3 !text-xs">Nation</Label>
+          <Select
+            value={nationFilter}
+            onChange={(e) => setNationFilter(e.target.value)}
+            className="h-8 w-auto"
+          >
+            <option value="">All</option>
+            {nations.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name}
+              </option>
+            ))}
+          </Select>
+          <Label className="ml-3 !text-xs">Sort</Label>
+          <Select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as SortMode)}
+            className="h-8 w-auto"
+          >
+            <option value="name">Name</option>
+            <option value="type">Type, then name</option>
+            <option value="nation">Nation, then name</option>
+          </Select>
+        </div>
       </div>
 
-      <div className="overflow-hidden rounded-md border border-border bg-card">
-        <div className="grid grid-cols-[1fr_90px_130px_180px_180px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
-          <Label>Name</Label>
-          <Label>Type</Label>
-          <Label>Citizen ID</Label>
-          <Label>City</Label>
-          <Label>Nation</Label>
-          <span />
-        </div>
-        {view.map((row) => (
-          <CitizenRow
-            key={row.id}
-            row={row}
-            cities={cities}
-            nations={nations}
-            duplicateIds={duplicateIds}
-            allCitizenIds={allCitizenIds}
-            nationById={nationById}
-            cityById={cityById}
-            peers={peers}
-            onActivity={pingActivity}
-            onDelete={() => {
-              startDeleteTransition(async () => {
-                const fd = new FormData();
-                fd.append("id", row.id);
-                await deleteCitizen(fd);
-                setRows((prev) => prev.filter((x) => x.id !== row.id));
-              });
-            }}
+      <div className="flex items-start gap-4">
+        <div
+          ref={panelRef}
+          className="sticky top-4 min-w-0 flex-1 overflow-hidden rounded-md border border-border bg-card"
+        >
+          <PanelHeader
+            title="Citizens"
+            icon={
+              <Users
+                size={14}
+                aria-hidden
+                className="text-muted-foreground/70"
+              />
+            }
           />
-        ))}
-        {view.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No citizens match the current filter.
-          </p>
+          <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
+            {cols.hero ? <span className="w-6 shrink-0" /> : null}
+            <Label className="flex-[2]">Name</Label>
+            {cols.citizenId ? (
+              <Label className="w-[68px] shrink-0 text-center">
+                Citizen ID
+              </Label>
+            ) : null}
+            {cols.city ? (
+              <Label className="flex-1 text-center">City</Label>
+            ) : null}
+            {cols.nation ? (
+              <Label className="flex-1 text-center">Nation</Label>
+            ) : null}
+          </div>
+          {view.map((row) => {
+            const issues = citizenIssues(row, {
+              duplicateName: dupNames.has(citizenNameKey(row)),
+              duplicateCitizenId: dupIds.has((row.citizen_id ?? "").trim()),
+            });
+            return (
+              <CitizenRow
+                key={row.id}
+                row={row}
+                cols={cols}
+                cityName={cityById.get(row.city_id ?? "")?.name ?? ""}
+                nation={nationById.get(row.nation_id ?? "") ?? null}
+                selected={row.id === selectedId}
+                hasError={issues.length > 0}
+                peerColors={peerRingsByCitizen.get(row.id) ?? null}
+                onSelect={() =>
+                  setSelectedId((cur) => (cur === row.id ? null : row.id))
+                }
+              />
+            );
+          })}
+          {view.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+              No citizens match the current filter.
+            </p>
+          ) : null}
+        </div>
+
+        {selected ? (
+          <div className="sticky top-4 w-[400px] shrink-0">
+            <CitizenInspector
+              key={selected.id}
+              citizen={selected}
+              cities={cities}
+              nations={nations}
+              storylines={storylines}
+              inspectionLetters={inspectionLetters}
+              sortingLetters={sortingLetters}
+              allCitizenIds={allCitizenIds}
+              otherNames={otherNames}
+              otherIds={otherIds}
+              onDeleted={handleDeleted}
+            />
+          </div>
         ) : null}
       </div>
     </>
   );
 }
 
-function missingClass(type: CitizenType | null | undefined, missing: boolean): string {
-  if (!missing) return "";
-  if (type === "npc") return "ring-2 ring-destructive ring-offset-0";
-  if (type === "hero") return "ring-2 ring-warning ring-offset-0";
-  return "";
-}
-
 function CitizenRow({
   row,
-  cities,
-  nations,
-  duplicateIds,
-  allCitizenIds,
-  nationById,
-  cityById,
-  peers,
-  onActivity,
-  onDelete,
+  cols,
+  cityName,
+  nation,
+  selected,
+  hasError,
+  peerColors,
+  onSelect,
 }: {
   row: Citizen;
-  cities: City[];
-  nations: Nation[];
-  duplicateIds: Set<string>;
-  allCitizenIds: Set<string>;
-  nationById: Map<string, Nation>;
-  cityById: Map<string, City>;
-  peers: PresencePeer[];
-  onActivity: () => void;
-  onDelete: () => void;
+  cols: ColLayout;
+  cityName: string;
+  nation: Nation | null;
+  selected: boolean;
+  hasError: boolean;
+  peerColors: string[] | null;
+  onSelect: () => void;
 }) {
-  const { setFocus } = usePresenceContext();
-  const [editing, setEditing] = useState(false);
-
-  const v = validateRow(row, duplicateIds);
-  const cityName = cities.find((c) => c.id === row.city_id)?.name ?? "";
-  const nation = nationById.get(row.nation_id ?? "");
-
-  function handleBlur(e: React.FocusEvent<HTMLDivElement>) {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-      setEditing(false);
-    }
-  }
-
-  const focusBase = { table: "citizens", recordId: row.id };
-
-  const nameField = useInstantField({
-    value: row.name,
-    onCommit: (v) => patchCitizen(row.id, { name: v }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "name" } : null);
-    },
-    onActivity,
-  });
-
-  const typeField = useInstantField({
-    value: row.type,
-    onCommit: (v) => patchCitizen(row.id, { type: v as CitizenType }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "type" } : null);
-    },
-    onActivity,
-  });
-
-  const citizenIdField = useInstantField({
-    value: row.citizen_id ?? "",
-    onCommit: (v) => patchCitizen(row.id, { citizen_id: v || null }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "citizen_id" } : null);
-    },
-    onActivity,
-  });
-
-  const cityIdField = useInstantField({
-    value: row.city_id ?? "",
-    onCommit: (v) => patchCitizen(row.id, { city_id: v || null }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "city_id" } : null);
-    },
-    onActivity,
-  });
-
-  const nationIdField = useInstantField({
-    value: row.nation_id ?? "",
-    onCommit: (v) => patchCitizen(row.id, { nation_id: v || null }),
-    onFocusChange: (focused) => {
-      setFocus(focused ? { ...focusBase, field: "nation_id" } : null);
-    },
-    onActivity,
-  });
-
-  // Use the hook's local (in-progress) nation value so the city dropdown
-  // filters correctly the moment the user selects a nation — before
-  // realtime echoes the change back to row.nation_id.
-  const availableCities = useMemo(
-    () =>
-      nationIdField.value
-        ? cities.filter((c) => c.nation_id === nationIdField.value)
-        : cities,
-    [cities, nationIdField.value]
-  );
-
-  const cidRing = v.duplicateCitizenId || v.badCitizenIdFormat
-    ? "ring-2 ring-destructive ring-offset-0"
-    : missingClass(row.type, v.missingCitizenId);
-
-  // Expand the row to input mode when a peer focuses any field on this row,
-  // so the FieldHighlight rings have an element to render against. Without
-  // this, peer rings can never appear on rows the local user isn't editing.
-  const peerEditingHere = peers.some((p) => p.focus?.recordId === row.id);
-  const showInputs = editing || peerEditingHere;
+  const name = citizenDisplayName(row);
+  // Peer rings drawn inset so the panel's clip + rounded corners don't crop
+  // them.
+  const boxShadow = peerColors?.length
+    ? peerColors
+        .map((c, i) => `inset 0 0 0 ${(i + 1) * 2}px ${c}`)
+        .join(", ")
+    : undefined;
 
   return (
     <div
-      tabIndex={-1}
-      onFocus={() => setEditing(true)}
-      onClick={() => setEditing(true)}
-      onBlur={handleBlur}
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      style={boxShadow ? { boxShadow } : undefined}
       className={cn(
-        "grid cursor-text grid-cols-[1fr_90px_130px_180px_180px_36px] items-center gap-2 border-t border-border px-3 py-1 first:border-t-0",
-        editing && "bg-accent/20"
+        "flex cursor-pointer items-center gap-2 border-t border-border px-3 py-1.5 text-sm transition-colors first:border-t-0 hover:bg-accent/20 focus:outline-none focus-visible:bg-accent/20",
+        selected
+          ? "bg-accent/30"
+          : hasError
+            ? "bg-destructive/10"
+            : undefined
       )}
     >
-      {showInputs ? (
-        <>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "name" }}>
-            <Input
-              value={nameField.value}
-              onChange={(e) => nameField.set(e.target.value)}
-              onFocus={nameField.onFocus}
-              onBlur={nameField.onBlur}
-              className={cn("h-8", missingClass(row.type, v.missingName))}
-              autoFocus={editing}
-              required
-            />
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "type" }}>
-            <TypePill
-              value={typeField.value}
-              onChange={(t) => typeField.set(t)}
-              onFocus={typeField.onFocus}
-              onBlur={typeField.onBlur}
-            />
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "citizen_id" }}>
-            <CitizenIdInput
-              value={citizenIdField.value}
-              onChange={(v) => citizenIdField.set(v)}
-              onFocus={citizenIdField.onFocus}
-              onBlur={citizenIdField.onBlur}
-              className={cn("h-8", cidRing)}
-              allCitizenIds={allCitizenIds}
-            />
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "city_id" }}>
-            <div
-              onFocus={cityIdField.onFocus}
-              onBlur={cityIdField.onBlur}
-            >
-              <Select
-                value={cityIdField.value}
-                onChange={(e) => {
-                  const newCityId = e.target.value;
-                  cityIdField.set(newCityId);
-                  // Auto-fill nation from city FK — both fields debounce
-                  // independently; realtime echoes confirm the final values.
-                  if (newCityId) {
-                    const city = cityById.get(newCityId);
-                    if (city) {
-                      nationIdField.set(city.nation_id);
-                    }
-                  }
-                }}
-                className={cn("h-8", missingClass(row.type, v.missingCityId))}
-              >
-                <option value="">—</option>
-                {availableCities.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </FieldHighlight>
-          <FieldHighlight peers={peers} focusKey={{ ...focusBase, field: "nation_id" }}>
-            <div
-              onFocus={nationIdField.onFocus}
-              onBlur={nationIdField.onBlur}
-            >
-              <Select
-                value={nationIdField.value}
-                onChange={(e) => {
-                  const newNationId = e.target.value;
-                  nationIdField.set(newNationId);
-                  // Clear city if it belongs to a different nation — both
-                  // fields debounce independently; realtime echoes confirm.
-                  const currentCity = cityById.get(cityIdField.value);
-                  if (currentCity && currentCity.nation_id !== newNationId) {
-                    cityIdField.set("");
-                  }
-                }}
-                className={cn("h-8", missingClass(row.type, v.missingNationId))}
-              >
-                <option value="">—</option>
-                {nations.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          </FieldHighlight>
-          <div className="flex items-center justify-end">
-            <DeleteX name={row.name} onDelete={onDelete} />
-          </div>
-        </>
-      ) : (
-        <>
-          <ReadCell className={missingClass(row.type, v.missingName)}>
-            {row.name || <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-          <TypePill
-            value={row.type}
-            onChange={(t) => typeField.set(t)}
+      {cols.hero ? (
+        <span
+          className="flex w-6 shrink-0 items-center justify-center"
+          title={row.type === "hero" ? "Hero" : undefined}
+        >
+          {row.type === "hero" ? (
+            <Star size={14} aria-label="Hero" className="text-foreground" />
+          ) : null}
+        </span>
+      ) : null}
+      <span className="flex min-w-0 flex-[2] items-center gap-1.5">
+        {hasError ? (
+          <AlertCircle
+            size={13}
+            aria-hidden
+            className="shrink-0 text-destructive"
           />
-          <ReadCell className={cidRing}>
-            {row.citizen_id || <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-          <ReadCell className={missingClass(row.type, v.missingCityId)}>
+        ) : null}
+        <span className="truncate">
+          {name || (
+            <span className="text-muted-foreground">Unnamed citizen</span>
+          )}
+        </span>
+      </span>
+      {cols.citizenId ? (
+        <span className="w-[68px] shrink-0 truncate text-center font-mono text-xs">
+          {row.citizen_id || <span className="text-muted-foreground">—</span>}
+        </span>
+      ) : null}
+      {cols.city ? (
+        cols.cityAsPill ? (
+          <span className="flex min-w-0 flex-1 justify-center">
+            <CityPill cityName={cityName} nation={nation} />
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-center">
             {cityName || <span className="text-muted-foreground">—</span>}
-          </ReadCell>
-          <div
-            className={cn(
-              "flex h-8 items-center",
-              missingClass(row.type, v.missingNationId)
-            )}
-          >
-            {nation ? (
-              <NationPill nation={nation} />
-            ) : (
-              <span className="px-2 text-muted-foreground">—</span>
-            )}
-          </div>
-          <div className="flex items-center justify-end">
-            <DeleteX name={row.name} onDelete={onDelete} />
-          </div>
-        </>
-      )}
+          </span>
+        )
+      ) : null}
+      {cols.nation ? (
+        <span className="flex min-w-0 flex-1 justify-center">
+          {nation ? (
+            <NationPill nation={nation} />
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function ReadCell({
-  children,
-  className,
-}: {
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "flex h-8 items-center truncate rounded-md px-2 text-sm",
-        className
-      )}
-    >
-      {children}
-    </span>
-  );
-}
-
-function TypePill({
-  value,
-  onChange,
-  onFocus,
-  onBlur,
-}: {
-  value: CitizenType;
-  onChange: (t: CitizenType) => void;
-  onFocus?: () => void;
-  onBlur?: () => void;
-}) {
-  const pillClass =
-    value === "hero"
-      ? "bg-foreground text-background"
-      : "bg-muted text-muted-foreground";
-  return (
-    <span
-      className={cn(
-        "relative inline-flex h-7 w-[74px] items-center justify-center rounded-full font-mono text-xs uppercase tracking-wide",
-        pillClass
-      )}
-    >
-      {value.toUpperCase()}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as CitizenType)}
-        onFocus={onFocus}
-        onBlur={onBlur}
-        className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0"
-        aria-label="Citizen type"
-      >
-        {CITIZEN_TYPES.map((t) => (
-          <option key={t} value={t}>
-            {t}
-          </option>
-        ))}
-      </select>
-    </span>
-  );
-}
-
 function NationPill({ nation }: { nation: Nation }) {
-  const fg = readableOn(nation.color_hex);
   return (
     <span
-      className="inline-flex h-7 items-center rounded-full px-3 font-mono text-xs uppercase tracking-wide"
-      style={{ background: nation.color_hex, color: fg }}
+      className="inline-flex h-6 max-w-full items-center truncate rounded-md px-1.5 font-mono text-[11px]"
+      style={{
+        background: nation.color_hex,
+        color: readableOnHex(nation.color_hex),
+      }}
     >
       {nation.name}
     </span>
   );
 }
 
-function DeleteX({
-  name,
-  onDelete,
+/** City rendered as a nation-colored pill — used once the standalone Nation
+ *  column is dropped. Falls back to plain text when the citizen has no
+ *  nation. */
+function CityPill({
+  cityName,
+  nation,
 }: {
-  name: string;
-  onDelete: () => void;
+  cityName: string;
+  nation: Nation | null;
 }) {
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
+  if (!cityName) return <span className="text-muted-foreground">—</span>;
+  if (!nation) return <span className="max-w-full truncate">{cityName}</span>;
   return (
-    <>
-      <button
-        type="button"
-        aria-label="Delete citizen"
-        title="Delete"
-        onClick={async () => {
-          const ok = await confirmDialog({
-            title: "Delete citizen?",
-            message: `"${name}" will be permanently removed.`,
-            confirmLabel: "Delete",
-            intent: "destructive",
-          });
-          if (!ok) return;
-          onDelete();
-        }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-      >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
-      </button>
-      {confirmDialogEl}
-    </>
-  );
-}
-
-function CitizenIdInput({
-  value,
-  onChange,
-  onFocus,
-  onBlur,
-  className,
-  allCitizenIds,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  onFocus?: () => void;
-  onBlur?: () => void;
-  className?: string;
-  allCitizenIds: Set<string>;
-}) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <div
-      className="relative flex items-center"
-      onFocus={() => {
-        setFocused(true);
-        onFocus?.();
-      }}
-      onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-          setFocused(false);
-          onBlur?.();
-        }
+    <span
+      className="inline-flex h-6 max-w-full items-center truncate rounded-md px-1.5 font-mono text-[11px]"
+      style={{
+        background: nation.color_hex,
+        color: readableOnHex(nation.color_hex),
       }}
     >
-      <Input
-        value={value}
-        onChange={(e) => onChange(formatCitizenIdInput(e.target.value))}
-        placeholder="#0042"
-        maxLength={5}
-        className={cn(className, "pr-7")}
-      />
-      {focused ? (
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            const taken = new Set(allCitizenIds);
-            taken.delete(value);
-            onChange(generateRandomCitizenId(taken));
-          }}
-          aria-label="Generate random citizen ID"
-          title="Generate random ID"
-          className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <rect x="3" y="3" width="18" height="18" rx="3" />
-            <circle cx="8" cy="8" r="1.1" fill="currentColor" />
-            <circle cx="12" cy="12" r="1.1" fill="currentColor" />
-            <circle cx="16" cy="16" r="1.1" fill="currentColor" />
-          </svg>
-        </button>
-      ) : null}
-    </div>
+      {cityName}
+    </span>
   );
 }

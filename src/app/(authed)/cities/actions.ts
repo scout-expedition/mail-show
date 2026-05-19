@@ -111,6 +111,11 @@ export async function deleteCity(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase.from("cities").update({ updated_by: updatedBy }).eq("id", id);
+  }
   const { error } = await supabase.from("cities").delete().eq("id", id);
   if (error) throw new Error(error.message);
   revalidatePath("/cities");

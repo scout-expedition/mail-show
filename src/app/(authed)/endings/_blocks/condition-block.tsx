@@ -106,8 +106,12 @@ export function ConditionBlock({
   const isDragging = drag.dragId === block.id;
   const [pending, startTransition] = useTransition();
   const override = collapseCtx.overrides.get(block.id);
-  const panelCollapsed = collapseMode !== "expanded";
+  // "groups" mode keeps condition blocks open — only "all" collapses them.
+  const panelCollapsed = collapseMode === "all";
   const collapsed = override ?? panelCollapsed;
+  // In "groups" mode the block renders as a compact, read-only structural
+  // view: tighter row spacing, no dividers, no add affordances.
+  const groupsCompact = collapseMode === "groups";
   const handleToggleCollapsed = () => {
     collapseCtx.setOverride(block.id, !collapsed);
   };
@@ -305,7 +309,14 @@ export function ConditionBlock({
           values={values}
         />
       ) : null}
-      <div className="flex flex-col gap-5 divide-y divide-white/10 rounded-md bg-[var(--block-result-bg)] px-2 py-5 [&>*+*]:pt-5">
+      <div
+        className={cn(
+          "flex flex-col rounded-md bg-[var(--block-result-bg)]",
+          groupsCompact
+            ? "gap-2.5 p-2"
+            : "gap-5 divide-y divide-white/10 px-2 py-5 [&>*+*]:pt-5"
+        )}
+      >
         {rows.map((row) => {
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
@@ -357,12 +368,13 @@ export function ConditionBlock({
                 })
               }
               closeChips={(getRowBlockCount?.(row.id) ?? 1) === 0}
+              compact={groupsCompact}
             >
               {renderRowContent(row)}
             </ConditionRow>
           );
         })}
-        {declaredVariables.length > 0 ? (
+        {declaredVariables.length > 0 && !groupsCompact ? (
           <div className="grid grid-cols-[minmax(120px,160px)_1fr_auto] gap-x-0 !pt-0">
             <div className="flex justify-center">
               <button
@@ -404,6 +416,7 @@ function ConditionRow({
   onRemoveRow,
   onDuplicateRow,
   closeChips,
+  compact,
   children,
 }: {
   chips: ChipState[];
@@ -420,6 +433,8 @@ function ConditionRow({
   onRemoveRow: () => void;
   onDuplicateRow: () => void;
   closeChips?: boolean;
+  /** Groups-mode compact view — hides the in-row chip adder. */
+  compact?: boolean;
   children: React.ReactNode;
 }) {
   const { confirm: confirmRow, dialog: rowDialog } = useConfirm();
@@ -490,7 +505,7 @@ function ConditionRow({
             closeRight={closeChips}
           />
         ))}
-        {declaredVariables.length > 0 ? (
+        {declaredVariables.length > 0 && !compact ? (
           <RowChipAdder
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}

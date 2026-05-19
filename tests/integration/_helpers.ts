@@ -264,16 +264,25 @@ export interface ImpactPatch {
   impact_pelico?: number;
 }
 
-/** Insert an action attached to an inspection letter, with impact overrides. */
+/** Insert an action attached to an inspection letter, with impact overrides
+ *  and an optional triggering link to a report segment (sets
+ *  actions.report_segment_id — what report_segments_view reads to find a
+ *  report's triggering letters). */
 export async function addAction(
   sb: SupabaseClient,
-  opts: { letterId: string; name?: string; impacts?: ImpactPatch }
+  opts: {
+    letterId: string;
+    name?: string;
+    impacts?: ImpactPatch;
+    reportSegmentId?: string | null;
+  }
 ): Promise<string> {
   const { data, error } = await sb
     .from("actions")
     .insert({
       inspection_letter_id: opts.letterId,
       name: opts.name ?? "test-action",
+      report_segment_id: opts.reportSegmentId ?? null,
       ...(opts.impacts ?? {}),
     })
     .select("id")
@@ -310,4 +319,83 @@ export async function addPlaythroughChoice(
     chosen_action_id: opts.actionId,
   });
   if (error) throw new Error(`addPlaythroughChoice: ${error.message}`);
+}
+
+/**
+ * Delete every sorting_rules row. `sorting_rules` is not reachable from a
+ * storyline cascade, so `cleanupTestData` doesn't touch it — sorting-rule
+ * tests must call this in `beforeAll` and `afterEach`. `letter` is a UNIQUE
+ * char(1) (A–Z), so leftover rows from an aborted run would exhaust the 26
+ * slots. `sorting_rule_conditions` cascade-delete with their rule.
+ */
+export async function cleanupSortingRules(sb: SupabaseClient): Promise<void> {
+  await sb.from("sorting_rules").delete().neq("id", ZERO_UUID);
+}
+
+const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * Insert a `sorting_rules` row. Defaults match the simplest valid rule.
+ * `letter` defaults to "A" — pass distinct letters when seeding several rules
+ * in one test (the column is UNIQUE). Returns the new id.
+ */
+export async function addRule(
+  sb: SupabaseClient,
+  opts: {
+    letter?: string;
+    matchMode?: "all" | "any";
+    storageLocation?: string | null;
+    summary?: string | null;
+    dayImplementedId?: string | null;
+    destinationSlot?: number | null;
+  } = {}
+): Promise<string> {
+  const { data, error } = await sb
+    .from("sorting_rules")
+    .insert({
+      letter: opts.letter ?? "A",
+      match_mode: opts.matchMode ?? "all",
+      storage_location: opts.storageLocation ?? null,
+      summary: opts.summary ?? null,
+      day_implemented_id: opts.dayImplementedId ?? null,
+      destination_slot: opts.destinationSlot ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addRule: ${error?.message}`);
+  return data.id as string;
+}
+
+/**
+ * Insert a `sorting_rule_conditions` row. Defaults are a valid
+ * target/operator/reference triple (`sender_name` whole `equals` string).
+ * Returns the new id.
+ */
+export async function addRuleCondition(
+  sb: SupabaseClient,
+  opts: {
+    ruleId: string;
+    position?: number;
+    target?: string;
+    targetSlice?: string;
+    operator?: string;
+    referenceValue?: string | null;
+    referenceType?: string;
+  }
+): Promise<string> {
+  const { data, error } = await sb
+    .from("sorting_rule_conditions")
+    .insert({
+      rule_id: opts.ruleId,
+      position: opts.position ?? 1,
+      target: opts.target ?? "sender_name",
+      target_slice: opts.targetSlice ?? "whole",
+      operator: opts.operator ?? "equals",
+      reference_value: opts.referenceValue ?? "Alice",
+      reference_type: opts.referenceType ?? "string",
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addRuleCondition: ${error?.message}`);
+  return data.id as string;
 }
