@@ -10,6 +10,7 @@ const KIND_LABEL: Record<EndingVariableKind, string> = {
   text: "text",
   number_ref: "number",
   aggregate_ref: "aggregate",
+  smart_ref: "smart",
 };
 
 export interface VariableOptionListProps<T extends VariableLike> {

@@ -64,6 +64,7 @@ export function ConditionBlock({
   variableIndex,
   variables,
   values,
+  smartVariableReturns,
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
@@ -76,6 +77,10 @@ export function ConditionBlock({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Forwarded into chip pills + the row
+   *  adder so smart_ref chips can pick from a real list. */
+  smartVariableReturns?: Map<string, string[]>;
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
@@ -331,6 +336,7 @@ export function ConditionBlock({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
+              smartVariableReturns={smartVariableReturns}
               shadowedByOrdinal={coveredByOrdinal}
               overlap={overlap}
               rowSortOrder={analysis.rowSortOrder}
@@ -406,6 +412,7 @@ function ConditionRow({
   variableIndex,
   variables,
   values,
+  smartVariableReturns,
   shadowedByOrdinal,
   overlap,
   rowSortOrder,
@@ -423,6 +430,7 @@ function ConditionRow({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  smartVariableReturns?: Map<string, string[]>;
   shadowedByOrdinal: number | null;
   overlap: import("@/lib/endings/static-analysis").NumericRowOverlap | null;
   rowSortOrder: Map<string, number>;
@@ -484,6 +492,7 @@ function ConditionRow({
                 variable={variable ?? null}
                 variables={variables}
                 values={values}
+                smartVariableReturns={smartVariableReturns}
                 compact
                 onChange={(patch) => onChangeChip(chip.id, patch)}
                 onRemove={() => onRemoveChip(chip.id)}
@@ -499,6 +508,7 @@ function ConditionRow({
             variable={variableIndex.get(chip.variable_id) ?? null}
             variables={variables}
             values={values}
+            smartVariableReturns={smartVariableReturns}
             onChange={(patch) => onChangeChip(chip.id, patch)}
             onRemove={() => onRemoveChip(chip.id)}
             closeRight={closeChips}
@@ -509,6 +519,7 @@ function ConditionRow({
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}
             values={values}
+            smartVariableReturns={smartVariableReturns}
             onAdd={onAddChip}
             alwaysVisible={chips.length === 0}
           />
@@ -676,12 +687,14 @@ function RowChipAdder({
   declaredVariables,
   variableIndex,
   values,
+  smartVariableReturns,
   onAdd,
   alwaysVisible,
 }: {
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   values: EndingVariableValue[];
+  smartVariableReturns?: Map<string, string[]>;
   onAdd: (input: AddChipInput) => void;
   /** When true, the + button is always visible (no hover required).
    *  Used when the row has zero chips so the affordance is obvious. */
@@ -703,7 +716,7 @@ function RowChipAdder({
           ? "set_includes"
           : "top="
         : "=";
-    const aggregateValue =
+    let aggregateValue =
       variable.kind === "aggregate_ref" && variable.aggregate_ref
         ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? null
         : null;
@@ -720,6 +733,18 @@ function RowChipAdder({
         return;
       }
       textValueId = fallback;
+    }
+    if (variable.kind === "smart_ref") {
+      // Smart variables compare against a free-text string stored in
+      // `aggregate_value`. Seed from the doc's unique result strings
+      // when available so the chip's value picker has a pre-selected
+      // option. When the smart variable has no results defined yet,
+      // seed with an empty string — the DB CHECK requires exactly one
+      // value slot non-null, so "" satisfies the shape constraint and
+      // the user gets a visible empty chip they can fill in later
+      // (rather than the silent no-op the old code produced).
+      const returns = smartVariableReturns?.get(variable.id) ?? [];
+      aggregateValue = returns[0] ?? "";
     }
     onAdd({
       variable_id: variable.id,
@@ -925,6 +950,7 @@ function AddHeaderVariablePicker({
   // Same optgroup layout as the chip-picker's variable dropdown so the
   // sections + ordering stay consistent across the editor.
   const textVariables = variables.filter((v) => v.kind === "text");
+  const smartVariables = variables.filter((v) => v.kind === "smart_ref");
   const numberVariablesByRef = new Map<string, VariableState>();
   for (const v of variables) {
     if (v.kind === "number_ref" && v.number_ref) {
@@ -1022,6 +1048,15 @@ function AddHeaderVariablePicker({
           })}
         </optgroup>
       ) : null}
+      {smartVariables.length > 0 ? (
+        <optgroup label="Smart Variables">
+          {smartVariables.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.name}
+            </option>
+          ))}
+        </optgroup>
+      ) : null}
     </select>
     </span>
   );
@@ -1105,6 +1140,11 @@ function formatOutcome(
   if (outcome === TIE_OUTCOME) return "tie";
   if (variable?.kind === "text") {
     return valueById.get(outcome)?.value ?? outcome;
+  }
+  if (variable?.kind === "smart_ref") {
+    // Smart variable returns are already free-text strings — the
+    // outcome is the literal value the smart var resolved to.
+    return outcome;
   }
   if (variable?.kind === "aggregate_ref" && variable.aggregate_ref) {
     const cols = AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref] ?? [];

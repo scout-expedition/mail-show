@@ -6,6 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useNavState } from "@/components/nav-context";
 import {
+  Atom,
   CalendarDays,
   BookOpen,
   Mail,
@@ -56,6 +57,7 @@ const NAV_ITEMS: Array<{
   { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
   { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
   { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
+  { href: "/endings/smart-variables", label: "Smart Variables", icon: Atom, section: "Endings" },
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },

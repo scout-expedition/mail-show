@@ -36,6 +36,7 @@ export function FrameworkEditor({
   blockVariables,
   variables,
   values,
+  smartVariableReturns,
   nations,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
@@ -48,6 +49,7 @@ export function FrameworkEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  smartVariableReturns?: Map<string, string[]>;
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
   tiebreakDocsRaw?: Map<
@@ -101,6 +103,7 @@ export function FrameworkEditor({
       blockVariables={blockVariables}
       variables={variables}
       values={values}
+      smartVariableReturns={smartVariableReturns}
       nations={nations}
       tiebreakDocsSummary={tiebreakDocsSummary}
       leaves={{ text: TextBlock }}

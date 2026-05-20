@@ -62,7 +62,12 @@ export default async function EndingLogicPage() {
   ]);
 
   const allDocs = (documentData ?? []) as EndingDocument[];
-  const logicDocs = allDocs.filter((d) => d.kind !== "framework");
+  // "logic" is the four singleton tiebreak/selection docs only — not
+  // smart_variable docs. The latter are author-created and have their
+  // own editor surface; surfacing them here would pollute the tab list.
+  const logicDocs = allDocs.filter(
+    (d) => d.kind !== "framework" && d.kind !== "smart_variable"
+  );
   const frameworkDocs = allDocs.filter((d) => d.kind === "framework");
   const logicDocIds = new Set(logicDocs.map((d) => d.id));
   const logicBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
@@ -80,6 +85,17 @@ export default async function EndingLogicPage() {
     (blockVarData ?? []) as EndingConditionBlockVariable[]
   ).filter((bv) => logicBlockIds.has(bv.condition_block_id));
 
+  // Smart Variables — pass raw docs + result/fallback blocks so the
+  // LogicEditor can mirror them via postgres_changes and re-derive
+  // `smartVariableReturns` live as result_value edits land.
+  const smartVariableDocs = allDocs.filter((d) => d.kind === "smart_variable");
+  const smartDocIds = new Set(smartVariableDocs.map((d) => d.id));
+  const smartVariableBlocks = ((blockData ?? []) as EndingBlock[]).filter(
+    (b) =>
+      smartDocIds.has(b.document_id) &&
+      (b.block_type === "result" || b.block_type === "fallback")
+  );
+
   return (
     <div>
       <PageHeader
@@ -95,6 +111,8 @@ export default async function EndingLogicPage() {
       blockVariables={logicHeaderVars}
       variables={(varData ?? []) as EndingVariable[]}
       values={(valueData ?? []) as EndingVariableValue[]}
+      smartVariableDocs={smartVariableDocs}
+      smartVariableBlocks={smartVariableBlocks}
       nations={
         (nationData ?? []) as Pick<
           Nation,

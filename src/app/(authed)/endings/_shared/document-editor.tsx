@@ -125,6 +125,12 @@ export interface DocumentEditorProps {
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Forwarded down to chip pills so smart_ref
+   *  chips have a real value dropdown. Caller computes by collecting
+   *  distinct `result_value` strings across each smart_variable doc's
+   *  result + fallback blocks. Optional — chips fall back gracefully. */
+  smartVariableReturns?: Map<string, string[]>;
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   /** Leaf components by block_type. Frameworks pass `{ text }`; logic
    *  docs pass `{ result }`. */
@@ -173,6 +179,10 @@ export interface DocumentEditorProps {
     /** Header label on the fallback panel (e.g. "Fallback ending" or
      *  "Tiebreak Fallback"). Defaults to "Fallback ending". */
     title?: string;
+    /** "text" → free-text fallback (Smart Variables). "dropdown" → the
+     *  existing Select chrome backed by `options`. */
+    mode?: "dropdown" | "text";
+    textPlaceholder?: string;
   };
   /** Per-logic-kind tiebreak summary for the static analyzer. When the
    *  doc the analyzer is running on has aggregate chips, tied outcomes
@@ -184,6 +194,17 @@ export interface DocumentEditorProps {
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
   >;
+  /** Override the delete copy shown in the OverflowMenu + confirm
+   *  dialog. Defaults to framework-style copy. Smart Variables pass
+   *  smart-variable-flavored copy. When `skipServerDelete` is true,
+   *  `onDeleted` is invoked WITHOUT calling `deleteFrameworkDocument`
+   *  — Smart Variables own their own delete action. */
+  deleteCopy?: {
+    menuLabel: string;
+    confirmTitle: string;
+    confirmMessage: string;
+    skipServerDelete?: boolean;
+  };
 }
 
 export function DocumentEditor({
@@ -194,6 +215,7 @@ export function DocumentEditor({
   blockVariables,
   variables,
   values,
+  smartVariableReturns,
   nations,
   leaves,
   renderPreview,
@@ -202,8 +224,11 @@ export function DocumentEditor({
   panelTitle,
   fallback,
   tiebreakDocsSummary,
+  deleteCopy,
 }: DocumentEditorProps) {
   const isFramework = document.kind === "framework";
+  const isSmartVariable = document.kind === "smart_variable";
+  const hasName = isFramework || isSmartVariable;
   const initialName = document.name ?? "";
 
   const initial = useMemo(
@@ -263,13 +288,13 @@ export function DocumentEditor({
   const nameField = useInstantField<string>({
     value: initial.name,
     onCommit: async (v) => {
-      if (!isFramework) return;
+      if (!hasName) return;
       const trimmed = v.trim();
       if (!trimmed) return; // server would throw; let the inline ring show the error
       await patchDocument(document.id, { name: trimmed });
     },
     onFocusChange: (focused) => {
-      if (!isFramework) return;
+      if (!hasName) return;
       setFocus(
         focused
           ? { table: "ending_documents", recordId: document.id, field: "name" }
@@ -736,6 +761,21 @@ export function DocumentEditor({
       id: v.id,
       variable_id: v.variable_id,
     }));
+    // Smart_ref variables have no ending_variable_values rows — their
+    // finite outcome set is the distinct result strings their tree
+    // resolves to. variableDomain() walks `evalValues` for kinds
+    // 'text' and 'smart_ref' identically, so feed synthetic rows here
+    // (id = the literal return string; chipMatchesOutcome compares
+    // chip.aggregate_value === outcome). Without these the overlap +
+    // uncovered-assignments enumeration silently skips smart_ref
+    // dimensions, masking real authoring gaps.
+    if (smartVariableReturns) {
+      for (const [variableId, returns] of smartVariableReturns) {
+        for (const r of returns) {
+          evalValues.push({ id: r, variable_id: variableId });
+        }
+      }
+    }
     const evalBlockVariables = blockVariableState.map((bv) => ({
       condition_block_id: bv.condition_block_id,
       variable_id: bv.variable_id,
@@ -769,6 +809,7 @@ export function DocumentEditor({
     blockVariableState,
     variableState,
     values,
+    smartVariableReturns,
     rowsByConditionBlock,
     tiebreakDocsSummary,
   ]);
@@ -1144,8 +1185,10 @@ export function DocumentEditor({
   async function handleDelete() {
     if (!onDeleted) return;
     const ok = await confirmDialog({
-      title: "Delete framework?",
-      message: `"${document.name ?? "this framework"}" and all of its blocks will be permanently removed. Logic rules that target this framework will also be removed.`,
+      title: deleteCopy?.confirmTitle ?? "Delete framework?",
+      message:
+        deleteCopy?.confirmMessage ??
+        `"${document.name ?? "this framework"}" and all of its blocks will be permanently removed. Logic rules that target this framework will also be removed.`,
       confirmLabel: "Delete",
       intent: "destructive",
     });
@@ -1153,12 +1196,17 @@ export function DocumentEditor({
     const fd = new FormData();
     fd.set("id", document.id);
     startDeleteTransition(async () => {
-      await deleteFrameworkDocument(fd);
+      // Framework path: invoke the server action. Smart Variables pass
+      // their own onDeleted that handles the paired ending_variables row
+      // and skips this server-action call via deleteCopy.skipServerDelete.
+      if (!deleteCopy?.skipServerDelete) {
+        await deleteFrameworkDocument(fd);
+      }
       onDeleted();
     });
   }
 
-  const nameInvalid = isFramework && !name.trim();
+  const nameInvalid = hasName && !name.trim();
 
   let body: ReactNode;
   if (previewOn && renderPreview) {
@@ -1185,9 +1233,11 @@ export function DocumentEditor({
   } else {
     body = (
       <div className="flex flex-col gap-4 p-3">
-        {isFramework ? (
+        {hasName ? (
           <div>
-            <Label className="!text-xs">Framework name</Label>
+            <Label className="!text-xs">
+              {isSmartVariable ? "Smart Variable name" : "Framework name"}
+            </Label>
             <FieldHighlight
               peers={peers}
               focusKey={{
@@ -1202,7 +1252,9 @@ export function DocumentEditor({
                 onChange={(e) => nameField.set(e.target.value)}
                 onFocus={nameField.onFocus}
                 onBlur={nameField.onBlur}
-                placeholder="Framework name"
+                placeholder={
+                  isSmartVariable ? "Smart Variable name" : "Framework name"
+                }
                 className={cn(
                   "h-9",
                   GHOST_FIELD,
@@ -1226,6 +1278,7 @@ export function DocumentEditor({
                 variableIndex={variableIndex}
                 variables={authoringVariableState}
                 values={values}
+                smartVariableReturns={smartVariableReturns}
                 document_id={document.id}
                 leaves={leaves}
                 onUpdateBlock={updateBlock}
@@ -1240,6 +1293,8 @@ export function DocumentEditor({
                   helperText={fallback.helperText}
                   emptyLabel={fallback.emptyLabel}
                   title={fallback.title}
+                  mode={fallback.mode}
+                  textPlaceholder={fallback.textPlaceholder}
                 />
               ) : null}
             </TotalCollapseCtx.Provider>
@@ -1250,7 +1305,8 @@ export function DocumentEditor({
   }
 
   const headerTitle =
-    panelTitle ?? (isFramework ? document.name ?? "(unnamed)" : document.kind);
+    panelTitle ??
+    (hasName ? document.name ?? "(unnamed)" : document.kind);
 
   return (
     <section className="overflow-hidden rounded-md border border-border bg-card">
@@ -1285,7 +1341,7 @@ export function DocumentEditor({
               <OverflowMenu
                 items={[
                   {
-                    label: "Delete Framework",
+                    label: deleteCopy?.menuLabel ?? "Delete Framework",
                     intent: "destructive",
                     icon: <Trash2 size={10} aria-hidden />,
                     onClick: () => {

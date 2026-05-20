@@ -69,6 +69,7 @@ export function BlockList({
   variableIndex,
   variables,
   values,
+  smartVariableReturns,
   document_id,
   leaves,
   onUpdateBlock,
@@ -84,6 +85,10 @@ export function BlockList({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Powers the chip value dropdown for
+   *  smart_ref chips. Optional — falls back to empty when absent. */
+  smartVariableReturns?: Map<string, string[]>;
   document_id: string;
   leaves: LeafComponents;
   onUpdateBlock: (id: string, patch: Partial<BlockState>) => void;
@@ -281,6 +286,7 @@ export function BlockList({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
+              smartVariableReturns={smartVariableReturns}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
               getRowBlockCount={(rowId) =>
@@ -301,6 +307,7 @@ export function BlockList({
                     variableIndex={variableIndex}
                     variables={variables}
                     values={values}
+                    smartVariableReturns={smartVariableReturns}
                     document_id={document_id}
                     leaves={leaves}
                     onUpdateBlock={onUpdateBlock}
