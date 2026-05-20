@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -27,7 +27,7 @@ import {
 } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
-import type { EndingVariableValue } from "@/lib/db/types";
+import type { EndingVariableFolder, EndingVariableValue } from "@/lib/db/types";
 import {
   addBlockVariable,
   addChip,
@@ -52,9 +52,12 @@ import {
 } from "./chip";
 import { DropLine } from "./text-block";
 import {
-  CREATE_VARIABLE_SENTINEL,
-  InlineCreateVariableForm,
-} from "./inline-create-variable";
+  buildPickerItems,
+  VariablePickerPanel,
+  type PickerItem,
+} from "@/components/variable-picker/variable-picker-panel";
+import { buildVariableTree } from "@/lib/endings/variable-categories";
+import { CreateVariablePopover } from "./create-variable-popover";
 
 export function ConditionBlock({
   block,
@@ -64,6 +67,7 @@ export function ConditionBlock({
   variableIndex,
   variables,
   values,
+  folders,
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
@@ -76,6 +80,7 @@ export function ConditionBlock({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
@@ -230,6 +235,7 @@ export function ConditionBlock({
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}
             variables={variables}
+            folders={folders}
             confirm={confirm}
           />
         </div>
@@ -803,12 +809,14 @@ function HeaderVariableStrip({
   declaredVariables,
   variableIndex,
   variables,
+  folders,
   confirm,
 }: {
   blockId: string;
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
+  folders: EndingVariableFolder[];
   confirm: ReturnType<typeof useConfirm>["confirm"];
 }) {
   const [pending, startTransition] = useTransition();
@@ -867,6 +875,7 @@ function HeaderVariableStrip({
       {eligible.length > 0 ? (
         <AddHeaderVariablePicker
           variables={eligible}
+          folders={folders}
           disabled={pending}
           alwaysVisible={
             declaredVariables.length === 0 && optimisticVarIds.length === 0
@@ -896,134 +905,212 @@ function HeaderVariableStrip({
   );
 }
 
+type PickerMode = "closed" | "picker" | "create";
+
 function AddHeaderVariablePicker({
   variables,
+  folders,
   disabled,
   onPick,
   alwaysVisible,
 }: {
   variables: VariableState[];
+  folders: EndingVariableFolder[];
   disabled: boolean;
   onPick: (variable_id: string) => void;
   /** When true, the + button is always visible. Used in the empty
    *  condition-block state so authors immediately see the affordance. */
   alwaysVisible?: boolean;
 }) {
-  const [creatingNew, setCreatingNew] = useState(false);
-  if (creatingNew) {
-    return (
-      <InlineCreateVariableForm
-        onCreated={({ variableId }) => {
-          setCreatingNew(false);
-          onPick(variableId);
-        }}
-        onCancel={() => setCreatingNew(false)}
-      />
-    );
+  const [mode, setMode] = useState<PickerMode>("closed");
+  const [anchorPos, setAnchorPos] = useState<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  });
+  // Picker panel state
+  const [query, setQuery] = useState("");
+  const [path, setPath] = useState<string[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Build the variable tree (memoized — stable variable objects from props)
+  const tree = useMemo(
+    () => buildVariableTree(variables, folders),
+    [variables, folders]
+  );
+
+  const items: PickerItem[] = useMemo(
+    () => buildPickerItems(tree, path, query),
+    [tree, path, query]
+  );
+
+  // Reset the keyboard highlight whenever the rendered items list
+  // changes shape. Uses the "adjust state in render" pattern (vs. a
+  // useEffect) so the react-hooks/set-state-in-effect rule stays happy.
+  const itemsToken = `${query}::${items.length}`;
+  const [prevItemsToken, setPrevItemsToken] = useState(itemsToken);
+  if (itemsToken !== prevItemsToken) {
+    setPrevItemsToken(itemsToken);
+    setActiveIndex(0);
   }
 
-  // Same optgroup layout as the chip-picker's variable dropdown so the
-  // sections + ordering stay consistent across the editor.
-  const textVariables = variables.filter((v) => v.kind === "text");
-  const numberVariablesByRef = new Map<string, VariableState>();
-  for (const v of variables) {
-    if (v.kind === "number_ref" && v.number_ref) {
-      numberVariablesByRef.set(v.number_ref, v);
+  // Click-outside + Esc close for the picker popover
+  useEffect(() => {
+    if (mode !== "picker") return;
+    function onMouseDown(e: MouseEvent) {
+      const picker = pickerRef.current;
+      const btn = btnRef.current;
+      if (!picker) return;
+      if (e.target instanceof Node && picker.contains(e.target)) return;
+      if (e.target instanceof Node && btn && btn.contains(e.target)) return;
+      setMode("closed");
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        setMode("closed");
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [mode]);
+
+  function openPicker() {
+    if (disabled) return;
+    const btn = btnRef.current;
+    if (btn) {
+      const rect = btn.getBoundingClientRect();
+      setAnchorPos({ top: rect.bottom + 4, left: rect.left });
+    }
+    setQuery("");
+    setPath([]);
+    setActiveIndex(0);
+    setMode("picker");
+  }
+
+  function commitItem(item: PickerItem) {
+    if (item.kind === "variable") {
+      onPick(item.variable.id);
+      setMode("closed");
+    } else if (item.kind === "category" || item.kind === "folder") {
+      setPath((prev) => [...prev, item.id]);
+      setQuery("");
+      setActiveIndex(0);
+    } else if (item.kind === "back") {
+      setPath((prev) => prev.slice(0, -1));
+      setActiveIndex(0);
+    } else if (item.kind === "create") {
+      // Switch to create mode at the same anchor
+      setMode("create");
     }
   }
-  const aggregateByRef = new Map<string, VariableState>();
-  for (const v of variables) {
-    if (v.kind === "aggregate_ref" && v.aggregate_ref) {
-      aggregateByRef.set(v.aggregate_ref, v);
+
+  function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (items.length > 0 ? (i + 1) % items.length : 0));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) =>
+        items.length > 0 ? (i - 1 + items.length) % items.length : 0
+      );
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const item = items[activeIndex];
+      if (item) commitItem(item);
+    } else if (e.key === "Backspace" && query === "" && path.length > 0) {
+      setPath((prev) => prev.slice(0, -1));
+      setActiveIndex(0);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setMode("closed");
     }
   }
-  const numberRefGroups: Array<{ label: string; columns: string[] }> = [
-    { label: "Impact", columns: ["world_status", "demerits"] },
-    { label: "Class Affinity", columns: ["proletariat", "gentry"] },
-    {
-      label: "Nation Affinity",
-      columns: ["epicenter", "folos", "emberlyn", "spokgrad", "pelico"],
-    },
-  ];
-  const aggregateOrder: Array<{ ref: string; label: string }> = [
-    { ref: "class_affinity", label: "Class Affinity" },
-    { ref: "nation_affinity", label: "Nation Affinity" },
-    { ref: "nation_tiebreak_set", label: "Tiebreak Set" },
-  ];
 
   return (
-    <span className={cn(
-      "group/varbtn relative inline-flex h-5 items-center transition-opacity focus-within:opacity-100",
-      alwaysVisible
-        ? "opacity-100"
-        : "opacity-0 group-hover/header:opacity-100"
-    )}>
-      <button
-        type="button"
-        aria-label="Add variable to this condition block"
-        tabIndex={-1}
-        disabled={disabled}
+    <>
+      <span
         className={cn(
-          "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/varbtn:border-solid group-hover/varbtn:bg-white/10 group-hover/varbtn:text-foreground disabled:opacity-50",
-          alwaysVisible ? "border-solid" : "border-dashed"
+          "group/varbtn relative inline-flex h-5 items-center transition-opacity focus-within:opacity-100",
+          alwaysVisible
+            ? "opacity-100"
+            : "opacity-0 group-hover/header:opacity-100"
         )}
       >
-        <Plus size={12} aria-hidden />
-      </button>
-    <select
-      aria-label="Add variable to this condition block"
-      defaultValue=""
-      disabled={disabled}
-      onChange={(e) => {
-        const id = e.target.value;
-        if (id === CREATE_VARIABLE_SENTINEL) {
-          setCreatingNew(true);
-          return;
-        }
-        if (id) onPick(id);
-        e.currentTarget.value = "";
-      }}
-      className="absolute inset-0 cursor-pointer opacity-0"
-    >
-      <option value="">variable…</option>
-      <optgroup label="Ending Variables">
-        {textVariables.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.name}
-          </option>
-        ))}
-        <option value={CREATE_VARIABLE_SENTINEL}>+ New variable…</option>
-      </optgroup>
-      {numberRefGroups.map((group) => {
-        const opts = group.columns
-          .map((col) => numberVariablesByRef.get(col))
-          .filter((v): v is VariableState => Boolean(v));
-        if (opts.length === 0) return null;
-        return (
-          <optgroup key={group.label} label={group.label}>
-            {opts.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </optgroup>
-        );
-      })}
-      {aggregateByRef.size > 0 ? (
-        <optgroup label="Aggregates">
-          {aggregateOrder.map(({ ref, label }) => {
-            const v = aggregateByRef.get(ref);
-            if (!v) return null;
-            return (
-              <option key={v.id} value={v.id}>
-                {label}
-              </option>
-            );
-          })}
-        </optgroup>
+        <button
+          ref={btnRef}
+          type="button"
+          aria-label="Add variable to this condition block"
+          aria-expanded={mode === "picker"}
+          disabled={disabled}
+          onClick={openPicker}
+          className={cn(
+            "inline-flex h-5 w-10 items-center justify-center rounded-md border border-[var(--block-border)] text-muted-foreground transition-colors duration-300 ease-out group-hover/varbtn:border-solid group-hover/varbtn:bg-white/10 group-hover/varbtn:text-foreground disabled:opacity-50",
+            alwaysVisible ? "border-solid" : "border-dashed"
+          )}
+        >
+          <Plus size={12} aria-hidden />
+        </button>
+      </span>
+
+      {mode === "picker" ? (
+        <div
+          ref={pickerRef}
+          style={{
+            position: "fixed",
+            top: anchorPos.top,
+            left: anchorPos.left,
+            zIndex: 30,
+          }}
+          className="w-56"
+        >
+          <div className="flex flex-col rounded-md border border-border bg-popover shadow-lg">
+            <div className="border-b border-border/60 px-2 py-1">
+              <input
+                autoFocus
+                type="text"
+                value={query}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  // Clear path when transitioning from empty to non-empty
+                  if (query === "" && next !== "") setPath([]);
+                  setQuery(next);
+                }}
+                onKeyDown={handleInputKeyDown}
+                placeholder="Search variables…"
+                aria-label="Search variables"
+                className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground/50"
+              />
+            </div>
+            <VariablePickerPanel
+              items={items}
+              activeIndex={activeIndex}
+              onChangeActiveIndex={setActiveIndex}
+              onCommitItem={commitItem}
+              ariaLabel="Variable picker"
+              className="border-0 shadow-none rounded-none rounded-b-md"
+            />
+          </div>
+        </div>
       ) : null}
-    </select>
-    </span>
+
+      {mode === "create" ? (
+        <CreateVariablePopover
+          position={anchorPos}
+          folders={folders}
+          onClose={() => setMode("closed")}
+          onCreated={({ variableId }) => {
+            setMode("closed");
+            onPick(variableId);
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

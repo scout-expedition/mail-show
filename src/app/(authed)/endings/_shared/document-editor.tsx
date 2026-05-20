@@ -43,6 +43,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -125,6 +126,7 @@ export interface DocumentEditorProps {
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   /** Leaf components by block_type. Frameworks pass `{ text }`; logic
    *  docs pass `{ result }`. */
@@ -194,6 +196,7 @@ export function DocumentEditor({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
   leaves,
   renderPreview,
@@ -639,6 +642,7 @@ export function DocumentEditor({
           default_value_id: v.default_value_id,
           color_index: v.color_index,
           color_hex,
+          folder_id: v.folder_id,
           sort_order: v.sort_order,
         };
       }),
@@ -1226,6 +1230,7 @@ export function DocumentEditor({
                 variableIndex={variableIndex}
                 variables={authoringVariableState}
                 values={values}
+                folders={folders}
                 document_id={document.id}
                 leaves={leaves}
                 onUpdateBlock={updateBlock}
