@@ -4,13 +4,13 @@
 // inspection-letters action chips — uses the same glyph.
 //
 // Mapping:
-//   text          → Focus    (a focused playthrough-defined string)
+//   text          → Hash     (a playthrough-defined string variable)
 //   number_ref    → Play     (per-playthrough numeric impact column)
 //   aggregate_ref → Sigma    (sum/aggregate over the impact columns)
 //   smart_ref     → Atom     (Smart Variable — composed via conditions)
 
 import type { ComponentType, SVGProps } from "react";
-import { Atom, Focus, Play, Sigma } from "lucide-react";
+import { Atom, Hash, Play, Sigma } from "lucide-react";
 import type { EndingVariableKind } from "@/lib/db/enums";
 
 export type VariableKindIconComponent = ComponentType<
@@ -21,7 +21,7 @@ export const VARIABLE_KIND_ICON: Record<
   EndingVariableKind,
   VariableKindIconComponent
 > = {
-  text: Focus,
+  text: Hash,
   number_ref: Play,
   aggregate_ref: Sigma,
   smart_ref: Atom,

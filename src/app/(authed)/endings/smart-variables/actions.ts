@@ -14,6 +14,13 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
+import {
+  createScopedFolder,
+  deleteScopedFolder,
+  moveScopedFolder,
+  moveScopedVariable,
+  patchScopedFolder,
+} from "../_shared/folder-actions";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -66,6 +73,7 @@ async function uniqueSmartVariableName(
  */
 export async function createSmartVariable(input: {
   name?: string;
+  folderId?: string | null;
 } = {}): Promise<{
   documentId: string;
   variableId: string;
@@ -92,6 +100,7 @@ export async function createSmartVariable(input: {
   const name = await uniqueSmartVariableName(supabase, baseName);
   const documentId = randomUUID();
   const variableId = randomUUID();
+  const folderId = input.folderId ?? null;
 
   // 1) Doc.
   const { error: docErr } = await supabase.from("ending_documents").insert({
@@ -102,7 +111,9 @@ export async function createSmartVariable(input: {
   });
   if (docErr) throw new Error(docErr.message);
 
-  // 2) Paired variable row.
+  // 2) Paired variable row. Folder scope is enforced by trigger: a
+  // smart_ref row must reference a 'smart_variable'-scope folder (or
+  // null root).
   const { error: varErr } = await supabase.from("ending_variables").insert({
     id: variableId,
     name,
@@ -112,6 +123,7 @@ export async function createSmartVariable(input: {
     smart_variable_doc_id: documentId,
     color_index: colorIndexFor(variableId),
     sort_order: nextVarSort,
+    folder_id: folderId,
   });
   if (varErr) {
     // Best-effort cleanup so the orphan doc doesn't linger.
@@ -261,3 +273,71 @@ export async function setSmartVariableColor(input: {
   if (error) throw new Error(error.message);
   revalidateEndings();
 }
+
+// Folder + move actions for the Smart Variables left rail. Each
+// delegates to the scope-aware shared helpers in
+// `_shared/folder-actions.ts` and revalidates the same paths as the
+// other Smart Variables mutations.
+
+export async function createSmartVariableFolder(input?: {
+  id?: string;
+  parentFolderId?: string | null;
+  name?: string;
+}): Promise<{ id: string }> {
+  const result = await createScopedFolder({
+    scope: "smart_variable",
+    parentFolderId: input?.parentFolderId ?? null,
+    id: input?.id,
+    name: input?.name,
+  });
+  revalidateEndings();
+  return result;
+}
+
+export async function renameSmartVariableFolder(input: {
+  id: string;
+  name: string;
+}): Promise<void> {
+  await patchScopedFolder({
+    scope: "smart_variable",
+    id: input.id,
+    patch: { name: input.name },
+  });
+  revalidateEndings();
+}
+
+export async function moveSmartVariableFolder(input: {
+  folderId: string;
+  parentFolderId: string | null;
+  beforeId: string | null;
+}): Promise<void> {
+  await moveScopedFolder({
+    scope: "smart_variable",
+    folderId: input.folderId,
+    parentFolderId: input.parentFolderId,
+    beforeId: input.beforeId,
+  });
+  revalidateEndings();
+}
+
+export async function deleteSmartVariableFolder(formData: FormData): Promise<void> {
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await deleteScopedFolder({ scope: "smart_variable", id });
+  revalidateEndings();
+}
+
+export async function moveSmartVariableToFolder(input: {
+  variableId: string;
+  folderId: string | null;
+  beforeId: string | null;
+}): Promise<void> {
+  await moveScopedVariable({
+    variableKind: "smart_ref",
+    variableId: input.variableId,
+    folderId: input.folderId,
+    beforeId: input.beforeId,
+  });
+  revalidateEndings();
+}
+

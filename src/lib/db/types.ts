@@ -344,6 +344,12 @@ export interface EndingVariableFolder {
    *  on delete. */
   parent_folder_id: string | null;
   sort_order: number;
+  /** Partitions folders into two namespaces:
+   *  - 'variable' is owned by /endings/variables (default for legacy rows).
+   *  - 'smart_variable' is owned by /endings/smart-variables.
+   *  Pages filter server-side; DB triggers reject cross-scope parenting
+   *  and cross-scope variable->folder assignment. */
+  scope: "variable" | "smart_variable";
   created_at: string;
   updated_at: string;
 }

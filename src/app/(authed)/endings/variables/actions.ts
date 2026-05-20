@@ -4,6 +4,13 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
+import {
+  createScopedFolder,
+  deleteScopedFolder,
+  moveScopedFolder,
+  moveScopedVariable,
+  patchScopedFolder,
+} from "../_shared/folder-actions";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -350,32 +357,13 @@ export async function deleteEndingVariableValue(formData: FormData) {
 export async function createEndingVariableFolder(
   input?: { id?: string; parent_folder_id?: string | null }
 ): Promise<{ id: string }> {
-  const supabase = await createSupabaseServerClient();
-  const parent = input?.parent_folder_id ?? null;
-
-  let siblingsQuery = supabase
-    .from("ending_variable_folders")
-    .select("sort_order")
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  if (parent === null) {
-    siblingsQuery = siblingsQuery.is("parent_folder_id", null);
-  } else {
-    siblingsQuery = siblingsQuery.eq("parent_folder_id", parent);
-  }
-  const { data: existing } = await siblingsQuery;
-  const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
-
-  const id = input?.id ?? randomUUID();
-  const { error } = await supabase.from("ending_variable_folders").insert({
-    id,
-    name: "New folder",
-    parent_folder_id: parent,
-    sort_order: nextSort,
+  const result = await createScopedFolder({
+    scope: "variable",
+    parentFolderId: input?.parent_folder_id ?? null,
+    id: input?.id,
   });
-  if (error) throw new Error(error.message);
   revalidateEndings();
-  return { id };
+  return result;
 }
 
 /**
@@ -392,24 +380,7 @@ export async function patchEndingVariableFolder(
     sort_order: number;
   }>
 ) {
-  const supabase = await createSupabaseServerClient();
-  const sanitized: typeof patch = { ...patch };
-
-  if (sanitized.name !== undefined) {
-    const trimmed = sanitized.name.trim();
-    if (!trimmed) throw new Error("Folder name cannot be empty.");
-    sanitized.name = trimmed;
-  }
-
-  if (sanitized.parent_folder_id === id) {
-    throw new Error("A folder cannot be its own parent.");
-  }
-
-  const { error } = await supabase
-    .from("ending_variable_folders")
-    .update(sanitized)
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  await patchScopedFolder({ scope: "variable", id, patch });
 }
 
 /**
@@ -423,45 +394,12 @@ export async function moveVariableToFolder(input: {
   folder_id: string | null;
   before_id: string | null;
 }): Promise<void> {
-  const supabase = await createSupabaseServerClient();
-  const { variable_id, folder_id, before_id } = input;
-  if (!variable_id) throw new Error("variable_id is required.");
-  if (before_id === variable_id) {
-    throw new Error("A row cannot be placed before itself.");
-  }
-
-  // Step 1: patch the variable's folder so subsequent queries see the
-  // new location.
-  const { error: moveErr } = await supabase
-    .from("ending_variables")
-    .update({ folder_id })
-    .eq("id", variable_id);
-  if (moveErr) throw new Error(moveErr.message);
-
-  // Step 2: read all text variables in the destination folder and
-  // renumber sort_order by their post-move position. The moved variable
-  // is inserted before `before_id`; if before_id is null or no longer in
-  // the group, it lands at the end.
-  let q = supabase
-    .from("ending_variables")
-    .select("id, sort_order")
-    .eq("kind", "text")
-    .order("sort_order", { ascending: true });
-  if (folder_id === null) q = q.is("folder_id", null);
-  else q = q.eq("folder_id", folder_id);
-  const { data: siblings, error: readErr } = await q;
-  if (readErr) throw new Error(readErr.message);
-
-  const ordered = (siblings ?? []).map((s) => s.id);
-  // Remove + reinsert so the move is a single deterministic ordering pass
-  // regardless of the row's prior sort_order in this group.
-  const without = ordered.filter((id) => id !== variable_id);
-  let insertAt = before_id ? without.indexOf(before_id) : -1;
-  if (insertAt < 0) insertAt = without.length;
-  const next = [...without];
-  next.splice(insertAt, 0, variable_id);
-
-  await renumberSortOrders(supabase, "ending_variables", next);
+  await moveScopedVariable({
+    variableKind: "text",
+    variableId: input.variable_id,
+    folderId: input.folder_id,
+    beforeId: input.before_id,
+  });
   revalidateEndings();
 }
 
@@ -476,96 +414,13 @@ export async function moveFolderToFolder(input: {
   parent_folder_id: string | null;
   before_id: string | null;
 }): Promise<void> {
-  const supabase = await createSupabaseServerClient();
-  const { folder_id, parent_folder_id, before_id } = input;
-  if (!folder_id) throw new Error("folder_id is required.");
-  if (before_id === folder_id) {
-    throw new Error("A row cannot be placed before itself.");
-  }
-  if (parent_folder_id === folder_id) {
-    throw new Error("A folder cannot be its own parent.");
-  }
-
-  // Walk the ancestor chain of parent_folder_id and reject if we land
-  // on folder_id — that would create a cycle.
-  if (parent_folder_id !== null) {
-    let cursor: string | null = parent_folder_id;
-    const visited = new Set<string>();
-    while (cursor) {
-      if (cursor === folder_id) {
-        throw new Error(
-          "Can't move a folder into itself or a descendant."
-        );
-      }
-      if (visited.has(cursor)) break; // corrupt FK chain — stop
-      visited.add(cursor);
-      const parentRow: { parent_folder_id: string | null } | null = (
-        await supabase
-          .from("ending_variable_folders")
-          .select("parent_folder_id")
-          .eq("id", cursor)
-          .maybeSingle()
-      ).data;
-      if (!parentRow) break;
-      cursor = parentRow.parent_folder_id ?? null;
-    }
-  }
-
-  const { error: moveErr } = await supabase
-    .from("ending_variable_folders")
-    .update({ parent_folder_id })
-    .eq("id", folder_id);
-  if (moveErr) throw new Error(moveErr.message);
-
-  let q = supabase
-    .from("ending_variable_folders")
-    .select("id, sort_order")
-    .order("sort_order", { ascending: true });
-  if (parent_folder_id === null) q = q.is("parent_folder_id", null);
-  else q = q.eq("parent_folder_id", parent_folder_id);
-  const { data: siblings, error: readErr } = await q;
-  if (readErr) throw new Error(readErr.message);
-
-  const ordered = (siblings ?? []).map((s) => s.id);
-  const without = ordered.filter((id) => id !== folder_id);
-  let insertAt = before_id ? without.indexOf(before_id) : -1;
-  if (insertAt < 0) insertAt = without.length;
-  const next = [...without];
-  next.splice(insertAt, 0, folder_id);
-
-  await renumberSortOrders(supabase, "ending_variable_folders", next);
+  await moveScopedFolder({
+    scope: "variable",
+    folderId: input.folder_id,
+    parentFolderId: input.parent_folder_id,
+    beforeId: input.before_id,
+  });
   revalidateEndings();
-}
-
-/**
- * Renumber sort_order for the given ordered ids so they read 1..N.
- * Skips rows whose sort_order is already correct to keep the write set
- * minimal (most reorders only shuffle one row).
- */
-async function renumberSortOrders(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  table: "ending_variables" | "ending_variable_folders",
-  orderedIds: string[]
-): Promise<void> {
-  // Read current sort_orders for the affected rows so we can skip
-  // no-op writes (saves WAL + realtime fan-out).
-  const { data: current } = await supabase
-    .from(table)
-    .select("id, sort_order")
-    .in("id", orderedIds);
-  const currentMap = new Map(
-    (current ?? []).map((r) => [r.id as string, r.sort_order as number])
-  );
-  for (let i = 0; i < orderedIds.length; i++) {
-    const id = orderedIds[i];
-    const next = i + 1;
-    if (currentMap.get(id) === next) continue;
-    const { error } = await supabase
-      .from(table)
-      .update({ sort_order: next })
-      .eq("id", id);
-    if (error) throw new Error(error.message);
-  }
 }
 
 /**
@@ -575,34 +430,8 @@ async function renumberSortOrders(
  * happen before the final delete.
  */
 export async function deleteEndingVariableFolder(formData: FormData) {
-  const supabase = await createSupabaseServerClient();
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-
-  const { data: folder } = await supabase
-    .from("ending_variable_folders")
-    .select("parent_folder_id")
-    .eq("id", id)
-    .maybeSingle();
-  if (!folder) return; // already gone
-  const newParent = folder.parent_folder_id ?? null;
-
-  const { error: reparentFoldersErr } = await supabase
-    .from("ending_variable_folders")
-    .update({ parent_folder_id: newParent })
-    .eq("parent_folder_id", id);
-  if (reparentFoldersErr) throw new Error(reparentFoldersErr.message);
-
-  const { error: reparentVarsErr } = await supabase
-    .from("ending_variables")
-    .update({ folder_id: newParent })
-    .eq("folder_id", id);
-  if (reparentVarsErr) throw new Error(reparentVarsErr.message);
-
-  const { error: delErr } = await supabase
-    .from("ending_variable_folders")
-    .delete()
-    .eq("id", id);
-  if (delErr) throw new Error(delErr.message);
+  await deleteScopedFolder({ scope: "variable", id });
   revalidateEndings();
 }
