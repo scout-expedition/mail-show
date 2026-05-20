@@ -419,6 +419,10 @@ function PagePickerMenu({
     };
   }, [open, closeAll]);
 
+  // Clear any pending close timer on unmount so we never fire setState
+  // after the picker is gone.
+  useEffect(() => cancelClose, [cancelClose]);
+
   // If the current submenu's parent disappears (because the matching tile
   // was added elsewhere), close the submenu.
   useEffect(() => {
@@ -586,7 +590,7 @@ function ExpandableRow({
       onFocus={(e) => onHoverIn(e.currentTarget)}
       onBlur={onHoverOut}
       onClick={parentVisible ? onClick : undefined}
-      disabled={!parentVisible}
+      aria-disabled={!parentVisible}
       className={cn(
         "flex w-full items-center gap-2 rounded-sm px-2 py-0.5 text-left text-xs",
         isOpen

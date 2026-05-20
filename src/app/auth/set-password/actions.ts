@@ -23,5 +23,5 @@ export async function setPassword(formData: FormData) {
   if (error) {
     redirect(buildRedirect(error.message));
   }
-  redirect("/dashboard");
+  redirect("/");
 }

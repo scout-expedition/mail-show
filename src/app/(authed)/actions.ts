@@ -7,9 +7,36 @@ import { NAV_ITEMS } from "@/lib/nav-items";
 const VALID_PATHS = new Set(NAV_ITEMS.map((item) => item.href));
 const MAX_TILES = 48;
 
-function pathnameOf(raw: string): string {
+/** Pathnames that support a single approved query-string deep-link key.
+ *  Any other query/hash on any other path is stripped, so attackers can't
+ *  fork duplicate tiles by appending arbitrary query strings. */
+const SUB_PARAM_BY_PATH: Record<string, string> = {
+  "/top-of-day/morning-reports": "day",
+  "/endings/frameworks": "framework",
+  "/endings/logic": "tab",
+};
+
+const SAFE_SUB_VALUE = /^[A-Za-z0-9_\-.~]{1,200}$/;
+
+/** Normalize an href: keep only the pathname for paths without sub-options;
+ *  keep `?<knownKey>=<safeValue>` for paths that do. Reject anything else. */
+function normalizeHref(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  if (!raw.startsWith("/")) return null;
   const noHash = raw.split("#")[0] ?? "";
-  return noHash.split("?")[0] ?? "";
+  const [pathname, query] = noHash.split("?");
+  if (!pathname || !VALID_PATHS.has(pathname)) return null;
+  if (!query) return pathname;
+  const subKey = SUB_PARAM_BY_PATH[pathname];
+  if (!subKey) return pathname;
+  const params = new URLSearchParams(query);
+  // Allow only the single known sub-key, nothing else.
+  let count = 0;
+  for (const _ of params.keys()) count++;
+  if (count !== 1) return pathname;
+  const value = params.get(subKey);
+  if (!value || !SAFE_SUB_VALUE.test(value)) return pathname;
+  return `${pathname}?${subKey}=${value}`;
 }
 
 export async function setUserHomeTiles(hrefs: string[]): Promise<void> {
@@ -21,12 +48,11 @@ export async function setUserHomeTiles(hrefs: string[]): Promise<void> {
   const seen = new Set<string>();
   const clean: string[] = [];
   for (const raw of hrefs) {
-    if (typeof raw !== "string") continue;
-    if (!raw.startsWith("/")) continue;
-    if (!VALID_PATHS.has(pathnameOf(raw))) continue;
-    if (seen.has(raw)) continue;
-    seen.add(raw);
-    clean.push(raw);
+    const normalized = normalizeHref(raw);
+    if (!normalized) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    clean.push(normalized);
     if (clean.length >= MAX_TILES) break;
   }
 

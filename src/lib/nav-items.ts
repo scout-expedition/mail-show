@@ -18,8 +18,6 @@ import {
   Variable,
 } from "lucide-react";
 import { IconBolt, IconMailOpened } from "@tabler/icons-react";
-import { WIP_PATHS } from "@/lib/wip-pages";
-
 export type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
 
 export type NavSection =
@@ -78,10 +76,3 @@ export const DEFAULT_TILE_HREFS: readonly string[] = [
   "/top-of-day/morning-reports",
 ] as const;
 
-export function getNavItem(href: string): NavItem | undefined {
-  return NAV_ITEMS.find((item) => item.href === href);
-}
-
-export function getNonWipNavItems(): NavItem[] {
-  return NAV_ITEMS.filter((item) => !WIP_PATHS.has(item.href));
-}
