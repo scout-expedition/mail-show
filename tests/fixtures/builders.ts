@@ -48,6 +48,8 @@ export function makeAction(overrides: Partial<ActionRow> = {}): ActionRow {
     impact_spokgrad: 0,
     impact_pelico: 0,
     sort_order: 0,
+    updated_at: new Date(0).toISOString(),
+    updated_by: null,
     ...overrides,
   };
 }

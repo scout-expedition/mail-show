@@ -38,7 +38,7 @@ export default async function StorylineDetail({
             {storyline.name}
           </span>
         }
-        description={storyline.description ?? undefined}
+        description={storyline.notes ?? undefined}
         actions={
           <Link href="/inspection/storylines">
             <Button variant="ghost" size="sm">
@@ -88,10 +88,10 @@ export default async function StorylineDetail({
           />
         </div>
         <div className="col-span-6 flex flex-col gap-1.5">
-          <Label>Description</Label>
+          <Label>Notes</Label>
           <Textarea
-            name="description"
-            defaultValue={storyline.description ?? ""}
+            name="notes"
+            defaultValue={storyline.notes ?? ""}
             rows={2}
           />
         </div>

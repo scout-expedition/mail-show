@@ -852,6 +852,7 @@ function HeaderVariableStrip({
   const [optimisticVarIds, setOptimisticVarIds] = useState<string[]>([]);
   const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
   useEffect(() => {
+     
     setOptimisticVarIds((prev) =>
       prev.filter((id) => !declaredIds.has(id))
     );
