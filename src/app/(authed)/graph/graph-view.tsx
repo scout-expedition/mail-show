@@ -3057,7 +3057,9 @@ export function GraphView({
               let changed = false;
               const next = { ...prev };
               for (const id of batchIds) {
-                if (id in next) {
+                // Skip entries that have been re-targeted by a subsequent
+                // drag — clearing them would yank the second drag's ghost.
+                if (next[id] === batchPendingIds[id]) {
                   delete next[id];
                   changed = true;
                 }
@@ -3122,8 +3124,11 @@ export function GraphView({
           gid,
           targetRowId === "unscheduled" ? null : targetRowId
         ).catch(() => {
+          // Only clear if this drag's target is still the pending one —
+          // a re-drag of the same group to a different target should not
+          // be cleared by the previous (failed) drag's catch.
           setPendingDayMoves((prev) => {
-            if (!(gid in prev)) return prev;
+            if (prev[gid] !== targetRowId) return prev;
             const next = { ...prev };
             delete next[gid];
             return next;
@@ -3153,8 +3158,11 @@ export function GraphView({
           sid,
           targetRowId === "unscheduled" ? null : targetRowId
         ).catch(() => {
+          // Only clear if this drag's target is still the pending one —
+          // a re-drag of the same segment to a different target should
+          // not be cleared by the previous (failed) drag's catch.
           setPendingDayMoves((prev) => {
-            if (!(sid in prev)) return prev;
+            if (prev[sid] !== targetRowId) return prev;
             const next = { ...prev };
             delete next[sid];
             return next;

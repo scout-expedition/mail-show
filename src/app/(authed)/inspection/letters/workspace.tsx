@@ -2054,16 +2054,24 @@ function LettersWorkspaceInner({
     });
   }
 
-  async function handleAddAction(templateId: string, includePair = true) {
+  function handleAddAction(
+    templateId: string,
+    includePair = true,
+    onOptimistic?: () => void
+  ) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    // Returns the awaitable server call directly — the child's onAdd
-    // (LetterActionsCard) wraps both the optimistic-ghost dispatch and
-    // this await inside one transition so useOptimistic ties the ghost to
-    // the server work (otherwise the ghost flashes off before the real
-    // row lands).
-    await addActionFromTemplate(groupId, selectedId, templateId, includePair);
+    // `onOptimistic` (when supplied) dispatches the child's
+    // useOptimistic ghost inside this transition — keeping the ghost,
+    // the rowPending flag (which drives the AddActionMenu disabled
+    // state), and the awaited server call all tied to the same
+    // startRowAction. If onOptimistic ran in its own transition the
+    // ghost would flicker off before the server returns.
+    startRowAction(async () => {
+      onOptimistic?.();
+      await addActionFromTemplate(groupId, selectedId, templateId, includePair);
+    });
   }
 
   async function handleDeleteAction(actionId: string) {
@@ -3831,7 +3839,11 @@ function LetterActionsCard({
    *  this true moves keyboard focus into the panel. */
   active: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
-  onAddAction: (templateId: string, includePair?: boolean) => Promise<void>;
+  onAddAction: (
+    templateId: string,
+    includePair?: boolean,
+    onOptimistic?: () => void
+  ) => void;
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
@@ -3943,14 +3955,13 @@ function LetterActionsCard({
             onAdd={(templateId, includePair) => {
               const tmpId = `tmp-${crypto.randomUUID()}`;
               const tpl = templates.find((t) => t.id === templateId);
-              // Dispatch the optimistic ghost AND await the server action
-              // inside the same transition — useOptimistic resets the
-              // optimistic value as soon as its hosting transition resolves,
-              // so the ghost has to be tied to the same transition the
-              // server call lives in. Otherwise the ghost clears on the
-              // next render (before the server returns) and the panel
-              // visibly flickers empty until revalidation lands.
-              startTransition(async () => {
+              // The parent's `handleAddAction` calls `onOptimistic`
+              // inside its `startRowAction(async () => {...})`, tying
+              // the useOptimistic ghost to the same transition as the
+              // awaited server action. That keeps the ghost visible
+              // until the server returns AND keeps `rowPending` true
+              // for the AddActionMenu's disabled state.
+              onAddAction(templateId, includePair, () => {
                 addOptimisticAction({
                   __optimistic: true,
                   id: tmpId,
@@ -3974,7 +3985,6 @@ function LetterActionsCard({
                   updated_by: null,
                   ending_assignments: [],
                 });
-                await onAddAction(templateId, includePair);
               });
             }}
           />

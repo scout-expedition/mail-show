@@ -1042,10 +1042,12 @@ export async function reorderLetterGroups(
   orderedIds: string[]
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   for (let i = 0; i < orderedIds.length; i++) {
     const { error } = await supabase
       .from("letter_groups")
-      .update({ sort_order: i + 1 })
+      .update({ sort_order: i + 1, updated_by: updatedBy })
       .eq("id", orderedIds[i])
       .eq("storyline_id", storylineId);
     if (error) throw new Error(error.message);
@@ -1270,6 +1272,8 @@ async function loadDayNumbers(
  */
 export async function sortLetterGroupsChronologically(storylineId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data: groups, error } = await supabase
     .from("letter_groups")
     .select("id, sort_order, delivery_day_id")
@@ -1286,7 +1290,7 @@ export async function sortLetterGroupsChronologically(storylineId: string) {
   for (let i = 0; i < ordered.length; i++) {
     const { error: e } = await supabase
       .from("letter_groups")
-      .update({ sort_order: i + 1 })
+      .update({ sort_order: i + 1, updated_by: updatedBy })
       .eq("id", ordered[i].id);
     if (e) throw new Error(e.message);
   }
@@ -1361,6 +1365,8 @@ export async function sortReportSegmentsChronologically(reportGroupId: string) {
  */
 export async function sortLetterGroupsById(storylineId: string) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data: groups, error } = await supabase
     .from("letter_groups")
     .select("id, sequence")
@@ -1376,7 +1382,7 @@ export async function sortLetterGroupsById(storylineId: string) {
   for (let i = 0; i < ordered.length; i++) {
     const { error: e } = await supabase
       .from("letter_groups")
-      .update({ sort_order: i + 1 })
+      .update({ sort_order: i + 1, updated_by: updatedBy })
       .eq("id", ordered[i].id as string);
     if (e) throw new Error(e.message);
   }
@@ -1732,6 +1738,8 @@ export async function createNextLetterGroupAndLetter(
   const nextSort =
     Math.max(0, ...((existing ?? []).map((g) => Number(g.sort_order ?? 0)))) +
     1;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data: newGroup, error } = await supabase
     .from("letter_groups")
     .insert({
@@ -1739,6 +1747,7 @@ export async function createNextLetterGroupAndLetter(
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
       sort_order: nextSort,
+      updated_by: updatedBy,
     })
     .select("id")
     .single();
@@ -1747,7 +1756,6 @@ export async function createNextLetterGroupAndLetter(
   const ids = await createInspectionLettersInGroup(newGroupId, 1);
   const letterId = ids[0];
   const variant = await ensureLetterVariant(letterId);
-  revalidatePath("/inspection/letters");
   revalidatePath("/inspection/letters");
   return { newGroupId, letterId, variant };
 }
