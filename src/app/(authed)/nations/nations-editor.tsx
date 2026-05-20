@@ -84,9 +84,12 @@ function NationsEditorInner({
   const { toast, toaster } = useToast();
   const [, startReorderTransition] = useTransition();
 
-  // Local mirror of nations
+  // Local mirror of nations — uses "adjust state in render" to reconcile
+  // when the server prop changes (e.g. after a create/delete revalidate).
   const [rows, setRows] = useState<Nation[]>(initialNations);
-  useEffect(() => {
+  const [prevInitialNations, setPrevInitialNations] = useState(initialNations);
+  if (initialNations !== prevInitialNations) {
+    setPrevInitialNations(initialNations);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(initialNations.map((n) => n.id));
@@ -98,7 +101,7 @@ function NationsEditorInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [initialNations]);
+  }
 
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
@@ -109,7 +112,9 @@ function NationsEditorInner({
   // back to id for backwards compatibility with old links. URLSearchParams
   // handles encode/decode of the value transparently — no manual encoding.
   const appliedParamRef = useRef<string | null>(null);
-  // URL → state
+  // URL → state (honor external navigation). URL search params are an
+  // external system; reading them here and calling setState to mirror the
+  // current URL value is the correct pattern for this effect.
   useEffect(() => {
     const param = searchParams.get("nation");
     if (param === appliedParamRef.current) return;
@@ -119,6 +124,7 @@ function NationsEditorInner({
         rows.find((r) => r.name === param) ??
         rows.find((r) => r.id === param) ??
         null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedId(match?.id ?? null);
     } else {
       setSelectedId(null);

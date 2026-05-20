@@ -189,8 +189,11 @@ export function PreviewView({
   }, [evalChips, variableIndex, baseSelections, rollCache]);
   // Sync newly-rolled values back into the cache so a subsequent
   // re-render with no input change keeps the same value (instead of
-  // rolling fresh every render).
+  // rolling fresh every render). This effect writes back into the
+  // roll-cache (an internal memoization store) — not a simple prop→state
+  // mirror — so the effect + setState is the correct shape here.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRollCache((prev) => {
       let changed = false;
       const next = new Map(prev);

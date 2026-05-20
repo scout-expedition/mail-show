@@ -17,11 +17,13 @@ export function useLocalStorage<T>(
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem(key);
+      // Hydrate from localStorage — the external system this hook synchronizes with.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (raw !== null) setValue(JSON.parse(raw) as T);
     } catch {
       // ignore parse/storage errors and keep the initial value
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [key]);
 
   const update = useCallback(

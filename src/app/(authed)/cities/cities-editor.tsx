@@ -74,7 +74,9 @@ function CitiesEditorInner({
 
   // Local mirror of cities, seeded from server props.
   const [rows, setRows] = useState<City[]>(initialCities);
-  useEffect(() => {
+  const [prevInitialCities, setPrevInitialCities] = useState(initialCities);
+  if (initialCities !== prevInitialCities) {
+    setPrevInitialCities(initialCities);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(initialCities.map((c) => c.id));
@@ -86,7 +88,7 @@ function CitiesEditorInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [initialCities]);
+  }
 
   const [sortMode, setSortMode] = useState<SortMode>("city");
   const [filterNationId, setFilterNationId] = useState<string>("");
@@ -101,6 +103,8 @@ function CitiesEditorInner({
   const appliedParamRef = useRef<string | null>(null);
 
   // URL → state (honor external navigation).
+  // The URL search params are an external system; reading them and calling
+  // setState to reflect the current URL value is the correct use of an effect.
   useEffect(() => {
     const param = searchParams.get("city");
     if (param === appliedParamRef.current) return;
@@ -110,6 +114,7 @@ function CitiesEditorInner({
         rows.find((r) => r.name === param) ??
         rows.find((r) => r.id === param) ??
         null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedId(match?.id ?? null);
     } else {
       setSelectedId(null);

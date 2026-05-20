@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   RealtimeChannel,
   RealtimePostgresChangesPayload,
@@ -110,6 +110,8 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
       });
     }
 
+    // Channel handle exposed to consumers — the effect IS the external-system subscription this hook is built around.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setChannel(ch);
 
     // Postgres_changes subscriptions are RLS-gated server-side, so the
@@ -149,13 +151,25 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
       void supabase.removeChannel(ch);
       setChannel(null);
     };
-  }, [name, presenceKey, postgresKey, broadcastKey]);
+  // Refs from useLatest are stable across renders; including them is a no-op but satisfies exhaustive-deps.
+  }, [name, presenceKey, postgresKey, broadcastKey, onBroadcastRef, onPostgresRef, onPresenceSyncRef]);
 
   return { channel, subscribed };
 }
 
+/**
+ * Returns a ref that always points at the latest `value`. The assignment
+ * runs in `useLayoutEffect`, not `useEffect`, so the ref is updated
+ * synchronously during the commit phase — before any external event
+ * (e.g. an incoming realtime broadcast) can run. With plain `useEffect`,
+ * a broadcast arriving between commit and effect-flush would read the
+ * stale ref on a rerender that changed `value`; `useLayoutEffect` closes
+ * that window without forcing the consumer to resubscribe.
+ */
 function useLatest<T>(value: T) {
   const ref = useRef(value);
-  ref.current = value;
+  useLayoutEffect(() => {
+    ref.current = value;
+  }, [value]);
   return ref;
 }

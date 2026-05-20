@@ -37,7 +37,6 @@ export default async function InspectionTab({
   const gs = (groups ?? []) as LetterGroup[];
   const sls = (storylines ?? []) as Storyline[];
   const groupMap = new Map(gs.map((g) => [g.id, g]));
-  const storylineMap = new Map(sls.map((s) => [s.id, s]));
 
   const byStoryline = new Map<string, InspectionLetterView[]>();
   for (const l of ls) {

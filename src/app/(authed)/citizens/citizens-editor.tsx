@@ -132,11 +132,13 @@ function CitizensEditorInner({
   const { toast, toaster } = useToast();
   const [, startMutation] = useTransition();
 
-  // Local mirror of citizens, seeded from server props. The useEffect
-  // reconciles when the server prop changes (e.g. after a bulk-paste
-  // revalidate adds rows).
+  // Local mirror of citizens, seeded from server props. The "adjust state in
+  // render" pattern resyncs when the server prop changes (e.g. after a
+  // bulk-paste revalidate adds rows).
   const [rows, setRows] = useState<Citizen[]>(initialCitizens);
-  useEffect(() => {
+  const [prevInitialCitizens, setPrevInitialCitizens] = useState(initialCitizens);
+  if (initialCitizens !== prevInitialCitizens) {
+    setPrevInitialCitizens(initialCitizens);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(initialCitizens.map((c) => c.id));
@@ -148,7 +150,7 @@ function CitizensEditorInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [initialCitizens]);
+  }
 
   const [sortMode, setSortMode] = useState<SortMode>("name");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
@@ -172,7 +174,8 @@ function CitizensEditorInner({
   // URL → state (honor external navigation). Citizen IDs commonly start
   // with a `#` sigil ("#G3X9"); the URL form drops that prefix so the
   // querystring stays readable, hence the `.replace(/^#/, "")` on both
-  // sides of the match.
+  // sides of the match. URL search params are an external system; reading
+  // them here and calling setState to mirror the URL is the correct pattern.
   useEffect(() => {
     const param = searchParams.get("citizen");
     if (param === appliedParamRef.current) return;
@@ -184,6 +187,7 @@ function CitizensEditorInner({
         ) ??
         rows.find((r) => r.id === param) ??
         null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedId(match?.id ?? null);
     } else {
       setSelectedId(null);

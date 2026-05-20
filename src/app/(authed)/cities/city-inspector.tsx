@@ -301,14 +301,6 @@ function FieldCell({
   );
 }
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mb-2 mt-6 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-      {children}
-    </div>
-  );
-}
-
 /**
  * Chip-shaped nation picker. The trigger renders the current nation as a
  * filled NationPill (icon-only for compactness); clicking opens a small
@@ -334,8 +326,11 @@ function NationChipPicker({
 
   // When the popover opens, seed focus on the currently-selected nation
   // (or the first one) and move keyboard focus to that option.
+  // This effect also performs a DOM side-effect (requestAnimationFrame focus),
+  // so it must remain an effect; the setState calls track that same open state.
   useEffect(() => {
     if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFocusIndex(-1);
       return;
     }

@@ -9,7 +9,6 @@ import {
   GripVertical,
   Plus,
   Trash2,
-  X,
 } from "lucide-react";
 import { IconArrowsSplit2 } from "@tabler/icons-react";
 import { OverflowMenu } from "@/components/panel";
