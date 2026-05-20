@@ -237,6 +237,7 @@ function ActivePresenceProvider({
       color: selfColor,
       focus,
       selection,
+      // eslint-disable-next-line react-hooks/purity
       lastActiveAt: Date.now(),
     }),
     [userId, email, profile, selfColor, focus, selection]

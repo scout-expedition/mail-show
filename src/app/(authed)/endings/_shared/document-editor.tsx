@@ -353,6 +353,7 @@ export function DocumentEditor({
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(collapseModeStorageKey);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (raw === "all") setCollapseModeState("all");
       else if (raw === "groups") setCollapseModeState("groups");
       else setCollapseModeState("expanded");
@@ -422,6 +423,7 @@ export function DocumentEditor({
   // append new ids from the server, drop ids that vanished. Per-leaf
   // useInstantField hooks own typed text and reconcile their own LWW.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBlockState((prev) =>
       mergeServer(prev, initial.blocks, (a, b) => a.id === b.id)
     );
