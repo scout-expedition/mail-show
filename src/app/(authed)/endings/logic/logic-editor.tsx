@@ -313,6 +313,14 @@ function LogicEditorInner({
     });
   }
 
+  // Same ref pattern frameworks/workspace.tsx uses — the ending_blocks
+  // postgres handler reads `smartVariableDocs` through the ref so it
+  // always sees the latest doc set without resubscribing the effect.
+  const smartVariableDocsRef = useRef(smartVariableDocs);
+  useEffect(() => {
+    smartVariableDocsRef.current = smartVariableDocs;
+  }, [smartVariableDocs]);
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table === "ending_variables") {
@@ -388,12 +396,6 @@ function LogicEditorInner({
       }
     });
   }, [onPostgresChanges]);
-
-  // Same ref pattern frameworks/workspace.tsx uses — the ending_blocks
-  // postgres handler reads `smartVariableDocs` through the ref so it
-  // always sees the latest doc set without resubscribing the effect.
-  const smartVariableDocsRef = useRef(smartVariableDocs);
-  smartVariableDocsRef.current = smartVariableDocs;
 
   const smartVariableReturns = useMemo(
     () =>

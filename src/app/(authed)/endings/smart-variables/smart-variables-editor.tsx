@@ -5,7 +5,7 @@
 // DocumentEditor per visible doc) but the document list is dynamic:
 // users add/rename/delete smart variables here directly.
 
-import { startTransition, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
