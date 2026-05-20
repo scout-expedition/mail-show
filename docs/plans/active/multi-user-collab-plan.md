@@ -195,7 +195,7 @@ After every surface is converted: delete `src/components/auto-save-form.tsx`, th
 - `pnpm test` clean (each phase's new unit tests above).
 - `pnpm test:e2e` clean (Phase 1 onwards adds `realtime-letters.spec.ts`; Phase 3 may add `realtime-graph.spec.ts`).
 - Manual two-profile smoke (Chrome + Chrome Incognito with two accounts) at end of every phase covering the phase's smoke-check scenario.
-- Status log lives in `docs/multi-user-collab-plan.md` (this file) — append a `## Status` section as phases land, same shape as `docs/inspection-letters-plan.md` / `docs/narrative-graph-plan.md`.
+- Status log lives in `docs/plans/active/multi-user-collab-plan.md` (this file) — append a `## Status` section as phases land, same shape as `docs/plans/archive/inspection-letters-plan.md` / `docs/plans/active/narrative-graph-plan.md`.
 
 ## Open risks to revisit during implementation
 

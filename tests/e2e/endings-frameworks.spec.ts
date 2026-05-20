@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * SKIPPED until step 6 of docs/endings-logic-v2-plan.md rewrites this
+ * SKIPPED until step 6 of docs/plans/active/endings-logic-v2-plan.md rewrites this
  * spec for the unified ending_documents schema. The setup hooks below
  * still reference the dropped ending_frameworks table; restoring this
  * file means rewriting it against the new shape (and adding logic-tab

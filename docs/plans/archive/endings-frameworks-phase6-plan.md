@@ -1,6 +1,6 @@
 # Endings Frameworks — Phase 6: Header-declared variables
 
-Master plan: `docs/endings-frameworks-plan.md` (Phases 1–3).
+Master plan: `docs/plans/archive/endings-frameworks-plan.md` (Phases 1–3).
 Predecessors:
 - `phase4` (aggregate kinds, shipped — PR #4)
 - `phase5` (static warnings, shipped — PR #5)

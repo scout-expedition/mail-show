@@ -3,7 +3,7 @@
 // Unified server actions for ending documents (frameworks + the five
 // logic-tab tiebreak / framework-selection docs). Both surfaces call
 // into this module — the frameworks workspace (step 2 of
-// docs/endings-logic-v2-plan.md) wires up first; the Logic tab
+// docs/plans/active/endings-logic-v2-plan.md) wires up first; the Logic tab
 // (step 3) hooks the same actions onto the shared editor.
 //
 // Shape mirrors the pre-rebuild `frameworks/actions.ts` — same UPDATE-only
