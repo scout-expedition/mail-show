@@ -2054,13 +2054,16 @@ function LettersWorkspaceInner({
     });
   }
 
-  function handleAddAction(templateId: string, includePair = true) {
+  async function handleAddAction(templateId: string, includePair = true) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    startRowAction(async () => {
-      await addActionFromTemplate(groupId, selectedId, templateId, includePair);
-    });
+    // Returns the awaitable server call directly — the child's onAdd
+    // (LetterActionsCard) wraps both the optimistic-ghost dispatch and
+    // this await inside one transition so useOptimistic ties the ghost to
+    // the server work (otherwise the ghost flashes off before the real
+    // row lands).
+    await addActionFromTemplate(groupId, selectedId, templateId, includePair);
   }
 
   async function handleDeleteAction(actionId: string) {
@@ -3828,7 +3831,7 @@ function LetterActionsCard({
    *  this true moves keyboard focus into the panel. */
   active: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
-  onAddAction: (templateId: string, includePair?: boolean) => void;
+  onAddAction: (templateId: string, includePair?: boolean) => Promise<void>;
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
@@ -3940,7 +3943,14 @@ function LetterActionsCard({
             onAdd={(templateId, includePair) => {
               const tmpId = `tmp-${crypto.randomUUID()}`;
               const tpl = templates.find((t) => t.id === templateId);
-              startTransition(() => {
+              // Dispatch the optimistic ghost AND await the server action
+              // inside the same transition — useOptimistic resets the
+              // optimistic value as soon as its hosting transition resolves,
+              // so the ghost has to be tied to the same transition the
+              // server call lives in. Otherwise the ghost clears on the
+              // next render (before the server returns) and the panel
+              // visibly flickers empty until revalidation lands.
+              startTransition(async () => {
                 addOptimisticAction({
                   __optimistic: true,
                   id: tmpId,
@@ -3964,8 +3974,8 @@ function LetterActionsCard({
                   updated_by: null,
                   ending_assignments: [],
                 });
+                await onAddAction(templateId, includePair);
               });
-              onAddAction(templateId, includePair);
             }}
           />
         </div>
