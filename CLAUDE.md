@@ -76,7 +76,7 @@ React Flow (`@xyflow/react` v12) view of letter groups → next-letter actions, 
 ### Plan files
 Work plans live under `docs/plans/`, split by status: open or has-followups plans live in `docs/plans/active/`; fully shipped plans with no remaining work move to `docs/plans/archive/`. Move a file when its scope closes — that's the "this is done" gesture, like merging a branch. Examples:
 - `docs/plans/archive/inspection-letters-plan.md` — closed; status log of the letters workspace work.
-- `docs/plans/active/narrative-graph-plan.md` — open; phases 1–3 + 5 shipped, phases 4 + 6 remaining.
+- `docs/plans/active/narrative-graph-plan.md` — open; phases 1–6 shipped, only the per-panel save modal scoping follow-up remains.
 
 Evergreen reference docs (testing protocol, transferable patterns, etc.) live outside `docs/plans/` — testing protocols in `docs/testing-*.md`, agent-loadable knowledge in `knowledge-base/`.
 

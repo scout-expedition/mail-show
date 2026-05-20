@@ -161,7 +161,7 @@ Sequenced by editing frequency, not by dependency — these surfaces are indepen
 
 ### Phase 4b — Endings document editors
 
-`src/app/(authed)/endings/_shared/document-editor.tsx` (used by frameworks + logic) is a structurally nested ordered-block document. Likely tractable with LWW per-block + structural ops via narrow actions, but warrants a fresh design pass before starting. **Action:** open a follow-up plan `docs/endings-collab-plan.md` once Phase 1 lands and we know what we learned.
+`src/app/(authed)/endings/_shared/document-editor.tsx` (used by frameworks + logic) is a structurally nested ordered-block document. Likely tractable with LWW per-block + structural ops via narrow actions, but warrants a fresh design pass before starting. **Action:** open a follow-up plan `docs/plans/active/endings-collab-plan.md` once Phase 1 lands and we know what we learned.
 
 ### Final cleanup PR
 
@@ -495,7 +495,7 @@ This is `ActionTemplatesEditor` — a bulk drag-reorder editor for *action templ
 #### Open follow-ups
 
 - **Remaining Phase 4 surfaces.** Sorting letters/rules, cities, citizens, nations, playthroughs, physical, days, ending variables. Each ships as its own PR.
-- **Phase 4b — Endings documents.** Pending design pass (`docs/endings-collab-plan.md`).
+- **Phase 4b — Endings documents.** Pending design pass (`docs/plans/active/endings-collab-plan.md`).
 - **Final cleanup PR.** Delete `updateAllStorylines`, `updateStorylineFields` once every caller is converted; delete `auto-save-form.tsx`, `unsaved-dialog.tsx` once all surfaces are converted.
 
 ### ✅ Phase 4 Sorting (2026-05-13)

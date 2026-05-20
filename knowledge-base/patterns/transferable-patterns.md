@@ -46,11 +46,22 @@ export type InstantFieldState<T> = {
   localValue: T;
   status: InstantFieldStatus;
   /**
-   * After a successful commit, the value we just sent to the server. Remote
-   * updates that don't match this are ignored until realtime catches up to it,
-   * so a saveSuccess→idle transition can't briefly snap the field back to the
-   * stale upstream value while the realtime broadcast is in flight.
-   * Cleared on `set` (user typed again) and on `remote` once it matches.
+   * The value most recently committed to the server, awaiting its realtime
+   * echo. Two jobs: (1) in the idle/error `remote` branch, stale upstream
+   * values that don't match it are ignored until realtime catches up, so a
+   * saveSuccess→idle transition can't snap the field back to the pre-save
+   * value while the broadcast is in flight; (2) in the dirty/saving `remote`
+   * branch, an incoming value that matches it is recognised as this client's
+   * OWN echo and dropped rather than stashed in pendingRemote — otherwise
+   * saveSuccess would later replay it and clobber text typed after a pause.
+   * Survives `set` (the echo of the just-committed value is still in flight
+   * while the user types on). Overwritten by the next commit, cleared once
+   * the echo matches, and cleared on `saveError`.
+   *
+   * Single slot — holds only the latest committed value. If two distinct
+   * commits are in flight with neither echo yet returned (heavy realtime lag),
+   * the older commit's echo is no longer recognised; a documented, rare
+   * residual.
    */
   committedAwaitingRemote?: T | null;
   /** Most recent remote value dropped while the field was dirty/saving.
@@ -64,11 +75,37 @@ export type InstantFieldAction<T> =
   | { type: "remote"; value: T }
   | { type: "saveStart" }
   | { type: "saveSuccess"; pendingValue: T }
+  | { type: "settle" }
   | { type: "saveError"; serverValue: T };
 
 /**
  * Pure state machine for a single instant-save field. Exported so the
  * LWW merge rule + status transitions can be unit-tested without React.
+ *
+ * - `set`     → user typed. localValue := value, status := "dirty",
+ *               pendingRemote cleared. committedAwaitingRemote is PRESERVED
+ *               (the just-committed value's echo is still in flight).
+ *               No-op if `equals(value, localValue)`.
+ * - `remote`  → server pushed a new value via postgres_changes. APPLIED
+ *               when status is "idle" or "error". When "dirty" or
+ *               "saving": a value matching committedAwaitingRemote is this
+ *               client's own echo → dropped. Otherwise local typing wins, so
+ *               the value is STASHED in pendingRemote (not dropped) and
+ *               replayed when the save settles.
+ * - `saveStart`   → commit in flight. status := "saving".
+ * - `saveSuccess` → commit returned. Always records the committed value in
+ *                   committedAwaitingRemote (its realtime echo is in flight).
+ *                   Transitions to "idle" only if localValue still equals the
+ *                   committed value. On that transition a stashed pendingRemote
+ *                   that differs from localValue is applied so a peer write
+ *                   during the save window converges.
+ * - `settle`      → a debounced commit found nothing to send (localValue
+ *                   already equals the server value). Settles status to
+ *                   "idle" without recording committedAwaitingRemote — no
+ *                   commit happened, so no echo is coming.
+ * - `saveError`   → commit threw. Revert localValue to the stashed remote if
+ *                   one exists (freshest server truth), else the server value,
+ *                   and surface "error" (inline glyph, no toast — caller styles it).
  */
 export function instantFieldReducer<T>(
   state: InstantFieldState<T>,
@@ -81,11 +118,27 @@ export function instantFieldReducer<T>(
       return {
         localValue: action.value,
         status: "dirty",
-        committedAwaitingRemote: null,
+        // Preserved, NOT cleared: the echo of the value we just committed is
+        // still in flight, and the dirty `remote` branch below must recognise
+        // it as our own so it isn't stashed and later replayed over this edit.
+        committedAwaitingRemote: state.committedAwaitingRemote ?? null,
         pendingRemote: null,
       };
     case "remote":
       if (state.status === "dirty" || state.status === "saving") {
+        // The realtime echo of THIS client's own just-committed write also
+        // arrives as a `remote`. While dirty/saving it must NOT be stashed:
+        // it is stale relative to what the user has since typed, and a stash
+        // would later be replayed by saveSuccess and clobber the newer text.
+        // Match with the caller's `equals`, not Object.is — an object-typed
+        // echo is a fresh value deserialized from the postgres payload and is
+        // never Object.is-equal to what we sent. Consume the slot on match.
+        if (
+          state.committedAwaitingRemote != null &&
+          equals(action.value, state.committedAwaitingRemote)
+        ) {
+          return { ...state, committedAwaitingRemote: null };
+        }
         // Local typing wins for now — stash the latest remote instead of
         // dropping it, so it can be replayed once the save settles.
         // Compare with Object.is, NOT the caller's `equals`: a loose
@@ -108,7 +161,6 @@ export function instantFieldReducer<T>(
         return state;
       }
       if (equals(action.value, state.localValue)) {
-        // Our own echo landed — clear the guard.
         if (state.committedAwaitingRemote != null) {
           return { ...state, committedAwaitingRemote: null };
         }
@@ -123,13 +175,20 @@ export function instantFieldReducer<T>(
     case "saveStart":
       return { ...state, status: "saving" };
     case "saveSuccess":
-      if (state.status === "saving" && equals(state.localValue, action.pendingValue)) {
+      // localValue still equals the committed value → the field has settled
+      // (covers both the user never typing during the save and typing away
+      // then back to the committed value, which leaves status "dirty").
+      if (
+        (state.status === "saving" || state.status === "dirty") &&
+        equals(state.localValue, action.pendingValue)
+      ) {
         if (
           state.pendingRemote !== null &&
           !equals(state.pendingRemote.value, state.localValue)
         ) {
-          // A peer write landed during the save window — replay it now.
-          // It becomes the new truth, so nothing of ours is awaiting an echo.
+          // A peer write landed during the save window — replay it now
+          // that local typing has settled. It becomes the new truth, so
+          // nothing of ours is awaiting a realtime echo.
           return {
             localValue: state.pendingRemote.value,
             status: "idle",
@@ -146,11 +205,28 @@ export function instantFieldReducer<T>(
           pendingRemote: null,
         };
       }
+      // The user kept typing a *different* value during the save, so the
+      // status can't settle — the next debounced commit will flush it. Still
+      // record the committed value: its realtime echo is in flight and must be
+      // recognised as our own (see the dirty/saving `remote` branch), not
+      // stashed as a peer write and later replayed over the new text.
+      if (state.status === "dirty" || state.status === "saving") {
+        return { ...state, committedAwaitingRemote: action.pendingValue };
+      }
       return state;
+    case "settle":
+      // A debounced commit found nothing to send (localValue already equals
+      // the server value). Settle the status — but leave committedAwaitingRemote
+      // untouched: no write happened, so recording a value here would freeze
+      // the idle-branch guard waiting on an echo that never comes.
+      if (state.status === "idle") return state;
+      return { ...state, status: "idle", pendingRemote: null };
     case "saveError":
       return {
         localValue:
-          state.pendingRemote !== null ? state.pendingRemote.value : action.serverValue,
+          state.pendingRemote !== null
+            ? state.pendingRemote.value
+            : action.serverValue,
         status: "error",
         committedAwaitingRemote: null,
         pendingRemote: null,
@@ -231,6 +307,7 @@ export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantF
   // Apply remote updates whenever the upstream `value` prop changes.
   useEffect(() => {
     dispatch({ type: "remote", value });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   // On unmount: flush any pending edit synchronously so a card remount
@@ -254,9 +331,11 @@ export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantF
     }
     const pending = stateRef.current.localValue;
     if (equalsRef.current(pending, valueRef.current)) {
-      // Nothing actually changed vs. server; just settle the status.
+      // Nothing actually changed vs. server; just settle the status. Use
+      // `settle`, NOT `saveSuccess` — no write happened, so there is no echo
+      // coming and committedAwaitingRemote must not be touched.
       if (stateRef.current.status !== "idle") {
-        dispatch({ type: "saveSuccess", pendingValue: pending });
+        dispatch({ type: "settle" });
       }
       return;
     }
@@ -357,10 +436,11 @@ The reducer is the whole story. The `value` prop is the **server-authoritative**
 State carries three pieces: `localValue`, `status`, and two transient slots — `pendingRemote` (a peer write parked while the local user is editing) and `committedAwaitingRemote` (a just-committed value parked while we wait for our own realtime echo).
 
 - Field **idle/error** → remote value is applied directly, **unless** `committedAwaitingRemote` is set and the incoming value doesn't match it — that incoming value is a stale upstream from before our own commit, so it's ignored. Once a remote arrives that *does* match, the guard clears and normal sync resumes.
-- Field **dirty/saving** → local typing wins; the remote value is **stashed in `pendingRemote`**, not dropped.
-- On **saveSuccess** (only if the user didn't keep typing — `localValue` still equals the committed value): a differing `pendingRemote` is **replayed** (peer write converges instead of being lost) and the echo-guard is cleared. With no pending peer write, the committed value is recorded in `committedAwaitingRemote` so the stale upstream `value` that's still in flight can't snap the field back before our own broadcast lands.
+- Field **dirty/saving** → local typing wins. **Before** stashing in `pendingRemote`, the reducer checks `committedAwaitingRemote`: an incoming value matching it is this client's own echo and is *dropped* (not stashed) — otherwise `saveSuccess` would later replay it and clobber text typed after the commit. Anything else goes into `pendingRemote`. Use the caller's `equals` for the own-echo match, not `Object.is`: an object-typed echo is a fresh deserialized value and is never `Object.is`-equal to what was sent.
+- On **saveSuccess**: if `localValue` still equals the committed value (covers "never typed during save" AND "typed away then back to committed"), settle to `idle` — replay a differing `pendingRemote` if one exists; otherwise record the committed value in `committedAwaitingRemote` for the in-flight echo. If the user kept typing a *different* value, status stays `dirty` for the next debounce flush BUT the committed value is still recorded in `committedAwaitingRemote` so the dirty-branch own-echo guard above can recognise it.
+- On **`settle`** (a separate action): the debounced commit found `localValue === server`, so nothing actually got sent. Settle status to `idle` but leave `committedAwaitingRemote` *untouched* — no write happened, so recording a value here would freeze the idle-branch guard waiting on an echo that never comes. This is why the hook dispatches `settle` instead of `saveSuccess` for the no-op path.
 - On **saveError**, the field reverts to `pendingRemote` (freshest server truth) if present, else the captured server value; both transient slots clear.
-- On **`set`** (user typed again), the echo-guard clears — they're not waiting on the previous commit's echo anymore.
+- On **`set`** (user typed again), `committedAwaitingRemote` is **PRESERVED** — the echo of the value just committed is still in flight, and the dirty-branch guard must recognise it. `pendingRemote` is cleared.
 
 This is plain LWW at field granularity. There is **no CRDT / operational transform** — two people typing in the *same* free-text field simultaneously will have the last commit win. Field-level granularity keeps that rare.
 
@@ -374,7 +454,7 @@ This is plain LWW at field granularity. There is **no CRDT / operational transfo
 
 4. **Race: peer write lands mid-save.** Stashed in `pendingRemote`, replayed on `saveSuccess` / applied on `saveError`. Never dropped.
 
-4a. **Race: our own realtime echo is still in flight when the save returns.** This was discovered the hard way. After `onCommit` resolves, the reducer goes idle — but the upstream `value` prop is still the stale pre-commit value (the postgres_changes broadcast for our own write hasn't echoed back yet). Without a guard, the `remote` effect briefly snaps the field back to that stale value, then flips again when the echo lands — a visible flicker. The fix is the `committedAwaitingRemote` slot: on `saveSuccess` we record the value we committed, and in `remote` (idle/error) we ignore any incoming value that doesn't match it. Once a matching echo arrives, the guard clears. If the user types again before the echo arrives, `set` clears it (they're not waiting on that commit anymore). If a peer write was queued in `pendingRemote` and gets replayed on `saveSuccess`, that peer value becomes the new truth and we're not awaiting our own echo at all. Don't ship the two-state version of this reducer with realtime — the flicker is real.
+4a. **Race: our own realtime echo is still in flight after the save.** Discovered the hard way, in two phases. **Phase 1 (idle-branch flicker):** after `onCommit` resolves, the reducer goes idle — but the upstream `value` prop is still the stale pre-commit value, because the postgres_changes broadcast for our own write hasn't echoed back yet. Without a guard, the `remote` effect briefly snaps the field back to that stale value, then flips again when the echo lands — a visible flicker. The fix is the `committedAwaitingRemote` slot: on `saveSuccess` we record the value we committed, and in `remote` (idle/error) we ignore any incoming value that doesn't match it. **Phase 2 (dirty-branch clobber, the deeper bug):** if the user typed during the save and then *paused* but kept typing later, the in-flight echo arrives during `dirty`/`saving` — and the naive reducer stashes it in `pendingRemote`, which then gets replayed on the next `saveSuccess` and *overwrites the freshly-typed text*. The fix is to check `committedAwaitingRemote` in the dirty-branch too: a matching value is this client's own echo and gets dropped (the slot is consumed), only non-matching peer writes get stashed. The slot must therefore be **PRESERVED across `set`** (the user typed again, but the previous commit's echo is still inbound) and **recorded even when `saveSuccess` doesn't settle the status** (the "user kept typing a different value" branch). Use the caller's `equals` for the dirty-branch match — object echoes are deserialized fresh and never `Object.is`-equal. Don't ship the idle-only variant of this guard — the clobber bug bites the moment realtime latency exceeds the user's pause-then-type interval.
 
 5. **`Object.is` vs. custom `equals` subtlety.** The `pendingRemote` no-op check uses `Object.is`, *not* the caller's `equals` — a loose predicate (case-insensitive, say) could treat two genuinely different values as equal, and the stashed value is read back out later. Preserve the truly-latest value.
 
