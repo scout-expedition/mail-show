@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import type { IconType } from "@/lib/db/enums";
 import {
@@ -266,20 +273,30 @@ export function usePresence(opts: UsePresenceOptions): {
     Record<string, number>
   >({});
   const channelRef = useRef<RealtimeChannel | null>(null);
+  // Latest-value refs feed the realtime callbacks (onPresenceSync,
+  // onBroadcast) that fire from the supabase client. `useLayoutEffect`
+  // (rather than `useEffect`) updates the ref synchronously during the
+  // commit phase, before any external event can fire — eliminating the
+  // commit-to-effect-flush window where a stale callback could run on
+  // a rerender that changed the value. (Same pattern as `useLatest` in
+  // ./channel.ts; we open-code it here so each ref keeps its named
+  // identity for grep-ability.)
   const selfUserIdRef = useRef(self.userId);
-  selfUserIdRef.current = self.userId;
+  useLayoutEffect(() => {
+    selfUserIdRef.current = self.userId;
+  }, [self.userId]);
   const selfFocusRef = useRef(self.focus);
-  selfFocusRef.current = self.focus;
-  // selfSelectionRef tracks the latest selection so onPresenceSync can
-  // re-broadcast it for newly-joined peers. Assigned via effect (not during
-  // render) per the react-hooks/refs rule; onPresenceSync runs async via
-  // the realtime channel callback so the effect-settled value is fine.
+  useLayoutEffect(() => {
+    selfFocusRef.current = self.focus;
+  }, [self.focus]);
   const selfSelectionRef = useRef(self.selection);
-  useEffect(() => {
+  useLayoutEffect(() => {
     selfSelectionRef.current = self.selection;
   }, [self.selection]);
   const onBroadcastRef = useRef(onBroadcast);
-  onBroadcastRef.current = onBroadcast;
+  useLayoutEffect(() => {
+    onBroadcastRef.current = onBroadcast;
+  }, [onBroadcast]);
 
   // Bump a peer's lastActiveAt to the current 5-second bucket. Bucketing
   // bounds state churn during sustained-typing (1Hz heartbeats collapse to

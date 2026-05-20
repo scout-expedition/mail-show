@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -49,8 +49,9 @@ export function PhysicalLettersEditor({
   const [rows, setRows] = useState<RowState[]>(() => physical.map(toRowState));
   const [dirty, setDirty] = useState(false);
   const [pending, startTransition] = useTransition();
-
-  useEffect(() => {
+  const [prevPhysical, setPrevPhysical] = useState(physical);
+  if (physical !== prevPhysical) {
+    setPrevPhysical(physical);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(physical.map((p) => p.id));
@@ -62,7 +63,7 @@ export function PhysicalLettersEditor({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [physical]);
+  }
 
   function save() {
     const form = formRef.current;

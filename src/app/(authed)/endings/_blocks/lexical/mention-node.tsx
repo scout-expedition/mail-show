@@ -10,7 +10,6 @@ import {
   $getNodeByKey,
   $isTextNode,
   DecoratorNode,
-  type EditorConfig,
   type LexicalNode,
   type NodeKey,
   type SerializedLexicalNode,
@@ -80,7 +79,7 @@ export class MentionNode extends DecoratorNode<JSX.Element> {
 
   // --- DOM render -----------------------------------------------------
 
-  createDOM(_config: EditorConfig): HTMLElement {
+  createDOM(): HTMLElement {
     // Lexical owns this outer wrapper; React mounts the decorated view
     // inside it via createPortal. Use an inline element so the
     // selection/caret logic treats the pill as a single atom.

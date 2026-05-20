@@ -362,10 +362,3 @@ function FieldCell({
   );
 }
 
-function SectionHeader({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mb-2 mt-6 font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-      {children}
-    </div>
-  );
-}

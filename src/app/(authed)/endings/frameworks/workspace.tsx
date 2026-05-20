@@ -140,7 +140,9 @@ function FrameworksWorkspaceInner({
   // so the next server render re-derives downstream tiebreak data.
   const [frameworks, setFrameworks] =
     useState<EndingDocument[]>(initialFrameworks);
-  useEffect(() => {
+  const [prevInitialFrameworks, setPrevInitialFrameworks] = useState(initialFrameworks);
+  if (initialFrameworks !== prevInitialFrameworks) {
+    setPrevInitialFrameworks(initialFrameworks);
     setFrameworks((prev) => {
       const prevById = new Map(prev.map((f) => [f.id, f]));
       const serverIds = new Set(initialFrameworks.map((f) => f.id));
@@ -149,7 +151,7 @@ function FrameworksWorkspaceInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [initialFrameworks]);
+  }
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table !== "ending_documents") return;

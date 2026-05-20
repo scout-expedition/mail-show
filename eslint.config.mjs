@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vitest coverage HTML reports — generated JS that includes `eslint-disable`
+    // directives ESLint then complains about under --max-warnings 0.
+    "coverage/**",
+    "coverage-int/**",
   ]),
 ]);
 

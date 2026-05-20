@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { IconPickerDialog } from "@/components/icon-picker-dialog";
 import { IconDisplay } from "@/components/icon-display";
 import { Button } from "@/components/ui/button";
@@ -53,8 +53,9 @@ export function ActionTemplatesEditor({
   const [pending, startTransition] = useTransition();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
-
-  useEffect(() => {
+  const [prevTemplates, setPrevTemplates] = useState(templates);
+  if (templates !== prevTemplates) {
+    setPrevTemplates(templates);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(templates.map((t) => t.id));
@@ -75,7 +76,7 @@ export function ActionTemplatesEditor({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [templates]);
+  }
 
   function save() {
     const form = formRef.current;

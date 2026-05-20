@@ -49,8 +49,12 @@ export function GraphContextMenu({
   } | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
+  // Measure the rendered menu and compute its clamped position from the
+  // DOM (window.innerHeight/Width). These setState calls are driven by DOM
+  // geometry — an external system — so they belong in a layout effect.
   useLayoutEffect(() => {
     if (!anchor || !ref.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPos(null);
       return;
     }

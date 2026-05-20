@@ -155,8 +155,10 @@ function VariablesEditorInner({
   const [rows, setRows] = useState<VariableState[]>(initial);
 
   // Server-prop reconcile: preserve local order for kept rows; append new
-  // rows; drop deleted rows. Mirrors the cities pattern.
-  useEffect(() => {
+  // rows; drop deleted rows. Uses the "adjust state in render" pattern.
+  const [prevInitial, setPrevInitial] = useState(initial);
+  if (initial !== prevInitial) {
+    setPrevInitial(initial);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const initialIds = new Set(initial.map((r) => r.id));
@@ -166,7 +168,7 @@ function VariablesEditorInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions.filter((a) => !keptIds.has(a.id))];
     });
-  }, [initial]);
+  }
 
   // postgres_changes handler — merges column-level updates from peers.
   // INSERT triggers router.refresh() so server-derived joins (variable refs)

@@ -63,16 +63,17 @@ export function MentionTriggerPlugin({
   const [editor] = useLexicalComposerContext();
   const [trigger, setTrigger] = useState<ActiveTrigger | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Reset highlight whenever the query changes — adjust in render.
+  const [prevQuery, setPrevQuery] = useState(trigger?.query);
+  if (trigger?.query !== prevQuery) {
+    setPrevQuery(trigger?.query);
+    setActiveIndex(0);
+  }
 
   const filtered = useMemo(
     () => filterVariables(variables, trigger?.query ?? ""),
     [variables, trigger?.query]
   );
-
-  // Reset highlight whenever the query changes.
-  useEffect(() => {
-    setActiveIndex(0);
-  }, [trigger?.query]);
 
   // -----------------------------------------------------------------
   // Trigger detection: re-run on every editor update.

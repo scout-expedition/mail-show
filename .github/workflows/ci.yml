@@ -35,13 +35,11 @@ jobs:
 
       - run: pnpm typecheck
 
-      # Advisory: the suite carries pre-existing lint debt (~49 errors, mostly
-      # react-hooks rules surfaced by the Next 16 upgrade). Reported on every
-      # run but non-blocking until the debt is burned down — then drop
-      # `continue-on-error` to make it a hard gate.
-      - name: Lint (advisory)
+      # Blocking gate. `pnpm lint` runs `eslint --max-warnings 0`, so any new
+      # warning (not just errors) fails the build — the cleanup that brought
+      # this to zero is locked in by the ratchet, no warning-drift.
+      - name: Lint
         run: pnpm lint
-        continue-on-error: true
 
       # Unit layer only — server-action + view tests need the DB and run in
       # the integration-e2e job. `--coverage` enforces the regression-ratchet

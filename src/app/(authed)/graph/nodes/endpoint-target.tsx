@@ -1,7 +1,7 @@
 "use client";
 
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Handle, Position } from "@xyflow/react";
 
 const HIT = 24;
 
@@ -17,7 +17,7 @@ const HIT = 24;
  * centered on the node's anchor (the visible circle is drawn by the edge
  * via EdgeLabelRenderer, not here).
  */
-function EndpointTargetNode(_props: NodeProps) {
+function EndpointTargetNode() {
   return (
     <div style={{ width: 1, height: 1, position: "relative" }}>
       <Handle

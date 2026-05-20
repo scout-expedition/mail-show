@@ -206,6 +206,7 @@ function IconGrid({
             <button
               key={name}
               type="button"
+              role="option"
               onClick={() => onSelect(name)}
               title={name}
               aria-selected={selected === name}
@@ -282,6 +283,7 @@ function EmojiGrid({
           <button
             key={e.emoji}
             type="button"
+            role="option"
             onClick={() => onSelect(e.emoji)}
             title={e.name}
             aria-selected={selected === e.emoji}
@@ -429,6 +431,7 @@ function AnimalGrid({
             <button
               key={animal.slug}
               type="button"
+              role="option"
               onClick={() => onSelect(`${animal.slug}:${variant}`)}
               title={animal.name}
               aria-label={animal.name}
