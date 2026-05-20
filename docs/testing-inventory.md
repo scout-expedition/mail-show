@@ -19,8 +19,9 @@ pushes to `main`. The `check` job does typecheck + lint + unit + coverage; a
 combined `integration-e2e` job boots a local Supabase stack
 (`supabase start`) and runs the DB-backed layers + coverage. Node version is
 pinned in `.nvmrc` (24 — the integration suite needs native `WebSocket`, Node 22+).
-Lint and E2E (`tests/e2e/auth-users.spec.ts`) are currently advisory
-(`continue-on-error`); see "Burndown".
+All three layers are blocking gates (no `continue-on-error`). `pnpm lint`
+runs `eslint --max-warnings 0` so a fresh warning is enough to fail the
+build, not just a fresh error.
 
 **Env requirements** — integration + E2E need `SUPABASE_TEST_URL`,
 `SUPABASE_TEST_SERVICE_KEY`, `SUPABASE_TEST_ANON_KEY` exported (CI writes them
@@ -106,20 +107,28 @@ not). Pinning per-file would either get circumvented or be aspirational.
 These show up as 0% in the unit-coverage report on purpose; the floors are
 calibrated to account for them.
 
-## Burndown
+## Burndown — done
 
-CI gates that are advisory today and the bar to flip them blocking:
+Both items that were advisory in CI are now blocking gates. Kept the
+section for the historical narrative on how each cleared.
 
-- **Lint** — `pnpm lint` carries ~49 pre-existing errors (mostly `react-hooks/*`
-  rules surfaced by the Next 16 upgrade: `set-state-in-effect`, `no-unused-vars`,
-  `react-hooks/refs`, `exhaustive-deps`, …). Burn down → drop
-  `continue-on-error` in `.github/workflows/ci.yml`.
-- **E2E settings management** — `tests/e2e/auth-users.spec.ts` has 3 failing
-  specs (`admin deletes a user` / `sends a password reset` / `sends a magic
-  link`): a user created via the admin API never appears in the `/settings`
-  list, so the row locator times out. Root cause not yet diagnosed — could be
-  a stale selector or a real `/settings` listing bug. Fix or quarantine → drop
-  `continue-on-error` on the E2E step.
+- **Lint** — cleared in PR #74. 61 problems (26 errors + 35 warnings) →
+  0 under `eslint --max-warnings 0`. Mix of mechanical unused-imports,
+  React 19 `react-hooks/refs` (assignments during render → wrapped in
+  `useLayoutEffect`), `react-hooks/set-state-in-effect` (prop→state
+  mirrors → adjust-state-in-render pattern; legitimate external-system
+  effects → targeted disable + justification). `--max-warnings 0` locks
+  the cleanup in so warnings can't accumulate again.
+- **E2E settings management** — cleared in PR #75. Cause was *not* a
+  `/settings` listing bug: the per-user actions had been refactored from
+  flat buttons (`Delete` / `Send reset link` / `Send magic link` per
+  row) into an `<OverflowMenu>` dropdown (`More actions` button →
+  `role="menuitem"` items), and the three failing specs still targeted
+  the old flat-button selectors. Updated to open the menu first and
+  click the `menuitem` by name. The "self-delete is blocked" spec was
+  also updated for correctness — it was checking the absence of a flat
+  Delete button (which never exists anymore), now checks the absence of
+  the `Delete user` menuitem in the own row's menu.
 
 ## Deferred / blocked
 

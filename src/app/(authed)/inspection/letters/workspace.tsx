@@ -66,7 +66,6 @@ import {
   createInspectionLettersInGroup,
   createLetterGroupInStoryline,
   createLetterInNextGroup,
-  createNextDay,
   createNextDayAndReportSegment,
   createNextLetterGroupAndLetter,
   createReportSegmentForGroup,
