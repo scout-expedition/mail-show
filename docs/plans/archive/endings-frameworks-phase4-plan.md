@@ -1,6 +1,6 @@
 # Endings Frameworks — Phase 4: Aggregate variable kinds
 
-Master plan: `docs/endings-frameworks-plan.md` (Phases 1–3).
+Master plan: `docs/plans/archive/endings-frameworks-plan.md` (Phases 1–3).
 Predecessor branch / PR: `endings-v3-phase-3` (collapse, overlap-in-preview, drag fixes).
 
 ## Context

@@ -309,6 +309,10 @@ export interface EndingVariable {
   color_index: number;
   /** User-set color override; null falls back to `paletteColor(color_index)`. */
   color_hex: string | null;
+  /** Folder this variable lives in (null = root). Folders are an
+   *  organizational layer for the "All" list view; the "By Ending" view
+   *  ignores folder membership. */
+  folder_id: string | null;
   created_at: string;
 }
 
@@ -317,6 +321,18 @@ export interface EndingVariableValue {
   variable_id: string;
   value: string;
   sort_order: number;
+}
+
+export interface EndingVariableFolder {
+  id: string;
+  name: string;
+  /** Self-FK for nestable folders (null = root). DB enforces no cycles
+   *  via a trigger; the server action enforces non-destructive reparent
+   *  on delete. */
+  parent_folder_id: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 }
 
 /**
@@ -351,7 +367,7 @@ export interface EndingBlock {
 
 /**
  * Pre-0022 framework row. Retained so the Frameworks workspace keeps
- * compiling until step 2 of `docs/endings-logic-v2-plan.md` switches
+ * compiling until step 2 of `docs/plans/active/endings-logic-v2-plan.md` switches
  * those callers to `EndingDocument`. New code should use `EndingDocument`.
  */
 export interface EndingFramework {

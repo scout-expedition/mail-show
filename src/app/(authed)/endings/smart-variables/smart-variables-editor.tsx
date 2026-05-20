@@ -18,6 +18,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -44,6 +45,7 @@ export function SmartVariablesEditor(props: {
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedDocId: string | null;
   currentUserId?: string;
@@ -80,6 +82,7 @@ function SmartVariablesEditorInner({
   blockVariables,
   variables: initialVariables,
   values,
+  folders,
   nations,
   selectedDocId,
 }: {
@@ -90,6 +93,7 @@ function SmartVariablesEditorInner({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedDocId: string | null;
 }) {
@@ -505,6 +509,7 @@ function SmartVariablesEditorInner({
             variables={variables}
             values={values}
             smartVariableReturns={smartVariableReturns}
+            folders={folders}
             nations={nations}
             leaves={{ result: smartResultLeaf }}
             panelTitle={activeDoc.name ?? "(unnamed)"}

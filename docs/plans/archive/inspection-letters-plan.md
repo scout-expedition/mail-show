@@ -69,7 +69,7 @@ and a short list of outstanding hygiene items.
   `/private/tmp/claude-501/-Users-corey-Documents-code-mail-show/b91cd552-54ff-4f6a-8e0c-abb8d8e437b5/tasks/bfvjawli6.output`.
 
 ## How to continue in a fresh session
-1. Read this file: `docs/inspection-letters-plan.md`.
+1. Read this file: `docs/plans/archive/inspection-letters-plan.md`.
 2. `git log --oneline -10` to orient.
 3. Take direction from the user; this plan is closed.
 4. Run `npm run typecheck` after each substantive change.

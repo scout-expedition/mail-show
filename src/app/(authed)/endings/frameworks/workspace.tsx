@@ -10,6 +10,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -31,6 +32,7 @@ export function FrameworksWorkspace({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
   selectedFrameworkId,
   smartVariableDocs,
@@ -48,6 +50,7 @@ export function FrameworksWorkspace({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
   /** All kind='smart_variable' docs. Mirrored locally so renames/inserts
@@ -99,6 +102,7 @@ export function FrameworksWorkspace({
         blockVariables={blockVariables}
         variables={variables}
         values={values}
+        folders={folders}
         nations={nations}
         selectedFrameworkId={selectedFrameworkId}
         smartVariableDocs={smartVariableDocs}
@@ -118,6 +122,7 @@ function FrameworksWorkspaceInner({
   blockVariables,
   variables: initialVariables,
   values,
+  folders,
   nations,
   selectedFrameworkId,
   smartVariableDocs: initialSmartVariableDocs,
@@ -132,6 +137,7 @@ function FrameworksWorkspaceInner({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
   smartVariableDocs: EndingDocument[];
@@ -421,6 +427,7 @@ function FrameworksWorkspaceInner({
           variables={variables}
           values={values}
           smartVariableReturns={smartVariableReturns}
+          folders={folders}
           nations={nations}
           tiebreakDocsSummary={tiebreakDocsSummary}
           tiebreakDocsRaw={tiebreakDocsRaw}

@@ -8,6 +8,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -40,6 +41,7 @@ export default async function FrameworksPage({
     { data: blockVarData },
     { data: varData },
     { data: valueData },
+    { data: folderData },
     { data: nationData },
   ] = await Promise.all([
     // Fetch all documents in one shot — frameworks, logic singletons,
@@ -60,6 +62,7 @@ export default async function FrameworksPage({
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    supabase.from("ending_variable_folders").select("*").order("sort_order"),
     supabase
       .from("nations")
       .select("name, color_hex, abbreviation, icon_type, icon_value"),
@@ -157,6 +160,7 @@ export default async function FrameworksPage({
       }
       variables={(varData ?? []) as EndingVariable[]}
       values={(valueData ?? []) as EndingVariableValue[]}
+      folders={(folderData ?? []) as EndingVariableFolder[]}
       nations={
         (nationData ?? []) as Pick<
           Nation,

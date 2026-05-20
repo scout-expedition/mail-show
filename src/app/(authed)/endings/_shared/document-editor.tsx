@@ -43,6 +43,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -131,6 +132,7 @@ export interface DocumentEditorProps {
    *  distinct `result_value` strings across each smart_variable doc's
    *  result + fallback blocks. Optional — chips fall back gracefully. */
   smartVariableReturns?: Map<string, string[]>;
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   /** Leaf components by block_type. Frameworks pass `{ text }`; logic
    *  docs pass `{ result }`. */
@@ -216,6 +218,7 @@ export function DocumentEditor({
   variables,
   values,
   smartVariableReturns,
+  folders,
   nations,
   leaves,
   renderPreview,
@@ -664,6 +667,7 @@ export function DocumentEditor({
           default_value_id: v.default_value_id,
           color_index: v.color_index,
           color_hex,
+          folder_id: v.folder_id,
           sort_order: v.sort_order,
         };
       }),
@@ -1279,6 +1283,7 @@ export function DocumentEditor({
                 variables={authoringVariableState}
                 values={values}
                 smartVariableReturns={smartVariableReturns}
+                folders={folders}
                 document_id={document.id}
                 leaves={leaves}
                 onUpdateBlock={updateBlock}

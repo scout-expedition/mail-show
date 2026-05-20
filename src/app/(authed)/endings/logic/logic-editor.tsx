@@ -28,6 +28,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -161,6 +162,7 @@ export function LogicEditor({
   values,
   smartVariableDocs,
   smartVariableBlocks,
+  folders,
   nations,
   currentUserId,
   currentEmail,
@@ -176,6 +178,7 @@ export function LogicEditor({
   values: EndingVariableValue[];
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   currentUserId?: string;
   currentEmail?: string;
@@ -210,6 +213,7 @@ export function LogicEditor({
         values={values}
         smartVariableDocs={smartVariableDocs}
         smartVariableBlocks={smartVariableBlocks}
+        folders={folders}
         nations={nations}
       />
     </WorkspacePresenceProvider>
@@ -227,6 +231,7 @@ function LogicEditorInner({
   values,
   smartVariableDocs: initialSmartVariableDocs,
   smartVariableBlocks: initialSmartVariableBlocks,
+  folders,
   nations,
 }: {
   logicDocs: EndingDocument[];
@@ -239,6 +244,7 @@ function LogicEditorInner({
   values: EndingVariableValue[];
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
 }) {
   const router = useRouter();
@@ -618,6 +624,7 @@ function LogicEditorInner({
               variables={variables}
               values={values}
               smartVariableReturns={smartVariableReturns}
+              folders={folders}
               nations={nations}
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}

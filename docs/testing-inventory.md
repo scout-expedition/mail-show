@@ -134,7 +134,7 @@ section for the historical narrative on how each cleared.
 
 - **`tests/e2e/endings-frameworks.spec.ts`** is fully `test.skip` pending the
   Step 6 rewrite for the unified `ending_documents` schema (see
-  `docs/endings-logic-v2-plan.md`). The seed hooks still reference dropped
+  `docs/plans/active/endings-logic-v2-plan.md`). The seed hooks still reference dropped
   tables; restoring it means a rewrite, not flipping `.skip` off.
 - **Playthrough runtime tests** — the playthrough framework that consumes
   `evaluateEnding` isn't built yet; nothing to test end-to-end yet.

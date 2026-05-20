@@ -15,6 +15,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -41,6 +42,7 @@ export default async function EndingLogicPage() {
     { data: blockVarData },
     { data: varData },
     { data: valueData },
+    { data: folderData },
     { data: nationData },
   ] = await Promise.all([
     supabase.from("ending_documents").select("*").order("sort_order"),
@@ -56,6 +58,7 @@ export default async function EndingLogicPage() {
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    supabase.from("ending_variable_folders").select("*").order("sort_order"),
     supabase
       .from("nations")
       .select("name, color_hex, abbreviation, icon_type, icon_value"),
@@ -113,6 +116,7 @@ export default async function EndingLogicPage() {
       values={(valueData ?? []) as EndingVariableValue[]}
       smartVariableDocs={smartVariableDocs}
       smartVariableBlocks={smartVariableBlocks}
+      folders={(folderData ?? []) as EndingVariableFolder[]}
       nations={
         (nationData ?? []) as Pick<
           Nation,

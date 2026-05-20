@@ -95,14 +95,17 @@ Cleanup: `updateAllEndingVariables` deleted; `saveDocument` kept
 
 ## Follow-ups (open)
 
-- **#43** — Lexical text block briefly shows the placeholder on initial
-  mount before the saved text renders.
-- **#44** — `useInstantField` drops a remote update that lands while the
-  field is `dirty`/`saving` with no replay queue; the dropped value is
-  lost until the next prop change.
-- `saveDocument` + its integration tests still use the bulk path —
-  migrate the tests to the per-field patches, then delete `saveDocument`.
-- Per-field patch coverage: the autosave wiring is only reducer-level
-  unit-tested; client wiring tests need presence/Realtime mocking.
-- Chip presence ring can be clipped by the editor section's
+- ~~**#43**~~ (closed) — Lexical text block briefly showed the placeholder
+  on initial mount. Residual SSR/hydration empty-frame is tracked as
+  **#47**.
+- ~~**#44**~~ (closed) — `useInstantField` drops a remote update that
+  lands during `dirty`/`saving`. Fix shipped; the reducer now stashes the
+  remote value in `pendingRemote` and replays on save settle.
+- **#77** — `saveDocument` + its integration tests still use the bulk
+  path; migrate the tests to the per-field patches, then delete
+  `saveDocument`.
+- **#78** — Per-field patch coverage: the autosave wiring is only
+  reducer-level unit-tested; client wiring tests need presence/Realtime
+  mocking.
+- **#79** — Chip presence ring can be clipped by the editor section's
   `overflow-hidden` when a chip sits flush to a panel edge (cosmetic).

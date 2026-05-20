@@ -78,7 +78,7 @@ Each phase is its own commit, leaving `pnpm typecheck` + `pnpm test` green. Visu
 
 These are flagged as "not designed yet" — implementation paces against them.
 
-1. **Save UX.** Is the new "Saved" indicator passive (autosave on every keystroke) or a different presentation of today's explicit save flow? Autosave is a separate large effort (`docs/endings-frameworks-plan.md` Followups). Default for now: keep today's behavior, just restyle the indicator.
+1. **Save UX.** Is the new "Saved" indicator passive (autosave on every keystroke) or a different presentation of today's explicit save flow? Autosave is a separate large effort (`docs/plans/archive/endings-frameworks-plan.md` Followups). Default for now: keep today's behavior, just restyle the indicator.
 2. **Empty state** — no framework selected on the Frameworks workspace.
 3. **Picker overlays** — chip-add picker, header `+ var` picker, inline "+ New variable…", "+ New value…", framework_selection custom-subset checkbox grid.
 4. **Random reroll affordance** — Dice5 button styling and "rolled from N options" copy treatment.
@@ -93,7 +93,7 @@ For each, default behavior is **keep current chrome until comps land**. Implemen
 - Variables editor (`/endings/variables`) — keeps its current chrome.
 - Inspection letters, narrative graph.
 - Schema migrations and evaluator changes.
-- Step 5 (runtime `evaluateEnding` / playthrough wiring) and Step 6 (E2E rewrite) from `docs/endings-logic-v2-plan.md`. These ride independently.
+- Step 5 (runtime `evaluateEnding` / playthrough wiring) and Step 6 (E2E rewrite) from `docs/plans/active/endings-logic-v2-plan.md`. These ride independently.
 
 ## Verification checklist
 

@@ -3696,7 +3696,7 @@ function LetterSegmentCard({
   // IMPORTANT: useInstantField's `value` MUST be the canonical server row
   // (segment.X), not local edit state — otherwise commitNow's equality
   // check short-circuits the save. See Track B3 lesson in
-  // docs/multi-user-collab-plan.md.
+  // docs/plans/active/multi-user-collab-plan.md.
   // The roman-numeral `variant` is no longer edited inline — it is changed
   // only through the Edit-ID popup (see the kebab menu).
   const serverOverride: DeliveryOverride =
