@@ -320,8 +320,14 @@ function SmartVariablesEditorInner({
   // Ref mirror of smartDocs so the postgres handler above always sees
   // the latest set, even when an ending_documents INSERT for a new
   // smart variable lands in the same tick as its first block INSERT.
+  // Synced in an effect to satisfy react-hooks/refs — the timing gap
+  // is benign because postgres events fire from microtasks that run
+  // after React commits, and the next prop reconcile (via the page's
+  // revalidate path) backfills anything that slipped through.
   const smartDocsRef = useRef(smartDocs);
-  smartDocsRef.current = smartDocs;
+  useEffect(() => {
+    smartDocsRef.current = smartDocs;
+  });
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [pending, runTransition] = useTransition();
 
