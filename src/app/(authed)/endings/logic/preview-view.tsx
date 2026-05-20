@@ -239,7 +239,7 @@ export function LogicPreviewView({
   const [rollNonce, setRollNonce] = useState(0);
   const rolled = useMemo(() => {
     if (!rollPool || rollPool.length === 0) return null;
-    // eslint-disable-next-line react-hooks/purity
+     
     return rollPool[Math.floor(Math.random() * rollPool.length)];
     // poolSnapshot stands in for the pool's identity so rolls survive
     // unrelated re-renders; rollNonce is the manual reroll trigger.

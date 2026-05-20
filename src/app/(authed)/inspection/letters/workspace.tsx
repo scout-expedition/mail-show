@@ -700,7 +700,7 @@ function LettersWorkspaceInner({
   }));
   useEffect(() => {
     if (!group) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setGroupState({
         storyline_id: "",
         name: "",
@@ -875,13 +875,13 @@ function LettersWorkspaceInner({
   // Latest-selection refs — the postgres_changes handler reads these without
   // re-registering itself on every selection change.
   const selectedGroupIdRef = useRef(selectedGroupId);
-  // eslint-disable-next-line react-hooks/refs
+   
   selectedGroupIdRef.current = selectedGroupId;
   const selectedIdRef = useRef(selectedId);
-  // eslint-disable-next-line react-hooks/refs
+   
   selectedIdRef.current = selectedId;
   const selectedSegmentIdRef = useRef(selectedSegmentId);
-  // eslint-disable-next-line react-hooks/refs
+   
   selectedSegmentIdRef.current = selectedSegmentId;
 
   // Coalesce bursts of INSERTs (e.g. a single create-action that inserts a
@@ -1160,7 +1160,7 @@ function LettersWorkspaceInner({
       return letter.id;
     }
     if (!sel) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
@@ -1494,7 +1494,7 @@ function LettersWorkspaceInner({
 
   // Heroes may grow via quick-create.
   const [heroes, setHeroes] = useState<Citizen[]>(initialHeroes);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+   
   useEffect(() => setHeroes(initialHeroes), [initialHeroes]);
 
   // When server data reloads, reconcile the selected letter if still present.
@@ -1505,7 +1505,7 @@ function LettersWorkspaceInner({
   // effect every render → setLetterState → re-render → Maximum-update-depth.
   useEffect(() => {
     // Clear local drag order once server data matches.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setOrderOverride(null);
     if (!selectedId) {
       return;
@@ -5344,7 +5344,7 @@ function HighlightableImpactTile({
   }, [value]);
 
   function handleChange(v: number) {
-    // eslint-disable-next-line react-hooks/purity
+     
     lastLocalChangeAtRef.current = Date.now();
     onChange(v);
   }
@@ -5367,7 +5367,7 @@ function HighlightableImpactTile({
             : undefined
         }
       >
-        {/* eslint-disable-next-line react-hooks/refs */}
+        { }
         {children(value, handleChange)}
       </div>
     </FieldHighlight>

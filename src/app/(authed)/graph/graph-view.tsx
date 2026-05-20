@@ -591,7 +591,7 @@ export function GraphView({
 
   // Drop resolved ghosts once the matching real entity has landed.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setPendingAdds((prev) => {
       const realGroupIds = new Set(letterGroups.map((g) => g.id));
       const realSegIds = new Set(segments.map((s) => s.id));
@@ -655,7 +655,7 @@ export function GraphView({
   // Drop pending-delete ids the moment the entity is no longer in the
   // server-side list (i.e. revalidation has caught up).
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setPendingDeletes((prev) => {
       const letterIds = new Set(letters.map((l) => l.id));
       const segmentIds = new Set(segments.map((s) => s.id));
@@ -706,7 +706,7 @@ export function GraphView({
   // up. Looking at one `actions` snapshot at a time means we never strand
   // a stale optimistic value visually past the revalidation.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setOptimisticNextByAction((prev) => {
       let changed = false;
       const next: Record<string, string | null> = {};
@@ -750,7 +750,7 @@ export function GraphView({
   // drop the entry so the ghost styling clears.
   // The guard ("return prev if nothing changed") prevents infinite re-renders.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setPendingDayMoves((prev) => {
       const keys = Object.keys(prev);
       if (keys.length === 0) return prev;
@@ -2813,7 +2813,7 @@ export function GraphView({
   useEffect(() => {
     isDraggingRef.current = isDragging;
   }, [isDragging]);
-  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+   
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     if (dragCanceledRef.current) return;
     if (!isDraggingRef.current) return;
@@ -2831,7 +2831,7 @@ export function GraphView({
   }, []);
 
   const onNodeDragStart = useCallback(
-    // eslint-disable-next-line react-hooks/preserve-manual-memoization
+     
     (_event: React.MouseEvent, node: Node) => {
       setIsDragging(true);
       setHoveredRowId(null);
@@ -3663,7 +3663,7 @@ export function GraphView({
   // remote edit by a peer would re-center the canvas for everyone with
   // a selection, which is jarring.
   const selectionCenterRef = useRef(selectionCenter);
-  // eslint-disable-next-line react-hooks/refs
+   
   selectionCenterRef.current = selectionCenter;
   const selectionKey = selection
     ? selection.kind === "letter" || selection.kind === "actions"
@@ -3677,7 +3677,7 @@ export function GraphView({
           : "other"
     : null;
   const autozoomEnabledRef = useRef(autozoomEnabled);
-  // eslint-disable-next-line react-hooks/refs
+   
   autozoomEnabledRef.current = autozoomEnabled;
   useEffect(() => {
     const rf = rfRef.current;

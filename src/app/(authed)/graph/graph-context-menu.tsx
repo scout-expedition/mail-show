@@ -54,6 +54,7 @@ export function GraphContextMenu({
   // geometry — an external system — so they belong in a layout effect.
   useLayoutEffect(() => {
     if (!anchor || !ref.current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPos(null);
       return;
     }
