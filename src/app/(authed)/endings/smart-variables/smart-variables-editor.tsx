@@ -540,26 +540,34 @@ function SmartVariablesEditorInner({
 
   const handleSelect = useCallback(
     (id: string, opts?: SelectOptions) => {
-      // Compute `next` OUTSIDE the setState updater so syncUrl (which
-      // calls router.replace) runs as a regular effect of the event
-      // handler, not synchronously inside React's commit phase. Next 16
-      // throws "Cannot update during render" if router methods fire
-      // while another component is committing, which also breaks the
-      // surrounding click event and prevents the subsequent dragstart
-      // from firing.
-      const next = new Set(selectedIds);
-      if (opts?.extend) {
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-      } else {
-        next.clear();
-        next.add(id);
-      }
-      setSelectedIds(next);
-      syncUrl(next);
+      // Functional updater so rapid clicks (16ms apart) compose
+      // correctly — closing over the latest `selectedIds` would race
+      // because both clicks would start from the pre-first-click set.
+      // URL sync runs in the useEffect below, keyed on selectedIds.
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (opts?.extend) {
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+        } else {
+          next.clear();
+          next.add(id);
+        }
+        return next;
+      });
     },
-    [selectedIds, syncUrl]
+    []
   );
+
+  // Mirror `selectedIds` to the URL via an effect — keeps the
+  // router.replace OUT of React's commit phase (Next 16 throws "Cannot
+  // update during render" otherwise, which silently breaks the
+  // surrounding click → dragstart event sequence). Initial selection
+  // (parsed from the URL on mount) re-writes a no-op URL on first
+  // commit, which is harmless.
+  useEffect(() => {
+    syncUrl(selectedIds);
+  }, [selectedIds, syncUrl]);
 
   function navigateToDoc(docId: string | null) {
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
