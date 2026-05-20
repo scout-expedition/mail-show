@@ -8,7 +8,6 @@ export const WIP_PATHS = new Set<string>([
   "/days",
   "/physical",
   "/sorting/letters",
-  "/sorting/rules",
   "/playthroughs",
 ]);
 
