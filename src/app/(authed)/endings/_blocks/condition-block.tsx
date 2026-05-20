@@ -938,7 +938,6 @@ function AddHeaderVariablePicker({
   // Build the variable tree (memoized — stable variable objects from props)
   const tree = useMemo(
     () => buildVariableTree(variables, folders),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [variables, folders]
   );
 
@@ -947,11 +946,15 @@ function AddHeaderVariablePicker({
     [tree, path, query]
   );
 
-  // Reset activeIndex when items list changes
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+  // Reset the keyboard highlight whenever the rendered items list
+  // changes shape. Uses the "adjust state in render" pattern (vs. a
+  // useEffect) so the react-hooks/set-state-in-effect rule stays happy.
+  const itemsToken = `${query}::${items.length}`;
+  const [prevItemsToken, setPrevItemsToken] = useState(itemsToken);
+  if (itemsToken !== prevItemsToken) {
+    setPrevItemsToken(itemsToken);
     setActiveIndex(0);
-  }, [items.length, query]);
+  }
 
   // Click-outside + Esc close for the picker popover
   useEffect(() => {

@@ -60,12 +60,15 @@ export function VariableInspector({
   const [optimisticDefaultId, setOptimisticDefaultId] = useState<
     string | null | undefined
   >(undefined);
-  useEffect(() => {
-    if (optimisticDefaultId === undefined) return;
-    if (variable.default_value_id === optimisticDefaultId) {
-      setOptimisticDefaultId(undefined);
-    }
-  }, [variable.default_value_id, optimisticDefaultId]);
+  // Clear the optimistic paint once the server's authoritative value
+  // matches what we asked for. "Adjust state in render" pattern
+  // satisfies the new react-hooks/set-state-in-effect rule.
+  if (
+    optimisticDefaultId !== undefined &&
+    variable.default_value_id === optimisticDefaultId
+  ) {
+    setOptimisticDefaultId(undefined);
+  }
   const effectiveDefaultId =
     optimisticDefaultId !== undefined
       ? optimisticDefaultId

@@ -10,7 +10,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useTransition,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -186,16 +185,27 @@ function VariablesEditorInner({
   const [folders, setFolders] = useState<EndingVariableFolder[]>(initialFolders);
 
   // Server-prop reconciliation: preserve local rows already present, append
-  // new ones, drop removed ones.
-  useEffect(() => {
+  // new ones, drop removed ones. Render-time setState (vs. useEffect) so
+  // the new react-hooks/set-state-in-effect rule stays happy — the
+  // identity check on the server-prop reference is the only trigger we
+  // need.
+  const [prevInitialVariables, setPrevInitialVariables] = useState(
+    initialVariables
+  );
+  if (initialVariables !== prevInitialVariables) {
+    setPrevInitialVariables(initialVariables);
     setVariables((prev) => reconcileById(prev, initialVariables));
-  }, [initialVariables]);
-  useEffect(() => {
+  }
+  const [prevInitialValues, setPrevInitialValues] = useState(initialValues);
+  if (initialValues !== prevInitialValues) {
+    setPrevInitialValues(initialValues);
     setValues((prev) => reconcileById(prev, initialValues));
-  }, [initialValues]);
-  useEffect(() => {
+  }
+  const [prevInitialFolders, setPrevInitialFolders] = useState(initialFolders);
+  if (initialFolders !== prevInitialFolders) {
+    setPrevInitialFolders(initialFolders);
     setFolders((prev) => reconcileById(prev, initialFolders));
-  }, [initialFolders]);
+  }
 
   // Realtime fan-out — variable / value / folder INSERT triggers a refresh
   // so server-derived joins (framework refs etc.) recompute; UPDATE + DELETE
@@ -557,7 +567,7 @@ function VariablesEditorInner({
     [values, toast]
   );
 
-  function handleDeleted(_id: string) {
+  function handleDeleted() {
     clearSelection();
     setPinnedId(null);
   }
@@ -575,13 +585,17 @@ function VariablesEditorInner({
       ? folders.find((f) => f.id === singleId) ?? null
       : null;
 
-  // Drop a single-selection id that vanished from the data.
-  useEffect(() => {
-    if (!isSingle || singleId === null) return;
-    if (!selectedVariable && !selectedFolder) {
-      clearSelection();
-    }
-  }, [isSingle, singleId, selectedVariable, selectedFolder, clearSelection]);
+  // Drop a single-selection id that vanished from the data. Render-time
+  // setState (vs. useEffect) so the new react-hooks/set-state-in-effect
+  // rule stays happy.
+  if (
+    isSingle &&
+    singleId !== null &&
+    !selectedVariable &&
+    !selectedFolder
+  ) {
+    clearSelection();
+  }
 
   // Counts used by the folder inspector summary.
   const childCountsByFolder = useMemo(() => {
@@ -978,7 +992,6 @@ function VariablesEditorInner({
           {view === "all" ? (
             <AllListView
               folders={folders}
-              foldersForCycle={foldersForCycle}
               childFoldersByParent={childFoldersByParent}
               sortedVariablesByFolder={sortedVariablesByFolder}
               isCollapsed={isCollapsedKey}
@@ -1322,7 +1335,6 @@ function CollapseModeToggle({
 
 function AllListView({
   folders,
-  foldersForCycle: _foldersForCycle, // currently consumed by DragCtx only; reserved for future per-row read-throughs
   childFoldersByParent,
   sortedVariablesByFolder,
   isCollapsed,
@@ -1335,7 +1347,6 @@ function AllListView({
   onDropCommit,
 }: {
   folders: EndingVariableFolder[];
-  foldersForCycle: FolderLike[];
   childFoldersByParent: Map<string | null, EndingVariableFolder[]>;
   sortedVariablesByFolder: Map<string | null, EndingVariable[]>;
   isCollapsed: (id: string) => boolean;
@@ -1884,9 +1895,14 @@ function RenamableLabel({
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!editing) setDraft(value);
-  }, [value, editing]);
+  // Keep the draft synced to the latest server value while we're NOT
+  // actively editing. Render-time setState (vs. useEffect) so the new
+  // react-hooks/set-state-in-effect rule stays happy.
+  const [prevValue, setPrevValue] = useState(value);
+  if (!editing && value !== prevValue) {
+    setPrevValue(value);
+    setDraft(value);
+  }
 
   useEffect(() => {
     if (editing) {

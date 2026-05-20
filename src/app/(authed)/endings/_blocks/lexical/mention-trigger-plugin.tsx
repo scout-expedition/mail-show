@@ -152,7 +152,7 @@ export function MentionTriggerPlugin({
         });
       });
     });
-  }, [editor]);
+  }, [editor, closeTrigger]);
 
   // -----------------------------------------------------------------
   // Commit: replace the `@query` text run with a MentionNode + a
@@ -318,7 +318,7 @@ export function MentionTriggerPlugin({
         COMMAND_PRIORITY_HIGH
       )
     );
-  }, [editor, trigger, items, activeIndex, path, handleItemCommit]);
+  }, [editor, trigger, items, activeIndex, path, handleItemCommit, closeTrigger]);
 
   return (
     <>
