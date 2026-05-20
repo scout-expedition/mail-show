@@ -256,7 +256,7 @@ describe("patchSortingRule", () => {
 });
 
 describe("saveConditions", () => {
-  it("should replace all conditions and revalidate both rule paths", async () => {
+  it("should replace all conditions and revalidate /sorting/rules", async () => {
     const ruleId = await addRule(sb, { letter: "A" });
     await addRuleCondition(sb, {
       ruleId,
@@ -283,7 +283,9 @@ describe("saveConditions", () => {
     expect(data).toEqual([
       { position: 1, target: "sender_name", reference_value: "Eve" },
     ]);
-    expect(revalidatePath).toHaveBeenCalledWith(`/sorting/rules/${ruleId}`);
+    // Revamp: the dead /sorting/rules/[id] route is gone, so saveConditions
+    // only revalidates the list path. The realtime channel handles per-rule
+    // fanout to other tabs.
     expect(revalidatePath).toHaveBeenCalledWith("/sorting/rules");
   });
 
