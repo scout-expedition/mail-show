@@ -26,12 +26,23 @@ function nextFreeLetter(used: Set<string>): string | null {
  */
 export async function createRule(): Promise<{ id: string; letter: string }> {
   const supabase = await createSupabaseServerClient();
-  const { data: existing } = await supabase.from("sorting_rules").select("letter");
+  const { data: existing } = await supabase
+    .from("sorting_rules")
+    .select("letter, sort_order");
   const letter = nextFreeLetter(new Set((existing ?? []).map((r) => r.letter)));
   if (!letter) throw new Error("No free rule letter (A-Z) available.");
+  // Append to the bottom of the manual order.
+  const maxOrder = (existing ?? []).reduce(
+    (m, r) => Math.max(m, (r.sort_order as number) ?? 0),
+    -1
+  );
   const { data, error } = await supabase
     .from("sorting_rules")
-    .insert({ letter, match_mode: "all" as RuleMatchMode })
+    .insert({
+      letter,
+      match_mode: "all" as RuleMatchMode,
+      sort_order: maxOrder + 1,
+    })
     .select("id")
     .single();
   if (error) throw new Error(error.message);
@@ -54,9 +65,15 @@ export async function duplicateRule(
     .maybeSingle();
   if (!source) return;
 
-  const { data: existing } = await supabase.from("sorting_rules").select("letter");
+  const { data: existing } = await supabase
+    .from("sorting_rules")
+    .select("letter, sort_order");
   const letter = nextFreeLetter(new Set((existing ?? []).map((r) => r.letter)));
   if (!letter) throw new Error("No free rule letter (A-Z) available.");
+  const maxOrder = (existing ?? []).reduce(
+    (m, r) => Math.max(m, (r.sort_order as number) ?? 0),
+    -1
+  );
 
   const { data: inserted, error } = await supabase
     .from("sorting_rules")
@@ -64,11 +81,14 @@ export async function duplicateRule(
       letter,
       storage_location: source.storage_location,
       summary: source.summary,
+      notes: source.notes,
+      color_hex: source.color_hex,
       day_implemented_id: source.day_implemented_id,
       day_cancelled_id: source.day_cancelled_id,
       destination_slot: source.destination_slot,
       routes_to_reporting: source.routes_to_reporting,
       match_mode: source.match_mode,
+      sort_order: maxOrder + 1,
     })
     .select("id")
     .single();
@@ -128,6 +148,8 @@ export async function patchSortingRule(
     letter: string;
     storage_location: string | null;
     summary: string | null;
+    notes: string | null;
+    color_hex: string | null;
     day_implemented_id: string | null;
     day_cancelled_id: string | null;
     destination_slot: number | null;
@@ -136,9 +158,11 @@ export async function patchSortingRule(
   }>
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { error } = await supabase
     .from("sorting_rules")
-    .update(patch)
+    .update({ ...patch, ...(updatedBy ? { updated_by: updatedBy } : {}) })
     .eq("id", id);
   if (error) {
     if (/unique/i.test(error.message)) {
@@ -167,6 +191,8 @@ export async function saveConditions(
   matchMode?: RuleMatchMode
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { error: delErr } = await supabase
     .from("sorting_rule_conditions")
     .delete()
@@ -181,12 +207,216 @@ export async function saveConditions(
     );
     if (error) throw new Error(error.message);
   }
-  if (matchMode) {
+  // Always stamp the parent rule so the "Last updated" footer reflects
+  // condition-only edits too. Combine with match_mode when provided.
+  const parentPatch: Record<string, unknown> = {};
+  if (matchMode) parentPatch.match_mode = matchMode;
+  if (updatedBy) parentPatch.updated_by = updatedBy;
+  if (Object.keys(parentPatch).length > 0) {
     const { error } = await supabase
       .from("sorting_rules")
-      .update({ match_mode: matchMode })
+      .update(parentPatch)
       .eq("id", ruleId);
     if (error) throw new Error(error.message);
   }
   revalidatePath("/sorting/rules");
+}
+
+/**
+ * Persist a new manual ordering of rules in a single round-trip via the
+ * `reorder_sorting_rules` RPC. Drag-and-drop and "Sort by ID" both feed
+ * this. Skips `revalidatePath` — the realtime channel fans the UPDATEs out
+ * to peers and the client mirror reconciles them against its optimistic
+ * order.
+ */
+export async function reorderRules(orderedIds: string[]): Promise<void> {
+  if (orderedIds.length === 0) return;
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const updates = orderedIds.map((id, i) => ({ id, sort_order: i }));
+  const { error } = await supabase.rpc("reorder_sorting_rules", {
+    updates,
+    updated_by_email: updatedBy,
+  });
+  if (error) throw new Error(error.message);
+}
+
+/** Re-order rules alphabetically by letter without changing any letters. */
+export async function sortRulesByLetter(): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("sorting_rules")
+    .select("id, letter")
+    .order("letter");
+  const ids = (data ?? []).map((r) => r.id as string);
+  await reorderRules(ids);
+}
+
+/**
+ * Apply a permutation of rule letters. Takes the desired final letter for
+ * each rule id and performs the moves in an order that never violates the
+ * unique(letter) constraint — moves any letter whose target is currently
+ * free first, then cycle-breaks remaining moves through a free letter.
+ * Fails loudly when all 26 letters are occupied AND a cycle exists (rare).
+ */
+async function applyLetterPermutation(
+  assignments: Array<{ id: string; letter: string }>
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { data } = await supabase
+    .from("sorting_rules")
+    .select("id, letter");
+  const rows = (data ?? []) as Array<{ id: string; letter: string }>;
+  const currentLetter = new Map<string, string>(rows.map((r) => [r.id, r.letter]));
+  const finalById = new Map<string, string>();
+  for (const a of assignments) finalById.set(a.id, a.letter);
+
+  const inUse = new Set(currentLetter.values());
+  const allLetters = Array.from({ length: 26 }, (_, i) =>
+    String.fromCharCode(65 + i)
+  );
+  const spare = allLetters.find((c) => !inUse.has(c));
+
+  async function setLetter(id: string, letter: string) {
+    const patch: Record<string, unknown> = { letter };
+    if (updatedBy) patch.updated_by = updatedBy;
+    const { error } = await supabase
+      .from("sorting_rules")
+      .update(patch)
+      .eq("id", id);
+    if (error) throw new Error(error.message);
+    currentLetter.set(id, letter);
+  }
+
+  /** Parallelize a batch of letter moves whose target letters are all
+   *  currently free (and unique across the batch). The DB unique(letter)
+   *  constraint is safe because each batch row writes to a distinct free
+   *  slot — no two writes target the same row. */
+  async function bulkSetLetters(pairs: { id: string; letter: string }[]) {
+    if (pairs.length === 0) return;
+    await Promise.all(
+      pairs.map(async (p) => {
+        const patch: Record<string, unknown> = { letter: p.letter };
+        if (updatedBy) patch.updated_by = updatedBy;
+        const { error } = await supabase
+          .from("sorting_rules")
+          .update(patch)
+          .eq("id", p.id);
+        if (error) throw new Error(error.message);
+      })
+    );
+    pairs.forEach((p) => currentLetter.set(p.id, p.letter));
+  }
+
+  const remaining = new Set(finalById.keys());
+
+  // Easy passes: collect every row whose target letter is currently free and
+  // unique within the batch, then send them all in parallel. Repeats until
+  // the loop stalls (no further moves possible without cycle-breaking).
+  let madeProgress = true;
+  while (madeProgress && remaining.size > 0) {
+    madeProgress = false;
+    const batch: { id: string; letter: string }[] = [];
+    const claimed = new Set<string>();
+    for (const id of Array.from(remaining)) {
+      const target = finalById.get(id)!;
+      if (currentLetter.get(id) === target) {
+        remaining.delete(id);
+        madeProgress = true;
+        continue;
+      }
+      const occupant = [...currentLetter.entries()].find(
+        ([oid, l]) => oid !== id && l === target
+      );
+      if (!occupant && !claimed.has(target)) {
+        batch.push({ id, letter: target });
+        claimed.add(target);
+      }
+    }
+    if (batch.length > 0) {
+      await bulkSetLetters(batch);
+      batch.forEach((b) => remaining.delete(b.id));
+      madeProgress = true;
+    }
+  }
+  // Cycle-break: route one through the spare letter, then loop back to
+  // resume easy passes. Cycles are usually short, so this stays cheap.
+  while (remaining.size > 0) {
+    if (!spare) {
+      throw new Error(
+        "Can't reassign letters: all 26 are in use and a cycle exists. Delete a rule first."
+      );
+    }
+    const id = remaining.values().next().value!;
+    const target = finalById.get(id)!;
+    const occupant = [...currentLetter.entries()].find(
+      ([oid, l]) => oid !== id && l === target
+    );
+    if (occupant) {
+      await setLetter(occupant[0], spare);
+    }
+    await setLetter(id, target);
+    remaining.delete(id);
+    let advanced = true;
+    while (advanced && remaining.size > 0) {
+      advanced = false;
+      const batch: { id: string; letter: string }[] = [];
+      const claimed = new Set<string>();
+      for (const rid of Array.from(remaining)) {
+        const tgt = finalById.get(rid)!;
+        if (currentLetter.get(rid) === tgt) {
+          remaining.delete(rid);
+          advanced = true;
+          continue;
+        }
+        const occ = [...currentLetter.entries()].find(
+          ([oid, l]) => oid !== rid && l === tgt
+        );
+        if (!occ && !claimed.has(tgt)) {
+          batch.push({ id: rid, letter: tgt });
+          claimed.add(tgt);
+        }
+      }
+      if (batch.length > 0) {
+        await bulkSetLetters(batch);
+        batch.forEach((b) => remaining.delete(b.id));
+        advanced = true;
+      }
+    }
+  }
+  revalidatePath("/sorting/rules");
+}
+
+/** Public: apply edits from the Edit-ID renumber dialog (one or more
+ *  rule letter reassignments, cascade-aware). */
+export async function applyRuleLetters(
+  assignments: Array<{ id: string; letter: string }>
+): Promise<void> {
+  if (assignments.length === 0) return;
+  await applyLetterPermutation(assignments);
+}
+
+/**
+ * Renumber rule letters based on the current `sort_order` — rule at position
+ * 0 becomes A, position 1 becomes B, etc.
+ */
+export async function renumberRuleLetters(): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data } = await supabase
+    .from("sorting_rules")
+    .select("id, sort_order")
+    .order("sort_order")
+    .order("letter");
+  const rows = (data ?? []) as Array<{ id: string; sort_order: number }>;
+  if (rows.length > 26) {
+    throw new Error("Too many rules to renumber (max 26).");
+  }
+  const assignments = rows.map((r, i) => ({
+    id: r.id,
+    letter: String.fromCharCode(65 + i),
+  }));
+  await applyLetterPermutation(assignments);
 }

@@ -1,7 +1,14 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, MailOpen, Mails, Megaphone } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Diamond,
+  MailOpen,
+  Mails,
+  Megaphone,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -15,7 +22,11 @@ import {
 // Public types
 // ---------------------------------------------------------------------------
 
-export type RenumberKind = "letterGroup" | "inspectionLetter" | "reportSegment";
+export type RenumberKind =
+  | "letterGroup"
+  | "inspectionLetter"
+  | "reportSegment"
+  | "sortingRule";
 
 export type RenumberItem = {
   /** Opaque unique key (groupId / segmentId / variant-string). */
@@ -62,6 +73,11 @@ const CODECS: Record<RenumberKind, Codec> = {
   },
   reportSegment: { parse: romanToInt, format: intToRoman },
   inspectionLetter: { parse: letterToInt, format: intToLetter },
+  sortingRule: {
+    parse: letterToInt,
+    // Rule IDs display as uppercase letters (A, B, …).
+    format: (n) => intToLetter(n).toUpperCase(),
+  },
 };
 
 const KIND_ICON: Record<
@@ -71,13 +87,15 @@ const KIND_ICON: Record<
   letterGroup: Mails,
   inspectionLetter: MailOpen,
   reportSegment: Megaphone,
+  sortingRule: Diamond,
 };
 
-/** Inspection-letter variants are a single char a–z, so options cap at 26. */
+/** Letter-kinded ranges cap at 26 (A–Z); numeric kinds are unbounded. */
 const MAX_OPTION: Record<RenumberKind, number> = {
   letterGroup: Number.POSITIVE_INFINITY,
   reportSegment: Number.POSITIVE_INFINITY,
   inspectionLetter: 26,
+  sortingRule: 26,
 };
 
 // ---------------------------------------------------------------------------
@@ -418,7 +436,19 @@ export function useRenumberDialog(options?: { scoped?: boolean }): {
                     value={row.draftInt}
                     placeholder={seqHint}
                     options={optionList}
-                    occupied={occupied}
+                    occupied={(() => {
+                      // Earlier rows have committed to a move, so their
+                      // *original* letter is free from this row's POV. The
+                      // user can pick it without a cascade.
+                      const earlierOriginals = new Set(
+                        rows.slice(0, index).map((r) => r.originalInt)
+                      );
+                      const filtered = new Set<number>();
+                      for (const v of occupied) {
+                        if (!earlierOriginals.has(v)) filtered.add(v);
+                      }
+                      return filtered;
+                    })()}
                     invalid={status.invalidIds.has(row.id)}
                     codec={codec}
                     kindIcon={KIND_ICON[req.kind]}
