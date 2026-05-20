@@ -57,8 +57,12 @@ export interface CreateVariablePopoverProps {
   onClose: () => void;
   /** Fires after a successful create. Caller typically uses this to
    *  commit the new variable into the surrounding picker context
-   *  (insert mention pill, add header chip, etc.). */
-  onCreated: (variableId: string) => void;
+   *  (insert mention pill, add header chip, etc.). Receives both the
+   *  id (for add-block-variable / onPick) and the name (for surfaces
+   *  that need to render the variable immediately, e.g. the Lexical
+   *  mention pill, since the parent's `variables` prop may not yet
+   *  reflect the revalidated DB row). */
+  onCreated: (result: { variableId: string; name: string }) => void;
 }
 
 type Phase =
@@ -113,7 +117,10 @@ export function CreateVariablePopover({
     }
     // If we already created the variable, hand it back to the caller.
     if (phase.stage === "inspect") {
-      onCreated(phase.variable.id);
+      onCreated({
+        variableId: phase.variable.id,
+        name: phase.variable.name,
+      });
     }
     onClose();
   }, [onClose, onCreated, phase]);

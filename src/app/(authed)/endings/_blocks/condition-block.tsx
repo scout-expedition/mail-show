@@ -1101,7 +1101,7 @@ function AddHeaderVariablePicker({
           position={anchorPos}
           folders={folders}
           onClose={() => setMode("closed")}
-          onCreated={(variableId) => {
+          onCreated={({ variableId }) => {
             setMode("closed");
             onPick(variableId);
           }}

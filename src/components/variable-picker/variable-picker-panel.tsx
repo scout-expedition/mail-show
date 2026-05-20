@@ -168,17 +168,22 @@ export function VariablePickerPanel({
                 }}
                 role="option"
                 aria-selected={isActive}
-                // For variable rows we dispatch on mousedown — the pill
-                // insertion needs the editor's selection intact before
-                // the click event fires (preventDefault stops the
-                // browser's default focus / window-selection change so
-                // the editor's caret stays in the `@query` run). For
-                // navigation rows (back / category / folder / create)
-                // we dispatch on click instead, which is the more
-                // forgiving event for click-then-drag interactions.
-                onMouseDown={(e) => {
+                // For variable rows we dispatch on pointerdown — the
+                // pill insertion needs the editor's selection intact
+                // before the click event fires (preventDefault stops
+                // the browser's default focus / window-selection
+                // change so the editor's caret stays in the `@query`
+                // run). pointerdown (rather than mousedown) fires for
+                // mouse, touch, and pen alike, so touch users aren't
+                // silently dropped. For navigation rows (back /
+                // category / folder / create) we dispatch on click
+                // instead, which is the more forgiving event for
+                // click-then-drag interactions and works for keyboard
+                // activation through the option list as well.
+                onPointerDown={(e) => {
+                  if (item.kind !== "variable") return;
                   e.preventDefault();
-                  if (item.kind === "variable") onCommitItem(item);
+                  onCommitItem(item);
                 }}
                 onClick={(e) => {
                   e.preventDefault();

@@ -158,23 +158,38 @@ export function MentionTriggerPlugin({
   //
   // Accepts an explicit `activeTrigger` so callers that hold a frozen
   // snapshot (e.g. onCreated after the popover closes) can still
-  // locate the text node even when the `trigger` state is already null.
+  // locate the text node even when the `trigger` state is already
+  // null. The caret offset is derived from the frozen trigger
+  // (`atOffset + 1 + query.length`) rather than the live selection,
+  // so the commit also works once focus has left the contenteditable
+  // (e.g. the user closed the create-variable popover, where the
+  // selection is no longer at the typed `@query`).
+  //
+  // Takes just the variable's name (not the full VariableState) so the
+  // deferred-create path doesn't have to look the new row up in a
+  // potentially stale `variables` prop.
   // -----------------------------------------------------------------
   const commitWithTrigger = useCallback(
-    (variable: VariableState, activeTrigger: ActiveTrigger) => {
+    (variableName: string, activeTrigger: ActiveTrigger) => {
       editor.update(() => {
-        const sel = $getSelection();
-        if (!$isRangeSelection(sel) || !sel.isCollapsed()) return;
         const node = $getNodeByKey(activeTrigger.textNodeKey);
         if (!node || !$isTextNode(node)) return;
         const textNode = node as TextNode;
-        const caret = sel.anchor.offset;
-        // Split the text node into three pieces at [atOffset, caret]:
+        // End of the `@query` run, derived from frozen state. The
+        // text-node's content hasn't been mutated between the trigger
+        // capture and this commit (the popover doesn't touch the
+        // editor), so atOffset + 1 + query.length still indexes the
+        // char immediately after the typed query.
+        const endOffset = Math.min(
+          activeTrigger.atOffset + 1 + activeTrigger.query.length,
+          textNode.getTextContentSize()
+        );
+        // Split the text node into three pieces at [atOffset, endOffset]:
         // [prefix, queryRun, suffix]. The query run is what the user
         // typed after `@` (e.g. "@mai"); we replace it with a
         // MentionNode + trailing space so the caret can land outside
         // the pill.
-        const parts = textNode.splitText(activeTrigger.atOffset, caret);
+        const parts = textNode.splitText(activeTrigger.atOffset, endOffset);
         // splitText returns up to 3 nodes — the original is in the
         // array. The `query` part (index depending on whether prefix
         // was empty) gets replaced.
@@ -187,7 +202,7 @@ export function MentionTriggerPlugin({
           queryNode = parts[1] ?? null;
         }
         if (!queryNode) return;
-        const mention = $createMentionNode(variable.name);
+        const mention = $createMentionNode(variableName);
         const trailingSpace = $createTextNode(" ");
         queryNode.replace(mention);
         mention.insertAfter(trailingSpace);
@@ -200,7 +215,7 @@ export function MentionTriggerPlugin({
   const commit = useCallback(
     (variable: VariableState) => {
       if (!trigger) return;
-      commitWithTrigger(variable, trigger);
+      commitWithTrigger(variable.name, trigger);
       closeTrigger();
     },
     [commitWithTrigger, trigger, closeTrigger]
@@ -326,13 +341,13 @@ export function MentionTriggerPlugin({
           position={createPopoverState.position}
           folders={folders}
           onClose={() => setCreatePopoverState(null)}
-          onCreated={(variableId) => {
-            const variable = variables.find((v) => v.id === variableId);
-            if (variable) {
-              // Use the frozen trigger snapshot — the live `trigger` is
-              // already null by the time onCreated fires.
-              commitWithTrigger(variable, createPopoverState.frozenTrigger);
-            }
+          onCreated={({ name }) => {
+            // Commit using the frozen trigger snapshot and the name
+            // the popover hands back — by the time onCreated fires the
+            // live `trigger` is null and the parent's `variables` prop
+            // may not yet have the revalidated row, so we can't look
+            // up by id and we can't rely on the live editor selection.
+            commitWithTrigger(name, createPopoverState.frozenTrigger);
             setCreatePopoverState(null);
           }}
         />
