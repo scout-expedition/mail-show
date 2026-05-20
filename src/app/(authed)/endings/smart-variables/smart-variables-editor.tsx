@@ -5,7 +5,7 @@
 // DocumentEditor per visible doc) but the document list is dynamic:
 // users add/rename/delete smart variables here directly.
 
-import { startTransition, useEffect, useMemo, useState, useTransition } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -215,12 +215,15 @@ function SmartVariablesEditorInner({
         // so cross-doc chip dropdowns reflect edits in other smart
         // variables. The active doc's full block tree is owned by the
         // DocumentEditor's own mirror; this handler only feeds the
-        // derived smartVariableReturns map.
+        // derived smartVariableReturns map. Doc-membership read through
+        // the ref so a peer's "INSERT doc → INSERT block" sequence
+        // doesn't drop the block because of a closure snapshot.
+        const docs = smartDocsRef.current;
         if (change.eventType === "UPDATE" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
           setSmartResultBlocks((prev) => {
-            const isSmart = smartDocs.some((d) => d.id === n.document_id);
+            const isSmart = docs.some((d) => d.id === n.document_id);
             if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
             const idx = prev.findIndex((b) => b.id === n.id);
             if (idx < 0) return isSmart ? [...prev, n] : prev;
@@ -234,15 +237,20 @@ function SmartVariablesEditorInner({
         } else if (change.eventType === "INSERT" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
-          const isSmart = smartDocs.some((d) => d.id === n.document_id);
-          if (!isSmart) return;
+          if (!docs.some((d) => d.id === n.document_id)) return;
           setSmartResultBlocks((prev) =>
             prev.some((b) => b.id === n.id) ? prev : [...prev, n]
           );
         }
       }
     });
-  }, [onPostgresChanges, router, smartDocs]);
+  }, [onPostgresChanges, router]);
+
+  // Ref mirror of smartDocs so the postgres handler above always sees
+  // the latest set, even when an ending_documents INSERT for a new
+  // smart variable lands in the same tick as its first block INSERT.
+  const smartDocsRef = useRef(smartDocs);
+  smartDocsRef.current = smartDocs;
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [pending, startTransition] = useTransition();
   const [pendingColor, setPendingColor] = useState<{
@@ -367,7 +375,7 @@ function SmartVariablesEditorInner({
     const ok = await confirm({
       title: `Delete "${doc.name ?? "this Smart Variable"}"?`,
       message:
-        "Removes the Smart Variable and all of its blocks. Chips in other ending documents that reference it will become unresolved.",
+        "Removes the Smart Variable and all of its blocks. Every chip in other ending documents that referenced it will also be deleted (the chip FK cascades).",
       confirmLabel: "Delete",
       intent: "destructive",
     });
@@ -513,7 +521,7 @@ function SmartVariablesEditorInner({
               menuLabel: "Delete Smart Variable",
               confirmTitle: `Delete "${activeDoc.name ?? "this Smart Variable"}"?`,
               confirmMessage:
-                "Removes the Smart Variable and all of its blocks. Chips in other ending documents that reference it will become unresolved.",
+                "Removes the Smart Variable and all of its blocks. Every chip in other ending documents that referenced it will also be deleted (the chip FK cascades).",
               skipServerDelete: true,
             }}
             onDeleted={() => {

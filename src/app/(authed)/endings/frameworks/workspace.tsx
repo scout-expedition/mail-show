@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
@@ -236,6 +236,16 @@ function FrameworksWorkspaceInner({
     });
   }
 
+  // Keep a ref to the latest smart-variable doc set so the
+  // ending_blocks postgres handler can decide doc-membership against
+  // the CURRENT mirror, not the closure snapshot from when the effect
+  // last ran. Without this, a peer's "INSERT doc → INSERT block"
+  // sequence has a window where the block arrives before React
+  // re-renders the effect with the new doc list, and the block gets
+  // dropped from the returns map.
+  const smartVariableDocsRef = useRef(smartVariableDocs);
+  smartVariableDocsRef.current = smartVariableDocs;
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table === "ending_documents") {
@@ -278,20 +288,16 @@ function FrameworksWorkspaceInner({
       if (change.table === "ending_blocks") {
         // Mirror smart_variable result/fallback blocks specifically.
         // The DocumentEditor owns its own framework-block mirror; this
-        // handler only feeds smartVariableReturns. UPDATE / INSERT must
-        // re-check membership because the row's document_id is the
-        // authoritative scope marker — block-type alone isn't enough.
+        // handler only feeds smartVariableReturns. Doc-membership is
+        // checked via the ref so we always see the latest doc set,
+        // even when the corresponding ending_documents INSERT just
+        // landed in the same tick.
+        const docs = smartVariableDocsRef.current;
         if (change.eventType === "UPDATE" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
-          // Trust the doc-id membership through the local mirror: if
-          // the block's document is a known smart_variable, mirror it.
-          // (A peer adding a Smart Variable will INSERT the doc first
-          // via the ending_documents branch above, then its blocks.)
           setSmartVariableBlocks((prev) => {
-            const isSmart = smartVariableDocs.some(
-              (d) => d.id === n.document_id
-            );
+            const isSmart = docs.some((d) => d.id === n.document_id);
             if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
             const idx = prev.findIndex((b) => b.id === n.id);
             if (idx < 0) return isSmart ? [...prev, n] : prev;
@@ -305,10 +311,7 @@ function FrameworksWorkspaceInner({
         } else if (change.eventType === "INSERT" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
-          const isSmart = smartVariableDocs.some(
-            (d) => d.id === n.document_id
-          );
-          if (!isSmart) return;
+          if (!docs.some((d) => d.id === n.document_id)) return;
           setSmartVariableBlocks((prev) =>
             prev.some((b) => b.id === n.id) ? prev : [...prev, n]
           );
@@ -332,7 +335,7 @@ function FrameworksWorkspaceInner({
         }
       }
     });
-  }, [onPostgresChanges, router, smartVariableDocs]);
+  }, [onPostgresChanges, router]);
 
   // Derived live map. Re-runs whenever any of the three mirrors update,
   // so chip dropdowns and the chip-adder seed always reflect the

@@ -13,7 +13,7 @@
 // Each editor saves itself; switching tabs prompts an unsaved-changes
 // dialog the same way the Frameworks workspace does between frameworks.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
@@ -352,14 +352,15 @@ function LogicEditorInner({
       if (change.table === "ending_blocks") {
         // Smart-variable result/fallback only — the LogicEditor's own
         // editor data is owned by DocumentEditor, which has its own
-        // per-doc mirror.
+        // per-doc mirror. Doc-membership read through the ref so a
+        // peer's "INSERT doc → INSERT block" sequence doesn't drop
+        // the block because of a closure snapshot.
+        const docs = smartVariableDocsRef.current;
         if (change.eventType === "UPDATE" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
           setSmartVariableBlocks((prev) => {
-            const isSmart = smartVariableDocs.some(
-              (d) => d.id === n.document_id
-            );
+            const isSmart = docs.some((d) => d.id === n.document_id);
             if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
             const idx = prev.findIndex((b) => b.id === n.id);
             if (idx < 0) return isSmart ? [...prev, n] : prev;
@@ -373,17 +374,20 @@ function LogicEditorInner({
         } else if (change.eventType === "INSERT" && change.new) {
           const n = change.new as unknown as EndingBlock;
           if (n.block_type !== "result" && n.block_type !== "fallback") return;
-          const isSmart = smartVariableDocs.some(
-            (d) => d.id === n.document_id
-          );
-          if (!isSmart) return;
+          if (!docs.some((d) => d.id === n.document_id)) return;
           setSmartVariableBlocks((prev) =>
             prev.some((b) => b.id === n.id) ? prev : [...prev, n]
           );
         }
       }
     });
-  }, [onPostgresChanges, smartVariableDocs]);
+  }, [onPostgresChanges]);
+
+  // Same ref pattern frameworks/workspace.tsx uses — the ending_blocks
+  // postgres handler reads `smartVariableDocs` through the ref so it
+  // always sees the latest doc set without resubscribing the effect.
+  const smartVariableDocsRef = useRef(smartVariableDocs);
+  smartVariableDocsRef.current = smartVariableDocs;
 
   const smartVariableReturns = useMemo(
     () =>

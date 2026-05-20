@@ -591,11 +591,10 @@ export async function patchBlock(
     }
   }
 
-  let smartVariableRename: {
-    oldValue: string;
-    newValue: string;
-    documentId: string;
-  } | null = null;
+  // Smart Variables route the result_value patch through an RPC so the
+  // block update + the chip-rename migration run as one transaction.
+  // Non-smart_variable docs still use the regular UPDATE path below.
+  let smartVariableRpc = false;
   if (sanitized.result_value !== undefined) {
     if (blockType !== "result" && blockType !== "fallback") {
       throw new Error("`result_value` is only patchable on result/fallback blocks.");
@@ -613,26 +612,32 @@ export async function patchBlock(
       // inline (clearing for a moment before typing the next value).
       throw new Error("Result blocks require a result_value.");
     }
-    // Detect a Smart Variable result rename. Only fires when both old
-    // and new values are non-empty AND distinct — pure clears or
-    // initial fills aren't renames. The actual migration runs AFTER
-    // the block update so we don't race with the rename target check
-    // (which scans current result_values across the doc).
-    const newResultValue = sanitized.result_value;
-    if (
-      kind === "smart_variable" &&
-      newResultValue != null &&
-      newResultValue !== "" &&
-      oldResultValue != null &&
-      oldResultValue !== "" &&
-      oldResultValue !== newResultValue
-    ) {
-      smartVariableRename = {
-        oldValue: oldResultValue,
-        newValue: newResultValue,
-        documentId: existing.document_id as string,
-      };
+    smartVariableRpc = kind === "smart_variable";
+  }
+
+  if (smartVariableRpc) {
+    // The RPC writes `result_value` AND migrates chips referencing
+    // the OLD value to the new one in a single Postgres transaction
+    // (see migration 20260520150000). Other patch fields (summary,
+    // sort_order) commit separately when present — they're block-local
+    // and don't need the atomicity guarantee.
+    void oldResultValue;
+    const newValue = (sanitized.result_value ?? "") as string;
+    const { error: rpcErr } = await supabase.rpc(
+      "update_smart_variable_block_result",
+      { p_block_id: id, p_new_value: newValue }
+    );
+    if (rpcErr) throw new Error(rpcErr.message);
+    const restPatch: typeof sanitized = { ...sanitized };
+    delete restPatch.result_value;
+    if (Object.keys(restPatch).length > 0) {
+      const { error: restErr } = await supabase
+        .from("ending_blocks")
+        .update(restPatch)
+        .eq("id", id);
+      if (restErr) throw new Error(restErr.message);
     }
+    return;
   }
 
   const { error } = await supabase
@@ -640,43 +645,6 @@ export async function patchBlock(
     .update(sanitized)
     .eq("id", id);
   if (error) throw new Error(error.message);
-
-  // Smart Variable result rename — propagate to every chip that
-  // referenced the old value via the paired smart_ref variable. Skips
-  // the migration when the old value is still produced by some OTHER
-  // block in the same doc (those chips might be referring to that
-  // other block's instance of the value, not the one being renamed).
-  if (smartVariableRename) {
-    const { oldValue, newValue, documentId } = smartVariableRename;
-    // Is the old value still produced by another result/fallback
-    // block in this doc? Excluding the block we just edited.
-    const { data: stillProduced } = await supabase
-      .from("ending_blocks")
-      .select("id")
-      .eq("document_id", documentId)
-      .in("block_type", ["result", "fallback"])
-      .eq("result_value", oldValue)
-      .neq("id", id)
-      .limit(1);
-    if (!stillProduced || stillProduced.length === 0) {
-      // Find the paired smart_ref variable; without it there's nothing
-      // to migrate (and nothing chips could be referencing).
-      const { data: pairedVar } = await supabase
-        .from("ending_variables")
-        .select("id")
-        .eq("smart_variable_doc_id", documentId)
-        .eq("kind", "smart_ref")
-        .maybeSingle();
-      if (pairedVar) {
-        const { error: chipMigrateErr } = await supabase
-          .from("ending_condition_row_chips")
-          .update({ aggregate_value: newValue })
-          .eq("variable_id", pairedVar.id as string)
-          .eq("aggregate_value", oldValue);
-        if (chipMigrateErr) throw new Error(chipMigrateErr.message);
-      }
-    }
-  }
 }
 
 /**
@@ -962,6 +930,21 @@ async function computeDefaultChip(
       text_value_id: null,
       number_value: null,
       aggregate_value: aggregateValue,
+    };
+  }
+
+  if (variable.kind === "smart_ref") {
+    // Smart variables compare against a free-text string stored in
+    // aggregate_value. Seed with an empty string so the chip satisfies
+    // the value-shape CHECK (exactly one slot non-null) on first save
+    // — the user fills it in via the dropdown. Mirrors the client-side
+    // chip-adder behavior in condition-block.tsx so the two paths
+    // don't diverge.
+    return {
+      operator: "=",
+      text_value_id: null,
+      number_value: null,
+      aggregate_value: "",
     };
   }
 
