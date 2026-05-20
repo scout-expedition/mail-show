@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useMenuPosition } from "@/components/use-menu-position";
 import { MoreVertical, Save, Trash2 } from "lucide-react";
 import { IconRestore } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
@@ -177,14 +178,13 @@ export function OverflowMenu({
   size?: "default" | "sm";
 }) {
   const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{
-    top: number;
-    left: number;
-    placement: "down" | "up";
-  } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const { triggerRef, menuRef, pos } = useMenuPosition({
+    open,
+    align: "right",
+    preferredPlacement: "down",
+    deps: [items.length],
+  });
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
@@ -196,62 +196,7 @@ export function OverflowMenu({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
-
-  // Reposition relative to viewport so the menu escapes any overflow-hidden
-  // ancestor. Flips above the button when there isn't room below.
-  useLayoutEffect(() => {
-    if (!open || !buttonRef.current || !menuRef.current) return;
-    const btn = buttonRef.current.getBoundingClientRect();
-    const menuH = menuRef.current.offsetHeight;
-    const menuW = menuRef.current.offsetWidth;
-    const margin = 4;
-    const fitsBelow = btn.bottom + menuH + margin <= window.innerHeight;
-    const placement = fitsBelow ? "down" : "up";
-    const top =
-      placement === "down" ? btn.bottom + margin : btn.top - menuH - margin;
-    const left = Math.max(margin, Math.min(btn.right - menuW, window.innerWidth - menuW - margin));
-    setMenuPos((prev) => {
-      if (
-        prev &&
-        prev.top === top &&
-        prev.left === left &&
-        prev.placement === placement
-      ) {
-        return prev;
-      }
-      return { top, left, placement };
-    });
-  }, [open, items.length]);
-
-  // Recompute on scroll/resize while open so the menu stays anchored.
-  useEffect(() => {
-    if (!open) return;
-    function reposition() {
-      if (!buttonRef.current || !menuRef.current) return;
-      const btn = buttonRef.current.getBoundingClientRect();
-      const menuH = menuRef.current.offsetHeight;
-      const menuW = menuRef.current.offsetWidth;
-      const margin = 4;
-      const fitsBelow = btn.bottom + menuH + margin <= window.innerHeight;
-      const placement = fitsBelow ? "down" : "up";
-      const top =
-        placement === "down"
-          ? btn.bottom + margin
-          : btn.top - menuH - margin;
-      const left = Math.max(
-        margin,
-        Math.min(btn.right - menuW, window.innerWidth - menuW - margin)
-      );
-      setMenuPos({ top, left, placement });
-    }
-    window.addEventListener("scroll", reposition, true);
-    window.addEventListener("resize", reposition);
-    return () => {
-      window.removeEventListener("scroll", reposition, true);
-      window.removeEventListener("resize", reposition);
-    };
-  }, [open]);
+  }, [menuRef]);
 
   const buttonClass =
     size === "sm"
@@ -261,7 +206,7 @@ export function OverflowMenu({
   return (
     <div ref={ref} className="relative">
       <button
-        ref={buttonRef}
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
@@ -277,9 +222,9 @@ export function OverflowMenu({
           role="menu"
           className="fixed z-50 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
           style={{
-            top: menuPos?.top ?? -9999,
-            left: menuPos?.left ?? -9999,
-            visibility: menuPos ? "visible" : "hidden",
+            top: pos?.top ?? -9999,
+            left: pos?.left ?? -9999,
+            visibility: pos ? "visible" : "hidden",
           }}
         >
           {items.map((item, i) => {
