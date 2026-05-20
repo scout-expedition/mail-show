@@ -50,6 +50,7 @@ import {
   type ActiveVariable,
   type ImpactFilter,
 } from "@/lib/graph-overlay";
+import { partitionGroupInstances } from "./layout-instances";
 import {
   addActionFromTemplate,
   batchMoveToDay,
@@ -936,10 +937,6 @@ export function GraphView({
       }
     }
 
-    // Each letter's effective day → which group instance houses it.
-    const letterEffectiveDayKey = (l: InspectionLetterView): string =>
-      l.effective_day_id ?? "unscheduled";
-
     // groupInstancesById indexed by instance node id ("group:GID" or
     // "group:GID@DAY"). instancesByGroup gives all instances for a group.
     const groupInstancesById = new Map<string, GroupInstance>();
@@ -952,44 +949,34 @@ export function GraphView({
       );
       // Consult pendingDayMoves first so the node renders in its target
       // row immediately after a drop, before the server confirms.
-      const gDayKey = pendingDayMoves[g.id] ?? g.delivery_day_id ?? "unscheduled";
+      const effectiveDeliveryDayId =
+        pendingDayMoves[g.id] === "unscheduled"
+          ? null
+          : pendingDayMoves[g.id] ?? g.delivery_day_id;
+      const gDayKey = effectiveDeliveryDayId ?? "unscheduled";
 
-      // Partition variants by their effective day. A variant can have
-      // multiple letters (different pieces); they should always share an
-      // effective_day_id since override is set per letter row, but if for
-      // some reason they diverge we follow the primary letter's day.
-      const variantByLetter: Array<{ variant: string; dayKey: string }> = [];
-      const seen = new Set<string>();
-      for (const l of groupLetters
-        .slice()
-        .sort((a, b) => {
-          const va = a.variant ?? "";
-          const vb = b.variant ?? "";
-          if (va !== vb) return va.localeCompare(vb);
-          return (a.piece ?? 0) - (b.piece ?? 0);
-        })) {
-        const vk = variantKey(l.variant);
-        if (seen.has(vk)) continue;
-        seen.add(vk);
-        const primary = primaryLetterByGroupVariant.get(`${g.id}:${vk}`);
-        variantByLetter.push({
-          variant: vk,
-          dayKey: letterEffectiveDayKey(primary ?? l),
-        });
-      }
-
-      // Per-day bucket of variants. Always include the primary day bucket
-      // (gDayKey) even if empty so the group's "home" pill still renders.
-      const variantsByDay = new Map<string, string[]>();
-      variantsByDay.set(gDayKey, []);
-      for (const { variant, dayKey } of variantByLetter) {
-        const list = variantsByDay.get(dayKey) ?? [];
-        list.push(variant);
-        variantsByDay.set(dayKey, list);
-      }
+      // Partition variants by their effective day via the shared helper
+      // (see layout-instances.ts + its tests). The helper handles
+      // home-day inclusion + multi-piece primary selection; we feed it
+      // the group with the pending-aware delivery_day_id so optimistic
+      // drag moves flow through.
+      const partitions = partitionGroupInstances(
+        { id: g.id, delivery_day_id: effectiveDeliveryDayId },
+        groupLetters.map((l) => ({
+          id: l.id,
+          variant: l.variant,
+          piece: l.piece,
+          // letterEffectiveDayKey resolves null to "unscheduled" for
+          // bucketing, but the helper accepts the raw effective_day_id
+          // and applies the same null → "unscheduled" rule internally.
+          effective_day_id: l.effective_day_id,
+        }))
+      );
 
       const instances: GroupInstance[] = [];
-      for (const [dayKey, vs] of variantsByDay) {
+      for (const partition of partitions) {
+        const dayKey = partition.rowId;
+        const vs = partition.variants;
         const isPrimary = dayKey === gDayKey;
         const instanceDayKey = isPrimary ? null : dayKey;
         const variantHeights =
@@ -3055,14 +3042,29 @@ export function GraphView({
             recordUndo?.({ kind: "batch", entries: undoEntries });
           }
           // Optimistically move all nodes to the target row before the
-          // server call so the layout reacts immediately.
+          // server call so the layout reacts immediately. On error, drop
+          // every pending entry for this batch so cards snap back.
           if (Object.keys(batchPendingIds).length > 0) {
             setPendingDayMoves((prev) => {
               const next = { ...prev, ...batchPendingIds };
               return next;
             });
           }
-          void batchMoveToDay(moves);
+          batchMoveToDay(moves).catch(() => {
+            const batchIds = Object.keys(batchPendingIds);
+            if (batchIds.length === 0) return;
+            setPendingDayMoves((prev) => {
+              let changed = false;
+              const next = { ...prev };
+              for (const id of batchIds) {
+                if (id in next) {
+                  delete next[id];
+                  changed = true;
+                }
+              }
+              return changed ? next : prev;
+            });
+          });
         }
         return;
       }
@@ -3109,14 +3111,24 @@ export function GraphView({
           previousDayId,
         });
         // Optimistically place the group in the target row before the server
-        // confirms so the card appears to land immediately on drop.
+        // confirms so the card appears to land immediately on drop. On
+        // server error the catch clears the pending entry so the card
+        // snaps back to its real row instead of getting stuck in ghost
+        // styling indefinitely.
         setPendingDayMoves((prev) =>
           prev[gid] === targetRowId ? prev : { ...prev, [gid]: targetRowId }
         );
-        void moveLetterGroupToDay(
+        moveLetterGroupToDay(
           gid,
           targetRowId === "unscheduled" ? null : targetRowId
-        );
+        ).catch(() => {
+          setPendingDayMoves((prev) => {
+            if (!(gid in prev)) return prev;
+            const next = { ...prev };
+            delete next[gid];
+            return next;
+          });
+        });
       } else if (node.id.startsWith("report:")) {
         const sid = node.id.slice("report:".length);
         const flowPt = rf.screenToFlowPosition({
@@ -3132,15 +3144,22 @@ export function GraphView({
           previousOverrideId: seg?.delivery_day_override_id ?? null,
           previousOffset: seg?.delivery_day_offset ?? null,
         });
-        // Optimistically place the report in the target row before the server
-        // confirms so the card appears to land immediately on drop.
+        // Optimistically place the report in the target row before the
+        // server confirms; on error the catch clears the pending entry.
         setPendingDayMoves((prev) =>
           prev[sid] === targetRowId ? prev : { ...prev, [sid]: targetRowId }
         );
-        void moveReportSegmentToDay(
+        moveReportSegmentToDay(
           sid,
           targetRowId === "unscheduled" ? null : targetRowId
-        );
+        ).catch(() => {
+          setPendingDayMoves((prev) => {
+            if (!(sid in prev)) return prev;
+            const next = { ...prev };
+            delete next[sid];
+            return next;
+          });
+        });
       } else if (node.id.startsWith("letter:")) {
         // Drop target: the letter-group node the pointer is over.
         const parsed = parseLetterNodeId(node.id);
