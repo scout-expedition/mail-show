@@ -251,12 +251,17 @@ export interface SortingRule {
   letter: string;
   storage_location: string | null;
   summary: string | null;
+  notes: string | null;
+  color_hex: string | null;
   day_implemented_id: string | null;
   day_cancelled_id: string | null;
   destination_slot: number | null;
   /** When true the rule routes to Reporting; mutually exclusive with destination_slot. */
   routes_to_reporting: boolean;
   match_mode: RuleMatchMode;
+  sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface SortingRuleCondition {

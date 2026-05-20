@@ -4,15 +4,20 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
 } from "react";
+import { ArrowDownAZ, GripVertical, Plus, RefreshCw } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/toast";
-import { MUTED_ADD_BTN, Spinner } from "@/components/panel";
+import { OverflowMenu, PanelHeader, Spinner } from "@/components/panel";
+import {
+  useRenumberDialog,
+  type RenumberItem,
+} from "@/components/renumber-dialog";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import {
@@ -22,13 +27,22 @@ import {
 import type {
   City,
   Day,
+  EndingVariable,
   Nation,
   SortingRule,
   SortingRuleCondition,
+  Storyline,
 } from "@/lib/db/types";
-import { createRule } from "./actions";
+import {
+  applyRuleLetters,
+  createRule,
+  renumberRuleLetters,
+  reorderRules,
+  sortRulesByLetter,
+} from "./actions";
 import { RulePill } from "./rule-pill";
 import { RulePanel } from "./rule-panel";
+import { SlotPill } from "./slot-pill";
 
 const POSTGRES_TABLES = ["sorting_rules", "sorting_rule_conditions"];
 
@@ -40,6 +54,8 @@ export function RulesList({
   days,
   nations,
   cities,
+  storylines,
+  endingVariables,
   initialSelectedRuleId,
   currentUserId,
   currentEmail,
@@ -50,6 +66,8 @@ export function RulesList({
   days: Day[];
   nations: Nation[];
   cities: City[];
+  storylines: Storyline[];
+  endingVariables: EndingVariable[];
   initialSelectedRuleId: string | null;
   currentUserId?: string;
   currentEmail?: string;
@@ -69,6 +87,8 @@ export function RulesList({
         days={days}
         nations={nations}
         cities={cities}
+        storylines={storylines}
+        endingVariables={endingVariables}
         initialSelectedRuleId={initialSelectedRuleId}
         currentEmail={currentEmail}
       />
@@ -84,6 +104,8 @@ function RulesWorkspace({
   days,
   nations,
   cities,
+  storylines,
+  endingVariables,
   initialSelectedRuleId,
   currentEmail,
 }: {
@@ -92,6 +114,8 @@ function RulesWorkspace({
   days: Day[];
   nations: Nation[];
   cities: City[];
+  storylines: Storyline[];
+  endingVariables: EndingVariable[];
   initialSelectedRuleId: string | null;
   currentEmail?: string;
 }) {
@@ -99,6 +123,7 @@ function RulesWorkspace({
   const pathname = usePathname();
   const { onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
+  const { openRenumber, dialog: renumberDialog } = useRenumberDialog();
 
   // Mirror rules + conditions so postgres_changes fans out without reload.
   const [rules, setRules] = useState(rulesProp);
@@ -119,6 +144,42 @@ function RulesWorkspace({
     initialSelectedRuleId
   );
   const selectedRule = rules.find((r) => r.id === selectedRuleId) ?? null;
+
+  // Optimistic ordering override after a drag-drop. Sits in front of the
+  // server's `sort_order` until every rule's persisted value catches up —
+  // this keeps the list from flickering back to old positions during the
+  // round-trip. Cleared when (a) every rule's actual sort_order matches
+  // the optimistic position, or (b) the rule set changes (an insert or
+  // delete means the snapshot is stale — fall back to server state).
+  //
+  // Reconciliation happens at render time (same style as the rulesProp
+  // mirror above) so the lint rule against setState-in-effect stays happy.
+  const [optimisticOrder, setOptimisticOrder] =
+    useState<Map<string, number> | null>(null);
+  if (optimisticOrder) {
+    const ruleIds = new Set(rules.map((r) => r.id));
+    const sameRuleSet =
+      ruleIds.size === optimisticOrder.size &&
+      rules.every((r) => optimisticOrder.has(r.id));
+    const allMatch =
+      sameRuleSet &&
+      rules.every(
+        (r) => optimisticOrder.get(r.id) === (r.sort_order ?? 0)
+      );
+    if (!sameRuleSet || allMatch) {
+      setOptimisticOrder(null);
+    }
+  }
+
+  const sortedRules = useMemo(
+    () =>
+      [...rules].sort((a, b) => {
+        const aOrder = optimisticOrder?.get(a.id) ?? a.sort_order ?? 0;
+        const bOrder = optimisticOrder?.get(b.id) ?? b.sort_order ?? 0;
+        return aOrder - bOrder || a.letter.localeCompare(b.letter);
+      }),
+    [rules, optimisticOrder]
+  );
 
   // Keep ?rule=<letter> in sync with the selection (and with letter renames).
   useEffect(() => {
@@ -168,9 +229,6 @@ function RulesWorkspace({
           });
           setSelectedRuleId((cur) => (cur === id ? null : cur));
           const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
-          // Suppress the toast when WE were the one who deleted — the kebab
-          // confirm already conveyed intent and the panel closes on its own.
-          // Peers still get the destructive heads-up.
           if (by !== currentEmail) {
             toast({
               intent: "destructive",
@@ -202,8 +260,6 @@ function RulesWorkspace({
           return;
         }
         if (eventType === "INSERT" || eventType === "DELETE") {
-          // Conditions are replaced as a set; trigger RSC refresh so the
-          // mirror stays consistent with position ordering.
           scheduleRefresh();
           return;
         }
@@ -219,37 +275,175 @@ function RulesWorkspace({
     });
   }
 
+  // ── Drag reorder ─────────────────────────────────────────────────────────
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const handleDrop = useCallback(
+    (targetId: string) => {
+      if (!dragId || dragId === targetId) {
+        setDragId(null);
+        setDragOverId(null);
+        return;
+      }
+      const ids = sortedRules.map((r) => r.id);
+      const from = ids.indexOf(dragId);
+      const to = ids.indexOf(targetId);
+      if (from < 0 || to < 0) return;
+      const next = ids.slice();
+      next.splice(from, 1);
+      next.splice(to, 0, dragId);
+      // Hold the new ordering on the client until every rule's persisted
+      // `sort_order` matches — see `optimisticOrder` above.
+      const orderMap = new Map(next.map((id, i) => [id, i]));
+      setOptimisticOrder(orderMap);
+      setDragId(null);
+      setDragOverId(null);
+      void reorderRules(next).catch((err) => {
+        setOptimisticOrder(null);
+        toast({
+          intent: "destructive",
+          message: `Couldn't save the new order: ${err.message}`,
+        });
+        scheduleRefresh();
+      });
+    },
+    [dragId, sortedRules, scheduleRefresh, toast]
+  );
+
+  // ── Kebab actions for the list pane ──────────────────────────────────────
+  const [actionPending, startAction] = useTransition();
+  function handleSortById() {
+    startAction(async () => {
+      try {
+        await sortRulesByLetter();
+      } catch (err) {
+        toast({
+          intent: "destructive",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
+  function handleRenumberRules() {
+    startAction(async () => {
+      try {
+        await renumberRuleLetters();
+      } catch (err) {
+        toast({
+          intent: "destructive",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
+
+  // ── Per-rule Edit ID popup ──────────────────────────────────────────────
+  async function handleEditRuleId(targetRuleId: string) {
+    const target = sortedRules.find((r) => r.id === targetRuleId);
+    if (!target) return;
+    const items: RenumberItem[] = sortedRules.map((r) => ({
+      id: r.id,
+      numberToken: r.letter,
+      name: r.summary ?? "(no summary)",
+    }));
+    const result = await openRenumber({
+      kind: "sortingRule",
+      items,
+      targetId: target.id,
+      prefix: "RR-",
+    });
+    if (!result) return;
+    // `newNumberToken` from the sortingRule codec is already a letter (A-Z).
+    const assignments = result.edits.map((e) => ({
+      id: e.id,
+      letter: e.newNumberToken.toUpperCase(),
+    }));
+    try {
+      await applyRuleLetters(assignments);
+    } catch (err) {
+      toast({
+        intent: "destructive",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const listMenuItems = [
+    {
+      label: "Sort by ID",
+      icon: <ArrowDownAZ size={12} aria-hidden />,
+      onClick: handleSortById,
+      disabled: actionPending || rules.length < 2,
+    },
+    {
+      label: "Renumber Rules",
+      icon: <RefreshCw size={12} aria-hidden />,
+      onClick: handleRenumberRules,
+      disabled: actionPending || rules.length < 2,
+    },
+  ];
+
   return (
     <>
       {toaster}
+      {renumberDialog}
       <div className="flex gap-3">
-        {/* List pane — fixed width, doesn't reflow when the panel opens/closes */}
-        <div className="flex w-80 shrink-0 flex-col gap-2">
-          {rules.map((r) => (
-            <RuleListRow
-              key={r.id}
-              rule={r}
-              selected={r.id === selectedRuleId}
-              onSelect={() => setSelectedRuleId(r.id)}
+        <aside className="flex w-80 shrink-0 flex-col gap-2">
+          <div className="overflow-hidden rounded-md border border-border bg-card">
+            <PanelHeader
+              title="Rules"
+              menu={
+                <span className="flex items-center gap-0.5">
+                  {actionPending ? (
+                    <span
+                      className="inline-flex items-center gap-1 px-1 font-mono text-[10px] uppercase tracking-widest text-muted-foreground"
+                      title="Sorting…"
+                    >
+                      <Spinner />
+                      <span>Sorting</span>
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleCreate}
+                    disabled={creating || rules.length >= 26}
+                    aria-label="Add rule"
+                    title="Add rule"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {creating ? <Spinner /> : <Plus size={14} aria-hidden />}
+                  </button>
+                  <OverflowMenu items={listMenuItems} />
+                </span>
+              }
             />
-          ))}
-          {rules.length === 0 ? (
-            <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-              No rules yet.
-            </p>
-          ) : null}
-          <button
-            type="button"
-            onClick={handleCreate}
-            disabled={creating || rules.length >= 26}
-            className={cn(MUTED_ADD_BTN, "mt-1 self-start")}
-          >
-            {creating ? <Spinner /> : <span aria-hidden>+</span>}
-            Rule
-          </button>
-        </div>
+            {rules.length === 0 ? (
+              <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                None yet.
+              </p>
+            ) : (
+              <ul>
+                {sortedRules.map((r) => (
+                  <RuleListRow
+                    key={r.id}
+                    rule={r}
+                    selected={r.id === selectedRuleId}
+                    onSelect={() => setSelectedRuleId(r.id)}
+                    onDragStart={() => setDragId(r.id)}
+                    onDragOver={() => setDragOverId(r.id)}
+                    onDragEnd={() => {
+                      setDragId(null);
+                      setDragOverId(null);
+                    }}
+                    onDrop={() => handleDrop(r.id)}
+                    dragOver={dragOverId === r.id && dragId !== r.id}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
 
-        {/* Panel pane — blank until a rule is selected */}
         <div className="min-w-0 flex-1">
           {selectedRule ? (
             <RulePanel
@@ -259,9 +453,12 @@ function RulesWorkspace({
               days={days}
               nations={nations}
               cities={cities}
+              storylines={storylines}
+              endingVariables={endingVariables}
               allRules={rules}
               onClose={() => setSelectedRuleId(null)}
               onSelectRule={(id) => setSelectedRuleId(id)}
+              onEditId={() => handleEditRuleId(selectedRule.id)}
               onConditionsError={(m) =>
                 toast({ intent: "destructive", message: m })
               }
@@ -279,35 +476,66 @@ function RuleListRow({
   rule,
   selected,
   onSelect,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  onDrop,
+  dragOver,
 }: {
   rule: SortingRule;
   selected: boolean;
   onSelect: () => void;
+  onDragStart: () => void;
+  onDragOver: () => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
+  dragOver: boolean;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-current={selected || undefined}
+    <li
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        onDragStart();
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        onDragOver();
+      }}
+      onDragEnd={onDragEnd}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop();
+      }}
       className={cn(
-        "flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left transition-colors",
-        selected ? "bg-accent/70 ring-1 ring-border" : "bg-accent/40 hover:bg-accent/60"
+        "group",
+        dragOver && "border-t-2 border-primary"
       )}
     >
-      <span className="flex min-w-0 items-center gap-2">
-        <RulePill letter={rule.letter} />
-        <span className="truncate text-sm">
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected || undefined}
+        className={cn(
+          "flex w-full items-center gap-2 border-b border-border px-3 py-1.5 text-left text-sm last:border-b-0 hover:bg-accent/40",
+          selected && "bg-accent/60 text-accent-foreground"
+        )}
+      >
+        <GripVertical
+          size={12}
+          aria-hidden
+          className="cursor-grab text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
+        />
+        <RulePill letter={rule.letter} color={rule.color_hex} />
+        <span className="min-w-0 flex-1 truncate">
           {rule.summary ?? <span className="text-muted-foreground">—</span>}
         </span>
-      </span>
-      <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-        {rule.routes_to_reporting ? (
-          <Badge variant="muted">reporting</Badge>
-        ) : rule.destination_slot ? (
-          <Badge variant="muted">slot {rule.destination_slot}</Badge>
-        ) : null}
-        <span aria-hidden>›</span>
-      </span>
-    </button>
+        <SlotPill
+          slot={rule.destination_slot}
+          reporting={rule.routes_to_reporting}
+        />
+      </button>
+    </li>
   );
 }
