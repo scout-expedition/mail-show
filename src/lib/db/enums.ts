@@ -308,6 +308,10 @@ export const ENDING_VARIABLE_KINDS = [
   "text",
   "number_ref",
   "aggregate_ref",
+  // Smart Variables — user-created variables whose value is the result
+  // string of a paired smart_variable document. Comparable like text;
+  // possible values are derived from the doc's result_value strings.
+  "smart_ref",
 ] as const;
 export type EndingVariableKind = (typeof ENDING_VARIABLE_KINDS)[number];
 
@@ -326,6 +330,7 @@ export const ENDING_OPERATORS_BY_KIND: Record<
     "set_includes",
     "set_excludes",
   ],
+  smart_ref: ["=", "≠"],
 };
 
 /**
@@ -378,6 +383,10 @@ export const ENDING_DOCUMENT_KINDS = [
   "class_affinity_top",
   "nation_affinity_top",
   "nation_affinity_bottom",
+  // Smart Variables — user-created docs paired 1:1 with a smart_ref
+  // ending_variables row. Same block tree shape as logic docs; leaves
+  // are result blocks whose result_value is a free-form string.
+  "smart_variable",
 ] as const;
 export type EndingDocumentKind = (typeof ENDING_DOCUMENT_KINDS)[number];
 
@@ -393,7 +402,10 @@ export const ENDING_LOGIC_KINDS = [
   "class_affinity_top",
   "nation_affinity_top",
   "nation_affinity_bottom",
-] as const satisfies readonly Exclude<EndingDocumentKind, "framework">[];
+] as const satisfies readonly Exclude<
+  EndingDocumentKind,
+  "framework" | "smart_variable"
+>[];
 export type EndingLogicKind = (typeof ENDING_LOGIC_KINDS)[number];
 
 export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
@@ -402,6 +414,7 @@ export const ENDING_DOCUMENT_KIND_LABELS: Record<EndingDocumentKind, string> = {
   class_affinity_top: "Tiebreak Logic",
   nation_affinity_top: "Top Tiebreak Logic",
   nation_affinity_bottom: "Bottom Tiebreak Logic",
+  smart_variable: "Smart Variable",
 };
 
 /** Tab grouping for the Logic page. */

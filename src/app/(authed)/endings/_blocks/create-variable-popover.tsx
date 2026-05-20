@@ -174,6 +174,7 @@ export function CreateVariablePopover({
           kind: "text",
           number_ref: null,
           aggregate_ref: null,
+          smart_variable_doc_id: null,
           color_index: colorIndexFor(variableId),
           color_hex,
           folder_id,

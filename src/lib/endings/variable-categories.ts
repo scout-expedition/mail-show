@@ -49,6 +49,7 @@ const AGGREGATE_CATEGORY: ReadonlyArray<{ ref: string; label: string }> = [
 
 const ENDING_VARIABLES_ID = "cat:ending_variables";
 const AGGREGATES_ID = "cat:aggregates";
+const SMART_VARIABLES_ID = "cat:smart_variables";
 
 /**
  * Shape a flat list of variables + folders into the picker's top-level
@@ -99,6 +100,25 @@ export function buildVariableTree(
       id: cat.id,
       label: cat.label,
       children,
+    });
+  }
+
+  const smartVariables = variables
+    .filter((v) => v.kind === "smart_ref")
+    .slice()
+    .sort(
+      (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+    );
+  if (smartVariables.length > 0) {
+    out.push({
+      type: "category",
+      id: SMART_VARIABLES_ID,
+      label: "Smart Variables",
+      children: smartVariables.map<PickerNode>((v) => ({
+        type: "variable",
+        id: v.id,
+        variable: v,
+      })),
     });
   }
 

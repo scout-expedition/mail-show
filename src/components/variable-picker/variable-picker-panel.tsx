@@ -35,6 +35,7 @@ const KIND_LABEL: Record<EndingVariableKind, string> = {
   text: "text",
   number_ref: "number",
   aggregate_ref: "aggregate",
+  smart_ref: "smart",
 };
 
 /** One row in the rendered list. */

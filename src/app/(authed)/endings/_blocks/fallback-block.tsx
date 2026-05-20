@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { GripVertical } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -51,6 +52,8 @@ export function FallbackBlock({
   helperText,
   emptyLabel,
   title,
+  mode = "dropdown",
+  textPlaceholder,
 }: {
   block: BlockState;
   options: FallbackOption[];
@@ -62,6 +65,11 @@ export function FallbackBlock({
   emptyLabel: string;
   /** Header label on the panel. Defaults to "Fallback ending". */
   title?: string;
+  /** "text" → free-text fallback (smart_variable docs). "dropdown"
+   *  (default) → the existing Select chrome backed by `options`. */
+  mode?: "dropdown" | "text";
+  /** Placeholder shown in text-mode when the field is empty. */
+  textPlaceholder?: string;
 }) {
   const { peers, setFocus } = usePresenceContext();
   // Fallback result_value autosaves through patchBlock. Empty-string is
@@ -150,33 +158,49 @@ export function FallbackBlock({
                 field: "result_value",
               }}
             >
-              <Select
-                value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
-                onChange={(e) => handleSelectChange(e.target.value)}
-                onFocus={resultField.onFocus}
-                onBlur={resultField.onBlur}
-                style={{ backgroundColor: "var(--block-result-bg)" }}
-                className={cn(
-                  "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
-                  isEmpty &&
-                    !showSubsetPicker &&
-                    "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
-                  resultField.status === "error" && "ring-2 ring-destructive"
-                )}
-              >
-                {isEmpty ? <option value="">{emptyLabel}</option> : null}
-                {!isEmpty && !valueKnown ? (
-                  <option value={value}>(unknown: {value})</option>
-                ) : null}
-                {options.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-                {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
-                  <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
-                ) : null}
-              </Select>
+              {mode === "text" ? (
+                <Input
+                  type="text"
+                  value={value}
+                  onChange={(e) => resultField.set(e.target.value)}
+                  onFocus={resultField.onFocus}
+                  onBlur={resultField.onBlur}
+                  placeholder={textPlaceholder ?? emptyLabel}
+                  style={{ backgroundColor: "var(--block-result-bg)" }}
+                  className={cn(
+                    "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                    resultField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                />
+              ) : (
+                <Select
+                  value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
+                  onChange={(e) => handleSelectChange(e.target.value)}
+                  onFocus={resultField.onFocus}
+                  onBlur={resultField.onBlur}
+                  style={{ backgroundColor: "var(--block-result-bg)" }}
+                  className={cn(
+                    "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                    isEmpty &&
+                      !showSubsetPicker &&
+                      "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                    resultField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                >
+                  {isEmpty ? <option value="">{emptyLabel}</option> : null}
+                  {!isEmpty && !valueKnown ? (
+                    <option value={value}>(unknown: {value})</option>
+                  ) : null}
+                  {options.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                  {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
+                    <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
+                  ) : null}
+                </Select>
+              )}
             </FieldHighlight>
           </div>
           {showSubsetPicker && subsetFrameworks ? (

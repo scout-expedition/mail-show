@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import type {
@@ -22,6 +22,7 @@ import {
 } from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
+import { buildSmartReturnsByVariable } from "@/lib/endings/smart-variable-returns";
 
 export function FrameworksWorkspace({
   frameworks,
@@ -34,6 +35,8 @@ export function FrameworksWorkspace({
   folders,
   nations,
   selectedFrameworkId,
+  smartVariableDocs,
+  smartVariableBlocks,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
   currentUserId,
@@ -50,6 +53,13 @@ export function FrameworksWorkspace({
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
+  /** All kind='smart_variable' docs. Mirrored locally so renames/inserts
+   *  echo into the per-variable returns map without a refresh. */
+  smartVariableDocs: EndingDocument[];
+  /** Smart variable `result` + `fallback` blocks across every smart
+   *  variable doc. Mirrored locally so result_value edits flow into
+   *  chip dropdowns + the chip-adder seed in real time. */
+  smartVariableBlocks: EndingBlock[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -78,6 +88,10 @@ export function FrameworksWorkspace({
         "ending_condition_rows",
         "ending_condition_row_chips",
         "ending_condition_block_variables",
+        // Variable name/color/sort_order edits — pulled in so the chip
+        // labels + variable picker stay live across all surfaces, not
+        // just the variables editor that owns the variable rows.
+        "ending_variables",
       ]}
     >
       <FrameworksWorkspaceInner
@@ -91,6 +105,8 @@ export function FrameworksWorkspace({
         folders={folders}
         nations={nations}
         selectedFrameworkId={selectedFrameworkId}
+        smartVariableDocs={smartVariableDocs}
+        smartVariableBlocks={smartVariableBlocks}
         tiebreakDocsSummary={tiebreakDocsSummary}
         tiebreakDocsRaw={tiebreakDocsRaw}
       />
@@ -104,11 +120,13 @@ function FrameworksWorkspaceInner({
   rows,
   chips,
   blockVariables,
-  variables,
+  variables: initialVariables,
   values,
   folders,
   nations,
   selectedFrameworkId,
+  smartVariableDocs: initialSmartVariableDocs,
+  smartVariableBlocks: initialSmartVariableBlocks,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
 }: {
@@ -122,6 +140,8 @@ function FrameworksWorkspaceInner({
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
+  smartVariableDocs: EndingDocument[];
+  smartVariableBlocks: EndingBlock[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -158,30 +178,183 @@ function FrameworksWorkspaceInner({
       return [...kept, ...additions];
     });
   }
+
+  // Same mirror pattern for ending_variables — chip labels + the
+  // variable picker read from `variables`, and a rename on the
+  // /endings/variables page (or via the Smart Variables editor's
+  // doc->variable name sync) should echo live without a tab switch.
+  const [variables, setVariables] = useState<EndingVariable[]>(initialVariables);
+  const [prevInitialVariables, setPrevInitialVariables] = useState(initialVariables);
+  if (initialVariables !== prevInitialVariables) {
+    setPrevInitialVariables(initialVariables);
+    setVariables((prev) => {
+      const prevById = new Map(prev.map((v) => [v.id, v]));
+      const serverIds = new Set(initialVariables.map((v) => v.id));
+      const kept = prev.filter((v) => serverIds.has(v.id));
+      const additions = initialVariables.filter((v) => !prevById.has(v.id));
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+
+  // Smart variable docs + their result/fallback blocks. We mirror both
+  // so chip dropdowns + the chip-adder seed re-derive `smartVariableReturns`
+  // live as a Smart Variable's result_value edits stream in via
+  // ending_blocks postgres_changes from the smart-variables editor.
+  // Without these mirrors the precomputed map would freeze at the
+  // server-render snapshot and only catch up on next navigation.
+  const [smartVariableDocs, setSmartVariableDocs] = useState<EndingDocument[]>(
+    initialSmartVariableDocs
+  );
+  const [prevInitialSmartDocs, setPrevInitialSmartDocs] = useState(
+    initialSmartVariableDocs
+  );
+  if (initialSmartVariableDocs !== prevInitialSmartDocs) {
+    setPrevInitialSmartDocs(initialSmartVariableDocs);
+    setSmartVariableDocs((prev) => {
+      const prevById = new Map(prev.map((d) => [d.id, d]));
+      const serverIds = new Set(initialSmartVariableDocs.map((d) => d.id));
+      const kept = prev.filter((d) => serverIds.has(d.id));
+      const additions = initialSmartVariableDocs.filter(
+        (d) => !prevById.has(d.id)
+      );
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+  const [smartVariableBlocks, setSmartVariableBlocks] = useState<EndingBlock[]>(
+    initialSmartVariableBlocks
+  );
+  const [prevInitialSmartBlocks, setPrevInitialSmartBlocks] = useState(
+    initialSmartVariableBlocks
+  );
+  if (initialSmartVariableBlocks !== prevInitialSmartBlocks) {
+    setPrevInitialSmartBlocks(initialSmartVariableBlocks);
+    setSmartVariableBlocks((prev) => {
+      const prevById = new Map(prev.map((b) => [b.id, b]));
+      const serverIds = new Set(initialSmartVariableBlocks.map((b) => b.id));
+      const kept = prev.filter((b) => serverIds.has(b.id));
+      const additions = initialSmartVariableBlocks.filter(
+        (b) => !prevById.has(b.id)
+      );
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+
+  // Keep a ref to the latest smart-variable doc set so the
+  // ending_blocks postgres handler can decide doc-membership against
+  // the CURRENT mirror, not the closure snapshot from when the effect
+  // last ran. Without this, a peer's "INSERT doc → INSERT block"
+  // sequence has a window where the block arrives before React
+  // re-renders the effect with the new doc list, and the block gets
+  // dropped from the returns map.
+  const smartVariableDocsRef = useRef(smartVariableDocs);
+  smartVariableDocsRef.current = smartVariableDocs;
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
-      if (change.table !== "ending_documents") return;
-      if (change.eventType === "UPDATE" && change.new) {
-        const updated = change.new as unknown as EndingDocument;
-        if (updated.kind !== "framework") return;
-        setFrameworks((prev) =>
-          prev.map((f) => (f.id === updated.id ? { ...f, ...updated } : f))
-        );
-      } else if (change.eventType === "DELETE" && change.old) {
-        const deleted = change.old as unknown as { id: string };
-        setFrameworks((prev) => prev.filter((f) => f.id !== deleted.id));
-      } else if (change.eventType === "INSERT" && change.new) {
-        const inserted = change.new as unknown as EndingDocument;
-        if (inserted.kind !== "framework") return;
-        setFrameworks((prev) =>
-          prev.some((f) => f.id === inserted.id) ? prev : [...prev, inserted]
-        );
-        // Trigger a re-fetch so the new framework's empty editor data
-        // (blocks/rows/chips/header_vars) appears in the prop tree.
-        startTransition(() => router.refresh());
+      if (change.table === "ending_documents") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const updated = change.new as unknown as EndingDocument;
+          if (updated.kind === "framework") {
+            setFrameworks((prev) =>
+              prev.map((f) => (f.id === updated.id ? { ...f, ...updated } : f))
+            );
+          } else if (updated.kind === "smart_variable") {
+            setSmartVariableDocs((prev) =>
+              prev.map((d) => (d.id === updated.id ? { ...d, ...updated } : d))
+            );
+          }
+        } else if (change.eventType === "DELETE" && change.old) {
+          const deleted = change.old as unknown as { id: string };
+          setFrameworks((prev) => prev.filter((f) => f.id !== deleted.id));
+          setSmartVariableDocs((prev) =>
+            prev.filter((d) => d.id !== deleted.id)
+          );
+        } else if (change.eventType === "INSERT" && change.new) {
+          const inserted = change.new as unknown as EndingDocument;
+          if (inserted.kind === "framework") {
+            setFrameworks((prev) =>
+              prev.some((f) => f.id === inserted.id) ? prev : [...prev, inserted]
+            );
+            // Trigger a re-fetch so the new framework's empty editor data
+            // (blocks/rows/chips/header_vars) appears in the prop tree.
+            startTransition(() => router.refresh());
+          } else if (inserted.kind === "smart_variable") {
+            setSmartVariableDocs((prev) =>
+              prev.some((d) => d.id === inserted.id)
+                ? prev
+                : [...prev, inserted]
+            );
+          }
+        }
+        return;
+      }
+      if (change.table === "ending_blocks") {
+        // Mirror smart_variable result/fallback blocks specifically.
+        // The DocumentEditor owns its own framework-block mirror; this
+        // handler only feeds smartVariableReturns. Doc-membership is
+        // checked via the ref so we always see the latest doc set,
+        // even when the corresponding ending_documents INSERT just
+        // landed in the same tick.
+        const docs = smartVariableDocsRef.current;
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          setSmartVariableBlocks((prev) => {
+            const isSmart = docs.some((d) => d.id === n.document_id);
+            if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
+            const idx = prev.findIndex((b) => b.id === n.id);
+            if (idx < 0) return isSmart ? [...prev, n] : prev;
+            const out = prev.slice();
+            out[idx] = { ...out[idx], ...n };
+            return out;
+          });
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setSmartVariableBlocks((prev) => prev.filter((b) => b.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          if (!docs.some((d) => d.id === n.document_id)) return;
+          setSmartVariableBlocks((prev) =>
+            prev.some((b) => b.id === n.id) ? prev : [...prev, n]
+          );
+        }
+        return;
+      }
+      if (change.table === "ending_variables") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const updated = change.new as unknown as EndingVariable;
+          setVariables((prev) =>
+            prev.map((v) => (v.id === updated.id ? { ...v, ...updated } : v))
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const deleted = change.old as unknown as { id: string };
+          setVariables((prev) => prev.filter((v) => v.id !== deleted.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const inserted = change.new as unknown as EndingVariable;
+          setVariables((prev) =>
+            prev.some((v) => v.id === inserted.id) ? prev : [...prev, inserted]
+          );
+        }
       }
     });
   }, [onPostgresChanges, router]);
+
+  // Derived live map. Re-runs whenever any of the three mirrors update,
+  // so chip dropdowns and the chip-adder seed always reflect the
+  // current set of smart-variable returns.
+  const smartVariableReturns = useMemo(
+    () =>
+      buildSmartReturnsByVariable(
+        smartVariableDocs,
+        variables,
+        smartVariableBlocks
+      ),
+    [smartVariableDocs, variables, smartVariableBlocks]
+  );
 
   const effectiveId =
     (selectedFrameworkId &&
@@ -253,6 +426,7 @@ function FrameworksWorkspaceInner({
           blockVariables={editorData.editorBlockVariables}
           variables={variables}
           values={values}
+          smartVariableReturns={smartVariableReturns}
           folders={folders}
           nations={nations}
           tiebreakDocsSummary={tiebreakDocsSummary}

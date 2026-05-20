@@ -175,6 +175,8 @@ export type ActiveVariable = {
   key: string;
   /** Variable name (the chip's top half). */
   name: string;
+  /** Kind — drives the leading icon on the chip's name segment. */
+  kind: EndingVariable["kind"];
   /** Chosen value label, or "—" when the assignment has no value yet. */
   valueLabel: string;
   /** Variable color — border + name-segment fill. */
@@ -219,6 +221,7 @@ export function extractActiveVariables(
   return out.map(({ variable, valueLabel }) => ({
     key: variable.id,
     name: variable.name,
+    kind: variable.kind,
     valueLabel,
     color: variable.color_hex ?? paletteColor(variable.color_index),
   }));

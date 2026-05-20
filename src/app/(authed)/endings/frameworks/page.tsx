@@ -34,8 +34,7 @@ export default async function FrameworksPage({
   };
 
   const [
-    { data: documentData },
-    { data: logicDocData },
+    { data: allDocData },
     { data: blockData },
     { data: rowData },
     { data: chipData },
@@ -45,17 +44,12 @@ export default async function FrameworksPage({
     { data: folderData },
     { data: nationData },
   ] = await Promise.all([
-    supabase
-      .from("ending_documents")
-      .select("*")
-      .eq("kind", "framework")
-      .order("sort_order"),
-    // Logic-kind documents — used downstream to compute the per-kind
-    // tiebreak summary that the static analyzer reads.
-    supabase
-      .from("ending_documents")
-      .select("id, kind")
-      .neq("kind", "framework"),
+    // Fetch all documents in one shot — frameworks, logic singletons,
+    // and smart_variable docs are all needed downstream (the framework
+    // list filters to kind='framework'; the tiebreak summary needs the
+    // logic docs; smart variables feed the per-variable returns map for
+    // chip pickers).
+    supabase.from("ending_documents").select("*").order("sort_order"),
     supabase.from("ending_blocks").select("*").order("sort_order"),
     supabase.from("ending_condition_rows").select("*").order("sort_order"),
     supabase
@@ -76,10 +70,29 @@ export default async function FrameworksPage({
 
   // Filter blocks to those whose document_id is one of our framework
   // docs — saves a JOIN at the cost of a tiny client-side filter.
-  const frameworkDocs = (documentData ?? []) as EndingDocument[];
+  const allDocs = (allDocData ?? []) as EndingDocument[];
+  const frameworkDocs = allDocs.filter((d) => d.kind === "framework");
   const frameworkIds = new Set(frameworkDocs.map((d) => d.id));
   const frameworkBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
     frameworkIds.has(b.document_id)
+  );
+  // Logic docs (used by the per-kind tiebreak summary below).
+  const logicDocData = allDocs.filter(
+    (d) => d.kind !== "framework" && d.kind !== "smart_variable"
+  );
+
+  // Smart Variables live in their own kind='smart_variable' docs.
+  // We pass the raw docs + their result/fallback blocks through so the
+  // workspace can derive `smartVariableReturns` client-side AND keep
+  // it live as result_value edits stream in via postgres_changes —
+  // without that, chip dropdowns would show the snapshot at first
+  // render and never reflect downstream edits without a refresh.
+  const smartVariableDocs = allDocs.filter((d) => d.kind === "smart_variable");
+  const smartDocIds = new Set(smartVariableDocs.map((d) => d.id));
+  const smartVariableBlocks = ((blockData ?? []) as EndingBlock[]).filter(
+    (b) =>
+      smartDocIds.has(b.document_id) &&
+      (b.block_type === "result" || b.block_type === "fallback")
   );
 
   // Per-logic-kind tiebreak summary for static analysis. A doc is
@@ -89,7 +102,7 @@ export default async function FrameworksPage({
   const allBlocks = (blockData ?? []) as EndingBlock[];
   const allRows = (rowData ?? []) as EndingConditionRow[];
   const tiebreakDocsSummary = new Map<EndingLogicKind, { isEmpty: boolean }>();
-  for (const d of (logicDocData ?? []) as Pick<EndingDocument, "id" | "kind">[]) {
+  for (const d of logicDocData) {
     const docBlocks = allBlocks.filter((b) => b.document_id === d.id);
     const conditionBlockIds = new Set(
       docBlocks.filter((b) => b.block_type === "condition").map((b) => b.id)
@@ -118,7 +131,7 @@ export default async function FrameworksPage({
       chips: EndingConditionRowChip[];
     }
   >();
-  for (const d of (logicDocData ?? []) as Pick<EndingDocument, "id" | "kind">[]) {
+  for (const d of logicDocData) {
     const docBlocks = allBlocks.filter((b) => b.document_id === d.id);
     const blockIds = new Set(docBlocks.map((b) => b.id));
     const docRows = allRows.filter((r) => blockIds.has(r.condition_block_id));
@@ -155,6 +168,8 @@ export default async function FrameworksPage({
         >[]
       }
       selectedFrameworkId={selectedId ?? null}
+      smartVariableDocs={smartVariableDocs}
+      smartVariableBlocks={smartVariableBlocks}
       tiebreakDocsSummary={tiebreakDocsSummary}
       tiebreakDocsRaw={logicDocRawByKind}
       currentUserId={currentUserId}
