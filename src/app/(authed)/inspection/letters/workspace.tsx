@@ -18,6 +18,7 @@ import { usePresenceUser } from "@/components/presence-user-context";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
+import { CompositeActionChip } from "@/components/composite-action-chip";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,7 @@ import {
 import type {
   ActionRow,
   ActionTemplate,
+  ActionTemplateGroup,
   Citizen,
   City,
   Day,
@@ -59,6 +61,7 @@ import type {
 } from "@/lib/db/types";
 import {
   addActionFromTemplate,
+  addActionsForGroup,
   addPieceToLetter,
   applyInspectionLetterVariants,
   applyLetterGroupSequences,
@@ -73,6 +76,7 @@ import {
   deleteGroup,
   deleteInspectionLetter,
   deleteReportSegment,
+  duplicateAction,
   patchAction,
   patchActionEndingAssignments,
   patchInspectionLetter,
@@ -127,18 +131,22 @@ import {
 } from "@/components/renumber-dialog";
 import { useToast } from "@/components/toast";
 import {
+  AlertTriangle,
   ArrowDownWideNarrow,
   BookOpen,
   Calendar,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Hash,
+  HelpCircle,
   MailOpen,
   Mails,
   Megaphone,
   MoreVertical,
   Plus,
+  Replace,
   Trash2,
 } from "lucide-react";
 import { paletteColor } from "@/lib/endings/color-palette";
@@ -271,10 +279,6 @@ type EndingAssignmentState = {
 type ActionState = ActionImpacts & {
   id: string;
   action_template_id: string | null;
-  name: string;
-  icon_type: ActionRow["icon_type"];
-  icon_value: string | null;
-  color_hex: string;
   report_segment_id: string | null;
   next_letter_id: string | null;
   ending_assignments: EndingAssignmentState[];
@@ -313,10 +317,6 @@ function toLetterState(
       .map((a) => ({
         id: a.id,
         action_template_id: a.action_template_id,
-        name: a.name,
-        icon_type: a.icon_type,
-        icon_value: a.icon_value,
-        color_hex: a.color_hex,
         report_segment_id: a.report_segment_id,
         next_letter_id: a.next_letter_id,
         impact_world_status: a.impact_world_status,
@@ -365,6 +365,7 @@ export type LettersWorkspaceProps = {
   letters: InspectionLetterView[];
   actions: ActionRow[];
   templates: ActionTemplate[];
+  templateGroups: ActionTemplateGroup[];
   heroes: Citizen[];
   allCitizenIds: string[];
   cities: City[];
@@ -465,6 +466,7 @@ function LettersWorkspaceInner({
   letters: allLettersProp,
   actions: allActionsProp,
   templates,
+  templateGroups,
   heroes: initialHeroes,
   allCitizenIds,
   cities,
@@ -755,6 +757,13 @@ function LettersWorkspaceInner({
     const init = initId ? letters.find((l) => l.id === initId) : null;
     return init ? toLetterState(init, actions, endingAssignments) : null;
   });
+  // Optimistic ghost action rows the user has just added via the picker.
+  // Keyed implicitly by `(inspection_letter_id, action_template_id)` — the
+  // partial unique index guarantees that pair identifies the real row
+  // once it lands, so the reconcile effect can drop the ghost cleanly.
+  const [pendingActionAdds, setPendingActionAdds] = useState<ActionState[]>(
+    []
+  );
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
@@ -1463,6 +1472,31 @@ function LettersWorkspaceInner({
     setLetterState(toLetterState(found, actions, endingAssignments));
   }, [letters, actions, endingAssignments, selectedId]);
 
+  // Reconcile pending action ghosts whenever the server `actions` prop
+  // updates: drop any ghost whose (selectedLetterId, template) pair now
+  // has a real row. The partial unique index
+  // `actions_letter_template_unique` guarantees that pair identifies the
+  // persisted row.
+  useEffect(() => {
+    if (!selectedId) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPendingActionAdds((prev) => {
+      if (prev.length === 0) return prev;
+      const realPairs = new Set(
+        actions
+          .filter(
+            (a) =>
+              a.inspection_letter_id === selectedId && a.action_template_id
+          )
+          .map((a) => a.action_template_id as string)
+      );
+      const next = prev.filter(
+        (g) => !g.action_template_id || !realPairs.has(g.action_template_id)
+      );
+      return next.length === prev.length ? prev : next;
+    });
+  }, [actions, selectedId]);
+
   function selectLetter(id: string) {
     if (id === selectedId) {
       setSelectedId(null);
@@ -1918,12 +1952,79 @@ function LettersWorkspaceInner({
     });
   }
 
-  function handleAddAction(templateId: string, includePair = true) {
+  function makeGhostActionState(templateId: string): ActionState {
+    return {
+      id: `ghost-action-${crypto.randomUUID()}`,
+      action_template_id: templateId,
+      report_segment_id: null,
+      next_letter_id: null,
+      impact_world_status: 0,
+      impact_demerits: 0,
+      impact_proletariat: 0,
+      impact_gentry: 0,
+      impact_epicenter: 0,
+      impact_folos: 0,
+      impact_emberlyn: 0,
+      impact_spokgrad: 0,
+      impact_pelico: 0,
+      ending_assignments: [],
+    };
+  }
+
+  function handleAddAction(templateId: string) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
+    // Skip if the letter already has this template (locally or via a
+    // pending ghost) — the server would no-op anyway.
+    const alreadyOnLetter =
+      letterState?.actions.some(
+        (a) => a.action_template_id === templateId
+      ) ?? false;
+    if (alreadyOnLetter) return;
+    const ghost = makeGhostActionState(templateId);
+    setPendingActionAdds((prev) => [...prev, ghost]);
     startRowAction(async () => {
-      await addActionFromTemplate(groupId, selectedId, templateId, includePair);
+      try {
+        await addActionFromTemplate(groupId, selectedId, templateId);
+      } catch {
+        setPendingActionAdds((prev) => prev.filter((g) => g.id !== ghost.id));
+      }
+    });
+  }
+
+  function handleAddActionGroup(templateGroupId: string) {
+    if (!group) return;
+    const groupId = group.id;
+    if (!selectedId || !templateGroupId) return;
+    // Spawn one ghost per unused member so the rows appear immediately.
+    const presentTemplateIds = new Set(
+      (letterState?.actions ?? [])
+        .map((a) => a.action_template_id)
+        .filter((id): id is string => !!id)
+    );
+    const memberTemplateIds = templates
+      .filter((t) => t.group_id === templateGroupId)
+      .map((t) => t.id)
+      .filter((id) => !presentTemplateIds.has(id));
+    if (memberTemplateIds.length === 0) return;
+    const ghosts = memberTemplateIds.map((id) => makeGhostActionState(id));
+    setPendingActionAdds((prev) => [...prev, ...ghosts]);
+    startRowAction(async () => {
+      try {
+        await addActionsForGroup(groupId, selectedId, templateGroupId);
+      } catch {
+        const ghostIds = new Set(ghosts.map((g) => g.id));
+        setPendingActionAdds((prev) =>
+          prev.filter((g) => !ghostIds.has(g.id))
+        );
+      }
+    });
+  }
+
+  function handleDuplicateAction(actionId: string) {
+    startRowAction(async () => {
+      await duplicateAction(actionId);
     });
   }
 
@@ -3062,8 +3163,13 @@ function LettersWorkspaceInner({
           {letterState ? (
             <LetterActionsCard
               key={letterState.id}
-              actions={letterState.actions}
+              actions={
+                pendingActionAdds.length === 0
+                  ? letterState.actions
+                  : [...letterState.actions, ...pendingActionAdds]
+              }
               templates={templates}
+              templateGroups={templateGroups}
               nations={nations}
               segments={segments}
               storyline={currentStoryline}
@@ -3083,7 +3189,9 @@ function LettersWorkspaceInner({
               active={view === "actions"}
               onActionChange={updateAction}
               onAddAction={handleAddAction}
+              onAddActionGroup={handleAddActionGroup}
               onDeleteAction={handleDeleteAction}
+              onDuplicateAction={handleDuplicateAction}
               onOpenSegment={openSegmentForAction}
               openSegmentId={selectedSegmentId}
               onOpenLetter={openLetterForAction}
@@ -3508,6 +3616,7 @@ function LetterFieldsCard({
 function LetterActionsCard({
   actions,
   templates,
+  templateGroups,
   nations,
   segments,
   storyline,
@@ -3524,7 +3633,9 @@ function LetterActionsCard({
   active,
   onActionChange,
   onAddAction,
+  onAddActionGroup,
   onDeleteAction,
+  onDuplicateAction,
   onOpenSegment,
   openSegmentId,
   onOpenLetter,
@@ -3534,6 +3645,7 @@ function LetterActionsCard({
 }: {
   actions: ActionState[];
   templates: ActionTemplate[];
+  templateGroups: ActionTemplateGroup[];
   nations: Nation[];
   segments: ReportSegmentView[];
   storyline: Storyline | undefined;
@@ -3551,8 +3663,10 @@ function LetterActionsCard({
    *  this true moves keyboard focus into the panel. */
   active: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
-  onAddAction: (templateId: string, includePair?: boolean) => void;
+  onAddAction: (templateId: string) => void;
+  onAddActionGroup: (templateGroupId: string) => void;
   onDeleteAction: (actionId: string) => void;
+  onDuplicateAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
   onOpenLetter: (actionIdx: number) => void;
@@ -3601,45 +3715,82 @@ function LetterActionsCard({
         />
       </div>
       <div className="flex flex-col gap-3">
-        {actions.map((a, i) => (
-          <ActionEditor
-            key={a.id}
-            action={a}
-            templates={templates}
-            nations={nations}
-            segments={segments}
-            storyline={storyline}
-            nextGroup={nextGroup}
-            nextDayLetters={nextDayLetters}
-            allLetters={allLetters}
-            groupId={groupId}
-            days={days}
-            currentLetterDayId={currentLetterDayId}
-            endingVariables={endingVariables}
-            endingValues={endingValues}
-            onChange={(patch) => onActionChange(i, patch)}
-            onDelete={() => onDeleteAction(a.id)}
-            onOpenSegment={() => onOpenSegment(i)}
-            segmentOpen={
-              !!a.report_segment_id && a.report_segment_id === openSegmentId
-            }
-            onOpenLetter={() => onOpenLetter(i)}
-            letterOpen={
-              !!a.next_letter_id && a.next_letter_id === openLetterId
-            }
-            highlighted={a.id === highlightedActionId}
-          />
-        ))}
+        {(() => {
+          // Sort the letter's actions by the order their template appears
+          // on the admin page: primary by group sort_order, secondary by
+          // within-group template sort_order. Untyped actions sink to the
+          // end. Index references stay aligned with the parent's `actions`
+          // array (which scheduleActionPatch / onDelete / etc. address by
+          // index), so we sort INDICES, not the rows themselves.
+          const orderFor = (a: ActionState): [number, number] => {
+            if (!a.action_template_id) return [Infinity, Infinity];
+            const tpl = templates.find((t) => t.id === a.action_template_id);
+            if (!tpl) return [Infinity, Infinity];
+            const grp = templateGroups.find((g) => g.id === tpl.group_id);
+            return [grp?.sort_order ?? Infinity, tpl.sort_order];
+          };
+          const sortedIndices = actions
+            .map((_, i) => i)
+            .sort((ia, ib) => {
+              const [ga, ta] = orderFor(actions[ia]);
+              const [gb, tb] = orderFor(actions[ib]);
+              if (ga !== gb) return ga - gb;
+              if (ta !== tb) return ta - tb;
+              return ia - ib;
+            });
+          return sortedIndices.map((i) => {
+            const a = actions[i];
+            const siblingTemplateIds = actions
+              .filter((_, j) => j !== i)
+              .map((o) => o.action_template_id)
+              .filter((id): id is string => !!id);
+            return (
+              <ActionEditor
+                key={a.id}
+                action={a}
+                templates={templates}
+                templateGroups={templateGroups}
+                nations={nations}
+                segments={segments}
+                storyline={storyline}
+                nextGroup={nextGroup}
+                nextDayLetters={nextDayLetters}
+                allLetters={allLetters}
+                groupId={groupId}
+                days={days}
+                currentLetterDayId={currentLetterDayId}
+                endingVariables={endingVariables}
+                endingValues={endingValues}
+                siblingTemplateIds={siblingTemplateIds}
+                onChange={(patch) => onActionChange(i, patch)}
+                onDelete={() => onDeleteAction(a.id)}
+                onDuplicate={() => onDuplicateAction(a.id)}
+                onOpenSegment={() => onOpenSegment(i)}
+                segmentOpen={
+                  !!a.report_segment_id && a.report_segment_id === openSegmentId
+                }
+                onOpenLetter={() => onOpenLetter(i)}
+                letterOpen={
+                  !!a.next_letter_id && a.next_letter_id === openLetterId
+                }
+                highlighted={a.id === highlightedActionId}
+              />
+            );
+          });
+        })()}
         {actions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No actions yet.</p>
         ) : null}
         <div className="flex justify-center pt-1">
           <AddActionMenu
             templates={templates}
+            groups={templateGroups}
+            existingTemplateIds={actions
+              .map((a) => a.action_template_id)
+              .filter((id): id is string => !!id)}
             disabled={rowPending || templates.length === 0}
-            onAdd={(templateId, includePair) =>
-              onAddAction(templateId, includePair)
-            }
+            onAddTemplate={(templateId) => onAddAction(templateId)}
+            onAddGroup={(templateGroupId) => onAddActionGroup(templateGroupId)}
           />
         </div>
       </div>
@@ -3756,7 +3907,7 @@ function LetterSegmentCard({
   type Trigger = {
     actionId: string;
     actionName: string;
-    actionIconType: IconType;
+    actionIconType: IconType | null;
     actionIconValue: string | null;
     actionColorHex: string;
     letterId: string;
@@ -3790,10 +3941,10 @@ function LetterSegmentCard({
           : undefined;
         return {
           actionId: a.id,
-          actionName: tpl?.name ?? a.name,
-          actionIconType: tpl?.icon_type ?? a.icon_type,
-          actionIconValue: tpl?.icon_value ?? a.icon_value,
-          actionColorHex: tpl?.color_hex ?? a.color_hex,
+          actionName: tpl?.name ?? "Unset action",
+          actionIconType: tpl?.icon_type ?? null,
+          actionIconValue: tpl?.icon_value ?? null,
+          actionColorHex: tpl?.color_hex ?? "#3f3f46",
           letterId: letter.id,
           contentId: letter.content_id,
           storylineId: letter.storyline_id,
@@ -4008,7 +4159,7 @@ function LetterSegmentCard({
                   />
                   <ActionPill
                     name={t.actionName}
-                    iconType={t.actionIconType}
+                    iconType={t.actionIconType ?? "lucide"}
                     iconValue={t.actionIconValue}
                     colorHex={t.actionColorHex}
                     iconOnly
@@ -5021,6 +5172,7 @@ function HighlightableImpactTile({
 function ActionEditor({
   action,
   templates,
+  templateGroups,
   nations,
   segments,
   storyline,
@@ -5032,8 +5184,10 @@ function ActionEditor({
   currentLetterDayId,
   endingVariables,
   endingValues,
+  siblingTemplateIds,
   onChange,
   onDelete,
+  onDuplicate,
   onOpenSegment,
   segmentOpen,
   onOpenLetter,
@@ -5042,6 +5196,7 @@ function ActionEditor({
 }: {
   action: ActionState;
   templates: ActionTemplate[];
+  templateGroups: ActionTemplateGroup[];
   nations: Nation[];
   segments: ReportSegmentView[];
   storyline: Storyline | undefined;
@@ -5053,8 +5208,13 @@ function ActionEditor({
   currentLetterDayId: string | null;
   endingVariables: EndingVariable[];
   endingValues: EndingVariableValue[];
+  /** Template IDs already in use by OTHER actions on this letter — used to
+   *  filter the "Change type to…" picker so a stray click can't trip the
+   *  partial unique index `actions_letter_template_unique`. */
+  siblingTemplateIds: string[];
   onChange: (patch: Partial<ActionState>) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   onOpenSegment: () => void;
   segmentOpen: boolean;
   onOpenLetter: () => void;
@@ -5119,10 +5279,11 @@ function ActionEditor({
   const tpl = action.action_template_id
     ? templates.find((t) => t.id === action.action_template_id)
     : undefined;
-  const name = tpl?.name ?? action.name;
-  const iconType = tpl?.icon_type ?? action.icon_type;
-  const iconValue = tpl?.icon_value ?? action.icon_value;
-  const colorHex = tpl?.color_hex ?? action.color_hex;
+  const isUnset = !tpl;
+  const name = tpl?.name ?? "Unset action type";
+  const iconType: IconType = tpl?.icon_type ?? "lucide";
+  const iconValue = tpl?.icon_value ?? null;
+  const colorHex = tpl?.color_hex ?? "#3f3f46";
 
   const orderedNations = nations
     .slice()
@@ -5314,14 +5475,35 @@ function ActionEditor({
           the name clear of the absolute kebab. */}
       <div className="mb-2 flex items-center gap-2 pr-7">
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded"
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded",
+            isUnset && "ring-1 ring-warning/40"
+          )}
           style={{ background: colorHex, color: readableOnHex(colorHex) }}
         >
-          {iconValue ? (
+          {isUnset ? (
+            <HelpCircle size={16} aria-hidden />
+          ) : iconValue ? (
             <IconDisplay type={iconType} value={iconValue} size={16} />
           ) : null}
         </span>
-        <span className="min-w-0 flex-1 truncate font-semibold">{name}</span>
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate font-semibold",
+            isUnset && "text-muted-foreground"
+          )}
+        >
+          {name}
+        </span>
+        {isUnset ? (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-warning-foreground ring-1 ring-warning/40"
+            title="This action has no type. Pick one via Change type to…"
+          >
+            <AlertTriangle size={9} aria-hidden />
+            type unset
+          </span>
+        ) : null}
       </div>
 
       {/* Two-column body: left = Report then Next letter (with summaries),
@@ -5382,10 +5564,80 @@ function ActionEditor({
       </div>
 
       {/* Kebab is the card's last DOM child → the last tab stop in the
-          row. Positioned to sit visually in the header's top-right. */}
+          row. Positioned to sit visually in the header's top-right.
+          "Change type to…" expands into a submenu listing every template
+          not already in use on this letter. */}
       <div className="absolute right-3 top-3">
         <OverflowMenu
           items={[
+            {
+              label: "Change type to…",
+              icon: <Replace size={12} aria-hidden />,
+              submenu: (() => {
+                const exclude = new Set(siblingTemplateIds);
+                const eligibleByGroup = new Map<string, ActionTemplate[]>();
+                for (const t of templates) {
+                  if (exclude.has(t.id)) continue;
+                  if (t.id === action.action_template_id) continue;
+                  if (!t.group_id) continue;
+                  const arr = eligibleByGroup.get(t.group_id) ?? [];
+                  arr.push(t);
+                  eligibleByGroup.set(t.group_id, arr);
+                }
+                if (eligibleByGroup.size === 0) {
+                  return [
+                    {
+                      label: "(no other types available)",
+                      onClick: () => {},
+                    },
+                  ];
+                }
+                // Render in group sort order. Solo-member groups flatten
+                // to a single clickable item; multi-member groups expose
+                // their actions in a nested submenu.
+                return templateGroups
+                  .filter((g) => eligibleByGroup.has(g.id))
+                  .map((g) => {
+                    const members = (
+                      eligibleByGroup.get(g.id) ?? []
+                    ).slice().sort((a, b) => a.sort_order - b.sort_order);
+                    if (members.length === 1) {
+                      const m = members[0];
+                      return {
+                        label: m.name,
+                        icon: <CompositeActionChip members={[m]} size={14} />,
+                        onClick: () => {
+                          onChange({ action_template_id: m.id });
+                        },
+                      };
+                    }
+                    const label =
+                      g.name?.trim() ||
+                      members.map((m) => m.name).join(" + ");
+                    return {
+                      label,
+                      icon: (
+                        <CompositeActionChip members={members} size={14} />
+                      ),
+                      submenu: members.map((m) => ({
+                        label: m.name,
+                        icon: (
+                          <CompositeActionChip members={[m]} size={14} />
+                        ),
+                        onClick: () => {
+                          onChange({ action_template_id: m.id });
+                        },
+                      })),
+                    };
+                  });
+              })(),
+            },
+            {
+              label: "Duplicate as new (unset)",
+              icon: <Copy size={12} aria-hidden />,
+              onClick: onDuplicate,
+            },
+            { separator: true },
             {
               label: "Delete Action",
               intent: "destructive",
@@ -5398,6 +5650,7 @@ function ActionEditor({
     </div>
   );
 }
+
 
 /** A "Next letter" / "Report" field row inside ActionRow.
  *
@@ -6036,8 +6289,17 @@ function AddEndingVariableMenu({
     const r = btn.getBoundingClientRect();
     // Over-estimate the popup width so the right-edge clamp stays safe.
     const width = 260;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-    setPos({ top: r.bottom + 4, left });
+    // The popup's vertical height depends on the filtered list; over-estimate
+    // for the clamp so a near-bottom trigger flips above instead of
+    // disappearing off-screen.
+    const estHeight = 240;
+    const margin = 8;
+    const left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
+    const fitsBelow = r.bottom + estHeight + margin <= window.innerHeight;
+    const top = fitsBelow
+      ? r.bottom + 4
+      : Math.max(margin, r.top - estHeight - 4);
+    setPos({ top, left });
   }, []);
 
   // Outside-click closes. The popup is portaled out of `wrapRef`, so the
@@ -6205,118 +6467,103 @@ function BackLink({
   );
 }
 
-/** One entry in the add-action menu — either a single template or a
- *  paired set of two. `templates` is ordered by sort_order; the first
- *  element's id is the canonical id used when adding the whole entry. */
+/** One entry in the add-action menu. Every entry is a group — even solo
+ *  templates live inside one — and the members carry per-row `used` flags
+ *  so the UI can grey out already-added options while keeping them visible
+ *  for context. `allUsed` indicates the group's primary click is a no-op
+ *  (every member already on the letter). */
 type ActionPickerEntry = {
   id: string;
   label: string;
-  templates: ActionTemplate[];
+  members: Array<{ template: ActionTemplate; used: boolean }>;
+  allUsed: boolean;
 };
 
 /**
- * Deduplicate paired templates into single picker entries. A paired
- * entry carries both templates (sort_order order) and is labeled "A + B";
- * the lower-sort_order template acts as the canonical id for the pair.
- * `addActionFromTemplate` handles pair insertion server-side.
+ * Build picker entries from the current templates + groups. Every group is
+ * always shown — used templates render greyed-out so the picker stays
+ * stable across adds and the user keeps the context of which group an
+ * action belongs to.
  */
-function pickerEntries(templates: ActionTemplate[]): ActionPickerEntry[] {
-  const byId = new Map(templates.map((t) => [t.id, t]));
-  const seen = new Set<string>();
+function pickerEntries(
+  templates: ActionTemplate[],
+  groups: ActionTemplateGroup[],
+  existingTemplateIds: string[]
+): ActionPickerEntry[] {
+  const used = new Set(existingTemplateIds);
   const entries: ActionPickerEntry[] = [];
-  for (const t of templates) {
-    if (seen.has(t.id)) continue;
-    const partner = t.paired_template_id
-      ? byId.get(t.paired_template_id)
-      : undefined;
-    if (partner) {
-      const [a, b] =
-        t.sort_order <= partner.sort_order ? [t, partner] : [partner, t];
-      entries.push({
-        id: a.id,
-        label: `${a.name} + ${b.name}`,
-        templates: [a, b],
-      });
-      seen.add(a.id);
-      seen.add(b.id);
-    } else {
-      entries.push({ id: t.id, label: t.name, templates: [t] });
-      seen.add(t.id);
-    }
+  for (const g of groups) {
+    const members = templates
+      .filter((t) => t.group_id === g.id)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    if (members.length === 0) continue;
+    const decorated = members.map((m) => ({
+      template: m,
+      used: used.has(m.id),
+    }));
+    const label = g.name ?? members.map((m) => m.name).join(" + ");
+    entries.push({
+      id: g.id,
+      label,
+      members: decorated,
+      allUsed: decorated.every((m) => m.used),
+    });
   }
   return entries;
 }
 
-/** Small icon swatch used in the add-action menu — a template's icon on
- *  its own color, falling back to a flag-bolt when the template has no
- *  icon set. */
-function ActionTemplateSwatch({
-  template,
-  size = 16,
-}: {
-  template: ActionTemplate;
-  size?: number;
-}) {
-  return (
-    <span
-      className="inline-flex shrink-0 items-center justify-center rounded"
-      style={{
-        width: size,
-        height: size,
-        background: template.color_hex,
-        color: readableOnHex(template.color_hex),
-      }}
-    >
-      {template.icon_value ? (
-        <IconDisplay
-          type={template.icon_type}
-          value={template.icon_value}
-          size={Math.round(size * 0.62)}
-        />
-      ) : (
-        <IconBolt size={Math.round(size * 0.62)} aria-hidden />
-      )}
-    </span>
-  );
-}
 
 /**
- * "+" add-action menu. Trigger matches the frameworks "+ block" button.
- * Each menu row is an ActionPickerEntry: a single template, or a pair.
- * For a pair, both action icons render before the label, clicking the
- * row adds BOTH actions, and hovering reveals a flyout submenu listing
- * each action so the user can add just one.
+ * "+" add-action menu.
+ *
+ * Always shows every action group so the user keeps a stable mental map of
+ * the catalog. Members already on the letter render greyed-out + unclickable
+ * (instead of being filtered out), so it's obvious WHICH actions are already
+ * here. Clicking a group's primary row inserts every member of that group
+ * that isn't already on the letter — the server's `addActionsForGroup`
+ * skips conflicts, so this is safe even if the local view is stale. A
+ * group whose members are all on the letter renders fully greyed.
+ *
+ * Multi-member groups expose a hover flyout listing each member so the
+ * user can add just one if they want.
  */
 function AddActionMenu({
   templates,
+  groups,
+  existingTemplateIds,
   disabled,
-  onAdd,
+  onAddTemplate,
+  onAddGroup,
 }: {
   templates: ActionTemplate[];
+  groups: ActionTemplateGroup[];
+  existingTemplateIds: string[];
   disabled?: boolean;
-  /** includePair=false adds just the one template even if it is paired. */
-  onAdd: (templateId: string, includePair: boolean) => void;
+  onAddTemplate: (templateId: string) => void;
+  onAddGroup: (templateGroupId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [hoverPairId, setHoverPairId] = useState<string | null>(null);
+  const [hoverGroupId, setHoverGroupId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
-  const entries = useMemo(() => pickerEntries(templates), [templates]);
+  const entries = useMemo(
+    () => pickerEntries(templates, groups, existingTemplateIds),
+    [templates, groups, existingTemplateIds]
+  );
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
       if (!ref.current.contains(e.target as Node)) {
         setOpen(false);
-        setHoverPairId(null);
+        setHoverGroupId(null);
       }
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  function add(templateId: string, includePair: boolean) {
-    onAdd(templateId, includePair);
+  function close() {
     setOpen(false);
-    setHoverPairId(null);
+    setHoverGroupId(null);
   }
 
   return (
@@ -6326,11 +6573,13 @@ function AddActionMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Add action"
-        disabled={disabled}
-        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled || entries.length === 0}
+        onClick={() =>
+          !disabled && entries.length > 0 && setOpen((o) => !o)
+        }
         className={cn(
           "inline-flex h-6 w-12 items-center justify-center rounded-md border border-dashed text-muted-foreground transition-colors duration-300 ease-out",
-          disabled
+          disabled || entries.length === 0
             ? "border-border/30 text-muted-foreground/40"
             : "border-border hover:border-solid hover:bg-white/10 hover:text-foreground"
         )}
@@ -6343,37 +6592,52 @@ function AddActionMenu({
           className="absolute bottom-full left-1/2 z-30 mb-1 w-max -translate-x-1/2 overflow-visible rounded-md border border-border bg-popover shadow-md"
         >
           {entries.map((entry) => {
-            const isPair = entry.templates.length === 2;
+            const memberTemplates = entry.members.map((m) => m.template);
+            const hasMultipleMembers = entry.members.length > 1;
+            const allUsed = entry.allUsed;
             return (
               <div
-                key={entry.id}
+                key={`grp-${entry.id}`}
                 className="relative"
-                onMouseEnter={() =>
-                  setHoverPairId(isPair ? entry.id : null)
-                }
-                onMouseLeave={() => setHoverPairId(null)}
+                onMouseEnter={() => setHoverGroupId(entry.id)}
+                onMouseLeave={() => setHoverGroupId(null)}
               >
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={() => add(entry.id, true)}
-                  className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+                  disabled={allUsed}
+                  onClick={() => {
+                    if (allUsed) return;
+                    onAddGroup(entry.id);
+                    close();
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
+                    allUsed
+                      ? "cursor-not-allowed text-muted-foreground/50"
+                      : "text-foreground hover:bg-accent/40"
+                  )}
+                  title={
+                    allUsed
+                      ? "Every action in this group is already on this letter"
+                      : undefined
+                  }
                 >
-                  <span className="flex items-center gap-1">
-                    {entry.templates.map((t) => (
-                      <ActionTemplateSwatch key={t.id} template={t} />
-                    ))}
+                  <span className={allUsed ? "opacity-50" : undefined}>
+                    <CompositeActionChip members={memberTemplates} size={18} />
                   </span>
-                  <span className="flex-1">{entry.label}</span>
-                  {isPair ? (
+                  <span className="min-w-0 max-w-[220px] flex-1 truncate">
+                    {entry.label}
+                  </span>
+                  {hasMultipleMembers ? (
                     <ChevronRight
                       size={12}
                       aria-hidden
-                      className="text-muted-foreground"
+                      className="shrink-0 text-muted-foreground"
                     />
                   ) : null}
                 </button>
-                {isPair && hoverPairId === entry.id ? (
+                {hasMultipleMembers && hoverGroupId === entry.id ? (
                   <div
                     role="menu"
                     /* Anchored to the item's bottom so the flyout grows
@@ -6382,30 +6646,29 @@ function AddActionMenu({
                        clipped by the panel-slide's overflow. */
                     className="absolute bottom-0 left-full z-40 ml-0.5 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
                   >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => add(entry.id, true)}
-                      className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
-                    >
-                      <span className="flex items-center gap-1">
-                        {entry.templates.map((t) => (
-                          <ActionTemplateSwatch key={t.id} template={t} />
-                        ))}
-                      </span>
-                      <span>Add both</span>
-                    </button>
-                    <div className="border-t border-border" />
-                    {entry.templates.map((t) => (
+                    {entry.members.map(({ template: t, used }) => (
                       <button
                         key={t.id}
                         type="button"
                         role="menuitem"
-                        onClick={() => add(t.id, false)}
-                        className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+                        disabled={used}
+                        onClick={() => {
+                          if (used) return;
+                          onAddTemplate(t.id);
+                          close();
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
+                          used
+                            ? "cursor-not-allowed text-muted-foreground/50"
+                            : "text-foreground hover:bg-accent/40"
+                        )}
+                        title={used ? "Already on this letter" : undefined}
                       >
-                        <ActionTemplateSwatch template={t} />
-                        <span>{t.name}</span>
+                        <span className={used ? "opacity-50" : undefined}>
+                          <CompositeActionChip members={[t]} size={16} />
+                        </span>
+                        <span className="max-w-[200px] truncate">{t.name}</span>
                       </button>
                     ))}
                   </div>
@@ -6697,7 +6960,7 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
       {open ? (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[280px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
         >
           {inSubmenu ? (
             <button
@@ -6722,9 +6985,18 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
                 key={i}
                 type="button"
                 role="menuitem"
+                // Hover a parent item with a submenu → push into it without
+                // requiring a click. Hovering a sibling without a submenu
+                // at the same depth pops back to keep the menu tidy.
+                onMouseEnter={() => {
+                  if (item.submenu) {
+                    setPath((p) => [...p.slice(0, path.length), i]);
+                  }
+                }}
                 onClick={() => {
                   if (item.submenu) {
-                    setPath((p) => [...p, i]);
+                    // Hover already opened it; click on a submenu parent is
+                    // a no-op so the user can travel into the flyout.
                     return;
                   }
                   item.onClick?.();
@@ -6732,19 +7004,19 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
                   setPath([]);
                 }}
                 className={cn(
-                  "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                  "flex w-full items-center gap-2 px-3 py-1 text-left font-mono text-[10px] transition-colors",
                   item.intent === "destructive"
                     ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
                     : "text-foreground hover:bg-accent/40"
                 )}
               >
                 {item.icon}
-                <span className="flex-1">{item.label}</span>
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {item.submenu ? (
                   <ChevronRight
                     size={11}
                     aria-hidden
-                    className="text-muted-foreground"
+                    className="shrink-0 text-muted-foreground"
                   />
                 ) : null}
               </button>
@@ -7457,6 +7729,43 @@ function StorylinesListPanel({
   onSelectLetter: (id: string) => void;
   onOpenStoryline: (id: string | null) => void;
 }) {
+  const { peers } = usePresenceContext();
+  // Peer focus rings per group + letter, mirroring the nations editor's
+  // visual treatment: a colored inset box-shadow stacks one ring per peer.
+  const peerColorsByLetter = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of peers) {
+      const lid = p.selection?.letterId ?? null;
+      if (!lid) continue;
+      const color = p.profile?.avatarColorHex ?? p.color;
+      const arr = m.get(lid) ?? [];
+      arr.push(color);
+      m.set(lid, arr);
+    }
+    return m;
+  }, [peers]);
+  const peerColorsByGroup = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const p of peers) {
+      const gid = p.selection?.groupId ?? null;
+      if (!gid) continue;
+      // Don't double-ring the group when a peer is on a specific letter —
+      // they're already represented on the letter row.
+      if (p.selection?.letterId) continue;
+      const color = p.profile?.avatarColorHex ?? p.color;
+      const arr = m.get(gid) ?? [];
+      arr.push(color);
+      m.set(gid, arr);
+    }
+    return m;
+  }, [peers]);
+  function ringShadow(colors: string[] | undefined): string | undefined {
+    if (!colors || colors.length === 0) return undefined;
+    return colors
+      .map((c, i) => `inset 0 0 0 ${(i + 1) * 2}px ${c}`)
+      .join(", ");
+  }
+
   const [groupMode, setGroupMode] = useState<"storyline" | "day">("storyline");
   // Default to all rows collapsed.
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
@@ -7568,13 +7877,15 @@ function StorylinesListPanel({
         if (va !== vb) return va.localeCompare(vb);
         return (a.piece ?? 0) - (b.piece ?? 0);
       });
+    const groupPeerShadow = ringShadow(peerColorsByGroup.get(g.id));
     return (
       <div
         key={g.id}
         className={cn(
-          "border-t border-border first:border-t-0",
+          "relative border-t border-border first:border-t-0",
           active && "bg-accent/40"
         )}
+        style={groupPeerShadow ? { boxShadow: groupPeerShadow } : undefined}
       >
         <div className="flex items-stretch">
           <button
@@ -7633,13 +7944,17 @@ function StorylinesListPanel({
               const overrideDay = hasOverride
                 ? dayById.get(l.effective_day_id ?? "")
                 : null;
+              const letterPeerShadow = ringShadow(peerColorsByLetter.get(l.id));
               return (
                 <button
                   key={l.id}
                   type="button"
                   onClick={() => onSelectLetter(l.id)}
+                  style={
+                    letterPeerShadow ? { boxShadow: letterPeerShadow } : undefined
+                  }
                   className={cn(
-                    "flex items-center gap-2 px-6 py-1 text-left text-xs",
+                    "relative flex items-center gap-2 px-6 py-1 text-left text-xs",
                     letterActive ? "bg-accent/40" : "hover:bg-accent/30"
                   )}
                 >

@@ -2,6 +2,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   ActionRow,
   ActionTemplate,
+  ActionTemplateGroup,
   Citizen,
   City,
   Day,
@@ -45,6 +46,7 @@ export default async function GraphPage() {
     { data: dData },
     { data: rData },
     { data: tData },
+    { data: tgData },
     { data: nData },
     { data: eaData },
     { data: heroesData },
@@ -68,6 +70,7 @@ export default async function GraphPage() {
     supabase.from("days").select("*").order("number"),
     supabase.from("report_segments_view").select("*").order("sort_order"),
     supabase.from("action_templates").select("*").order("sort_order"),
+    supabase.from("action_template_groups").select("*").order("sort_order"),
     supabase.from("nations").select("*").order("sort_order"),
     supabase.from("inspection_action_ending_assignments").select("*"),
     supabase.from("citizens").select("*").eq("type", "hero").order("last_name").order("first_name"),
@@ -98,6 +101,7 @@ export default async function GraphPage() {
   const days = (dData ?? []) as Day[];
   const segments = (rData ?? []) as ReportSegmentView[];
   const actionTemplates = (tData ?? []) as ActionTemplate[];
+  const actionTemplateGroups = (tgData ?? []) as ActionTemplateGroup[];
   const nations = (nData ?? []) as Nation[];
   const endingAssignments = (eaData ?? []) as InspectionActionEndingAssignment[];
   const heroes = (heroesData ?? []) as Citizen[];
@@ -126,6 +130,7 @@ export default async function GraphPage() {
       letters={letters}
       actions={actions}
       actionTemplates={actionTemplates}
+      actionTemplateGroups={actionTemplateGroups}
       days={days}
       segments={segments}
       nations={nations}

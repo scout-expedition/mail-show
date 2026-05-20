@@ -235,7 +235,7 @@ describe("chooseAction", () => {
   it("should insert a choice and revalidate the playthrough + home", async () => {
     const seed = await seedStoryline(sb, { suffix: "choose", days: 1 });
     const [letterId] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
-    const actionId = await addAction(sb, { letterId, name: "act-1" });
+    const actionId = await addAction(sb, { letterId });
     const playthroughId = await addPlaythrough(sb, { suffix: "choose" });
 
     const fd = new FormData();
@@ -263,8 +263,8 @@ describe("chooseAction", () => {
   it("should upsert on (playthrough_id, inspection_letter_id) — switching the chosen action in place", async () => {
     const seed = await seedStoryline(sb, { suffix: "upsert", days: 1 });
     const [letterId] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
-    const actionA = await addAction(sb, { letterId, name: "act-a" });
-    const actionB = await addAction(sb, { letterId, name: "act-b" });
+    const actionA = await addAction(sb, { letterId });
+    const actionB = await addAction(sb, { letterId });
     const playthroughId = await addPlaythrough(sb, { suffix: "upsert" });
     await addPlaythroughChoice(sb, {
       playthroughId,
@@ -311,7 +311,7 @@ describe("clearChoice", () => {
   it("should delete the (playthrough, letter) pair and revalidate the playthrough page", async () => {
     const seed = await seedStoryline(sb, { suffix: "clear", days: 1 });
     const [letterId] = await addLetters(sb, { groupId: seed.groupId, count: 1 });
-    const actionId = await addAction(sb, { letterId, name: "act-clear" });
+    const actionId = await addAction(sb, { letterId });
     const playthroughId = await addPlaythrough(sb, { suffix: "clear" });
     await addPlaythroughChoice(sb, {
       playthroughId,
@@ -342,8 +342,8 @@ describe("clearChoice", () => {
       groupId: seed.groupId,
       count: 2,
     });
-    const actionA = await addAction(sb, { letterId: letterA, name: "act-a" });
-    const actionB = await addAction(sb, { letterId: letterB, name: "act-b" });
+    const actionA = await addAction(sb, { letterId: letterA });
+    const actionB = await addAction(sb, { letterId: letterB });
     const playthroughId = await addPlaythrough(sb, { suffix: "scoped" });
     await addPlaythroughChoice(sb, {
       playthroughId,

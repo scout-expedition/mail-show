@@ -34,6 +34,7 @@ import {
 import type {
   ActionRow,
   ActionTemplate,
+  ActionTemplateGroup,
   Citizen,
   City,
   Day,
@@ -93,6 +94,7 @@ type GraphSurfaceProps = {
   letters: InspectionLetterView[];
   actions: ActionRow[];
   actionTemplates: ActionTemplate[];
+  actionTemplateGroups: ActionTemplateGroup[];
   days: Day[];
   segments: ReportSegmentView[];
   nations: Nation[];
@@ -134,6 +136,7 @@ function GraphSurfaceInner({
   letters,
   actions,
   actionTemplates,
+  actionTemplateGroups,
   days,
   segments,
   nations,
@@ -525,6 +528,7 @@ function GraphSurfaceInner({
               letters={letters}
               actions={actions}
               actionTemplates={actionTemplates}
+              actionTemplateGroups={actionTemplateGroups}
               days={days}
               segments={segments}
               nations={nations}
@@ -561,6 +565,7 @@ function GraphSurfaceInner({
                 letters={letters}
                 actions={actions}
                 templates={actionTemplates}
+                templateGroups={actionTemplateGroups}
                 heroes={heroes}
                 allCitizenIds={allCitizenIds}
                 cities={cities}

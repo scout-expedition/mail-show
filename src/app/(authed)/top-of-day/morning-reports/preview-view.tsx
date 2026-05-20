@@ -118,9 +118,8 @@ export function PreviewView({
     if (prevAction) {
       const match = (actionsByLetter.get(letterId) ?? []).find(
         (a) =>
-          (prevAction.action_template_id != null &&
-            a.action_template_id === prevAction.action_template_id) ||
-          a.name === prevAction.name
+          prevAction.action_template_id != null &&
+          a.action_template_id === prevAction.action_template_id
       );
       if (match) carried = match.id;
     }
@@ -149,10 +148,10 @@ export function PreviewView({
       ? templatesById.get(a.action_template_id)
       : undefined;
     return {
-      name: tpl?.name ?? a.name,
-      iconType: tpl?.icon_type ?? a.icon_type,
-      iconValue: tpl?.icon_value ?? a.icon_value,
-      colorHex: tpl?.color_hex ?? a.color_hex,
+      name: tpl?.name ?? "Unset action",
+      iconType: tpl?.icon_type ?? null,
+      iconValue: tpl?.icon_value ?? null,
+      colorHex: tpl?.color_hex ?? "#3f3f46",
     };
   }
 
@@ -259,7 +258,7 @@ export function PreviewView({
                             >
                               <ActionPill
                                 name={ra.name}
-                                iconType={ra.iconType}
+                                iconType={ra.iconType ?? "lucide"}
                                 iconValue={ra.iconValue}
                                 colorHex={ra.colorHex}
                                 iconOnly

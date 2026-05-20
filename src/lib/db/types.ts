@@ -134,17 +134,19 @@ export interface ActionTemplate {
   icon_value: string | null;
   color_hex: string;
   sort_order: number;
-  paired_template_id: string | null;
+  group_id: string | null;
+}
+
+export interface ActionTemplateGroup {
+  id: string;
+  name: string | null;
+  sort_order: number;
 }
 
 export interface ActionRow {
   id: string;
   inspection_letter_id: string;
   action_template_id: string | null;
-  name: string;
-  icon_type: IconType;
-  icon_value: string | null;
-  color_hex: string;
   report_segment_id: string | null;
   next_letter_id: string | null;
   impact_world_status: number;

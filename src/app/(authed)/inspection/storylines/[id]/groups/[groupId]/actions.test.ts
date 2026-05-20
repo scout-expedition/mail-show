@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   addAction,
+  addActionTemplate,
   addReportSegment,
   cleanupTestData,
   makeTestClient,
@@ -106,13 +107,18 @@ describe("createInspectionLetter", () => {
       .single();
     const { data: actions } = await sb
       .from("actions")
-      .select("name, sort_order")
+      .select("action_template_id, sort_order")
       .eq("inspection_letter_id", letter!.id)
       .order("sort_order");
-    expect(actions).toEqual([
-      { name: "Deliver", sort_order: 0 },
-      { name: "Flag", sort_order: 1 },
-    ]);
+    // Seeded as references to the canonical "Deliver" + "Flag" templates.
+    // We only check shape (two rows, ordered, templates set), not which
+    // template ids resolve to which slot — seed order is by template
+    // sort_order, which is migration-defined.
+    expect(actions).toHaveLength(2);
+    expect(actions?.[0]?.action_template_id).toBeTruthy();
+    expect(actions?.[1]?.action_template_id).toBeTruthy();
+    expect(actions?.[0]?.sort_order).toBe(0);
+    expect(actions?.[1]?.sort_order).toBe(1);
   });
 
   it("should store blank optional fields as null", async () => {
@@ -313,38 +319,32 @@ describe("createAction", () => {
     await cleanupTestData(sb);
   });
 
-  it("should insert the action and revalidate /inspection/storylines", async () => {
+  it("should insert the action linked to the template and revalidate", async () => {
     const seed = await seedStoryline(sb, { suffix: "ca-ok", abbreviation: "G" });
     const { data: letter } = await sb
       .from("inspection_letters")
       .insert({ letter_group_id: seed.groupId, variant: "a" })
       .select("id")
       .single();
+    const tplId = await addActionTemplate(sb, { suffix: "ca-tpl" });
 
     await createAction(
       form({
         inspection_letter_id: letter!.id,
-        name: "Investigate",
-        icon_value: "Search",
-        color_hex: "#123456",
+        action_template_id: tplId,
       })
     );
 
     const { data } = await sb
       .from("actions")
-      .select("name, icon_type, icon_value, color_hex")
+      .select("action_template_id")
       .eq("inspection_letter_id", letter!.id)
       .single();
-    expect(data).toEqual({
-      name: "Investigate",
-      icon_type: "lucide",
-      icon_value: "Search",
-      color_hex: "#123456",
-    });
+    expect(data?.action_template_id).toBe(tplId);
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/storylines");
   });
 
-  it("should fall back to default name and color when the form omits them", async () => {
+  it("should insert an unset action when no template is supplied", async () => {
     const seed = await seedStoryline(sb, { suffix: "ca-defaults", abbreviation: "H" });
     const { data: letter } = await sb
       .from("inspection_letters")
@@ -356,18 +356,14 @@ describe("createAction", () => {
 
     const { data } = await sb
       .from("actions")
-      .select("name, color_hex, icon_value")
+      .select("action_template_id")
       .eq("inspection_letter_id", letter!.id)
       .single();
-    expect(data).toEqual({
-      name: "New action",
-      color_hex: "#888888",
-      icon_value: null,
-    });
+    expect(data?.action_template_id).toBeNull();
   });
 
   it("should no-op when inspection_letter_id is missing", async () => {
-    await createAction(form({ name: "orphan" }));
+    await createAction(form({}));
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 });
@@ -383,22 +379,20 @@ describe("updateAction", () => {
     await cleanupTestData(sb);
   });
 
-  it("should update name, color and impact columns and revalidate", async () => {
+  it("should update template + impact columns and revalidate", async () => {
     const seed = await seedStoryline(sb, { suffix: "ua-ok", abbreviation: "I" });
     const { data: letter } = await sb
       .from("inspection_letters")
       .insert({ letter_group_id: seed.groupId, variant: "a" })
       .select("id")
       .single();
-    const actionId = await addAction(sb, { letterId: letter!.id, name: "before" });
+    const actionId = await addAction(sb, { letterId: letter!.id });
+    const tplId = await addActionTemplate(sb, { suffix: "ua-tpl" });
 
     await updateAction(
       form({
         id: actionId,
-        name: "after",
-        icon_type: "emoji",
-        icon_value: "🔥",
-        color_hex: "#ff0000",
+        action_template_id: tplId,
         impact_world_status: "3",
         impact_demerits: "-1",
         impact_folos: "2",
@@ -408,15 +402,12 @@ describe("updateAction", () => {
     const { data } = await sb
       .from("actions")
       .select(
-        "name, icon_type, icon_value, color_hex, impact_world_status, impact_demerits, impact_folos, impact_gentry"
+        "action_template_id, impact_world_status, impact_demerits, impact_folos, impact_gentry"
       )
       .eq("id", actionId)
       .single();
     expect(data).toEqual({
-      name: "after",
-      icon_type: "emoji",
-      icon_value: "🔥",
-      color_hex: "#ff0000",
+      action_template_id: tplId,
       impact_world_status: 3,
       impact_demerits: -1,
       impact_folos: 2,
@@ -439,7 +430,7 @@ describe("updateAction", () => {
     });
 
     await updateAction(
-      form({ id: actionId, name: "n", color_hex: "#888888", report_segment_id: segId })
+      form({ id: actionId, color_hex: "#888888", report_segment_id: segId })
     );
 
     const { data } = await sb
