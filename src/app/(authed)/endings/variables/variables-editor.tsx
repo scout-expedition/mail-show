@@ -63,6 +63,7 @@ import {
   type FolderTreeOption,
 } from "./variable-inspector";
 import { FolderInspector } from "./folder-inspector";
+import { buildFolderOptions } from "./folder-tree";
 import { MultiSelectInspector } from "./multi-select-inspector";
 
 type ViewMode = "all" | "by-ending";
@@ -377,41 +378,11 @@ function VariablesEditorInner({
 
   // Indented folder-picker option list. `excludedIds` (and every
   // descendant of each) is omitted so we can't reparent a folder under
-  // itself.
-  const buildFolderOptions = useCallback(
-    (excludedIds: ReadonlyArray<string>): FolderTreeOption[] => {
-      const excluded = new Set<string>(excludedIds);
-      const queue: string[] = [...excludedIds];
-      while (queue.length > 0) {
-        const next = queue.shift()!;
-        for (const child of childFoldersByParent.get(next) ?? []) {
-          if (!excluded.has(child.id)) {
-            excluded.add(child.id);
-            queue.push(child.id);
-          }
-        }
-      }
-      const out: FolderTreeOption[] = [];
-      function visit(parentId: string | null, depth: number) {
-        const children = childFoldersByParent.get(parentId) ?? [];
-        for (const f of children) {
-          if (excluded.has(f.id)) continue;
-          out.push({
-            id: f.id,
-            label: `${" ".repeat(depth)}${f.name}`,
-          });
-          visit(f.id, depth + 1);
-        }
-      }
-      visit(null, 0);
-      return out;
-    },
-    [childFoldersByParent]
-  );
-
+  // itself. Implementation lives in folder-tree.ts so the
+  // create-variable popover can reuse it.
   const allFolderOptions = useMemo<FolderTreeOption[]>(
-    () => buildFolderOptions([]),
-    [buildFolderOptions]
+    () => buildFolderOptions(folders),
+    [folders]
   );
 
   const variableRefs = useMemo(() => {
@@ -948,11 +919,12 @@ function VariablesEditorInner({
   const multiFolderOptions = useMemo(
     () =>
       buildFolderOptions(
+        folders,
         Array.from(selectedIds).filter((id) =>
           folders.some((f) => f.id === id)
         )
       ),
-    [selectedIds, folders, buildFolderOptions]
+    [selectedIds, folders]
   );
 
   // Single-selection inspector — exclude the selected folder + descendants
@@ -960,9 +932,9 @@ function VariablesEditorInner({
   const singleFolderOptions = useMemo(
     () =>
       selectedFolder
-        ? buildFolderOptions([selectedFolder.id])
-        : buildFolderOptions([]),
-    [selectedFolder, buildFolderOptions]
+        ? buildFolderOptions(folders, [selectedFolder.id])
+        : buildFolderOptions(folders),
+    [selectedFolder, folders]
   );
 
   return (

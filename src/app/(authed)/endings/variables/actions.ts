@@ -89,12 +89,20 @@ export async function createEndingVariable(
 export async function createEndingVariableInline(input: {
   name: string;
   firstValue: string;
+  /** Optional folder to place the new variable into; null = root. */
+  folder_id?: string | null;
+  /** Optional color override; otherwise the palette index seeds the
+   *  swatch via paletteColor(color_index). */
+  color_hex?: string | null;
 }): Promise<{ variableId: string; valueId: string }> {
   const supabase = await createSupabaseServerClient();
   const trimmedName = input.name.trim();
   const trimmedValue = input.firstValue.trim();
   if (!trimmedName) throw new Error("Variable name is required.");
   if (!trimmedValue) throw new Error("First value is required.");
+  if (input.color_hex && !/^#[0-9a-fA-F]{6}$/.test(input.color_hex)) {
+    throw new Error(`Invalid color "${input.color_hex}" — expected #RRGGBB.`);
+  }
 
   const { data: existing } = await supabase
     .from("ending_variables")
@@ -112,7 +120,9 @@ export async function createEndingVariableInline(input: {
     kind: "text",
     number_ref: null,
     color_index: colorIndexFor(variableId),
+    color_hex: input.color_hex ?? null,
     sort_order: nextSort,
+    folder_id: input.folder_id ?? null,
   });
   if (varErr) throw new Error(varErr.message);
 

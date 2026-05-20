@@ -28,6 +28,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -157,6 +158,7 @@ export function LogicEditor({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
   currentUserId,
   currentEmail,
@@ -170,6 +172,7 @@ export function LogicEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   currentUserId?: string;
   currentEmail?: string;
@@ -198,6 +201,7 @@ export function LogicEditor({
         blockVariables={blockVariables}
         variables={variables}
         values={values}
+        folders={folders}
         nations={nations}
       />
     </WorkspacePresenceProvider>
@@ -213,6 +217,7 @@ function LogicEditorInner({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
 }: {
   logicDocs: EndingDocument[];
@@ -223,6 +228,7 @@ function LogicEditorInner({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
 }) {
   const router = useRouter();
@@ -447,6 +453,7 @@ function LogicEditorInner({
               blockVariables={data.blockVariables}
               variables={variables}
               values={values}
+              folders={folders}
               nations={nations}
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}

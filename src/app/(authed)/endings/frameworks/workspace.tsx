@@ -10,6 +10,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -30,6 +31,7 @@ export function FrameworksWorkspace({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
   selectedFrameworkId,
   tiebreakDocsSummary,
@@ -45,6 +47,7 @@ export function FrameworksWorkspace({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
   tiebreakDocsSummary: Map<
@@ -85,6 +88,7 @@ export function FrameworksWorkspace({
         blockVariables={blockVariables}
         variables={variables}
         values={values}
+        folders={folders}
         nations={nations}
         selectedFrameworkId={selectedFrameworkId}
         tiebreakDocsSummary={tiebreakDocsSummary}
@@ -102,6 +106,7 @@ function FrameworksWorkspaceInner({
   blockVariables,
   variables,
   values,
+  folders,
   nations,
   selectedFrameworkId,
   tiebreakDocsSummary,
@@ -114,6 +119,7 @@ function FrameworksWorkspaceInner({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   selectedFrameworkId: string | null;
   tiebreakDocsSummary: Map<
@@ -245,6 +251,7 @@ function FrameworksWorkspaceInner({
           blockVariables={editorData.editorBlockVariables}
           variables={variables}
           values={values}
+          folders={folders}
           nations={nations}
           tiebreakDocsSummary={tiebreakDocsSummary}
           tiebreakDocsRaw={tiebreakDocsRaw}

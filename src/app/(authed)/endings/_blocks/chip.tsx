@@ -801,6 +801,7 @@ export function AddChipButton({
         default_value_id: optimistic.valueId,
         color_index: 0,
         color_hex: null,
+        folder_id: null,
         sort_order: 0,
       }
     : null;
