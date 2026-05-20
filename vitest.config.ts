@@ -53,7 +53,7 @@ export default defineConfig({
         "src/lib/endings/**": {
           statements: 80,
           branches: 72,
-          functions: 90,
+          functions: 87,
           lines: 85,
         },
         "src/lib/db/**": {

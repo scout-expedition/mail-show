@@ -739,7 +739,7 @@ function ConditionRow({
   return (
     <div
       className={cn(
-        "flex flex-col gap-1 rounded-md p-1",
+        "group flex flex-col gap-1 rounded-md p-1",
         contradiction && "bg-destructive/5 ring-1 ring-destructive/40"
       )}
     >
@@ -789,7 +789,7 @@ function ConditionRow({
           type="button"
           onClick={onRemove}
           aria-label="Remove condition"
-          className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive hover:text-destructive-foreground"
+          className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-[colors,opacity] hover:bg-destructive hover:text-destructive-foreground focus-visible:opacity-100 group-hover:opacity-100"
         >
           <X size={14} aria-hidden />
         </button>
@@ -1027,7 +1027,7 @@ export function ConditionsEditor({
         type="button"
         onClick={add}
         aria-label="Add condition"
-        className="inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground transition-colors duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground"
+        className="ml-6 inline-flex h-5 w-10 items-center justify-center rounded-md border border-dashed border-border text-muted-foreground transition-colors duration-300 ease-out hover:border-solid hover:bg-white/10 hover:text-foreground"
       >
         <Plus size={12} aria-hidden />
       </button>

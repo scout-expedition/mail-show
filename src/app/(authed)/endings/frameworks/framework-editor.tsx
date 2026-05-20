@@ -12,6 +12,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -36,6 +37,8 @@ export function FrameworkEditor({
   blockVariables,
   variables,
   values,
+  smartVariableReturns,
+  folders,
   nations,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
@@ -48,6 +51,8 @@ export function FrameworkEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  smartVariableReturns?: Map<string, string[]>;
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
   tiebreakDocsRaw?: Map<
@@ -101,6 +106,8 @@ export function FrameworkEditor({
       blockVariables={blockVariables}
       variables={variables}
       values={values}
+      smartVariableReturns={smartVariableReturns}
+      folders={folders}
       nations={nations}
       tiebreakDocsSummary={tiebreakDocsSummary}
       leaves={{ text: TextBlock }}

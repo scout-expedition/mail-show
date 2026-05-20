@@ -13,7 +13,7 @@
 // Each editor saves itself; switching tabs prompts an unsaved-changes
 // dialog the same way the Frameworks workspace does between frameworks.
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import {
@@ -28,6 +28,7 @@ import type {
   EndingConditionRowChip,
   EndingDocument,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
@@ -36,7 +37,9 @@ import {
   usePresenceContext,
   WorkspacePresenceProvider,
 } from "@/lib/realtime/presence-context";
+import type { PostgresChange } from "@/lib/realtime/channel";
 import type { PresenceProfile } from "@/lib/realtime/presence";
+import { buildSmartReturnsByVariable } from "@/lib/endings/smart-variable-returns";
 import { makeResultBlock } from "../_blocks/result-block";
 import { LogicTabBar, type TabBarItem } from "./_components/tab-bar";
 import { LogicPreviewView } from "./preview-view";
@@ -157,6 +160,9 @@ export function LogicEditor({
   blockVariables,
   variables,
   values,
+  smartVariableDocs,
+  smartVariableBlocks,
+  folders,
   nations,
   currentUserId,
   currentEmail,
@@ -170,6 +176,9 @@ export function LogicEditor({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  smartVariableDocs: EndingDocument[];
+  smartVariableBlocks: EndingBlock[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   currentUserId?: string;
   currentEmail?: string;
@@ -187,6 +196,10 @@ export function LogicEditor({
         "ending_condition_rows",
         "ending_condition_row_chips",
         "ending_condition_block_variables",
+        // Live variable rename/color edits — chip labels read from
+        // `variables` so this keeps the logic editor in sync with edits
+        // on the Variables / Smart Variables pages.
+        "ending_variables",
       ]}
     >
       <LogicEditorInner
@@ -198,6 +211,9 @@ export function LogicEditor({
         blockVariables={blockVariables}
         variables={variables}
         values={values}
+        smartVariableDocs={smartVariableDocs}
+        smartVariableBlocks={smartVariableBlocks}
+        folders={folders}
         nations={nations}
       />
     </WorkspacePresenceProvider>
@@ -211,8 +227,11 @@ function LogicEditorInner({
   rows,
   chips,
   blockVariables,
-  variables,
+  variables: initialVariables,
   values,
+  smartVariableDocs: initialSmartVariableDocs,
+  smartVariableBlocks: initialSmartVariableBlocks,
+  folders,
   nations,
 }: {
   logicDocs: EndingDocument[];
@@ -223,11 +242,170 @@ function LogicEditorInner({
   blockVariables: EndingConditionBlockVariable[];
   variables: EndingVariable[];
   values: EndingVariableValue[];
+  smartVariableDocs: EndingDocument[];
+  smartVariableBlocks: EndingBlock[];
+  folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { setSelection, peers } = usePresenceContext();
+  const { setSelection, peers, onPostgresChanges } = usePresenceContext();
+
+  // Local mirror of ending_variables so renames/color edits made on
+  // other surfaces (the Variables page; the Smart Variables editor's
+  // doc->variable name sync) echo live into chip labels here without a
+  // refresh. Mirrors the frameworks workspace pattern.
+  const [variables, setVariables] =
+    useState<EndingVariable[]>(initialVariables);
+  const [prevInitialVariables, setPrevInitialVariables] =
+    useState(initialVariables);
+  if (initialVariables !== prevInitialVariables) {
+    setPrevInitialVariables(initialVariables);
+    setVariables((prev) => {
+      const prevById = new Map(prev.map((v) => [v.id, v]));
+      const serverIds = new Set(initialVariables.map((v) => v.id));
+      const kept = prev.filter((v) => serverIds.has(v.id));
+      const additions = initialVariables.filter((v) => !prevById.has(v.id));
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+
+  // Smart variable docs + their result/fallback blocks — mirrored so
+  // chip dropdowns inside the logic editor stay live as the
+  // smart-variables surface edits result_values.
+  const [smartVariableDocs, setSmartVariableDocs] = useState<EndingDocument[]>(
+    initialSmartVariableDocs
+  );
+  const [prevInitialSmartDocs, setPrevInitialSmartDocs] = useState(
+    initialSmartVariableDocs
+  );
+  if (initialSmartVariableDocs !== prevInitialSmartDocs) {
+    setPrevInitialSmartDocs(initialSmartVariableDocs);
+    setSmartVariableDocs((prev) => {
+      const prevById = new Map(prev.map((d) => [d.id, d]));
+      const serverIds = new Set(initialSmartVariableDocs.map((d) => d.id));
+      const kept = prev.filter((d) => serverIds.has(d.id));
+      const additions = initialSmartVariableDocs.filter(
+        (d) => !prevById.has(d.id)
+      );
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+  const [smartVariableBlocks, setSmartVariableBlocks] = useState<EndingBlock[]>(
+    initialSmartVariableBlocks
+  );
+  const [prevInitialSmartBlocks, setPrevInitialSmartBlocks] = useState(
+    initialSmartVariableBlocks
+  );
+  if (initialSmartVariableBlocks !== prevInitialSmartBlocks) {
+    setPrevInitialSmartBlocks(initialSmartVariableBlocks);
+    setSmartVariableBlocks((prev) => {
+      const prevById = new Map(prev.map((b) => [b.id, b]));
+      const serverIds = new Set(initialSmartVariableBlocks.map((b) => b.id));
+      const kept = prev.filter((b) => serverIds.has(b.id));
+      const additions = initialSmartVariableBlocks.filter(
+        (b) => !prevById.has(b.id)
+      );
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+
+  // Same ref pattern frameworks/workspace.tsx uses — the ending_blocks
+  // postgres handler reads `smartVariableDocs` through the ref so it
+  // always sees the latest doc set without resubscribing the effect.
+  const smartVariableDocsRef = useRef(smartVariableDocs);
+  useEffect(() => {
+    smartVariableDocsRef.current = smartVariableDocs;
+  }, [smartVariableDocs]);
+
+  useEffect(() => {
+    return onPostgresChanges((change: PostgresChange) => {
+      if (change.table === "ending_variables") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const updated = change.new as unknown as EndingVariable;
+          setVariables((prev) =>
+            prev.map((v) => (v.id === updated.id ? { ...v, ...updated } : v))
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const deleted = change.old as unknown as { id: string };
+          setVariables((prev) => prev.filter((v) => v.id !== deleted.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const inserted = change.new as unknown as EndingVariable;
+          setVariables((prev) =>
+            prev.some((v) => v.id === inserted.id) ? prev : [...prev, inserted]
+          );
+        }
+        return;
+      }
+      if (change.table === "ending_documents") {
+        if (change.eventType === "UPDATE" && change.new) {
+          const updated = change.new as unknown as EndingDocument;
+          if (updated.kind !== "smart_variable") return;
+          setSmartVariableDocs((prev) =>
+            prev.map((d) => (d.id === updated.id ? { ...d, ...updated } : d))
+          );
+        } else if (change.eventType === "DELETE" && change.old) {
+          const deleted = change.old as unknown as { id: string };
+          setSmartVariableDocs((prev) =>
+            prev.filter((d) => d.id !== deleted.id)
+          );
+        } else if (change.eventType === "INSERT" && change.new) {
+          const inserted = change.new as unknown as EndingDocument;
+          if (inserted.kind !== "smart_variable") return;
+          setSmartVariableDocs((prev) =>
+            prev.some((d) => d.id === inserted.id)
+              ? prev
+              : [...prev, inserted]
+          );
+        }
+        return;
+      }
+      if (change.table === "ending_blocks") {
+        // Smart-variable result/fallback only — the LogicEditor's own
+        // editor data is owned by DocumentEditor, which has its own
+        // per-doc mirror. Doc-membership read through the ref so a
+        // peer's "INSERT doc → INSERT block" sequence doesn't drop
+        // the block because of a closure snapshot.
+        const docs = smartVariableDocsRef.current;
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          setSmartVariableBlocks((prev) => {
+            const isSmart = docs.some((d) => d.id === n.document_id);
+            if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
+            const idx = prev.findIndex((b) => b.id === n.id);
+            if (idx < 0) return isSmart ? [...prev, n] : prev;
+            const out = prev.slice();
+            out[idx] = { ...out[idx], ...n };
+            return out;
+          });
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setSmartVariableBlocks((prev) => prev.filter((b) => b.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          if (!docs.some((d) => d.id === n.document_id)) return;
+          setSmartVariableBlocks((prev) =>
+            prev.some((b) => b.id === n.id) ? prev : [...prev, n]
+          );
+        }
+      }
+    });
+  }, [onPostgresChanges]);
+
+  const smartVariableReturns = useMemo(
+    () =>
+      buildSmartReturnsByVariable(
+        smartVariableDocs,
+        variables,
+        smartVariableBlocks
+      ),
+    [smartVariableDocs, variables, smartVariableBlocks]
+  );
   const tabParam = searchParams?.get("tab") ?? null;
   const activeTab: LogicTabId = isLogicTabId(tabParam) ? tabParam : DEFAULT_TAB;
 
@@ -447,6 +625,8 @@ function LogicEditorInner({
               blockVariables={data.blockVariables}
               variables={variables}
               values={values}
+              smartVariableReturns={smartVariableReturns}
+              folders={folders}
               nations={nations}
               leaves={{ result: resultLeaf }}
               panelTitle={panelTitle}

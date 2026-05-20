@@ -140,7 +140,11 @@ export function variableDomain(
   variable: EvalVariable,
   values: StaticValue[]
 ): string[] | null {
-  if (variable.kind === "text") {
+  if (variable.kind === "text" || variable.kind === "smart_ref") {
+    // Smart variables enumerate over the distinct strings their tree can
+    // resolve to. The caller is responsible for feeding synthetic
+    // StaticValue rows (`{ id: <unique return string>, variable_id }`)
+    // alongside the real text-variable values.
     const vids = values
       .filter((v) => v.variable_id === variable.id)
       .map((v) => v.id);
@@ -243,6 +247,14 @@ export function chipMatchesOutcome(
     if (outcome === UNSET_TEXT_OUTCOME) return false;
     if (chip.text_value_id == null) return false;
     const equal = outcome === chip.text_value_id;
+    if (chip.operator === "=") return equal;
+    if (chip.operator === "≠") return !equal;
+    return false;
+  }
+  if (variable.kind === "smart_ref") {
+    if (outcome === UNSET_TEXT_OUTCOME) return false;
+    if (chip.aggregate_value == null) return false;
+    const equal = outcome === chip.aggregate_value;
     if (chip.operator === "=") return equal;
     if (chip.operator === "≠") return !equal;
     return false;

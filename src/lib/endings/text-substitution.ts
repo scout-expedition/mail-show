@@ -6,7 +6,7 @@
 // Storage shape: `@[Variable Name]` is stored verbatim in
 // `ending_blocks.text`. No migration. Renaming a variable breaks the
 // reference (the substitution falls through to literal). See
-// docs/endings-text-substitution-plan.md for trade-offs.
+// docs/plans/archive/endings-text-substitution-plan.md for trade-offs.
 
 import type { EvalVariable, PreviewSelections } from "./evaluator";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";

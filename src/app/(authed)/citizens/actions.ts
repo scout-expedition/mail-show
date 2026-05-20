@@ -5,6 +5,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { CitizenType } from "@/lib/db/enums";
 import type { Citizen } from "@/lib/db/types";
 import { splitName } from "@/lib/citizen-name";
+import { toStorageCitizenId } from "@/lib/citizen-id";
 
 /**
  * Narrow per-field patch — called by useInstantField in the citizen inspector.
@@ -27,6 +28,7 @@ export async function patchCitizen(
     nation_id: string | null;
   }>
 ) {
+  if ("citizen_id" in patch) { patch.citizen_id = toStorageCitizenId(patch.citizen_id); }
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.from("citizens").update(patch).eq("id", id);
   if (error) throw new Error(error.message);
@@ -97,7 +99,7 @@ export async function bulkCreateCitizens(formData: FormData) {
       type,
       first_name,
       last_name,
-      citizen_id: citizenIdRaw || null,
+      citizen_id: toStorageCitizenId(citizenIdRaw),
       city_id: city?.id ?? null,
       nation_id: city?.nation_id ?? null,
     });

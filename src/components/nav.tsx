@@ -1,67 +1,13 @@
 "use client";
 
 import { useEffect } from "react";
-import type { ComponentType, SVGProps } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useNavState } from "@/components/nav-context";
-import {
-  CalendarDays,
-  BookOpen,
-  Mail,
-  Users,
-  Map as MapIcon,
-  MapPin,
-  Megaphone,
-  Flag,
-  Inbox,
-  Menu,
-  Network,
-  Ruler,
-  Package,
-  PlayCircle,
-  ScrollText,
-  Settings,
-  Variable,
-} from "lucide-react";
-import { IconBolt, IconMailOpened } from "@tabler/icons-react";
+import { Menu } from "lucide-react";
+import { NAV_ITEMS, NAV_SECTIONS } from "@/lib/nav-items";
 import { WIP_PATHS } from "@/lib/wip-pages";
 import { cn } from "@/lib/utils";
-
-type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
-
-const NAV_ITEMS: Array<{
-  href: string;
-  label: string;
-  icon: NavIcon;
-  section:
-    | "Game"
-    | "Sorting"
-    | "Inspection"
-    | "Top of Day"
-    | "Endings"
-    | "Data"
-    | "Run";
-}> = [
-  { href: "/dashboard", label: "Dashboard", icon: Inbox, section: "Game" },
-  { href: "/days", label: "Days", icon: CalendarDays, section: "Game" },
-  { href: "/graph", label: "Graph View", icon: MapIcon, section: "Game" },
-  { href: "/physical", label: "Physical Letters", icon: Package, section: "Game" },
-  { href: "/sorting/letters", label: "Letters", icon: Mail, section: "Sorting" },
-  { href: "/sorting/rules", label: "Rules", icon: Ruler, section: "Sorting" },
-  { href: "/inspection/letters", label: "Letters", icon: IconMailOpened, section: "Inspection" },
-  { href: "/inspection/storylines", label: "Storylines", icon: BookOpen, section: "Inspection" },
-  { href: "/inspection/actions", label: "Actions", icon: IconBolt, section: "Inspection" },
-  { href: "/top-of-day/morning-reports", label: "Morning Reports", icon: Megaphone, section: "Top of Day" },
-  { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
-  { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
-  { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
-  { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
-  { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
-  { href: "/nations", label: "Nations", icon: Flag, section: "Data" },
-  { href: "/playthroughs", label: "Playthroughs", icon: PlayCircle, section: "Run" },
-  { href: "/settings", label: "Settings", icon: Settings, section: "Run" },
-];
 
 /**
  * Routes that force the nav into hamburger/overlay mode at every viewport
@@ -114,15 +60,6 @@ export function Nav() {
   const pathname = usePathname();
   const forceNarrow = isForceNarrowPath(pathname);
   const inlineMenu = isInlineMenuPath(pathname);
-  const sections = [
-    "Game",
-    "Top of Day",
-    "Sorting",
-    "Inspection",
-    "Endings",
-    "Data",
-    "Run",
-  ] as const;
   const { open, setOpen } = useNavState();
 
   // Close the drawer whenever navigation finishes so a clicked link
@@ -182,12 +119,18 @@ export function Nav() {
         )}
         aria-hidden={!open ? undefined : false}
       >
-        <div className="px-2 pt-8 lg:pt-0">
-          <div className="text-sm font-semibold tracking-wide">Mail Show</div>
+        <Link
+          href="/"
+          onClick={() => setOpen(false)}
+          className="block rounded-md px-2 pt-8 lg:pt-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <div className="text-sm font-semibold tracking-wide transition-colors hover:text-foreground">
+            Mail Show
+          </div>
           <div className="text-xs text-muted-foreground">Planning tool</div>
-        </div>
+        </Link>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto">
-          {sections.map((section) => (
+          {NAV_SECTIONS.map((section) => (
             <div key={section} className="flex flex-col gap-0.5">
               <div className="px-2 text-[10px] uppercase tracking-widest text-muted-foreground">
                 {section}

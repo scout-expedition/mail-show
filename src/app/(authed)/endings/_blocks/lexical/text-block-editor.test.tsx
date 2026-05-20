@@ -54,6 +54,7 @@ function v(
     default_value_id: null,
     color_index: 0,
     color_hex: null,
+    folder_id: null,
     sort_order: 0,
   };
 }
@@ -66,6 +67,7 @@ describe("LexicalTextBlockEditor — initial parse", () => {
         value="Just plain prose."
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     expect(container.textContent).toContain("Just plain prose.");
@@ -79,6 +81,7 @@ describe("LexicalTextBlockEditor — initial parse", () => {
         value="Hi @[Bob], welcome."
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const pills = container.querySelectorAll("[data-mention]");
@@ -96,6 +99,7 @@ describe("LexicalTextBlockEditor — initial parse", () => {
         value="@[A]@[B]"
         onChange={onChange}
         variables={[v("A"), v("B")]}
+        folders={[]}
       />
     );
     const pills = container.querySelectorAll("[data-mention]");
@@ -111,6 +115,7 @@ describe("LexicalTextBlockEditor — initial parse", () => {
         value={"Line one.\nLine two."}
         onChange={onChange}
         variables={[]}
+        folders={[]}
       />
     );
     const paragraphs = container.querySelectorAll("[data-lexical-editor] p");
@@ -124,6 +129,7 @@ describe("LexicalTextBlockEditor — initial parse", () => {
         value="@[Unknown]"
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const pill = container.querySelector("[data-mention]");
@@ -142,6 +148,7 @@ describe("LexicalTextBlockEditor — onChange contract", () => {
         value="Hi @[Bob]."
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     // Initial editor state set via LexicalComposer's `editorState`
@@ -163,6 +170,7 @@ describe("MentionNode — getTextContent serializes to @[Name]", () => {
         value="A @[Bob] B"
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const pill = container.querySelector("[data-mention]");
@@ -205,6 +213,7 @@ describe("MentionPastePlugin — converts pasted @[Name] tokens to pills", () =>
         value=""
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const editable = container.querySelector(
@@ -230,6 +239,7 @@ describe("MentionPastePlugin — converts pasted @[Name] tokens to pills", () =>
         value=""
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const editable = container.querySelector(
@@ -252,6 +262,7 @@ describe("MentionPastePlugin — converts pasted @[Name] tokens to pills", () =>
         value=""
         onChange={onChange}
         variables={[v("Bob")]}
+        folders={[]}
       />
     );
     const editable = container.querySelector(

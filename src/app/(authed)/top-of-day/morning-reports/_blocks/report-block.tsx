@@ -7,12 +7,13 @@
 
 import Link from "next/link";
 import {
-  BLOCK_TEXTAREA_CLASS,
   BlockFrame,
   BlockSectionLabel,
   HeaderInput,
 } from "./block-shell";
-import { MarkdownTextarea } from "@/components/markdown-textarea";
+import { RichTextEditor } from "@/components/rich-text/rich-text-editor";
+import { GHOST_FIELD } from "@/components/panel";
+import { cn } from "@/lib/utils";
 import {
   ActionPill,
   InspectionLetterPill,
@@ -116,14 +117,14 @@ export function ReportBlock({
           field: "content",
         }}
       >
-        <div onFocus={content.onFocus} onBlur={content.onBlur}>
-          <MarkdownTextarea
-            value={content.value}
-            onChange={(e) => content.set(e.target.value)}
-            minRows={2}
-            className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-          />
-        </div>
+        <RichTextEditor
+          value={content.value}
+          onChange={(next) => content.set(next)}
+          onFocus={content.onFocus}
+          onBlur={content.onBlur}
+          minRows={2}
+          className={cn("font-mono text-xs", GHOST_FIELD)}
+        />
       </FieldHighlight>
       <BlockSectionLabel>
         {triggers.length > 0 ? `Triggers (${triggers.length})` : "Trigger"}

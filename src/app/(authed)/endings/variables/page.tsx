@@ -14,6 +14,7 @@ import type {
   EndingDocument,
   EndingFramework,
   EndingVariable,
+  EndingVariableFolder,
   EndingVariableValue,
 } from "@/lib/db/types";
 import { VariablesEditor } from "./variables-editor";
@@ -33,6 +34,7 @@ export default async function EndingVariablesPage() {
   const [
     { data: varData },
     { data: valueData },
+    { data: folderData },
     { data: documentData },
     { data: blockData },
     { data: rowData },
@@ -40,6 +42,7 @@ export default async function EndingVariablesPage() {
   ] = await Promise.all([
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    supabase.from("ending_variable_folders").select("*").order("sort_order"),
     supabase.from("ending_documents").select("*").order("sort_order"),
     supabase.from("ending_blocks").select("id, document_id"),
     supabase.from("ending_condition_rows").select("id, condition_block_id"),
@@ -117,6 +120,7 @@ export default async function EndingVariablesPage() {
       <VariablesEditor
         variables={(varData ?? []) as EndingVariable[]}
         values={(valueData ?? []) as EndingVariableValue[]}
+        folders={(folderData ?? []) as EndingVariableFolder[]}
         frameworks={frameworkRows}
         frameworkVariableRefs={frameworkVariableRefs}
         logicConditions={logicConditions}

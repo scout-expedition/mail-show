@@ -134,7 +134,7 @@ describe("createStorylineWithFields", () => {
     const { id } = await createStorylineWithFields({
       name: `  ${testName("cwf")}  `,
       abbreviation: "el",
-      description: "  a desc  ",
+      notes: "  a desc  ",
       icon_type: "lucide",
       icon_value: "  star  ",
       color_hex: "ABC",
@@ -142,13 +142,13 @@ describe("createStorylineWithFields", () => {
 
     const { data } = await sb
       .from("storylines")
-      .select("name, abbreviation, description, icon_value, color_hex")
+      .select("name, abbreviation, notes, icon_value, color_hex")
       .eq("id", id)
       .single();
     expect(data?.name).toBe(testName("cwf"));
     // Abbreviation is upper-cased and clipped to the first char.
     expect(data?.abbreviation).toBe("E");
-    expect(data?.description).toBe("a desc");
+    expect(data?.notes).toBe("a desc");
     expect(data?.icon_value).toBe("star");
     // 3-digit hex expands and lower-cases.
     expect(data?.color_hex).toBe("#aabbcc");
@@ -162,7 +162,7 @@ describe("createStorylineWithFields", () => {
       createStorylineWithFields({
         name: testName("cwf-guard"),
         abbreviation: "d",
-        description: null,
+        notes: null,
         icon_type: "lucide",
         icon_value: null,
         color_hex: "#123456",
@@ -243,7 +243,7 @@ describe("updateStorylineFields", () => {
       id,
       name: `  ${testName("usf-new")}  `,
       abbreviation: "gh",
-      description: "   ",
+      notes: "   ",
       icon_type: "lucide",
       icon_value: null,
       color_hex: "#FFFFFF",
@@ -251,13 +251,13 @@ describe("updateStorylineFields", () => {
 
     const { data } = await sb
       .from("storylines")
-      .select("name, abbreviation, description, color_hex")
+      .select("name, abbreviation, notes, color_hex")
       .eq("id", id)
       .single();
     expect(data?.name).toBe(testName("usf-new"));
     expect(data?.abbreviation).toBe("G");
-    // Whitespace-only description normalizes to null.
-    expect(data?.description).toBeNull();
+    // Whitespace-only notes normalizes to null.
+    expect(data?.notes).toBeNull();
     expect(data?.color_hex).toBe("#ffffff");
 
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
@@ -278,7 +278,7 @@ describe("updateStorylineFields", () => {
         id,
         name: testName("usf-guard-new"),
         abbreviation: "D",
-        description: null,
+        notes: null,
         icon_type: "lucide",
         icon_value: null,
         color_hex: "#123456",
@@ -317,7 +317,7 @@ describe("updateStoryline", () => {
         id,
         name: `  ${testName("us-new")}  `,
         abbreviation: "k",
-        description: "  notes here  ",
+        notes: "  notes here  ",
         icon_type: "lucide",
         icon_value: "  flag  ",
         color_hex: "abc",
@@ -327,12 +327,12 @@ describe("updateStoryline", () => {
 
     const { data } = await sb
       .from("storylines")
-      .select("name, abbreviation, description, icon_value, color_hex, sort_order")
+      .select("name, abbreviation, notes, icon_value, color_hex, sort_order")
       .eq("id", id)
       .single();
     expect(data?.name).toBe(testName("us-new"));
     expect(data?.abbreviation).toBe("K");
-    expect(data?.description).toBe("notes here");
+    expect(data?.notes).toBe("notes here");
     expect(data?.icon_value).toBe("flag");
     expect(data?.color_hex).toBe("#aabbcc");
     expect(data?.sort_order).toBe(7);
@@ -480,8 +480,8 @@ describe("updateAllStorylines", () => {
     fd.append("names", testName("ua-b-new"));
     fd.append("abbreviations", "x");
     fd.append("abbreviations", "y");
-    fd.append("descriptions", "desc a");
-    fd.append("descriptions", "  ");
+    fd.append("notes", "desc a");
+    fd.append("notes", "  ");
     fd.append("icon_types", "lucide");
     fd.append("icon_types", "lucide");
     fd.append("icon_values", "star");
@@ -495,17 +495,17 @@ describe("updateAllStorylines", () => {
 
     const { data } = await sb
       .from("storylines")
-      .select("id, name, abbreviation, description, color_hex, sort_order")
+      .select("id, name, abbreviation, notes, color_hex, sort_order")
       .in("id", [idA, idB]);
     const byId = Object.fromEntries((data ?? []).map((r) => [r.id, r]));
     expect(byId[idA].name).toBe(testName("ua-a-new"));
     expect(byId[idA].abbreviation).toBe("X");
-    expect(byId[idA].description).toBe("desc a");
+    expect(byId[idA].notes).toBe("desc a");
     expect(byId[idA].color_hex).toBe("#aabbcc");
     expect(byId[idA].sort_order).toBe(3);
     expect(byId[idB].abbreviation).toBe("Y");
-    // Whitespace-only description normalizes to null.
-    expect(byId[idB].description).toBeNull();
+    // Whitespace-only notes normalizes to null.
+    expect(byId[idB].notes).toBeNull();
 
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/storylines");
   });
@@ -520,7 +520,7 @@ describe("updateAllStorylines", () => {
     fd.append("ids", id);
     fd.append("names", "   ");
     fd.append("abbreviations", "x");
-    fd.append("descriptions", "should not land");
+    fd.append("notes", "should not land");
     fd.append("icon_types", "lucide");
     fd.append("icon_values", "");
     fd.append("colors", "#000000");
@@ -530,13 +530,13 @@ describe("updateAllStorylines", () => {
 
     const { data } = await sb
       .from("storylines")
-      .select("name, abbreviation, description")
+      .select("name, abbreviation, notes")
       .eq("id", id)
       .single();
     // Blank-name row was skipped entirely — original values intact.
     expect(data?.name).toBe(testName("ua-skip"));
     expect(data?.abbreviation).toBe("Z");
-    expect(data?.description).toBeNull();
+    expect(data?.notes).toBeNull();
   });
 
   it("should reject the reserved 'D' abbreviation for any row in the batch", async () => {
@@ -549,7 +549,7 @@ describe("updateAllStorylines", () => {
     fd.append("ids", id);
     fd.append("names", testName("ua-guard-new"));
     fd.append("abbreviations", "d");
-    fd.append("descriptions", "");
+    fd.append("notes", "");
     fd.append("icon_types", "lucide");
     fd.append("icon_values", "");
     fd.append("colors", "#123456");

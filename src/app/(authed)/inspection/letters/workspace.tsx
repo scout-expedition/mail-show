@@ -6,6 +6,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
   useTransition,
@@ -19,6 +20,7 @@ import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
 import { CompositeActionChip } from "@/components/composite-action-chip";
+import { VariableKindIcon } from "@/lib/endings/variable-kind-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,9 +32,11 @@ import { DaySelect } from "@/components/day-select";
 import { filterVariables } from "@/components/variable-picker/variable-filter";
 import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 import {
+  displayCitizenId,
   formatCitizenIdInput,
   generateRandomCitizenId,
   isValidCitizenId,
+  toStorageCitizenId,
 } from "@/lib/citizen-id";
 import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
@@ -77,6 +81,8 @@ import {
   deleteInspectionLetter,
   deleteReportSegment,
   duplicateAction,
+  duplicateInspectionLetter,
+  duplicateReportSegment,
   patchAction,
   patchActionEndingAssignments,
   patchInspectionLetter,
@@ -141,6 +147,7 @@ import {
   Copy,
   Hash,
   HelpCircle,
+  MailCheck,
   MailOpen,
   Mails,
   Megaphone,
@@ -160,6 +167,7 @@ import {
   IconWorldBolt,
 } from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
+import { useMenuPosition } from "@/components/use-menu-position";
 
 /**
  * Selection shape used when this workspace is embedded into another page
@@ -282,6 +290,8 @@ type ActionState = ActionImpacts & {
   report_segment_id: string | null;
   next_letter_id: string | null;
   ending_assignments: EndingAssignmentState[];
+  updated_at: string;
+  updated_by: string | null;
 };
 
 type LetterState = {
@@ -328,6 +338,8 @@ function toLetterState(
         impact_emberlyn: a.impact_emberlyn,
         impact_spokgrad: a.impact_spokgrad,
         impact_pelico: a.impact_pelico,
+        updated_at: a.updated_at,
+        updated_by: a.updated_by,
         ending_assignments: endingAssignments
           .filter((e) => e.action_id === a.id)
           .map((e) => ({
@@ -566,6 +578,27 @@ function LettersWorkspaceInner({
     [storylines]
   );
 
+  // ── Optimistic-create state ──────────────────────────────────────────
+  // Ghost rows with `__optimistic: true` are appended to the server lists
+  // on click and disappear naturally on the next render after revalidation.
+  //
+  // letters/segments are dispatched from handleAddLetters/handleAddSegments
+  // (inside this component). Letter groups and actions dispatch from their
+  // respective child components (StorylineInspector / LetterActionsCard)
+  // which own their own useOptimistic hooks for cleaner encapsulation.
+  type OptLetter = InspectionLetterView & { __optimistic?: true };
+  type OptSegment = ReportSegmentView & { __optimistic?: true };
+
+  const [optimisticLetters, addOptimisticLetter] = useOptimistic(
+    allLetters as OptLetter[],
+    (prev: OptLetter[], ghost: OptLetter) => [...prev, ghost]
+  );
+  const [optimisticSegments, addOptimisticSegment] = useOptimistic(
+    allSegments as OptSegment[],
+    (prev: OptSegment[], ghost: OptSegment) => [...prev, ghost]
+  );
+  // ────────────────────────────────────────────────────────────────────
+
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
     initialGroupId
   );
@@ -575,19 +608,35 @@ function LettersWorkspaceInner({
   );
 
   const letters = useMemo(
-    () => allLetters.filter((l) => l.letter_group_id === selectedGroupId),
-    [allLetters, selectedGroupId]
+    () => optimisticLetters.filter((l) => l.letter_group_id === selectedGroupId),
+    [optimisticLetters, selectedGroupId]
   );
   const actions = useMemo(() => {
     const letterIds = new Set(letters.map((l) => l.id));
     return allActions.filter((a) => letterIds.has(a.inspection_letter_id));
   }, [allActions, letters]);
+
+  /** Per-letter action stats for the group-panel row badges. */
+  const letterActionStats = useMemo(() => {
+    const m = new Map<string, { a: number; r: number; n: number }>();
+    for (const action of actions) {
+      const id = action.inspection_letter_id;
+      const prev = m.get(id) ?? { a: 0, r: 0, n: 0 };
+      m.set(id, {
+        a: prev.a + 1,
+        r: prev.r + (action.report_segment_id != null ? 1 : 0),
+        n: prev.n + (action.next_letter_id != null ? 1 : 0),
+      });
+    }
+    return m;
+  }, [actions]);
+
   const segments = useMemo(
     () =>
       group
-        ? allSegments.filter((s) => s.letter_group_id === group.id)
-        : ([] as ReportSegmentView[]),
-    [allSegments, group]
+        ? optimisticSegments.filter((s) => s.letter_group_id === group.id)
+        : ([] as OptSegment[]),
+    [optimisticSegments, group]
   );
   const dayById = useMemo(
     () => new Map(days.map((d) => [d.id, d])),
@@ -657,6 +706,7 @@ function LettersWorkspaceInner({
   }));
   useEffect(() => {
     if (!group) {
+       
       setGroupState({
         storyline_id: "",
         name: "",
@@ -842,10 +892,13 @@ function LettersWorkspaceInner({
   // Latest-selection refs — the postgres_changes handler reads these without
   // re-registering itself on every selection change.
   const selectedGroupIdRef = useRef(selectedGroupId);
+   
   selectedGroupIdRef.current = selectedGroupId;
   const selectedIdRef = useRef(selectedId);
+   
   selectedIdRef.current = selectedId;
   const selectedSegmentIdRef = useRef(selectedSegmentId);
+   
   selectedSegmentIdRef.current = selectedSegmentId;
 
   // Coalesce bursts of INSERTs (e.g. a single create-action that inserts a
@@ -1124,6 +1177,7 @@ function LettersWorkspaceInner({
       return letter.id;
     }
     if (!sel) {
+       
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
@@ -1457,33 +1511,48 @@ function LettersWorkspaceInner({
 
   // Heroes may grow via quick-create.
   const [heroes, setHeroes] = useState<Citizen[]>(initialHeroes);
+   
   useEffect(() => setHeroes(initialHeroes), [initialHeroes]);
 
   // When server data reloads, reconcile the selected letter if still present.
+  // Depend on the un-optimistic base (allLetters/allActions), not the
+  // useOptimistic-derived `letters`/`actions`: React 19 re-runs the optimistic
+  // reducer on every render while a transition is pending, yielding new array
+  // references each render. Depending on the derived lists here re-fires the
+  // effect every render → setLetterState → re-render → Maximum-update-depth.
   useEffect(() => {
     // Clear local drag order once server data matches.
+     
     setOrderOverride(null);
     if (!selectedId) {
       return;
     }
-    const found = letters.find((l) => l.id === selectedId);
+    const groupLetters = selectedGroupId
+      ? allLetters.filter((l) => l.letter_group_id === selectedGroupId)
+      : allLetters;
+    const groupLetterIds = new Set(groupLetters.map((l) => l.id));
+    const groupActions = allActions.filter((a) =>
+      groupLetterIds.has(a.inspection_letter_id)
+    );
+    const found = groupLetters.find((l) => l.id === selectedId);
     if (!found) {
       // Deleted server-side; fall back to first.
-      setSelectedId(letters[0]?.id ?? null);
+      setSelectedId(groupLetters[0]?.id ?? null);
       setLetterState(
-        letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
+        groupLetters[0]
+          ? toLetterState(groupLetters[0], groupActions, endingAssignments)
+          : null
       );
       return;
     }
-    setLetterState(toLetterState(found, actions, endingAssignments));
-  }, [letters, actions, endingAssignments, selectedId]);
+    setLetterState(toLetterState(found, groupActions, endingAssignments));
+  }, [allLetters, allActions, endingAssignments, selectedId, selectedGroupId]);
 
   // Reconcile pending action ghosts whenever the server `actions` prop
   // updates: drop any ghost whose (letterId, templateId) pair now has a
   // real row. The partial unique index `actions_letter_template_unique`
   // guarantees that pair identifies the persisted row.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingActionAdds((prev) => {
       if (prev.length === 0) return prev;
       const realPairs = new Set(
@@ -1729,7 +1798,36 @@ function LettersWorkspaceInner({
   async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
+    const storyAbbr = currentStoryline?.abbreviation ?? "";
+    const groupSeq = group.sequence;
+    const storyId = group.storyline_id;
+    // Dispatch ghost letter rows immediately for each letter being added.
     startRowAction(async () => {
+      for (let i = 0; i < count; i++) {
+        const tmpId = `tmp-${crypto.randomUUID()}`;
+        addOptimisticLetter({
+          __optimistic: true,
+          id: tmpId,
+          letter_group_id: groupId,
+          variant: null,
+          piece: null,
+          sort_order: 9999 + i,
+          delivery_day_override_id: null,
+          delivery_day_offset: null,
+          summary: null,
+          content: null,
+          sender_citizen_id: null,
+          receiver_citizen_id: null,
+          notes: null,
+          updated_at: new Date().toISOString(),
+          updated_by: null,
+          effective_day_id: group.delivery_day_id,
+          storyline_abbreviation: storyAbbr,
+          group_sequence: groupSeq,
+          storyline_id: storyId,
+          content_id: "…",
+        } satisfies OptLetter);
+      }
       const ids = await createInspectionLettersInGroup(groupId, count);
       if (ids[0]) setSelectedId(ids[0]);
     });
@@ -1738,7 +1836,33 @@ function LettersWorkspaceInner({
   async function handleAddSegments(count: number) {
     if (!group) return;
     const groupId = group.id;
+    const storyAbbr = currentStoryline?.abbreviation ?? "";
+    const groupSeq = group.sequence;
+    const storyId = group.storyline_id;
+    // Dispatch ghost segment rows immediately.
     startRowAction(async () => {
+      for (let i = 0; i < count; i++) {
+        const tmpId = `tmp-${crypto.randomUUID()}`;
+        addOptimisticSegment({
+          __optimistic: true,
+          id: tmpId,
+          report_group_id: "",
+          variant: "…",
+          summary: null,
+          content: null,
+          delivery_day_override_id: null,
+          delivery_day_offset: null,
+          sort_order: 9999 + i,
+          updated_at: new Date().toISOString(),
+          updated_by: null,
+          letter_group_id: groupId,
+          storyline_id: storyId,
+          storyline_abbreviation: storyAbbr,
+          group_sequence: groupSeq,
+          report_id: "…",
+          effective_day_id: group.delivery_day_id,
+        } satisfies OptSegment);
+      }
       for (let i = 0; i < count; i++) {
         await createReportSegmentForGroup(groupId);
       }
@@ -1773,6 +1897,19 @@ function LettersWorkspaceInner({
         setSelectedId(null);
         setLetterState(null);
       }
+    });
+  }
+
+  function handleDuplicateLetter(letterId: string) {
+    startRowAction(async () => {
+      const { newLetterId } = await duplicateInspectionLetter(letterId);
+      setSelectedId(newLetterId);
+    });
+  }
+
+  function handleDuplicateSegment(segmentId: string) {
+    startRowAction(async () => {
+      await duplicateReportSegment(segmentId);
     });
   }
 
@@ -1973,6 +2110,8 @@ function LettersWorkspaceInner({
       impact_spokgrad: 0,
       impact_pelico: 0,
       ending_assignments: [],
+      updated_at: new Date().toISOString(),
+      updated_by: null,
     };
   }
 
@@ -2788,9 +2927,21 @@ function LettersWorkspaceInner({
               {(orderOverride
                 ? (orderOverride
                     .map((id) => letters.find((x) => x.id === id))
-                    .filter(Boolean) as InspectionLetterView[])
+                    .filter(Boolean) as OptLetter[])
                 : letters
               ).map((l, i) => {
+                // Ghost rows (optimistic creates) render as a simple
+                // non-interactive placeholder.
+                if ((l as OptLetter).__optimistic) {
+                  return (
+                    <div
+                      key={l.id}
+                      className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0 opacity-60 italic pointer-events-none"
+                    >
+                      <CreatingPill />
+                    </div>
+                  );
+                }
                 const active = l.id === selectedId;
                 const isGhost = !listLocked && dragIndex === i;
                 return (
@@ -2844,7 +2995,7 @@ function LettersWorkspaceInner({
                       });
                     }}
                     className={cn(
-                      "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                      "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
                       isGhost
                         ? null
                         : active
@@ -2902,6 +3053,66 @@ function LettersWorkspaceInner({
                           >
                             + Piece
                           </button>
+                        ) : null}
+                        {(() => {
+                          const stats = letterActionStats.get(l.id);
+                          const aC = stats?.a ?? 0;
+                          const rC = stats?.r ?? 0;
+                          const nC = stats?.n ?? 0;
+                          return (aC > 0 || rC > 0 || nC > 0) ? (
+                            <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                              {aC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <IconBolt size={11} aria-hidden />
+                                  {aC}
+                                </span>
+                              ) : null}
+                              {rC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <Megaphone size={11} aria-hidden />
+                                  {rC}
+                                </span>
+                              ) : null}
+                              {nC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <MailCheck size={11} aria-hidden />
+                                  {nC}
+                                </span>
+                              ) : null}
+                            </span>
+                          ) : null;
+                        })()}
+                        {listLocked ? (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                              "shrink-0 transition-opacity",
+                              active
+                                ? "opacity-100"
+                                : "opacity-0 group-hover/row:opacity-100"
+                            )}
+                          >
+                            <OverflowMenu
+                              items={[
+                                {
+                                  label: "Edit ID",
+                                  icon: <Hash size={12} aria-hidden />,
+                                  onClick: () => handleEditLetterId(l.id),
+                                },
+                                {
+                                  label: "Duplicate",
+                                  icon: <Copy size={12} aria-hidden />,
+                                  onClick: () => handleDuplicateLetter(l.id),
+                                },
+                                {
+                                  label: "Delete",
+                                  intent: "destructive",
+                                  icon: <Trash2 size={12} aria-hidden />,
+                                  onClick: () => handleDeleteLetter(l.id),
+                                },
+                              ]}
+                            />
+                          </div>
                         ) : null}
                       </>
                     )}
@@ -2978,9 +3189,21 @@ function LettersWorkspaceInner({
               {(segmentOrderOverride
                 ? (segmentOrderOverride
                     .map((id) => segments.find((x) => x.id === id))
-                    .filter(Boolean) as ReportSegmentView[])
+                    .filter(Boolean) as OptSegment[])
                 : segments
               ).map((seg, i) => {
+                // Ghost rows (optimistic creates) render as a simple
+                // non-interactive placeholder.
+                if ((seg as OptSegment).__optimistic) {
+                  return (
+                    <div
+                      key={seg.id}
+                      className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0 opacity-60 italic pointer-events-none"
+                    >
+                      <CreatingPill />
+                    </div>
+                  );
+                }
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
                 const isGhost =
@@ -3034,7 +3257,7 @@ function LettersWorkspaceInner({
                       });
                     }}
                     className={cn(
-                      "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                      "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
                       isGhost
                         ? null
                         : active
@@ -3083,6 +3306,47 @@ function LettersWorkspaceInner({
                           seg.delivery_day_override_id,
                           seg.effective_day_id
                         )}
+                        {segmentListLocked ? (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                              "shrink-0 transition-opacity",
+                              active
+                                ? "opacity-100"
+                                : "opacity-0 group-hover/row:opacity-100"
+                            )}
+                          >
+                            <OverflowMenu
+                              items={[
+                                {
+                                  label: "Edit ID",
+                                  icon: <Hash size={12} aria-hidden />,
+                                  onClick: () => handleEditSegmentId(seg.id),
+                                },
+                                {
+                                  label: "Duplicate",
+                                  icon: <Copy size={12} aria-hidden />,
+                                  onClick: () => handleDuplicateSegment(seg.id),
+                                },
+                                {
+                                  label: "Delete",
+                                  intent: "destructive",
+                                  icon: <Trash2 size={12} aria-hidden />,
+                                  onClick: async () => {
+                                    const ok = await confirmDialog({
+                                      title: "Delete report segment?",
+                                      message: `Segment ${seg.report_id} will be removed from the report. This cannot be undone.`,
+                                      confirmLabel: "Delete",
+                                      intent: "destructive",
+                                    });
+                                    if (!ok) return;
+                                    handleDeleteSegment(seg.id);
+                                  },
+                                },
+                              ]}
+                            />
+                          </div>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -3096,6 +3360,12 @@ function LettersWorkspaceInner({
             </div>
               </div>
             </div>
+
+            <LastUpdatedFooter
+              at={group.updated_at}
+              by={group.updated_by}
+              hidden={peers.some((p) => p.focus?.recordId === group.id)}
+            />
           </div>
           </>
           )}
@@ -3120,6 +3390,7 @@ function LettersWorkspaceInner({
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
               onDelete={() => handleDeleteLetter(letterState.id)}
+              onDuplicate={() => handleDuplicateLetter(letterState.id)}
               onEditId={() => handleEditLetterId(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
@@ -3183,6 +3454,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onDuplicate={handleDuplicateSegment}
               onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
@@ -3257,6 +3529,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onDuplicate={handleDuplicateSegment}
               onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
@@ -3308,6 +3581,7 @@ function LetterFieldsCard({
   onQuickCreateHero,
   onEditCitizen,
   onDelete,
+  onDuplicate,
   onEditId,
   onBack,
   actionsCount,
@@ -3326,6 +3600,7 @@ function LetterFieldsCard({
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   /** Opens the Edit-ID popup for this letter's variant. */
   onEditId: () => void;
   /** Called by the back-arrow in the panel header — typically
@@ -3443,6 +3718,11 @@ function LetterFieldsCard({
                 label: "Edit ID",
                 icon: <Hash size={12} aria-hidden />,
                 onClick: onEditId,
+              },
+              {
+                label: "Duplicate",
+                icon: <Copy size={12} aria-hidden />,
+                onClick: onDuplicate,
               },
               {
                 label: "Delete Inspection Letter",
@@ -3724,6 +4004,7 @@ function LetterActionsCard({
     }
     wasActiveRef.current = active;
   }, [active]);
+
   return (
     <div
       ref={panelRef}
@@ -3844,6 +4125,7 @@ function LetterSegmentCard({
   templates,
   onBack,
   onDelete,
+  onDuplicate,
   onEditId,
   onJumpToTrigger,
   onConfirmDialog,
@@ -3857,6 +4139,7 @@ function LetterSegmentCard({
   templates: ActionTemplate[];
   onBack: () => void;
   onDelete: (segmentId: string) => void;
+  onDuplicate: (segmentId: string) => void;
   /** Opens the Edit-ID popup for this report segment's variant. */
   onEditId: (segmentId: string) => void;
   onJumpToTrigger: (letterId: string) => void;
@@ -3881,7 +4164,7 @@ function LetterSegmentCard({
   // IMPORTANT: useInstantField's `value` MUST be the canonical server row
   // (segment.X), not local edit state — otherwise commitNow's equality
   // check short-circuits the save. See Track B3 lesson in
-  // docs/multi-user-collab-plan.md.
+  // docs/plans/active/multi-user-collab-plan.md.
   // The roman-numeral `variant` is no longer edited inline — it is changed
   // only through the Edit-ID popup (see the kebab menu).
   const serverOverride: DeliveryOverride =
@@ -4049,6 +4332,11 @@ function LetterSegmentCard({
                 label: "Edit ID",
                 icon: <Hash size={12} aria-hidden />,
                 onClick: () => onEditId(segment.id),
+              },
+              {
+                label: "Duplicate",
+                icon: <Copy size={12} aria-hidden />,
+                onClick: () => onDuplicate(segment.id),
               },
               {
                 label: "Delete Report Segment",
@@ -4383,7 +4671,7 @@ function HeroSearch({
             value={
               selected && !editing
                 ? `${citizenDisplayName(selected)}${
-                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                    selected.citizen_id ? ` ${displayCitizenId(selected.citizen_id)}` : ""
                   }`
                 : query
             }
@@ -4583,7 +4871,7 @@ function CitizenDialog({
   const [suffix, setSuffix] = useState(existing?.suffix ?? "");
   const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
   const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
-  const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
+  const [citizenId, setCitizenId] = useState(displayCitizenId(existing?.citizen_id));
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
   const [pending, startTransition] = useTransition();
@@ -4618,7 +4906,7 @@ function CitizenDialog({
   }
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
-  const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
+  const cidDuplicate = citizenId.length > 0 && takenIds.has(toStorageCitizenId(citizenId) ?? "");
   const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
@@ -4636,7 +4924,7 @@ function CitizenDialog({
       await onSubmit({
         first_name: firstName.trim(),
         last_name: lastName.trim(),
-        citizen_id: citizenId.trim() || null,
+        citizen_id: toStorageCitizenId(citizenId),
         city_id: cityId || null,
         nation_id: nationId || null,
         middle_name: middleName.trim() || null,
@@ -4779,7 +5067,7 @@ function CitizenDialog({
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setCitizenId(generateRandomCitizenId(takenIds))}
+                onClick={() => setCitizenId(displayCitizenId(generateRandomCitizenId(takenIds)))}
                 aria-label="Generate random citizen ID"
                 title="Generate random ID"
                 className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -5176,6 +5464,7 @@ function HighlightableImpactTile({
   }, [value]);
 
   function handleChange(v: number) {
+     
     lastLocalChangeAtRef.current = Date.now();
     onChange(v);
   }
@@ -5198,6 +5487,7 @@ function HighlightableImpactTile({
             : undefined
         }
       >
+        { }
         {children(value, handleChange)}
       </div>
     </FieldHighlight>
@@ -5597,6 +5887,12 @@ function ActionEditor({
           />
         </div>
       </div>
+
+      <LastUpdatedFooter
+        at={action.updated_at}
+        by={action.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === action.id)}
+      />
 
       {/* Kebab is the card's last DOM child → the last tab stop in the
           row. Positioned to sit visually in the header's top-right.
@@ -6228,13 +6524,18 @@ function ActionVariableChip({
             across chips) so the name|value divider aligns vertically;
             the name is right-aligned so it sits against the divider. */}
         <span
-          className="flex shrink-0 items-center justify-end px-1.5"
+          className="flex shrink-0 items-center justify-end gap-1 px-1.5"
           style={{
             backgroundColor: color,
             color: readableOnHex(color),
             width: `calc(${nameColCh}ch + 0.75rem)`,
           }}
         >
+          <VariableKindIcon
+            kind={variable.kind}
+            size={10}
+            className="shrink-0 opacity-80"
+          />
           <span className="truncate text-right">{variable.name}</span>
         </span>
         {/* Right: value + chevron + invisible overlay select. Fills the
@@ -6310,32 +6611,24 @@ function AddEndingVariableMenu({
   // Keyboard-highlighted row; the search input owns nav, rows are not
   // tab stops.
   const [activeIndex, setActiveIndex] = useState(0);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const popupRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const filtered = filterVariables(variables, query);
 
-  const computePos = useCallback(() => {
-    const btn = buttonRef.current;
-    if (!btn) return;
-    const r = btn.getBoundingClientRect();
-    // Over-estimate the popup width so the right-edge clamp stays safe.
-    const width = 260;
-    // The popup's vertical height depends on the filtered list; over-estimate
-    // for the clamp so a near-bottom trigger flips above instead of
-    // disappearing off-screen.
-    const estHeight = 240;
-    const margin = 8;
-    const left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
-    const fitsBelow = r.bottom + estHeight + margin <= window.innerHeight;
-    const top = fitsBelow
-      ? r.bottom + 4
-      : Math.max(margin, r.top - estHeight - 4);
-    setPos({ top, left });
-  }, []);
+  // Position via the shared hook: flips up when there isn't room below,
+  // clamps to viewport on both axes. `deps: [filtered.length]` re-measures
+  // whenever the result list grows/shrinks (search input filter).
+  const {
+    triggerRef: buttonRef,
+    menuRef: popupRef,
+    pos,
+  } = useMenuPosition({
+    open,
+    align: "left",
+    preferredPlacement: "down",
+    deps: [filtered.length],
+  });
 
   // Outside-click closes. The popup is portaled out of `wrapRef`, so the
   // check has to cover both the trigger and the portaled popup.
@@ -6349,20 +6642,7 @@ function AddEndingVariableMenu({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
-
-  // Keep the fixed popup pinned to the trigger as the page scrolls or
-  // resizes — the rect coords are viewport-relative and otherwise stale.
-  useLayoutEffect(() => {
-    if (!open) return;
-    computePos();
-    window.addEventListener("scroll", computePos, true);
-    window.addEventListener("resize", computePos);
-    return () => {
-      window.removeEventListener("scroll", computePos, true);
-      window.removeEventListener("resize", computePos);
-    };
-  }, [open, computePos]);
+  }, [open, popupRef]);
 
   // Focus the search input once the popup is mounted (open + positioned).
   // Re-firing on a scroll-driven `pos` change is a no-op when the input
@@ -6580,6 +6860,11 @@ function AddActionMenu({
   const [open, setOpen] = useState(false);
   const [hoverGroupId, setHoverGroupId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const { triggerRef, menuRef, pos } = useMenuPosition({
+    open,
+    align: "right",
+    preferredPlacement: "up",
+  });
   const entries = useMemo(
     () => pickerEntries(templates, groups, existingTemplateIds),
     [templates, groups, existingTemplateIds]
@@ -6587,14 +6872,15 @@ function AddActionMenu({
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) {
-        setOpen(false);
-        setHoverGroupId(null);
-      }
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+      setHoverGroupId(null);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [menuRef]);
 
   function close() {
     setOpen(false);
@@ -6604,6 +6890,7 @@ function AddActionMenu({
   return (
     <div ref={ref} className="relative inline-flex">
       <button
+        ref={triggerRef}
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -6621,98 +6908,110 @@ function AddActionMenu({
       >
         <Plus size={14} aria-hidden />
       </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute bottom-full left-1/2 z-30 mb-1 w-max -translate-x-1/2 overflow-visible rounded-md border border-border bg-popover shadow-md"
-        >
-          {entries.map((entry) => {
-            const memberTemplates = entry.members.map((m) => m.template);
-            const hasMultipleMembers = entry.members.length > 1;
-            const allUsed = entry.allUsed;
-            return (
-              <div
-                key={`grp-${entry.id}`}
-                className="relative"
-                onMouseEnter={() => setHoverGroupId(entry.id)}
-                onMouseLeave={() => setHoverGroupId(null)}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={allUsed}
-                  onClick={() => {
-                    if (allUsed) return;
-                    onAddGroup(entry.id);
-                    close();
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
-                    allUsed
-                      ? "cursor-not-allowed text-muted-foreground/50"
-                      : "text-foreground hover:bg-accent/40"
-                  )}
-                  title={
-                    allUsed
-                      ? "Every action in this group is already on this letter"
-                      : undefined
-                  }
-                >
-                  <span className={allUsed ? "opacity-50" : undefined}>
-                    <CompositeActionChip members={memberTemplates} size={18} />
-                  </span>
-                  <span className="min-w-0 max-w-[220px] flex-1 truncate">
-                    {entry.label}
-                  </span>
-                  {hasMultipleMembers ? (
-                    <ChevronRight
-                      size={12}
-                      aria-hidden
-                      className="shrink-0 text-muted-foreground"
-                    />
-                  ) : null}
-                </button>
-                {hasMultipleMembers && hoverGroupId === entry.id ? (
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 w-max overflow-visible rounded-md border border-border bg-popover shadow-md"
+              style={{
+                top: pos?.top ?? -9999,
+                left: pos?.left ?? -9999,
+                visibility: pos ? "visible" : "hidden",
+              }}
+            >
+              {entries.map((entry) => {
+                const memberTemplates = entry.members.map((m) => m.template);
+                const hasMultipleMembers = entry.members.length > 1;
+                const allUsed = entry.allUsed;
+                return (
                   <div
-                    role="menu"
-                    /* Anchored to the item's bottom so the flyout grows
-                       upward — the menu itself opens upward from a
-                       bottom-of-panel "+", so a downward flyout would be
-                       clipped by the panel-slide's overflow. */
-                    className="absolute bottom-0 left-full z-40 ml-0.5 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
+                    key={`grp-${entry.id}`}
+                    className="relative"
+                    onMouseEnter={() => setHoverGroupId(entry.id)}
+                    onMouseLeave={() => setHoverGroupId(null)}
                   >
-                    {entry.members.map(({ template: t, used }) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        role="menuitem"
-                        disabled={used}
-                        onClick={() => {
-                          if (used) return;
-                          onAddTemplate(t.id);
-                          close();
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
-                          used
-                            ? "cursor-not-allowed text-muted-foreground/50"
-                            : "text-foreground hover:bg-accent/40"
-                        )}
-                        title={used ? "Already on this letter" : undefined}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={allUsed}
+                      onClick={() => {
+                        if (allUsed) return;
+                        onAddGroup(entry.id);
+                        close();
+                      }}
+                      className={cn(
+                        "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
+                        allUsed
+                          ? "cursor-not-allowed text-muted-foreground/50"
+                          : "text-foreground hover:bg-accent/40"
+                      )}
+                      title={
+                        allUsed
+                          ? "Every action in this group is already on this letter"
+                          : undefined
+                      }
+                    >
+                      <span className={allUsed ? "opacity-50" : undefined}>
+                        <CompositeActionChip
+                          members={memberTemplates}
+                          size={18}
+                        />
+                      </span>
+                      <span className="min-w-0 max-w-[220px] flex-1 truncate">
+                        {entry.label}
+                      </span>
+                      {hasMultipleMembers ? (
+                        <ChevronRight
+                          size={12}
+                          aria-hidden
+                          className="shrink-0 text-muted-foreground"
+                        />
+                      ) : null}
+                    </button>
+                    {hasMultipleMembers && hoverGroupId === entry.id ? (
+                      <div
+                        role="menu"
+                        className="absolute bottom-0 left-full z-40 ml-0.5 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
                       >
-                        <span className={used ? "opacity-50" : undefined}>
-                          <CompositeActionChip members={[t]} size={16} />
-                        </span>
-                        <span className="max-w-[200px] truncate">{t.name}</span>
-                      </button>
-                    ))}
+                        {entry.members.map(({ template: t, used }) => (
+                          <button
+                            key={t.id}
+                            type="button"
+                            role="menuitem"
+                            disabled={used}
+                            onClick={() => {
+                              if (used) return;
+                              onAddTemplate(t.id);
+                              close();
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-xs transition-colors",
+                              used
+                                ? "cursor-not-allowed text-muted-foreground/50"
+                                : "text-foreground hover:bg-accent/40"
+                            )}
+                            title={
+                              used ? "Already on this letter" : undefined
+                            }
+                          >
+                            <span className={used ? "opacity-50" : undefined}>
+                              <CompositeActionChip members={[t]} size={16} />
+                            </span>
+                            <span className="max-w-[200px] truncate">
+                              {t.name}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+                );
+              })}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -6954,17 +7253,25 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   const [open, setOpen] = useState(false);
   const [path, setPath] = useState<number[]>([]);
   const ref = useRef<HTMLDivElement>(null);
+  const { triggerRef, menuRef, pos } = useMenuPosition({
+    open,
+    align: "right",
+    preferredPlacement: "down",
+    deps: [items.length],
+  });
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) {
-        setOpen(false);
-        setPath([]);
-      }
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+      setPath([]);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [menuRef]);
 
   const currentItems = useMemo(() => {
     let cur: OverflowMenuItem[] = items;
@@ -6980,6 +7287,7 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   return (
     <div ref={ref} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => {
           setOpen((o) => !o);
@@ -6992,73 +7300,81 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
       >
         <MoreVertical size={14} aria-hidden />
       </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[280px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
-        >
-          {inSubmenu ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => setPath((p) => p.slice(0, -1))}
-              className="flex w-full items-center gap-2 whitespace-nowrap border-b border-border px-3 py-1 text-left font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 w-max max-w-[280px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+              style={{
+                top: pos?.top ?? -9999,
+                left: pos?.left ?? -9999,
+                visibility: pos ? "visible" : "hidden",
+              }}
             >
-              <ChevronLeft size={11} aria-hidden />
-              Back
-            </button>
-          ) : null}
-          {currentItems.map((item, i) =>
-            item.separator ? (
-              <div
-                key={i}
-                role="separator"
-                className="my-1 border-t border-border"
-              />
-            ) : (
-              <button
-                key={i}
-                type="button"
-                role="menuitem"
-                // Hover a parent item with a submenu → push into it without
-                // requiring a click. Hovering a sibling without a submenu
-                // at the same depth pops back to keep the menu tidy.
-                onMouseEnter={() => {
-                  if (item.submenu) {
-                    setPath((p) => [...p.slice(0, path.length), i]);
-                  }
-                }}
-                onClick={() => {
-                  if (item.submenu) {
-                    // Hover already opened it; click on a submenu parent is
-                    // a no-op so the user can travel into the flyout.
-                    return;
-                  }
-                  item.onClick?.();
-                  setOpen(false);
-                  setPath([]);
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-1 text-left font-mono text-[10px] transition-colors",
-                  item.intent === "destructive"
-                    ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                    : "text-foreground hover:bg-accent/40"
-                )}
-              >
-                {item.icon}
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                {item.submenu ? (
-                  <ChevronRight
-                    size={11}
-                    aria-hidden
-                    className="shrink-0 text-muted-foreground"
+              {inSubmenu ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => setPath((p) => p.slice(0, -1))}
+                  className="flex w-full items-center gap-2 whitespace-nowrap border-b border-border px-3 py-1 text-left font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                >
+                  <ChevronLeft size={11} aria-hidden />
+                  Back
+                </button>
+              ) : null}
+              {currentItems.map((item, i) =>
+                item.separator ? (
+                  <div
+                    key={i}
+                    role="separator"
+                    className="my-1 border-t border-border"
                   />
-                ) : null}
-              </button>
-            )
-          )}
-        </div>
-      ) : null}
+                ) : (
+                  <button
+                    key={i}
+                    type="button"
+                    role="menuitem"
+                    // Hover a parent item with a submenu → push into it
+                    // without requiring a click. Click on a submenu parent
+                    // is a no-op so the user can travel into the flyout
+                    // without re-anchoring the menu.
+                    onMouseEnter={() => {
+                      if (item.submenu) {
+                        setPath((p) => [...p.slice(0, path.length), i]);
+                      }
+                    }}
+                    onClick={() => {
+                      if (item.submenu) return;
+                      item.onClick?.();
+                      setOpen(false);
+                      setPath([]);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                      item.intent === "destructive"
+                        ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                        : "text-foreground hover:bg-accent/40"
+                    )}
+                  >
+                    {item.icon}
+                    <span className="min-w-0 flex-1 truncate">
+                      {item.label}
+                    </span>
+                    {item.submenu ? (
+                      <ChevronRight
+                        size={11}
+                        aria-hidden
+                        className="shrink-0 text-muted-foreground"
+                      />
+                    ) : null}
+                  </button>
+                )
+              )}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -7168,13 +7484,26 @@ function StorylineInspector({
   const [state, setState] = useState(() => ({
     name: storyline.name,
     abbreviation: storyline.abbreviation,
-    description: storyline.description,
+    notes: storyline.notes,
     icon_type: storyline.icon_type,
     icon_value: storyline.icon_value,
     color_hex: storyline.color_hex,
   }));
   const [, startRowAction] = useTransition();
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Optimistic create: appends a ghost LetterGroup row immediately when
+  // the user clicks "Add". The ghost disappears on the next render that
+  // includes the real row (after revalidation).
+  type InspectorOptGroup = LetterGroup & { __optimistic?: true };
+  const [optimisticInspectorGroups, addOptimisticInspectorGroup] =
+    useOptimistic(
+      groups as InspectorOptGroup[],
+      (prev: InspectorOptGroup[], ghost: InspectorOptGroup) => [
+        ...prev,
+        ghost,
+      ]
+    );
 
   // Resync the local mirror when a different storyline is selected.
   // Instant-save hooks are remounted via key={storyline.id} at the call site,
@@ -7185,7 +7514,7 @@ function StorylineInspector({
     setState({
       name: storyline.name,
       abbreviation: storyline.abbreviation,
-      description: storyline.description,
+      notes: storyline.notes,
       icon_type: storyline.icon_type,
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
@@ -7229,10 +7558,10 @@ function StorylineInspector({
       ),
     onActivity: pingActivity,
   });
-  const descriptionField = useInstantField<string | null>({
-    value: storyline.description,
+  const storylineNotesField = useInstantField<string | null>({
+    value: storyline.notes,
     onCommit: async (next) => {
-      await patchStoryline(storyline.id, { description: next });
+      await patchStoryline(storyline.id, { notes: next });
     },
     onFocusChange: (focused) =>
       setFocus(
@@ -7240,7 +7569,7 @@ function StorylineInspector({
           ? {
               table: "storylines",
               recordId: storyline.id,
-              field: "description",
+              field: "notes",
             }
           : null
       ),
@@ -7293,10 +7622,10 @@ function StorylineInspector({
     recordId: storyline.id,
     field: "abbreviation",
   };
-  const descriptionFocus: PresenceFocus = {
+  const storylineNotesFocus: PresenceFocus = {
     table: "storylines",
     recordId: storyline.id,
-    field: "description",
+    field: "notes",
   };
   const iconColorFocus: PresenceFocus = {
     table: "storylines",
@@ -7305,7 +7634,20 @@ function StorylineInspector({
   };
 
   function handleAddGroup() {
+    const tmpId = `tmp-${crypto.randomUUID()}`;
     startRowAction(async () => {
+      addOptimisticInspectorGroup({
+        __optimistic: true,
+        id: tmpId,
+        storyline_id: storyline.id,
+        name: "",
+        notes: null,
+        sequence: 9999,
+        sort_order: 9999,
+        delivery_day_id: null,
+        updated_at: new Date().toISOString(),
+        updated_by: null,
+      });
       const { group } = await createLetterGroupInStoryline(storyline.id);
       onCreateGroup(group);
     });
@@ -7362,8 +7704,11 @@ function StorylineInspector({
   const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
 
   const sortedGroups = useMemo(
-    () => groups.slice().sort((a, b) => a.sort_order - b.sort_order),
-    [groups]
+    () =>
+      optimisticInspectorGroups
+        .slice()
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [optimisticInspectorGroups]
   );
 
   // --- Instant-save reorder for the letter-groups list ---
@@ -7514,17 +7859,17 @@ function StorylineInspector({
 
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Description</Label>
-          <FieldHighlight peers={peers} focusKey={descriptionFocus}>
+          <Label>Notes</Label>
+          <FieldHighlight peers={peers} focusKey={storylineNotesFocus}>
             <AutoTextarea
-              value={descriptionField.value ?? ""}
+              value={storylineNotesField.value ?? ""}
               onChange={(e) => {
                 const next = e.target.value || null;
-                setState((s) => ({ ...s, description: next }));
-                descriptionField.set(next);
+                setState((s) => ({ ...s, notes: next }));
+                storylineNotesField.set(next);
               }}
-              onFocus={descriptionField.onFocus}
-              onBlur={descriptionField.onBlur}
+              onFocus={storylineNotesField.onFocus}
+              onBlur={storylineNotesField.onBlur}
               minRows={2}
               className={GHOST_FIELD}
             />
@@ -7610,6 +7955,18 @@ function StorylineInspector({
         </div>
         <div className="flex flex-col overflow-hidden rounded-b-md">
           {viewOrderedGroups.map((g, i) => {
+            // Ghost rows (optimistic creates) render as a simple
+            // non-interactive placeholder.
+            if ((g as InspectorOptGroup).__optimistic) {
+              return (
+                <div
+                  key={g.id}
+                  className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0 opacity-60 italic pointer-events-none"
+                >
+                  <CreatingPill />
+                </div>
+              );
+            }
             const count = letterCountByGroup.get(g.id) ?? 0;
             const day = g.delivery_day_id
               ? dayById.get(g.delivery_day_id)
@@ -7736,6 +8093,12 @@ function StorylineInspector({
           ) : null}
         </div>
       </div>
+
+      <LastUpdatedFooter
+        at={storyline.updated_at}
+        by={storyline.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === storyline.id)}
+      />
       </div>
     </div>
   );
@@ -7764,48 +8127,39 @@ function StorylinesListPanel({
   onSelectLetter: (id: string) => void;
   onOpenStoryline: (id: string | null) => void;
 }) {
-  const { peers } = usePresenceContext();
-  // Peer focus rings per group + letter, mirroring the nations editor's
-  // visual treatment: a colored inset box-shadow stacks one ring per peer.
-  const peerColorsByLetter = useMemo(() => {
-    const m = new Map<string, string[]>();
-    for (const p of peers) {
-      const lid = p.selection?.letterId ?? null;
-      if (!lid) continue;
-      const color = p.profile?.avatarColorHex ?? p.color;
-      const arr = m.get(lid) ?? [];
-      arr.push(color);
-      m.set(lid, arr);
-    }
-    return m;
-  }, [peers]);
-  const peerColorsByGroup = useMemo(() => {
-    const m = new Map<string, string[]>();
-    for (const p of peers) {
-      const gid = p.selection?.groupId ?? null;
-      if (!gid) continue;
-      // Don't double-ring the group when a peer is on a specific letter —
-      // they're already represented on the letter row.
-      if (p.selection?.letterId) continue;
-      const color = p.profile?.avatarColorHex ?? p.color;
-      const arr = m.get(gid) ?? [];
-      arr.push(color);
-      m.set(gid, arr);
-    }
-    return m;
-  }, [peers]);
-  function ringShadow(colors: string[] | undefined): string | undefined {
-    if (!colors || colors.length === 0) return undefined;
-    return colors
-      .map((c, i) => `inset 0 0 0 ${(i + 1) * 2}px ${c}`)
-      .join(", ");
-  }
-
   const [groupMode, setGroupMode] = useState<"storyline" | "day">("storyline");
   // Default to all rows collapsed.
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
     () => new Set()
   );
+  // Presence: peer/self focus on a letter or group lights up a ring on the
+  // matching row so collaborators can see what each other is editing. Mirrors
+  // FieldHighlight's color selection (self wins over peer when both match).
+  const {
+    peers: presencePeers,
+    focus: localFocus,
+    selfColor,
+  } = usePresenceContext();
+  function rowFocusColor(
+    table: "inspection_letters" | "letter_groups",
+    recordId: string
+  ): string | undefined {
+    if (
+      localFocus &&
+      localFocus.table === table &&
+      localFocus.recordId === recordId &&
+      selfColor
+    ) {
+      return selfColor;
+    }
+    const peer = presencePeers.find(
+      (p) =>
+        p.focus &&
+        p.focus.table === table &&
+        p.focus.recordId === recordId
+    );
+    return peer?.profile?.avatarColorHex ?? peer?.color;
+  }
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -7912,7 +8266,7 @@ function StorylinesListPanel({
         if (va !== vb) return va.localeCompare(vb);
         return (a.piece ?? 0) - (b.piece ?? 0);
       });
-    const groupPeerShadow = ringShadow(peerColorsByGroup.get(g.id));
+    const groupRingColor = rowFocusColor("letter_groups", g.id);
     return (
       <div
         key={g.id}
@@ -7920,9 +8274,15 @@ function StorylinesListPanel({
           "relative border-t border-border first:border-t-0",
           active && "bg-accent/40"
         )}
-        style={groupPeerShadow ? { boxShadow: groupPeerShadow } : undefined}
       >
-        <div className="flex items-stretch">
+        <div
+          className="flex items-stretch"
+          style={
+            groupRingColor
+              ? { boxShadow: `inset 0 0 0 2px ${groupRingColor}` }
+              : undefined
+          }
+        >
           <button
             type="button"
             onClick={() => onSelectGroup(g.id)}
@@ -7979,19 +8339,21 @@ function StorylinesListPanel({
               const overrideDay = hasOverride
                 ? dayById.get(l.effective_day_id ?? "")
                 : null;
-              const letterPeerShadow = ringShadow(peerColorsByLetter.get(l.id));
+              const ringColor = rowFocusColor("inspection_letters", l.id);
               return (
                 <button
                   key={l.id}
                   type="button"
                   onClick={() => onSelectLetter(l.id)}
-                  style={
-                    letterPeerShadow ? { boxShadow: letterPeerShadow } : undefined
-                  }
                   className={cn(
                     "relative flex items-center gap-2 px-6 py-1 text-left text-xs",
                     letterActive ? "bg-accent/40" : "hover:bg-accent/30"
                   )}
+                  style={
+                    ringColor
+                      ? { boxShadow: `inset 0 0 0 2px ${ringColor}` }
+                      : undefined
+                  }
                 >
                   {overrideDay ? (
                     <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">

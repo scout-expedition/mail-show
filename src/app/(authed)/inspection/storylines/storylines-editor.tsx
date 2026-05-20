@@ -207,7 +207,7 @@ function StorylinesEditorInner({ storylines }: { storylines: Storyline[] }) {
           <span />
           <Label>Name</Label>
           <Label>Abbr</Label>
-          <Label>Description</Label>
+          <Label>Notes</Label>
           <span />
         </div>
         {viewRows.map((row, i) => (
@@ -319,11 +319,11 @@ function StorylineRow({
     onActivity: pingActivity,
   });
   const descriptionField = useInstantField<string | null>({
-    value: row.description,
+    value: row.notes,
     onCommit: async (next) => {
-      await patchStoryline(row.id, { description: next });
+      await patchStoryline(row.id, { notes: next });
     },
-    onFocusChange: (focused) => setFocus(focused ? fk("description") : null),
+    onFocusChange: (focused) => setFocus(focused ? fk("notes") : null),
     onActivity: pingActivity,
   });
   const iconColorField = useInstantField<{
@@ -420,7 +420,7 @@ function StorylineRow({
             className="h-8 text-center"
           />
         </FieldHighlight>
-        <FieldHighlight peers={peers} focusKey={fk("description")}>
+        <FieldHighlight peers={peers} focusKey={fk("notes")}>
           <Input
             value={descriptionField.value ?? ""}
             onChange={(e) => descriptionField.set(e.target.value || null)}

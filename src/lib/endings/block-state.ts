@@ -90,6 +90,10 @@ export interface VariableState {
   /** Optional hex override (e.g. nation color, impact-column color).
    *  Falls back to the `color_index` palette when null. */
   color_hex: string | null;
+  /** Folder this variable lives in (null = root). Drives the
+   *  folder-aware picker; number_ref / aggregate_ref variables ignore
+   *  this since they live under hardcoded category nodes. */
+  folder_id: string | null;
   sort_order: number;
 }
 

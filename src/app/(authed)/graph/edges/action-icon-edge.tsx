@@ -11,6 +11,7 @@ import {
 } from "@xyflow/react";
 import { IconDisplay } from "@/components/icon-display";
 import { readableOnHex } from "@/components/pills";
+import { VariableKindIcon } from "@/lib/endings/variable-kind-icon";
 import type { IconType } from "@/lib/db/enums";
 import {
   VAR_CHIP_W,
@@ -344,7 +345,7 @@ function ActionIconEdgeComponent({
               />
             ) : (
               <span className="text-[10px] font-mono font-semibold">
-                {d.actionName.slice(0, 1).toUpperCase()}
+                {(d.actionName ?? "?").slice(0, 1).toUpperCase()}
               </span>
             )}
           </button>
@@ -530,13 +531,14 @@ function VariableChip({
       title={`${variable.name} = ${variable.valueLabel}`}
     >
       <span
-        className="line-clamp-2 px-0.5 py-px text-[7px] leading-[8px]"
+        className="line-clamp-2 inline-flex items-center justify-center gap-0.5 px-0.5 py-px text-[7px] leading-[8px]"
         style={{
           backgroundColor: variable.color,
           color: readableOnHex(variable.color),
         }}
       >
-        {variable.name}
+        <VariableKindIcon kind={variable.kind} size={7} />
+        <span className="line-clamp-2">{variable.name}</span>
       </span>
       <span className="line-clamp-2 bg-background/85 px-0.5 py-px text-[9px] leading-[10px] text-foreground">
         {variable.valueLabel}

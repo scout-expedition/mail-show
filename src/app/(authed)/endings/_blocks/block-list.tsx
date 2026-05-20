@@ -12,7 +12,7 @@ import type {
   VariableState,
 } from "@/lib/endings/block-state";
 import { parentKey } from "@/lib/endings/block-state";
-import type { EndingVariableValue } from "@/lib/db/types";
+import type { EndingVariableFolder, EndingVariableValue } from "@/lib/db/types";
 import { addBlock, deleteBlock } from "../_shared/document-actions";
 import { useDrag } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
@@ -26,6 +26,8 @@ export type TextBlockComponent = ComponentType<{
   /** Authoring variable list, fed into the `@[Name]` autocomplete
    *  popup. Same array DocumentEditor passes to BlockList. */
   variables: VariableState[];
+  /** Folder rows for the variable picker's nested navigation. */
+  folders: EndingVariableFolder[];
 }>;
 
 export type ResultBlockComponent = ComponentType<{
@@ -69,6 +71,8 @@ export function BlockList({
   variableIndex,
   variables,
   values,
+  smartVariableReturns,
+  folders,
   document_id,
   leaves,
   onUpdateBlock,
@@ -84,6 +88,11 @@ export function BlockList({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Powers the chip value dropdown for
+   *  smart_ref chips. Optional — falls back to empty when absent. */
+  smartVariableReturns?: Map<string, string[]>;
+  folders: EndingVariableFolder[];
   document_id: string;
   leaves: LeafComponents;
   onUpdateBlock: (id: string, patch: Partial<BlockState>) => void;
@@ -251,6 +260,7 @@ export function BlockList({
                 block={b}
                 onDelete={() => handleDeleteBlock(b.id)}
                 variables={variables}
+                folders={folders}
               />
             ) : (
               (() => {
@@ -281,6 +291,8 @@ export function BlockList({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
+              smartVariableReturns={smartVariableReturns}
+              folders={folders}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
               getRowBlockCount={(rowId) =>
@@ -301,6 +313,8 @@ export function BlockList({
                     variableIndex={variableIndex}
                     variables={variables}
                     values={values}
+                    smartVariableReturns={smartVariableReturns}
+                    folders={folders}
                     document_id={document_id}
                     leaves={leaves}
                     onUpdateBlock={onUpdateBlock}

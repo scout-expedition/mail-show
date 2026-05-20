@@ -20,6 +20,7 @@ import {
   type MutableRefObject,
 } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
+import type { EndingVariableFolder } from "@/lib/db/types";
 import { cn } from "@/lib/utils";
 import { MentionArrowPlugin } from "./mention-arrow-plugin";
 import { MentionPastePlugin } from "./mention-paste-plugin";
@@ -44,6 +45,7 @@ export interface LexicalTextBlockEditorProps {
    *  to flush pending commits before the focus ring leaves. */
   onBlur?: () => void;
   variables: VariableState[];
+  folders: EndingVariableFolder[];
   placeholder?: string;
   className?: string;
   style?: CSSProperties;
@@ -55,6 +57,7 @@ export function LexicalTextBlockEditor({
   onFocus,
   onBlur,
   variables,
+  folders,
   placeholder = "Paragraph text…",
   className,
   style,
@@ -151,7 +154,7 @@ export function LexicalTextBlockEditor({
           <ValueSyncPlugin value={value} lastEmittedRef={lastEmittedRef} />
           <MentionArrowPlugin />
           <MentionPastePlugin />
-          <MentionTriggerPlugin variables={variables} />
+          <MentionTriggerPlugin variables={variables} folders={folders} />
         </LexicalComposer>
       </div>
     </MentionVariablesProvider>

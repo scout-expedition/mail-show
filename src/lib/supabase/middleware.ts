@@ -52,10 +52,10 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(redirect);
   }
 
-  // Already signed in and hitting /sign-in → bounce to dashboard.
+  // Already signed in and hitting /sign-in → bounce to the homepage.
   if (user && pathname.startsWith("/sign-in")) {
     const redirect = request.nextUrl.clone();
-    redirect.pathname = "/dashboard";
+    redirect.pathname = "/";
     redirect.search = "";
     return NextResponse.redirect(redirect);
   }

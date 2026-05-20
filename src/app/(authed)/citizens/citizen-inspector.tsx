@@ -32,8 +32,10 @@ import {
   type AddressLookupLevel,
 } from "@/lib/citizen-name";
 import {
+  displayCitizenId,
   formatCitizenIdInput,
   generateRandomCitizenId,
+  toStorageCitizenId,
 } from "@/lib/citizen-id";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
@@ -133,8 +135,8 @@ export function CitizenInspector({
     onActivity: pingActivity,
   });
   const citizenIdField = useInstantField<string>({
-    value: citizen.citizen_id ?? "",
-    onCommit: (v) => patchCitizen(citizen.id, { citizen_id: v || null }),
+    value: displayCitizenId(citizen.citizen_id),
+    onCommit: (v) => patchCitizen(citizen.id, { citizen_id: toStorageCitizenId(v) }),
     onFocusChange: onFocusChangeFor("citizen_id"),
     onActivity: pingActivity,
   });
@@ -207,7 +209,7 @@ export function CitizenInspector({
     suffix: suffixField.value || null,
     name_display_format: nameFormatField.value || null,
     address_line: addressLineField.value || null,
-    citizen_id: citizenIdField.value || null,
+    citizen_id: toStorageCitizenId(citizenIdField.value),
     type: typeField.value as CitizenType,
     city_id: cityIdField.value || null,
     nation_id: nationIdField.value || null,
@@ -228,7 +230,7 @@ export function CitizenInspector({
   // Validation, computed from the live (in-progress) field values so errors
   // clear as soon as they're fixed.
   const liveNameKey = citizenFullName(liveCitizen).trim().toLowerCase();
-  const liveIdKey = (citizenIdField.value ?? "").trim();
+  const liveIdKey = toStorageCitizenId(citizenIdField.value) ?? "";
   const issues = citizenIssues(liveCitizen, {
     duplicateName: !!liveNameKey && otherNames.has(liveNameKey),
     duplicateCitizenId: !!liveIdKey && otherIds.has(liveIdKey),
@@ -697,8 +699,8 @@ function CitizenIdInput({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
             const taken = new Set(allCitizenIds);
-            taken.delete(value);
-            onChange(generateRandomCitizenId(taken));
+            taken.delete(toStorageCitizenId(value) ?? "");
+            onChange(displayCitizenId(generateRandomCitizenId(taken)));
           }}
           aria-label="Generate random citizen ID"
           title="Generate random ID"

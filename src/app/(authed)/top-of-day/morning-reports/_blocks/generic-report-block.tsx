@@ -9,12 +9,13 @@ import { Trash2 } from "lucide-react";
 import { OverflowMenu } from "@/components/panel";
 import { useConfirm } from "@/components/confirm-dialog";
 import {
-  BLOCK_TEXTAREA_CLASS,
   BlockFrame,
   HeaderInput,
   type DragApi,
 } from "./block-shell";
-import { MarkdownTextarea } from "@/components/markdown-textarea";
+import { RichTextEditor } from "@/components/rich-text/rich-text-editor";
+import { GHOST_FIELD } from "@/components/panel";
+import { cn } from "@/lib/utils";
 import { ReportSegmentPill } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
@@ -136,14 +137,14 @@ export function GenericReportBlock({
             field: "content",
           }}
         >
-          <div onFocus={content.onFocus} onBlur={content.onBlur}>
-            <MarkdownTextarea
-              value={content.value}
-              onChange={(e) => content.set(e.target.value)}
-              minRows={2}
-              className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-            />
-          </div>
+          <RichTextEditor
+            value={content.value}
+            onChange={(next) => content.set(next)}
+            onFocus={content.onFocus}
+            onBlur={content.onBlur}
+            minRows={2}
+            className={cn("font-mono text-xs", GHOST_FIELD)}
+          />
         </FieldHighlight>
       </BlockFrame>
       {dialog}

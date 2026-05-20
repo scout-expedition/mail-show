@@ -3,7 +3,7 @@
 // Unified server actions for ending documents (frameworks + the five
 // logic-tab tiebreak / framework-selection docs). Both surfaces call
 // into this module — the frameworks workspace (step 2 of
-// docs/endings-logic-v2-plan.md) wires up first; the Logic tab
+// docs/plans/active/endings-logic-v2-plan.md) wires up first; the Logic tab
 // (step 3) hooks the same actions onto the shared editor.
 //
 // Shape mirrors the pre-rebuild `frameworks/actions.ts` — same UPDATE-only
@@ -140,19 +140,33 @@ export async function patchDocument(
   const sanitized: typeof patch = { ...patch };
 
   if (sanitized.name !== undefined) {
-    if (kind !== "framework") {
-      throw new Error("Only framework documents can be renamed.");
+    if (kind !== "framework" && kind !== "smart_variable") {
+      throw new Error(
+        "Only framework or smart_variable documents can be renamed."
+      );
     }
     const trimmed = sanitized.name.trim();
-    if (!trimmed) throw new Error("Framework name cannot be empty.");
+    if (!trimmed) {
+      throw new Error(
+        kind === "framework"
+          ? "Framework name cannot be empty."
+          : "Smart Variable name cannot be empty."
+      );
+    }
     const { data: conflict } = await supabase
       .from("ending_documents")
       .select("id")
-      .eq("kind", "framework")
+      .eq("kind", kind)
       .ilike("name", trimmed.replace(/[\\%_]/g, "\\$&"))
       .neq("id", id)
       .maybeSingle();
-    if (conflict) throw new Error(`Duplicate framework name: ${trimmed}`);
+    if (conflict) {
+      throw new Error(
+        kind === "framework"
+          ? `Duplicate framework name: ${trimmed}`
+          : `Duplicate Smart Variable name: ${trimmed}`
+      );
+    }
     sanitized.name = trimmed;
   }
 
@@ -161,6 +175,21 @@ export async function patchDocument(
     .update(sanitized)
     .eq("id", id);
   if (error) throw new Error(error.message);
+
+  // Smart Variables are paired 1:1 with an `ending_variables` row of
+  // kind='smart_ref' — that variable row is the public identity used by
+  // every chip picker across endings + frameworks. Keep the two names in
+  // sync so renaming in the editor immediately propagates to every
+  // surface that reads `ending_variables.name`. A DB trigger also enforces
+  // this invariant, but doing it here too keeps the rejected-name error
+  // surface in app code where the caller can react to it.
+  if (sanitized.name !== undefined && kind === "smart_variable") {
+    const { error: varErr } = await supabase
+      .from("ending_variables")
+      .update({ name: sanitized.name })
+      .eq("smart_variable_doc_id", id);
+    if (varErr) throw new Error(varErr.message);
+  }
 }
 
 /**
@@ -236,6 +265,15 @@ async function validateResultValue(
 ): Promise<void> {
   if (kind === "framework") {
     throw new Error("Framework documents cannot contain result blocks.");
+  }
+  // Smart Variables accept any non-empty string. The free-text result IS
+  // the variable's resolved value at evaluation time. No need to walk
+  // the sentinel matchers below.
+  if (kind === "smart_variable") {
+    if (result_value === "") {
+      throw new Error("Smart Variable result blocks require a result value.");
+    }
+    return;
   }
   // Custom-subset random is only valid on framework_selection — the
   // payload is a JSON list of framework UUIDs to randomize over.
@@ -410,11 +448,18 @@ export async function addBlock(
   if (input.block_type === "text") {
     textValue = input.text ?? "";
   } else if (input.block_type === "result") {
+    // Smart Variables author the result inline as free text, so we let
+    // a fresh result block start with an empty string. Other doc kinds
+    // require the picker to commit a value before save.
     if (input.result_value == null || input.result_value === "") {
-      throw new Error("Result blocks require a result_value.");
+      if (kind !== "smart_variable") {
+        throw new Error("Result blocks require a result_value.");
+      }
+      resultValue = "";
+    } else {
+      await validateResultValue(supabase, kind, input.result_value);
+      resultValue = input.result_value;
     }
-    await validateResultValue(supabase, kind, input.result_value);
-    resultValue = input.result_value;
   }
 
   // Resolve insertion point. before_block_id pins the new block at
@@ -531,11 +576,12 @@ export async function patchBlock(
   const supabase = await createSupabaseServerClient();
   const { data: existing } = await supabase
     .from("ending_blocks")
-    .select("document_id, block_type")
+    .select("document_id, block_type, result_value")
     .eq("id", id)
     .maybeSingle();
   if (!existing) throw new Error(`Unknown block ${id}.`);
   const blockType = existing.block_type as EndingBlockType;
+  const oldResultValue = (existing.result_value as string | null) ?? null;
 
   const sanitized: typeof patch = { ...patch };
 
@@ -545,20 +591,53 @@ export async function patchBlock(
     }
   }
 
+  // Smart Variables route the result_value patch through an RPC so the
+  // block update + the chip-rename migration run as one transaction.
+  // Non-smart_variable docs still use the regular UPDATE path below.
+  let smartVariableRpc = false;
   if (sanitized.result_value !== undefined) {
     if (blockType !== "result" && blockType !== "fallback") {
       throw new Error("`result_value` is only patchable on result/fallback blocks.");
     }
+    const kind = await getDocumentKind(
+      supabase,
+      existing.document_id as string
+    );
+    if (!kind) throw new Error(`Unknown document ${existing.document_id}.`);
     if (sanitized.result_value != null && sanitized.result_value !== "") {
-      const kind = await getDocumentKind(
-        supabase,
-        existing.document_id as string
-      );
-      if (!kind) throw new Error(`Unknown document ${existing.document_id}.`);
       await validateResultValue(supabase, kind, sanitized.result_value);
-    } else if (blockType === "result") {
+    } else if (blockType === "result" && kind !== "smart_variable") {
+      // Smart Variables let authors clear the result mid-edit — empty
+      // string is a valid transient state since the user types it
+      // inline (clearing for a moment before typing the next value).
       throw new Error("Result blocks require a result_value.");
     }
+    smartVariableRpc = kind === "smart_variable";
+  }
+
+  if (smartVariableRpc) {
+    // The RPC writes `result_value` AND migrates chips referencing
+    // the OLD value to the new one in a single Postgres transaction
+    // (see migration 20260520150000). Other patch fields (summary,
+    // sort_order) commit separately when present — they're block-local
+    // and don't need the atomicity guarantee.
+    void oldResultValue;
+    const newValue = (sanitized.result_value ?? "") as string;
+    const { error: rpcErr } = await supabase.rpc(
+      "update_smart_variable_block_result",
+      { p_block_id: id, p_new_value: newValue }
+    );
+    if (rpcErr) throw new Error(rpcErr.message);
+    const restPatch: typeof sanitized = { ...sanitized };
+    delete restPatch.result_value;
+    if (Object.keys(restPatch).length > 0) {
+      const { error: restErr } = await supabase
+        .from("ending_blocks")
+        .update(restPatch)
+        .eq("id", id);
+      if (restErr) throw new Error(restErr.message);
+    }
+    return;
   }
 
   const { error } = await supabase
@@ -854,6 +933,21 @@ async function computeDefaultChip(
     };
   }
 
+  if (variable.kind === "smart_ref") {
+    // Smart variables compare against a free-text string stored in
+    // aggregate_value. Seed with an empty string so the chip satisfies
+    // the value-shape CHECK (exactly one slot non-null) on first save
+    // — the user fills it in via the dropdown. Mirrors the client-side
+    // chip-adder behavior in condition-block.tsx so the two paths
+    // don't diverge.
+    return {
+      operator: "=",
+      text_value_id: null,
+      number_value: null,
+      aggregate_value: "",
+    };
+  }
+
   return null;
 }
 
@@ -1065,7 +1159,8 @@ export async function patchChip(
   const kind = variable.kind as
     | "text"
     | "number_ref"
-    | "aggregate_ref";
+    | "aggregate_ref"
+    | "smart_ref";
   const validOperators = {
     text: ["=", "≠"],
     number_ref: ["=", "≠", "<", "≤", ">", "≥"],
@@ -1077,6 +1172,9 @@ export async function patchChip(
       "set_includes",
       "set_excludes",
     ],
+    // Smart Variables compare against a free-text string in
+    // `aggregate_value`; only equality operators are meaningful.
+    smart_ref: ["=", "≠"],
   }[kind];
   if (!validOperators.includes(merged.operator)) {
     throw new Error(

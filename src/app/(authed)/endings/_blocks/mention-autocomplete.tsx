@@ -1,15 +1,9 @@
 "use client";
 
-// The @[Variable Name] tag flow's mention-specific pieces: the `@`
-// trigger scan and the caret-anchored popup wrapper. The kind-grouped
-// filter and the rendered option rows live in the shared
-// `variable-picker` module (filterVariables / VariableOptionList).
+// The @[Variable Name] tag flow's mention trigger detection.
+// The caret-anchored popup was moved to VariablePickerPanel (folder-aware).
 // The textarea-based driver from Phase 2 was retired in Phase 3 when
 // the text-block body switched to a Lexical contenteditable.
-
-import { type CSSProperties } from "react";
-import type { VariableState } from "@/lib/endings/block-state";
-import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 
 // ---------------------------------------------------------------------
 // Trigger detection
@@ -42,59 +36,4 @@ export function detectMentionTrigger(
     }
   }
   return null;
-}
-
-// ---------------------------------------------------------------------
-// Popup
-// ---------------------------------------------------------------------
-
-export interface MentionAutocompletePopupProps {
-  filtered: VariableState[];
-  activeIndex: number;
-  onChangeActiveIndex: (i: number) => void;
-  onCommit: (variable: VariableState) => void;
-  /** Pixel coordinates for absolute positioning. Caller computes from
-   *  the caret's bounding rect. */
-  position: { top: number; left: number };
-}
-
-export function MentionAutocompletePopup({
-  filtered,
-  activeIndex,
-  onChangeActiveIndex,
-  onCommit,
-  position,
-}: MentionAutocompletePopupProps) {
-  // `position: fixed` so the caller-supplied coords (which come from
-  // `getBoundingClientRect()`, i.e. viewport-relative) work directly
-  // without needing the popup's parent to be positioned.
-  const positionStyle: CSSProperties = {
-    position: "fixed",
-    top: position.top,
-    left: position.left,
-    zIndex: 20,
-  };
-
-  if (filtered.length === 0) {
-    return (
-      <div
-        style={positionStyle}
-        className="w-56 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg"
-      >
-        No matching variables.
-      </div>
-    );
-  }
-
-  return (
-    <VariableOptionList
-      filtered={filtered}
-      activeIndex={activeIndex}
-      onChangeActiveIndex={onChangeActiveIndex}
-      onCommit={onCommit}
-      ariaLabel="Variable autocomplete"
-      style={positionStyle}
-      className="w-64 rounded-md border border-border bg-popover shadow-lg"
-    />
-  );
 }

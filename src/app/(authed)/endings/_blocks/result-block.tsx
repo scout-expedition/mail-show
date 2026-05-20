@@ -15,6 +15,7 @@
 
 import { useMemo, useRef, useState, type ComponentType } from "react";
 import { GripVertical, Trash2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { OverflowMenu } from "@/components/panel";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -57,12 +58,19 @@ export function ResultBlock({
    *  `subsetEnabled` is true; ignored otherwise. */
   subsetFrameworks,
   subsetEnabled,
+  /** "text" → free-text result (smart_variable docs). "dropdown" (default)
+   *  → the existing Select chrome backed by `options`. */
+  mode = "dropdown",
+  /** Placeholder shown in text-mode when the field is empty. */
+  textPlaceholder,
   onDelete,
 }: {
   block: BlockState;
   options: ResultOption[];
   subsetFrameworks?: ResultOption[];
   subsetEnabled?: boolean;
+  mode?: "dropdown" | "text";
+  textPlaceholder?: string;
   onDelete: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -241,35 +249,53 @@ export function ResultBlock({
                 field: "result_value",
               }}
             >
-              <Select
-                value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
-                onChange={(e) => handleSelectChange(e.target.value)}
-                onFocus={resultField.onFocus}
-                onBlur={resultField.onBlur}
-                style={{ backgroundColor: "var(--block-result-bg)" }}
-                className={cn(
-                  "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
-                  isEmpty &&
-                    !showSubsetPicker &&
-                    "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
-                  resultField.status === "error" && "ring-2 ring-destructive"
-                )}
-              >
-              {isEmpty ? (
-                <option value="">— pick a result —</option>
-              ) : null}
-              {!isEmpty && !valueKnown ? (
-                <option value={value}>(unknown: {value})</option>
-              ) : null}
-              {options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-              {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
-                <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
-              ) : null}
-              </Select>
+              {mode === "text" ? (
+                <Input
+                  type="text"
+                  value={value}
+                  onChange={(e) => resultField.set(e.target.value)}
+                  onFocus={resultField.onFocus}
+                  onBlur={resultField.onBlur}
+                  placeholder={textPlaceholder ?? "Result…"}
+                  style={{ backgroundColor: "var(--block-result-bg)" }}
+                  className={cn(
+                    "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                    isEmpty &&
+                      "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                    resultField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                />
+              ) : (
+                <Select
+                  value={showSubsetPicker ? SUBSET_PICKER_VALUE : value}
+                  onChange={(e) => handleSelectChange(e.target.value)}
+                  onFocus={resultField.onFocus}
+                  onBlur={resultField.onBlur}
+                  style={{ backgroundColor: "var(--block-result-bg)" }}
+                  className={cn(
+                    "h-8 w-auto min-w-[200px] border-transparent shadow-none focus:border-border focus-visible:shadow-sm",
+                    isEmpty &&
+                      !showSubsetPicker &&
+                      "ring-2 ring-warning/60 bg-warning/10 text-warning-foreground",
+                    resultField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                >
+                {isEmpty ? (
+                  <option value="">— pick a result —</option>
+                ) : null}
+                {!isEmpty && !valueKnown ? (
+                  <option value={value}>(unknown: {value})</option>
+                ) : null}
+                {options.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                {subsetEnabled && (subsetFrameworks?.length ?? 0) > 0 ? (
+                  <option value={SUBSET_PICKER_VALUE}>Random (subset)</option>
+                ) : null}
+                </Select>
+              )}
             </FieldHighlight>
             <div className="ml-auto shrink-0">
               <OverflowMenu
@@ -419,4 +445,35 @@ export function makeResultBlock(
     Component: ConfiguredResultBlock,
     defaultValue: options[0]?.value ?? null,
   };
+}
+
+/**
+ * `ResultBlock` factory for smart_variable documents. The result is a
+ * free-text string (no dropdown, no subset picker), so the factory just
+ * pre-binds mode='text' and an empty option list. `defaultValue` is the
+ * empty string so a freshly-added result block starts with a focus-able
+ * input rather than blocked-on-pick warning chrome.
+ */
+export function makeSmartVariableResultBlock(): {
+  Component: ComponentType<{
+    block: BlockState;
+    onDelete: () => void;
+  }>;
+  defaultValue: string | null;
+} {
+  function SmartVariableResultBlock(props: {
+    block: BlockState;
+    onDelete: () => void;
+  }) {
+    return (
+      <ResultBlock
+        options={[]}
+        mode="text"
+        textPlaceholder="Result value…"
+        {...props}
+      />
+    );
+  }
+  SmartVariableResultBlock.displayName = "ResultBlock(smart_variable)";
+  return { Component: SmartVariableResultBlock, defaultValue: "" };
 }

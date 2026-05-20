@@ -85,7 +85,7 @@ describe("patchCitizen", () => {
       .select("citizen_id")
       .eq("id", citizenId)
       .single();
-    expect(data?.citizen_id).toBe("#A1234");
+    expect(data?.citizen_id).toBe("A1234");
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
@@ -167,7 +167,7 @@ describe("bulkCreateCitizens", () => {
         first_name: "First",
         last_name: testName("bulkA"),
         type: "hero",
-        citizen_id: "#0001",
+        citizen_id: "0001",
         city_id: cityId,
         nation_id: nationId,
       },

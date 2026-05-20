@@ -77,11 +77,13 @@ export interface Storyline {
   id: string;
   name: string;
   abbreviation: string;
-  description: string | null;
+  notes: string | null;
   icon_type: IconType;
   icon_value: string | null;
   color_hex: string;
   sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface LetterGroup {
@@ -92,6 +94,8 @@ export interface LetterGroup {
   sequence: number;
   sort_order: number;
   delivery_day_id: string | null;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface ReportGroup {
@@ -159,6 +163,8 @@ export interface ActionRow {
   impact_spokgrad: number;
   impact_pelico: number;
   sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface ReportSegment {
@@ -247,12 +253,17 @@ export interface SortingRule {
   letter: string;
   storage_location: string | null;
   summary: string | null;
+  notes: string | null;
+  color_hex: string | null;
   day_implemented_id: string | null;
   day_cancelled_id: string | null;
   destination_slot: number | null;
   /** When true the rule routes to Reporting; mutually exclusive with destination_slot. */
   routes_to_reporting: boolean;
   match_mode: RuleMatchMode;
+  sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface SortingRuleCondition {
@@ -304,9 +315,17 @@ export interface EndingVariable {
   kind: EndingVariableKind;
   number_ref: string | null;
   aggregate_ref: string | null;
+  /** Set when kind === 'smart_ref'. FK to the paired
+   *  ending_documents row of kind='smart_variable' that holds the
+   *  variable's condition tree. */
+  smart_variable_doc_id: string | null;
   color_index: number;
   /** User-set color override; null falls back to `paletteColor(color_index)`. */
   color_hex: string | null;
+  /** Folder this variable lives in (null = root). Folders are an
+   *  organizational layer for the "All" list view; the "By Ending" view
+   *  ignores folder membership. */
+  folder_id: string | null;
   created_at: string;
 }
 
@@ -315,6 +334,18 @@ export interface EndingVariableValue {
   variable_id: string;
   value: string;
   sort_order: number;
+}
+
+export interface EndingVariableFolder {
+  id: string;
+  name: string;
+  /** Self-FK for nestable folders (null = root). DB enforces no cycles
+   *  via a trigger; the server action enforces non-destructive reparent
+   *  on delete. */
+  parent_folder_id: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 }
 
 /**
@@ -349,7 +380,7 @@ export interface EndingBlock {
 
 /**
  * Pre-0022 framework row. Retained so the Frameworks workspace keeps
- * compiling until step 2 of `docs/endings-logic-v2-plan.md` switches
+ * compiling until step 2 of `docs/plans/active/endings-logic-v2-plan.md` switches
  * those callers to `EndingDocument`. New code should use `EndingDocument`.
  */
 export interface EndingFramework {
@@ -417,4 +448,10 @@ export interface InspectionActionEndingAssignment {
   /** Nullable since migration 0033: an action can be assigned a variable
    *  without yet picking a value (the value picker stays open in the UI). */
   value_id: string | null;
+}
+
+export interface UserHomeTiles {
+  user_id: string;
+  tile_hrefs: string[];
+  updated_at: string;
 }
