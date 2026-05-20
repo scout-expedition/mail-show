@@ -437,6 +437,8 @@ const POSTGRES_TABLES = [
   "inspection_letters",
   "letter_groups",
   "actions",
+  "action_templates",
+  "action_template_groups",
   "report_segments",
   "storylines",
   "inspection_action_ending_assignments",
@@ -758,12 +760,16 @@ function LettersWorkspaceInner({
     return init ? toLetterState(init, actions, endingAssignments) : null;
   });
   // Optimistic ghost action rows the user has just added via the picker.
-  // Keyed implicitly by `(inspection_letter_id, action_template_id)` — the
-  // partial unique index guarantees that pair identifies the real row
-  // once it lands, so the reconcile effect can drop the ghost cleanly.
-  const [pendingActionAdds, setPendingActionAdds] = useState<ActionState[]>(
-    []
-  );
+  // Each entry remembers its parent letter so switching the selection
+  // before the server lands doesn't paint the ghost on the wrong row.
+  // Reconciliation drops a ghost when the server `actions` prop contains
+  // a row with the matching `(letterId, action_template_id)` — the
+  // partial unique index `actions_letter_template_unique` guarantees
+  // that pair identifies the persisted row.
+  type PendingActionAdd = { letterId: string; ghost: ActionState };
+  const [pendingActionAdds, setPendingActionAdds] = useState<
+    PendingActionAdd[]
+  >([]);
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
@@ -1473,29 +1479,28 @@ function LettersWorkspaceInner({
   }, [letters, actions, endingAssignments, selectedId]);
 
   // Reconcile pending action ghosts whenever the server `actions` prop
-  // updates: drop any ghost whose (selectedLetterId, template) pair now
-  // has a real row. The partial unique index
-  // `actions_letter_template_unique` guarantees that pair identifies the
-  // persisted row.
+  // updates: drop any ghost whose (letterId, templateId) pair now has a
+  // real row. The partial unique index `actions_letter_template_unique`
+  // guarantees that pair identifies the persisted row.
   useEffect(() => {
-    if (!selectedId) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingActionAdds((prev) => {
       if (prev.length === 0) return prev;
       const realPairs = new Set(
         actions
-          .filter(
-            (a) =>
-              a.inspection_letter_id === selectedId && a.action_template_id
+          .filter((a) => a.action_template_id)
+          .map(
+            (a) => `${a.inspection_letter_id}|${a.action_template_id}`
           )
-          .map((a) => a.action_template_id as string)
       );
-      const next = prev.filter(
-        (g) => !g.action_template_id || !realPairs.has(g.action_template_id)
-      );
+      const next = prev.filter((entry) => {
+        if (!entry.ghost.action_template_id) return true;
+        const key = `${entry.letterId}|${entry.ghost.action_template_id}`;
+        return !realPairs.has(key);
+      });
       return next.length === prev.length ? prev : next;
     });
-  }, [actions, selectedId]);
+  }, [actions]);
 
   function selectLetter(id: string) {
     if (id === selectedId) {
@@ -1975,20 +1980,32 @@ function LettersWorkspaceInner({
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
-    // Skip if the letter already has this template (locally or via a
-    // pending ghost) — the server would no-op anyway.
-    const alreadyOnLetter =
-      letterState?.actions.some(
-        (a) => a.action_template_id === templateId
-      ) ?? false;
-    if (alreadyOnLetter) return;
+    // Skip if the letter already has this template — either as a real
+    // row or an in-flight ghost — to suppress rapid double-clicks that
+    // would otherwise enqueue two ghosts (the second server call would
+    // fail silently on the partial unique index).
+    const realPresent = (letterState?.actions ?? []).some(
+      (a) => a.action_template_id === templateId
+    );
+    const ghostPresent = pendingActionAdds.some(
+      (entry) =>
+        entry.letterId === selectedId &&
+        entry.ghost.action_template_id === templateId
+    );
+    if (realPresent || ghostPresent) return;
     const ghost = makeGhostActionState(templateId);
-    setPendingActionAdds((prev) => [...prev, ghost]);
+    const letterIdAtClick = selectedId;
+    setPendingActionAdds((prev) => [
+      ...prev,
+      { letterId: letterIdAtClick, ghost },
+    ]);
     startRowAction(async () => {
       try {
-        await addActionFromTemplate(groupId, selectedId, templateId);
+        await addActionFromTemplate(groupId, letterIdAtClick, templateId);
       } catch {
-        setPendingActionAdds((prev) => prev.filter((g) => g.id !== ghost.id));
+        setPendingActionAdds((prev) =>
+          prev.filter((entry) => entry.ghost.id !== ghost.id)
+        );
       }
     });
   }
@@ -1997,8 +2014,17 @@ function LettersWorkspaceInner({
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateGroupId) return;
+    const letterIdAtClick = selectedId;
     // Spawn one ghost per unused member so the rows appear immediately.
-    const presentTemplateIds = new Set(
+    // "Used" means real-on-letter OR an in-flight ghost — covers rapid
+    // double-clicks on the group entry.
+    const ghostedTemplateIdsForLetter = new Set(
+      pendingActionAdds
+        .filter((entry) => entry.letterId === letterIdAtClick)
+        .map((entry) => entry.ghost.action_template_id)
+        .filter((id): id is string => !!id)
+    );
+    const realPresent = new Set(
       (letterState?.actions ?? [])
         .map((a) => a.action_template_id)
         .filter((id): id is string => !!id)
@@ -2006,17 +2032,23 @@ function LettersWorkspaceInner({
     const memberTemplateIds = templates
       .filter((t) => t.group_id === templateGroupId)
       .map((t) => t.id)
-      .filter((id) => !presentTemplateIds.has(id));
+      .filter(
+        (id) => !realPresent.has(id) && !ghostedTemplateIdsForLetter.has(id)
+      );
     if (memberTemplateIds.length === 0) return;
     const ghosts = memberTemplateIds.map((id) => makeGhostActionState(id));
-    setPendingActionAdds((prev) => [...prev, ...ghosts]);
+    const entries = ghosts.map((g) => ({
+      letterId: letterIdAtClick,
+      ghost: g,
+    }));
+    setPendingActionAdds((prev) => [...prev, ...entries]);
     startRowAction(async () => {
       try {
-        await addActionsForGroup(groupId, selectedId, templateGroupId);
+        await addActionsForGroup(groupId, letterIdAtClick, templateGroupId);
       } catch {
         const ghostIds = new Set(ghosts.map((g) => g.id));
         setPendingActionAdds((prev) =>
-          prev.filter((g) => !ghostIds.has(g.id))
+          prev.filter((entry) => !ghostIds.has(entry.ghost.id))
         );
       }
     });
@@ -3163,11 +3195,14 @@ function LettersWorkspaceInner({
           {letterState ? (
             <LetterActionsCard
               key={letterState.id}
-              actions={
-                pendingActionAdds.length === 0
+              actions={(() => {
+                const here = pendingActionAdds.filter(
+                  (entry) => entry.letterId === letterState.id
+                );
+                return here.length === 0
                   ? letterState.actions
-                  : [...letterState.actions, ...pendingActionAdds]
-              }
+                  : [...letterState.actions, ...here.map((e) => e.ghost)];
+              })()}
               templates={templates}
               templateGroups={templateGroups}
               nations={nations}

@@ -117,7 +117,10 @@ describe("patchActionTemplate", () => {
 
   it("should set group_id when provided", async () => {
     const id = await addActionTemplate(sb, { suffix: "patch-grp" });
-    const gid = await addActionTemplateGroup(sb, { name: null });
+    // Use the default TEST_PREFIX-marked name so cleanupTestData picks
+    // it up automatically. Earlier versions passed `name: null` and
+    // leaked groups across integration runs.
+    const gid = await addActionTemplateGroup(sb);
     await patchActionTemplate(id, { group_id: gid });
     const { data } = await sb
       .from("action_templates")

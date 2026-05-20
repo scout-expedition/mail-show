@@ -811,14 +811,21 @@ export function GraphView({
       letterId: string,
       templateId: string
     ): Promise<void> => {
-      // Skip if the letter already has this template (server skips too,
-      // but suppressing the ghost avoids a flash).
-      const alreadyOnLetter = actions.some(
+      // Skip if the letter already has this template — real or already
+      // ghosted. Without the ghost check, two rapid clicks enqueue two
+      // ghosts and the second server call would fail silently on the
+      // partial unique index.
+      const realPresent = actions.some(
         (a) =>
           a.inspection_letter_id === letterId &&
           a.action_template_id === templateId
       );
-      if (alreadyOnLetter) return;
+      const ghostPresent = optimisticActionAdds.some(
+        (g) =>
+          g.inspection_letter_id === letterId &&
+          g.action_template_id === templateId
+      );
+      if (realPresent || ghostPresent) return;
       const ghost = makeGhostAction(letterId, templateId);
       setOptimisticActionAdds((prev) => [...prev, ghost]);
       try {
@@ -830,7 +837,7 @@ export function GraphView({
         throw err;
       }
     },
-    [actions, makeGhostAction]
+    [actions, optimisticActionAdds, makeGhostAction]
   );
   const dispatchAddActionsForGroup = useCallback(
     async (
@@ -838,6 +845,12 @@ export function GraphView({
       letterId: string,
       templateGroupId: string
     ): Promise<void> => {
+      const ghostedTemplateIdsHere = new Set(
+        optimisticActionAdds
+          .filter((g) => g.inspection_letter_id === letterId)
+          .map((g) => g.action_template_id)
+          .filter((id): id is string => !!id)
+      );
       const members = actionTemplates
         .filter((t) => t.group_id === templateGroupId)
         .filter(
@@ -846,7 +859,7 @@ export function GraphView({
               (a) =>
                 a.inspection_letter_id === letterId &&
                 a.action_template_id === t.id
-            )
+            ) && !ghostedTemplateIdsHere.has(t.id)
         );
       const ghosts = members.map((t) => makeGhostAction(letterId, t.id));
       if (ghosts.length === 0) return;
@@ -861,7 +874,7 @@ export function GraphView({
         throw err;
       }
     },
-    [actions, actionTemplates, makeGhostAction]
+    [actions, optimisticActionAdds, actionTemplates, makeGhostAction]
   );
 
   // Wrap the next-letter / report-segment server calls in an optimistic
