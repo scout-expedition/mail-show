@@ -148,26 +148,28 @@ function RulesWorkspace({
   // Optimistic ordering override after a drag-drop. Sits in front of the
   // server's `sort_order` until every rule's persisted value catches up —
   // this keeps the list from flickering back to old positions during the
-  // round-trip. Cleared when (a) every rule's actual sort_order matches the
-  // optimistic position, or (b) the rule set changes (an insert or delete
-  // means the snapshot is stale — fall back to server state immediately).
+  // round-trip. Cleared when (a) every rule's actual sort_order matches
+  // the optimistic position, or (b) the rule set changes (an insert or
+  // delete means the snapshot is stale — fall back to server state).
+  //
+  // Reconciliation happens at render time (same style as the rulesProp
+  // mirror above) so the lint rule against setState-in-effect stays happy.
   const [optimisticOrder, setOptimisticOrder] =
     useState<Map<string, number> | null>(null);
-  useEffect(() => {
-    if (!optimisticOrder) return;
+  if (optimisticOrder) {
     const ruleIds = new Set(rules.map((r) => r.id));
     const sameRuleSet =
       ruleIds.size === optimisticOrder.size &&
       rules.every((r) => optimisticOrder.has(r.id));
-    if (!sameRuleSet) {
+    const allMatch =
+      sameRuleSet &&
+      rules.every(
+        (r) => optimisticOrder.get(r.id) === (r.sort_order ?? 0)
+      );
+    if (!sameRuleSet || allMatch) {
       setOptimisticOrder(null);
-      return;
     }
-    const allMatch = rules.every(
-      (r) => optimisticOrder.get(r.id) === (r.sort_order ?? 0)
-    );
-    if (allMatch) setOptimisticOrder(null);
-  }, [rules, optimisticOrder]);
+  }
 
   const sortedRules = useMemo(
     () =>
