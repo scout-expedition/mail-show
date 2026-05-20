@@ -4,6 +4,7 @@ import {
   formatCitizenIdInput,
   generateRandomCitizenId,
   isValidCitizenId,
+  isValidCitizenIdBody,
   toStorageCitizenId,
 } from "./citizen-id";
 
@@ -44,6 +45,21 @@ describe("isValidCitizenId", () => {
     ["", false],
   ])("should return %s for %s", (input, expected) => {
     expect(isValidCitizenId(input)).toBe(expected);
+  });
+});
+
+describe("isValidCitizenIdBody", () => {
+  it.each([
+    ["A1B2", true],
+    ["9999", true],
+    ["#A1B2", false], // has display prefix
+    ["A1B2C", false], // too long
+    ["A1B", false], // too short
+    ["a1b2", false], // lowercase
+    ["I123", false], // forbidden I
+    ["", false],
+  ])("should return %s for %s", (input, expected) => {
+    expect(isValidCitizenIdBody(input)).toBe(expected);
   });
 });
 

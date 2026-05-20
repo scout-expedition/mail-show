@@ -1,5 +1,5 @@
 import type { Citizen, City, Nation } from "@/lib/db/types";
-import { displayCitizenId, isValidCitizenId } from "@/lib/citizen-id";
+import { displayCitizenId, isValidCitizenIdBody } from "@/lib/citizen-id";
 
 /**
  * Citizen name + formatted-address helpers.
@@ -145,7 +145,7 @@ export function citizenIssues(
       message: "Citizen ID is required",
       fields: ["citizen_id"],
     });
-  } else if (!isValidCitizenId(cid)) {
+  } else if (!isValidCitizenIdBody(cid)) {
     issues.push({
       message: "Citizen ID format is invalid",
       fields: ["citizen_id"],

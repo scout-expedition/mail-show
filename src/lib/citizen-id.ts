@@ -4,6 +4,7 @@
 const CITIZEN_ID_ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ0123456789";
 const CITIZEN_ID_CHAR_CLASS = /[^A-HJ-Z0-9]/g;
 const CITIZEN_ID_DISPLAY_RE = /^#[A-HJ-Z0-9]{4}$/;
+const CITIZEN_ID_BODY_RE = /^[A-HJ-Z0-9]{4}$/;
 
 /** Mask the editable input value. Returns the display form (`#XXXX`) so the
  *  input box continues to render the "#" as the user types. */
@@ -20,6 +21,11 @@ export function formatCitizenIdInput(raw: string): string {
 /** Validate the display form (`#XXXX`) — what lives in the input box. */
 export function isValidCitizenId(id: string): boolean {
   return CITIZEN_ID_DISPLAY_RE.test(id);
+}
+
+/** Validate the raw storage form (`XXXX`) — what lives in the DB column. */
+export function isValidCitizenIdBody(id: string): boolean {
+  return CITIZEN_ID_BODY_RE.test(id);
 }
 
 /** Strip "#" to get the raw storage form. Lenient: accepts "#A1B2", "A1B2",
