@@ -75,7 +75,7 @@ function Dialog({
       await createStorylineWithFields({
         name,
         abbreviation,
-        description: description.trim() || null,
+        notes: description.trim() || null,
         icon_type: iconType,
         icon_value: iconValue.trim() || null,
         color_hex: colorHex,

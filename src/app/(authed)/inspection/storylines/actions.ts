@@ -9,7 +9,7 @@ import { normalizeHex } from "@/lib/color";
 type StorylinePatchFields = {
   name: string;
   abbreviation: string;
-  description: string | null;
+  notes: string | null;
   icon_type: IconType;
   icon_value: string | null;
   color_hex: string;
@@ -37,7 +37,12 @@ export async function patchStoryline(
     assertAbbreviationAllowed(patch.abbreviation);
   }
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.from("storylines").update(patch).eq("id", id);
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("storylines")
+    .update({ ...patch, updated_by: updatedBy })
+    .eq("id", id);
   if (error) throw new Error(error.message);
 }
 
@@ -54,7 +59,7 @@ function nilStr(v: FormDataEntryValue | null): string | null {
 export async function createStorylineWithFields(data: {
   name: string;
   abbreviation: string;
-  description: string | null;
+  notes: string | null;
   icon_type: IconType;
   icon_value: string | null;
   color_hex: string;
@@ -63,13 +68,16 @@ export async function createStorylineWithFields(data: {
   const normalizedAbbr =
     data.abbreviation.trim().toUpperCase().charAt(0) || "X";
   assertAbbreviationAllowed(normalizedAbbr);
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const payload = {
     name: data.name.trim() || "New storyline",
     abbreviation: normalizedAbbr,
-    description: data.description?.trim() || null,
+    notes: data.notes?.trim() || null,
     icon_type: data.icon_type,
     icon_value: data.icon_value?.trim() || null,
     color_hex: normalizeHex(data.color_hex),
+    updated_by: updatedBy,
   };
   const { data: row, error } = await supabase
     .from("storylines")
@@ -100,6 +108,8 @@ export async function createStoryline() {
       break;
     }
   }
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data, error } = await supabase
     .from("storylines")
     .insert({
@@ -107,6 +117,7 @@ export async function createStoryline() {
       abbreviation: abbr,
       icon_type: "lucide" as IconType,
       color_hex: "#4b8eff",
+      updated_by: updatedBy,
     })
     .select("id")
     .single();
@@ -124,7 +135,7 @@ export async function updateStorylineFields(data: {
   id: string;
   name: string;
   abbreviation: string;
-  description: string | null;
+  notes: string | null;
   icon_type: IconType;
   icon_value: string | null;
   color_hex: string;
@@ -133,13 +144,16 @@ export async function updateStorylineFields(data: {
   const normalizedAbbr =
     data.abbreviation.trim().toUpperCase().charAt(0) || "X";
   assertAbbreviationAllowed(normalizedAbbr);
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const payload = {
     name: data.name.trim(),
     abbreviation: normalizedAbbr,
-    description: data.description?.trim() || null,
+    notes: data.notes?.trim() || null,
     icon_type: data.icon_type,
     icon_value: data.icon_value?.trim() || null,
     color_hex: normalizeHex(data.color_hex),
+    updated_by: updatedBy,
   };
   const { error } = await supabase
     .from("storylines")
@@ -160,14 +174,17 @@ export async function updateStoryline(formData: FormData) {
     .toUpperCase()
     .charAt(0);
   assertAbbreviationAllowed(normalizedAbbr);
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const payload = {
     name: String(formData.get("name") ?? "").trim(),
     abbreviation: normalizedAbbr,
-    description: nilStr(formData.get("description")),
+    notes: nilStr(formData.get("notes")),
     icon_type: String(formData.get("icon_type") ?? "lucide") as IconType,
     icon_value: nilStr(formData.get("icon_value")),
     color_hex: normalizeHex(String(formData.get("color_hex") ?? "#888888")),
     sort_order: Number(formData.get("sort_order") ?? 0),
+    updated_by: updatedBy,
   };
   const { error } = await supabase.from("storylines").update(payload).eq("id", id);
   if (error) throw new Error(error.message);
@@ -203,10 +220,12 @@ export async function reorderStorylines(ids: string[]) {
 
 export async function updateAllStorylines(formData: FormData) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const ids = formData.getAll("ids").map(String);
   const names = formData.getAll("names").map(String);
   const abbrs = formData.getAll("abbreviations").map(String);
-  const descriptions = formData.getAll("descriptions").map(String);
+  const notes = formData.getAll("notes").map(String);
   const iconTypes = formData.getAll("icon_types").map(String);
   const iconValues = formData.getAll("icon_values").map(String);
   const colors = formData.getAll("colors").map(String);
@@ -223,11 +242,12 @@ export async function updateAllStorylines(formData: FormData) {
     const payload = {
       name,
       abbreviation: normalizedAbbr,
-      description: (descriptions[i] ?? "").trim() || null,
+      notes: (notes[i] ?? "").trim() || null,
       icon_type: ((iconTypes[i] as IconType) ?? "lucide") as IconType,
       icon_value: (iconValues[i] ?? "").trim() || null,
       color_hex: normalizeHex(colors[i] ?? "#888888"),
       sort_order: Number(sortOrders[i] ?? i),
+      updated_by: updatedBy,
     };
     const { error } = await supabase
       .from("storylines")
