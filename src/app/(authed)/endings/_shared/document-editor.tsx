@@ -207,6 +207,11 @@ export interface DocumentEditorProps {
     confirmMessage: string;
     skipServerDelete?: boolean;
   };
+  /** Optional content rendered to the LEFT of the name input on
+   *  framework + smart-variable docs (same row as the variable title).
+   *  Smart Variables use this slot for a per-doc color swatch tied to
+   *  the paired ending_variable's color_hex. */
+  nameLeadingExtras?: ReactNode;
 }
 
 export function DocumentEditor({
@@ -228,6 +233,7 @@ export function DocumentEditor({
   fallback,
   tiebreakDocsSummary,
   deleteCopy,
+  nameLeadingExtras,
 }: DocumentEditorProps) {
   const isFramework = document.kind === "framework";
   const isSmartVariable = document.kind === "smart_variable";
@@ -1239,34 +1245,42 @@ export function DocumentEditor({
       <div className="flex flex-col gap-4 p-3">
         {hasName ? (
           <div>
-            <Label className="!text-xs">
-              {isSmartVariable ? "Smart Variable name" : "Framework name"}
-            </Label>
-            <FieldHighlight
-              peers={peers}
-              focusKey={{
-                table: "ending_documents",
-                recordId: document.id,
-                field: "name",
-              }}
-              className="mt-1"
-            >
-              <Input
-                value={nameField.value}
-                onChange={(e) => nameField.set(e.target.value)}
-                onFocus={nameField.onFocus}
-                onBlur={nameField.onBlur}
-                placeholder={
-                  isSmartVariable ? "Smart Variable name" : "Framework name"
-                }
-                className={cn(
-                  "h-9",
-                  GHOST_FIELD,
-                  nameInvalid && "ring-2 ring-destructive",
-                  nameField.status === "error" && "ring-2 ring-destructive"
-                )}
-              />
-            </FieldHighlight>
+            <div className="flex items-center gap-2">
+              {nameLeadingExtras ? (
+                <span aria-hidden className="invisible h-7 w-7 shrink-0" />
+              ) : null}
+              <Label className="!text-xs">
+                {isSmartVariable ? "Smart Variable name" : "Framework name"}
+              </Label>
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              {nameLeadingExtras}
+              <FieldHighlight
+                peers={peers}
+                focusKey={{
+                  table: "ending_documents",
+                  recordId: document.id,
+                  field: "name",
+                }}
+                className="min-w-0 flex-1"
+              >
+                <Input
+                  value={nameField.value}
+                  onChange={(e) => nameField.set(e.target.value)}
+                  onFocus={nameField.onFocus}
+                  onBlur={nameField.onBlur}
+                  placeholder={
+                    isSmartVariable ? "Smart Variable name" : "Framework name"
+                  }
+                  className={cn(
+                    "h-9",
+                    GHOST_FIELD,
+                    nameInvalid && "ring-2 ring-destructive",
+                    nameField.status === "error" && "ring-2 ring-destructive"
+                  )}
+                />
+              </FieldHighlight>
+            </div>
           </div>
         ) : null}
 
