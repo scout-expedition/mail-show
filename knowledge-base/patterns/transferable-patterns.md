@@ -87,7 +87,8 @@ export type InstantFieldAction<T> =
  *               (the just-committed value's echo is still in flight).
  *               No-op if `equals(value, localValue)`.
  * - `remote`  → server pushed a new value via postgres_changes. APPLIED
- *               when status is "idle" or "error". When "dirty" or
+ *               when status is "idle" or "error" (caller would have already
+ *               filtered if the row is otherwise stale). When "dirty" or
  *               "saving": a value matching committedAwaitingRemote is this
  *               client's own echo → dropped. Otherwise local typing wins, so
  *               the value is STASHED in pendingRemote (not dropped) and
@@ -96,9 +97,10 @@ export type InstantFieldAction<T> =
  * - `saveSuccess` → commit returned. Always records the committed value in
  *                   committedAwaitingRemote (its realtime echo is in flight).
  *                   Transitions to "idle" only if localValue still equals the
- *                   committed value. On that transition a stashed pendingRemote
- *                   that differs from localValue is applied so a peer write
- *                   during the save window converges.
+ *                   committed value (the user didn't keep typing a different
+ *                   value during the save). On that transition a stashed
+ *                   pendingRemote that differs from localValue is applied so a
+ *                   peer write during the save window converges.
  * - `settle`      → a debounced commit found nothing to send (localValue
  *                   already equals the server value). Settles status to
  *                   "idle" without recording committedAwaitingRemote — no
@@ -140,10 +142,13 @@ export function instantFieldReducer<T>(
           return { ...state, committedAwaitingRemote: null };
         }
         // Local typing wins for now — stash the latest remote instead of
-        // dropping it, so it can be replayed once the save settles.
+        // dropping it, so it can be replayed once the save settles. A
+        // remote that repeats the exact value already stashed is a true
+        // no-op; return the same state so React skips the re-render.
         // Compare with Object.is, NOT the caller's `equals`: a loose
         // predicate could call two distinct values equal, and saveError
-        // / saveSuccess read pendingRemote.value back out.
+        // / saveSuccess read pendingRemote.value back out — so we must
+        // keep the genuinely-latest value unless it is truly identical.
         if (
           state.pendingRemote !== null &&
           Object.is(state.pendingRemote.value, action.value)
@@ -237,9 +242,9 @@ export function instantFieldReducer<T>(
 }
 
 export type UseInstantFieldOptions<T> = {
-  /** Server-authoritative current value. */
+  /** Server-authoritative current value (typically passed from the workspace's row state). */
   value: T;
-  /** Persist function called after debounce. Throwing => status = "error". */
+  /** Persist function called after debounce. Throwing => status = "error" and the field reverts to `value`. */
   onCommit: (next: T) => Promise<void> | void;
   /** Debounce window in ms. Default 400. */
   debounceMs?: number;
@@ -247,9 +252,16 @@ export type UseInstantFieldOptions<T> = {
   equals?: (a: T, b: T) => boolean;
   /** Notified `true` on focus, `false` on blur. */
   onFocusChange?: (focused: boolean) => void;
-  /** Throttled "still typing" heartbeat (for presence). */
+  /**
+   * Throttled "still typing" heartbeat. Fired at most once per
+   * `activityThrottleMs` while the field is in `dirty` status (i.e. the user
+   * has typed since the last commit). Lets presence-aware consumers keep the
+   * peer marked active without re-firing focus events.
+   */
   onActivity?: () => void;
-  /** Throttle window for `onActivity` in ms. Default 5000. */
+  /** Throttle window for `onActivity` in ms. Default 5000 — aligned with
+   *  the 5s lastActiveAt bucketing in usePresence; broadcasting more often
+   *  yields no extra precision and just inflates channel traffic. */
   activityThrottleMs?: number;
 };
 
@@ -263,7 +275,17 @@ export type UseInstantFieldReturn<T> = {
   onBlur: () => void;
 };
 
-export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantFieldReturn<T> {
+/**
+ * Debounced per-field instant-save with LWW conflict handling. The local
+ * value is the source of truth while editing; remote updates to the `value`
+ * prop are accepted only when the field is idle (or in error state).
+ *
+ * Blur flushes any pending debounce immediately so leaving the field
+ * doesn't hide an unsaved edit behind the timer.
+ */
+export function useInstantField<T>(
+  opts: UseInstantFieldOptions<T>
+): UseInstantFieldReturn<T> {
   const {
     value,
     onCommit,
@@ -305,16 +327,26 @@ export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantF
   }
 
   // Apply remote updates whenever the upstream `value` prop changes.
+  // The reducer enforces the LWW rule (drops when dirty/saving).
   useEffect(() => {
     dispatch({ type: "remote", value });
+  // dispatch is a plain function redefined each render — adding it would re-run on every render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   // On unmount: flush any pending edit synchronously so a card remount
-  // within the debounce window doesn't silently drop the typed value.
+  // (e.g. `key={letterState.id}` switching between rows within the debounce
+  // window) doesn't silently drop the typed-but-unsaved value. The captured
+  // `onCommit` closure still points at the row this hook was instantiated
+  // for, so the edit lands on the right id even though the new instance has
+  // already taken over the DOM. Status transitions from this commit go to
+  // the unmounted state and are discarded, which is fine — the await
+  // chain still runs to completion.
   useEffect(() => {
     return () => {
       if (stateRef.current.status === "dirty") {
+        // commitNow clears the timer + dispatches saveStart/saveSuccess;
+        // setState after unmount is a no-op + safe.
         commitNow();
       } else if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
@@ -367,6 +399,10 @@ export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantF
   function set(next: T) {
     dispatch({ type: "set", value: next });
     scheduleCommit();
+    // Throttled "still typing" signal. Skipped when the value didn't actually
+    // change (reducer's no-op) — we still attempt because the input event
+    // fired, but the dirty status check below filters re-emits during a
+    // saving window where local === server.
     if (!equalsRef.current(next, valueRef.current)) {
       pingActivity();
     }
@@ -385,7 +421,13 @@ export function useInstantField<T>(opts: UseInstantFieldOptions<T>): UseInstantF
     }
   }
 
-  return { value: state.localValue, set, status: state.status, onFocus, onBlur };
+  return {
+    value: state.localValue,
+    set,
+    status: state.status,
+    onFocus,
+    onBlur,
+  };
 }
 ```
 
