@@ -1,5 +1,5 @@
 import type { Citizen, City, Nation } from "@/lib/db/types";
-import { isValidCitizenId } from "@/lib/citizen-id";
+import { displayCitizenId, isValidCitizenId } from "@/lib/citizen-id";
 
 /**
  * Citizen name + formatted-address helpers.
@@ -182,8 +182,8 @@ export type AddressLookupLevel = 0 | 1 | 2 | 3;
  *   3 (3 lookups) — omit nation + city name + city code
  *
  * `hideName` collapses line 1 to just the citizen ID (no honorific/title/
- * name/suffix). Blank parts are always dropped; `citizen_id` already
- * carries its own `#`.
+ * name/suffix). Blank parts are always dropped; `citizen_id` is stored raw;
+ * `displayCitizenId` prepends the `#`.
  */
 export function composeCitizenAddress(
   c: Citizen,
@@ -195,7 +195,7 @@ export function composeCitizenAddress(
 
   // Line 1 — name + citizen ID.
   if (opts.hideName) {
-    if (c.citizen_id) lines.push(c.citizen_id);
+    if (c.citizen_id) lines.push(displayCitizenId(c.citizen_id));
   } else {
     const nameLine = joinParts([
       c.honorific,
@@ -204,7 +204,7 @@ export function composeCitizenAddress(
       c.middle_name,
       c.last_name,
       c.suffix,
-      c.citizen_id,
+      displayCitizenId(c.citizen_id),
     ]);
     if (nameLine) lines.push(nameLine);
   }

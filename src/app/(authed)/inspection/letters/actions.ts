@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { CitizenType, IconType } from "@/lib/db/enums";
 import type { LetterGroup } from "@/lib/db/types";
+import { toStorageCitizenId } from "@/lib/citizen-id";
 
 /**
  * Numbering helpers.
@@ -1965,7 +1966,7 @@ export async function updateCitizen(data: {
     .update({
       first_name: data.first_name.trim(),
       last_name: data.last_name.trim(),
-      citizen_id: data.citizen_id?.trim() || null,
+      citizen_id: toStorageCitizenId(data.citizen_id),
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
       middle_name: data.middle_name?.trim() || null,
@@ -2002,7 +2003,7 @@ export async function quickCreateCitizen(data: {
       first_name: data.first_name.trim(),
       last_name: data.last_name.trim(),
       type: data.type,
-      citizen_id: data.citizen_id?.trim() || null,
+      citizen_id: toStorageCitizenId(data.citizen_id),
       city_id: data.city_id || null,
       nation_id: data.nation_id || null,
       middle_name: data.middle_name?.trim() || null,
