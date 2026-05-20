@@ -325,6 +325,18 @@ export async function deleteLetterGroup(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   const storyline_id = String(formData.get("storyline_id") ?? "");
   if (!id) return;
+  // Stamp updated_by before delete so the realtime DELETE payload
+  // (REPLICA IDENTITY FULL captures the row's old values) carries the
+  // deleter's email — matches the pattern from migration 0040 used by
+  // letters/actions.ts::deleteGroup.
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  if (updatedBy) {
+    await supabase
+      .from("letter_groups")
+      .update({ updated_by: updatedBy })
+      .eq("id", id);
+  }
   const { error } = await supabase.from("letter_groups").delete().eq("id", id);
   if (error) throw new Error(error.message);
   redirect(`/inspection/storylines/${storyline_id}`);
