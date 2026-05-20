@@ -432,3 +432,9 @@ export interface InspectionActionEndingAssignment {
    *  without yet picking a value (the value picker stays open in the UI). */
   value_id: string | null;
 }
+
+export interface UserHomeTiles {
+  user_id: string;
+  tile_hrefs: string[];
+  updated_at: string;
+}
