@@ -77,11 +77,13 @@ export interface Storyline {
   id: string;
   name: string;
   abbreviation: string;
-  description: string | null;
+  notes: string | null;
   icon_type: IconType;
   icon_value: string | null;
   color_hex: string;
   sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface LetterGroup {
@@ -92,6 +94,8 @@ export interface LetterGroup {
   sequence: number;
   sort_order: number;
   delivery_day_id: string | null;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface ReportGroup {
@@ -157,6 +161,8 @@ export interface ActionRow {
   impact_spokgrad: number;
   impact_pelico: number;
   sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface ReportSegment {
