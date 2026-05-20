@@ -136,6 +136,39 @@ function SmartVariablesEditorInner({
       return [...kept, ...additions];
     });
   }
+
+  // Workspace-level mirror of result + fallback blocks across EVERY
+  // smart variable doc, so cross-doc references — a chip in smart
+  // variable A targeting smart variable B — see B's result_value
+  // edits live. The active doc's DocumentEditor still owns its own
+  // per-doc mirror (for in-progress typing); this one only feeds the
+  // derived `smartVariableReturns` map below.
+  const initialSmartResultBlocks = useMemo(
+    () =>
+      blocks.filter(
+        (b) => b.block_type === "result" || b.block_type === "fallback"
+      ),
+    [blocks]
+  );
+  const [smartResultBlocks, setSmartResultBlocks] = useState<EndingBlock[]>(
+    initialSmartResultBlocks
+  );
+  const [prevInitialSmartResultBlocks, setPrevInitialSmartResultBlocks] =
+    useState(initialSmartResultBlocks);
+  if (initialSmartResultBlocks !== prevInitialSmartResultBlocks) {
+    setPrevInitialSmartResultBlocks(initialSmartResultBlocks);
+    setSmartResultBlocks((prev) => {
+      const prevById = new Map(prev.map((b) => [b.id, b]));
+      const serverIds = new Set(initialSmartResultBlocks.map((b) => b.id));
+      const kept = prev.filter((b) => serverIds.has(b.id));
+      const additions = initialSmartResultBlocks.filter(
+        (b) => !prevById.has(b.id)
+      );
+      if (additions.length === 0 && kept.length === prev.length) return prev;
+      return [...kept, ...additions];
+    });
+  }
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table === "ending_documents") {
@@ -175,9 +208,41 @@ function SmartVariablesEditorInner({
             prev.some((v) => v.id === inserted.id) ? prev : [...prev, inserted]
           );
         }
+        return;
+      }
+      if (change.table === "ending_blocks") {
+        // Mirror smart_variable result + fallback blocks specifically,
+        // so cross-doc chip dropdowns reflect edits in other smart
+        // variables. The active doc's full block tree is owned by the
+        // DocumentEditor's own mirror; this handler only feeds the
+        // derived smartVariableReturns map.
+        if (change.eventType === "UPDATE" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          setSmartResultBlocks((prev) => {
+            const isSmart = smartDocs.some((d) => d.id === n.document_id);
+            if (!isSmart && !prev.some((b) => b.id === n.id)) return prev;
+            const idx = prev.findIndex((b) => b.id === n.id);
+            if (idx < 0) return isSmart ? [...prev, n] : prev;
+            const out = prev.slice();
+            out[idx] = { ...out[idx], ...n };
+            return out;
+          });
+        } else if (change.eventType === "DELETE" && change.old) {
+          const o = change.old as unknown as { id: string };
+          setSmartResultBlocks((prev) => prev.filter((b) => b.id !== o.id));
+        } else if (change.eventType === "INSERT" && change.new) {
+          const n = change.new as unknown as EndingBlock;
+          if (n.block_type !== "result" && n.block_type !== "fallback") return;
+          const isSmart = smartDocs.some((d) => d.id === n.document_id);
+          if (!isSmart) return;
+          setSmartResultBlocks((prev) =>
+            prev.some((b) => b.id === n.id) ? prev : [...prev, n]
+          );
+        }
       }
     });
-  }, [onPostgresChanges, router]);
+  }, [onPostgresChanges, router, smartDocs]);
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [pending, startTransition] = useTransition();
   const [pendingColor, setPendingColor] = useState<{
@@ -252,9 +317,16 @@ function SmartVariablesEditorInner({
     return out;
   }, [smartDocs, blocks, rows, chips, blockVariables]);
 
+  // Derive from the mirrored result/fallback blocks so cross-doc
+  // chip dropdowns stay live as result_value edits land — including
+  // the rename propagation from patchBlock that updates referencing
+  // chips. The active doc's typed-but-uncommitted result_value lives
+  // in the DocumentEditor's local state and doesn't bleed back into
+  // the dropdown until it commits (debounced autosave + postgres
+  // echo), which is the behaviour we want.
   const smartVariableReturns = useMemo(
-    () => buildSmartReturnsByVariable(smartDocs, variables, blocks),
-    [smartDocs, variables, blocks]
+    () => buildSmartReturnsByVariable(smartDocs, variables, smartResultBlocks),
+    [smartDocs, variables, smartResultBlocks]
   );
 
   // Memoized leaf component so React doesn't remount the result blocks

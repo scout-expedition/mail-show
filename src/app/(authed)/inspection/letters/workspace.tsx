@@ -18,6 +18,7 @@ import { usePresenceUser } from "@/components/presence-user-context";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
+import { VariableKindIcon } from "@/lib/endings/variable-kind-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -5940,13 +5941,18 @@ function ActionVariableChip({
             across chips) so the name|value divider aligns vertically;
             the name is right-aligned so it sits against the divider. */}
         <span
-          className="flex shrink-0 items-center justify-end px-1.5"
+          className="flex shrink-0 items-center justify-end gap-1 px-1.5"
           style={{
             backgroundColor: color,
             color: readableOnHex(color),
             width: `calc(${nameColCh}ch + 0.75rem)`,
           }}
         >
+          <VariableKindIcon
+            kind={variable.kind}
+            size={10}
+            className="shrink-0 opacity-80"
+          />
           <span className="truncate text-right">{variable.name}</span>
         </span>
         {/* Right: value + chevron + invisible overlay select. Fills the

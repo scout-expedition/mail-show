@@ -3,12 +3,16 @@
 import { Fragment, useEffect, useRef, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import { paletteColor } from "@/lib/endings/color-palette";
+import { VARIABLE_KIND_ICON } from "@/lib/endings/variable-kind-icon";
 import type { EndingVariableKind } from "@/lib/db/enums";
 import type { VariableLike } from "./variable-filter";
 
 const KIND_LABEL: Record<EndingVariableKind, string> = {
   text: "text",
-  number_ref: "number",
+  // Renamed from "number" — these variables track playthrough impact
+  // columns (citizens, deaths, etc.), not arbitrary numerics. The
+  // "playthrough" label reads more clearly in the picker than "number".
+  number_ref: "playthrough",
   aggregate_ref: "aggregate",
   smart_ref: "smart",
 };
@@ -67,6 +71,7 @@ export function VariableOptionList<T extends VariableLike>({
         const isActive = i === activeIndex;
         const color = v.color_hex ?? paletteColor(v.color_index);
         const showDivider = i > 0 && filtered[i - 1].kind !== v.kind;
+        const KindIcon = VARIABLE_KIND_ICON[v.kind];
         return (
           <Fragment key={v.id}>
             {showDivider ? (
@@ -98,6 +103,11 @@ export function VariableOptionList<T extends VariableLike>({
                 aria-hidden
                 className="h-2 w-2 shrink-0 rounded-sm"
                 style={{ backgroundColor: color }}
+              />
+              <KindIcon
+                size={11}
+                aria-hidden
+                className="shrink-0 text-muted-foreground/80"
               />
               <span className="flex-1 truncate text-foreground">{v.name}</span>
               <span className="text-[10px] uppercase tracking-widest text-muted-foreground/70">

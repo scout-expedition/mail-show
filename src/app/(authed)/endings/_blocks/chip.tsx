@@ -2,6 +2,7 @@
 
 import { useContext, useEffect, useState } from "react";
 import { Minus, Plus, X } from "lucide-react";
+import { VARIABLE_KIND_ICON } from "@/lib/endings/variable-kind-icon";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -552,11 +553,13 @@ export function VariableChip({
 }) {
   const color =
     variable.color_hex ?? paletteColor(variable.color_index);
+  const KindIcon = VARIABLE_KIND_ICON[variable.kind];
   return (
     <span
-      className="inline-flex h-5 items-center gap-1 rounded-md pl-2 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
+      className="inline-flex h-5 items-center gap-1 rounded-md pl-1.5 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
       style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
+      <KindIcon size={10} aria-hidden className="shrink-0 opacity-80" />
       <span>{chipDisplayName(variable)}</span>
       {onRemove ? (
         <button
