@@ -9,6 +9,7 @@ import type {
   RuleTarget,
   RuleTargetSlice,
 } from "@/lib/db/enums";
+import { toStorageCitizenId } from "@/lib/citizen-id";
 
 /** Lowest unused rule letter A–Z, or null when all 26 are taken. */
 function nextFreeLetter(used: Set<string>): string | null {
@@ -174,10 +175,15 @@ export async function saveConditions(
   if (delErr) throw new Error(delErr.message);
   if (conditions.length > 0) {
     const { error } = await supabase.from("sorting_rule_conditions").insert(
-      conditions.map((c) => ({
-        rule_id: ruleId,
-        ...c,
-      }))
+      conditions.map((c) => {
+        if (
+          (c.target === "sender_citizen_id" || c.target === "recipient_citizen_id") &&
+          c.target_slice === "whole"
+        ) {
+          c = { ...c, reference_value: toStorageCitizenId(c.reference_value) };
+        }
+        return { rule_id: ruleId, ...c };
+      })
     );
     if (error) throw new Error(error.message);
   }
