@@ -1498,6 +1498,11 @@ function LettersWorkspaceInner({
   useEffect(() => setHeroes(initialHeroes), [initialHeroes]);
 
   // When server data reloads, reconcile the selected letter if still present.
+  // Depend on the un-optimistic base (allLetters/allActions), not the
+  // useOptimistic-derived `letters`/`actions`: React 19 re-runs the optimistic
+  // reducer on every render while a transition is pending, yielding new array
+  // references each render. Depending on the derived lists here re-fires the
+  // effect every render → setLetterState → re-render → Maximum-update-depth.
   useEffect(() => {
     // Clear local drag order once server data matches.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -1505,17 +1510,26 @@ function LettersWorkspaceInner({
     if (!selectedId) {
       return;
     }
-    const found = letters.find((l) => l.id === selectedId);
+    const groupLetters = selectedGroupId
+      ? allLetters.filter((l) => l.letter_group_id === selectedGroupId)
+      : allLetters;
+    const groupLetterIds = new Set(groupLetters.map((l) => l.id));
+    const groupActions = allActions.filter((a) =>
+      groupLetterIds.has(a.inspection_letter_id)
+    );
+    const found = groupLetters.find((l) => l.id === selectedId);
     if (!found) {
       // Deleted server-side; fall back to first.
-      setSelectedId(letters[0]?.id ?? null);
+      setSelectedId(groupLetters[0]?.id ?? null);
       setLetterState(
-        letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
+        groupLetters[0]
+          ? toLetterState(groupLetters[0], groupActions, endingAssignments)
+          : null
       );
       return;
     }
-    setLetterState(toLetterState(found, actions, endingAssignments));
-  }, [letters, actions, endingAssignments, selectedId]);
+    setLetterState(toLetterState(found, groupActions, endingAssignments));
+  }, [allLetters, allActions, endingAssignments, selectedId, selectedGroupId]);
 
   function selectLetter(id: string) {
     if (id === selectedId) {
