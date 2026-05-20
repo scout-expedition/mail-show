@@ -225,7 +225,7 @@ this status entry is what closes the phase out as tracked debt:
 
 - **`endings-frameworks.spec.ts` skip pin** — the file already carries
   an explanatory block comment (`tests/e2e/endings-frameworks.spec.ts:4-20`)
-  tying its `.skip` to Step 6 of `docs/endings-logic-v2-plan.md`. The
+  tying its `.skip` to Step 6 of `docs/plans/active/endings-logic-v2-plan.md`. The
   setup hooks still reference the dropped `ending_frameworks` table;
   restoring this spec means a rewrite against the unified
   `ending_documents` shape (and adding logic-tab coverage), not just

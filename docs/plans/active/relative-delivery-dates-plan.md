@@ -335,7 +335,7 @@ Audit and update as part of Phase 2 (Codex flagged these — they currently read
 | Report panel UI | `src/app/(authed)/inspection/letters/workspace.tsx` ~3248–3291, trigger pills ~3318–3352, `triggers` memo ~3179 |
 | Existing `DaySelect` to retire (or repurpose internally) | `src/app/(authed)/inspection/letters/workspace.tsx` ~5388–5528 |
 | Day formatter | `src/lib/db/days.ts` (`normalizeDayIdentifier`) — unchanged but reused |
-| Plan files reference | `docs/inspection-letters-plan.md`, `docs/narrative-graph-plan.md` |
+| Plan files reference | `docs/plans/archive/inspection-letters-plan.md`, `docs/plans/active/narrative-graph-plan.md` |
 
 ## Realtime / concurrent-edit caveat
 

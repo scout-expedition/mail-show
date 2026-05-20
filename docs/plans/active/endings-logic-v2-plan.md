@@ -1,6 +1,6 @@
 # Endings Frameworks — Tiebreak Logic + Logic-tab rebuild
 
-Master plan: `docs/endings-frameworks-plan.md`.
+Master plan: `docs/plans/archive/endings-frameworks-plan.md`.
 Predecessors:
 - Phase 4 (`phase4`) — aggregate kinds, shipped (PR #4). Left tiebreakers TBD.
 - Phase 5 (`phase5`) — static warnings, shipped (PR #5). Models tie as a distinct outcome with a note that this plan rewrites that truth-table.

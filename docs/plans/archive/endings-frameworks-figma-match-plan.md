@@ -4,7 +4,7 @@ Mockup: https://www.figma.com/design/AD68eqkgtzsl4pgykdI81Y/Mail-Show-Ending-Fra
 
 ## Context
 
-`docs/endings-frameworks-plan.md` (Phases 1–3) committed to the **structural** intent of the mockup: chip-row authoring, multi-variable conditions, typed operators, collapse chevron, overlap detection. It explicitly did not commit to pixel-perfect typography, spacing, color palette, or the exact chip-pill / row chrome shown in Figma.
+`docs/plans/archive/endings-frameworks-plan.md` (Phases 1–3) committed to the **structural** intent of the mockup: chip-row authoring, multi-variable conditions, typed operators, collapse chevron, overlap detection. It explicitly did not commit to pixel-perfect typography, spacing, color palette, or the exact chip-pill / row chrome shown in Figma.
 
 Phase 1–3 ships an editor that reads correctly but doesn't visually match the mockup. This plan closes that gap as a single focused pass.
 

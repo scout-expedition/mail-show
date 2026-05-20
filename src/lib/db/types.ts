@@ -363,7 +363,7 @@ export interface EndingBlock {
 
 /**
  * Pre-0022 framework row. Retained so the Frameworks workspace keeps
- * compiling until step 2 of `docs/endings-logic-v2-plan.md` switches
+ * compiling until step 2 of `docs/plans/active/endings-logic-v2-plan.md` switches
  * those callers to `EndingDocument`. New code should use `EndingDocument`.
  */
 export interface EndingFramework {

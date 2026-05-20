@@ -1,14 +1,14 @@
 # Endings Frameworks — Phase 5: Static warnings
 
-Master plan: `docs/endings-frameworks-plan.md` (Phases 1–3).
-Predecessor: `docs/endings-frameworks-phase4-plan.md` (aggregate variable kinds — shipped as PR #4 / commit `1225d8b`).
+Master plan: `docs/plans/archive/endings-frameworks-plan.md` (Phases 1–3).
+Predecessor: `docs/plans/archive/endings-frameworks-phase4-plan.md` (aggregate variable kinds — shipped as PR #4 / commit `1225d8b`).
 
 **Status:** shipped as PR #5 (`7cfa415`). Two follow-ups landed on top:
 
 - PR #6 (`a8974f2`) — numeric interval analysis. Single-numeric-variable blocks now compute exact uncovered intervals via breakpoint enumeration. Mixed (numeric + finite) blocks still use the wildcard-and-partial path.
 - PR #7 (`5b4badd`) — numeric row overlap detection. Per-row badge for partial overlap (later row's range intersects an earlier row's) and full numeric shadow (later row entirely contained).
 
-Phase 6 (`docs/endings-frameworks-phase6-plan.md`, header-declared variables) re-points the uncovered analysis at the header's declared set; the numeric analyses here stay as-is and continue to apply.
+Phase 6 (`docs/plans/archive/endings-frameworks-phase6-plan.md`, header-declared variables) re-points the uncovered analysis at the header's declared set; the numeric analyses here stay as-is and continue to apply.
 
 ## Context
 

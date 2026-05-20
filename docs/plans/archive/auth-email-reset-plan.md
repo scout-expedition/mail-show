@@ -58,7 +58,7 @@ No changes. The reset link includes `?code=...`; our existing `/auth/callback` h
 
 ### Resend SMTP setup (dashboard-only, documented)
 
-No code. Document the steps in `docs/auth-email-reset-plan.md` (this file, in a final "Resend setup" section below) and add a one-paragraph note to `CLAUDE.md` under Deployment so future-you remembers where Supabase Auth gets its SMTP from.
+No code. Document the steps in `docs/plans/archive/auth-email-reset-plan.md` (this file, in a final "Resend setup" section below) and add a one-paragraph note to `CLAUDE.md` under Deployment so future-you remembers where Supabase Auth gets its SMTP from.
 
 Steps the operator follows:
 1. Sign up at resend.com (free tier).

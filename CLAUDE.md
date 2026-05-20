@@ -68,15 +68,17 @@ Row + view types are hand-maintained in `src/lib/db/types.ts`. Enum values + dis
 ### The two big editor surfaces
 
 **`/inspection/letters` — `LettersWorkspace`** (`src/app/(authed)/inspection/letters/workspace.tsx`)
-A 5-panel horizontal slide: storylines list | group info+letters | letter fields | actions | segment. Wrapper width is `250%`, each panel is `w-1/5`, advance with `-translate-x-[20%]` per step. Don't break the slide math. Slot 1 swaps between storyline inspector / group panel / empty state based on selection. URL params `?group` / `?letter` / `?report` deep-link.
+A 6-panel horizontal slide: storylines list | storyline inspector | group info+letters | letter fields / segment | actions | report segment. Track width is `w-[600%]` (narrow) or `lg:w-[300%]` (wide — shows two panels side by side), each panel is `w-1/6`. There's no step counter: `slideOffset` is derived from the `view` enum (`list`/`group`/`main`/`actions`/`segment`) with a `-(100/6)%` step and applied via an inline `translateX`. Don't break the slide math — panel count, track width, `w-1/N`, and the `100/N` divisor must stay in lockstep. Slot 1 swaps between storyline inspector / group's parent storyline / empty state based on selection; slot 3 swaps between letter fields and segment card. URL params `?group` / `?letter` / `?actions` / `?report` deep-link.
 
 **`/graph` — narrative graph** (`src/app/(authed)/graph/`)
-React Flow (`@xyflow/react` v12) view of letter groups → next-letter actions, laid out by storyline column × day row. `graph-surface.tsx` embeds `LettersWorkspace` in `forceNarrow` controlled-selection mode for inline inspection. Drag-and-drop re-plumbing dispatches server actions in `inspection/letters/actions.ts` (`moveLetterGroupToDay`, `moveLetterToGroup`, `moveReportSegmentToDay`, `setActionNextLetter`, `batchMoveToDay`); xyflow re-renders from props after `revalidatePath`, so invalid drops snap back automatically. Phase status is tracked in `docs/narrative-graph-plan.md`.
+React Flow (`@xyflow/react` v12) view of letter groups → next-letter actions, laid out by storyline column × day row. `graph-surface.tsx` embeds `LettersWorkspace` in `forceNarrow` controlled-selection mode for inline inspection. Drag-and-drop re-plumbing dispatches server actions in `inspection/letters/actions.ts` (`moveLetterGroupToDay`, `moveLetterToGroup`, `moveReportSegmentToDay`, `setActionNextLetter`, `batchMoveToDay`); xyflow re-renders from props after `revalidatePath`, so invalid drops snap back automatically. Phase status is tracked in `docs/plans/active/narrative-graph-plan.md`.
 
 ### Plan files
-Active and historical work plans live under `docs/`:
-- `docs/inspection-letters-plan.md` — closed; status log of the letters workspace work.
-- `docs/narrative-graph-plan.md` — open; phases 1–3 + 5 shipped, phases 4 + 6 remaining.
+Work plans live under `docs/plans/`, split by status: open or has-followups plans live in `docs/plans/active/`; fully shipped plans with no remaining work move to `docs/plans/archive/`. Move a file when its scope closes — that's the "this is done" gesture, like merging a branch. Examples:
+- `docs/plans/archive/inspection-letters-plan.md` — closed; status log of the letters workspace work.
+- `docs/plans/active/narrative-graph-plan.md` — open; phases 1–6 shipped, only the per-panel save modal scoping follow-up remains.
+
+Evergreen reference docs (testing protocol, transferable patterns, etc.) live outside `docs/plans/` — testing protocols in `docs/testing-*.md`, agent-loadable knowledge in `knowledge-base/`.
 
 Before starting feature work in either area, read the corresponding plan first.
 
@@ -92,4 +94,4 @@ Hosted on Vercel under the `coreylubos-projects` team. The repo is connected to 
 
 Env vars live in the Vercel project settings (not in the repo). The proxy + Supabase clients read `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY`. Membership is governed by Supabase `auth.users` directly (no allowlist) — invites/deletes happen at `/settings`.
 
-Auth emails (invite, magic link, password reset) go through **Resend** SMTP — configured in the Supabase dashboard under Auth → SMTP Settings, not in code. The sender currently uses Resend's onboarding domain (`onboarding@resend.dev`); swap to a custom sending domain in a later branch. Setup checklist in `docs/auth-email-reset-plan.md`.
+Auth emails (invite, magic link, password reset) go through **Resend** SMTP — configured in the Supabase dashboard under Auth → SMTP Settings, not in code. The sender currently uses Resend's onboarding domain (`onboarding@resend.dev`); swap to a custom sending domain in a later branch. Setup checklist in `docs/plans/archive/auth-email-reset-plan.md`.

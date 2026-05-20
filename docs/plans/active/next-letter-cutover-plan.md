@@ -167,7 +167,7 @@ the final commit, once nothing reads it. It still ships as one PR.
   exposure is only edits made in the minutes between that resync and the merge —
   accepted for a small team. (If next-letter editing is heavy in the interim,
   the more robust fix is a tiny dual-write PR to `main` first — call it if so.)
-- Save this plan to `docs/next-letter-cutover-plan.md` on execution.
+- Save this plan to `docs/plans/active/next-letter-cutover-plan.md` on execution.
 
 ## Verification
 - `pnpm typecheck` clean; `pnpm lint` no worse than the 46-problem baseline.

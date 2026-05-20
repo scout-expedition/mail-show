@@ -2,7 +2,7 @@
 
 ## Context
 
-The current frameworks editor (`src/app/(authed)/endings/frameworks/workspace.tsx`, ~1500 lines) ties each condition block to a single variable and renders its values as side-by-side columns. This breaks down for real ending writing where paragraphs need to fire on combinations like `SECURITY=LOW AND WORLD_STATUS ≥ 0`. The full redesign is specced in **`docs/endings-frameworks-plan.md`** (read it for the schema, file decomposition, and test slices — this plan does not duplicate that detail).
+The current frameworks editor (`src/app/(authed)/endings/frameworks/workspace.tsx`, ~1500 lines) ties each condition block to a single variable and renders its values as side-by-side columns. This breaks down for real ending writing where paragraphs need to fire on combinations like `SECURITY=LOW AND WORLD_STATUS ≥ 0`. The full redesign is specced in **`docs/plans/archive/endings-frameworks-plan.md`** (read it for the schema, file decomposition, and test slices — this plan does not duplicate that detail).
 
 This pass implements **Phase 1 only**: schema reset to v3, decomposition of `workspace.tsx` into a folder, and the new condition-row + chip authoring surface with **equality-only** matching. Numeric operators, impact-variable refs, the kind picker, collapse chevrons, and overlap detection are explicitly out of scope and tracked for Phases 2/3 of the doc plan.
 
@@ -15,7 +15,7 @@ User-confirmed scope decisions for this pass:
 
 ### Schema (`supabase/migrations/0014_endings_v3.sql`)
 
-Drop v2 endings tables and rebuild per `docs/endings-frameworks-plan.md` §Schema. Notes specific to this pass:
+Drop v2 endings tables and rebuild per `docs/plans/archive/endings-frameworks-plan.md` §Schema. Notes specific to this pass:
 
 - `ending_variables.kind` column ships now (defaults to `'text'`); Phase 1 only writes `'text'`. CHECK accepts both `'text'` and `'number_ref'` so Phase 2 doesn't need a schema bump.
 - Operator enum (`'='`, `'≠'`, `'<'`, `'≤'`, `'>'`, `'≥'`) on `ending_condition_row_chips` ships **all six values** in the CHECK. Phase 1 only writes `'='`. Same rationale: avoid a Phase 2 schema migration just to widen the CHECK.
@@ -27,7 +27,7 @@ Drop v2 endings tables and rebuild per `docs/endings-frameworks-plan.md` §Schem
 
 ### File decomposition (`src/app/(authed)/endings/frameworks/`)
 
-Target layout (per `docs/endings-frameworks-plan.md` §UI architecture). Each file ≤ ~300 lines:
+Target layout (per `docs/plans/archive/endings-frameworks-plan.md` §UI architecture). Each file ≤ ~300 lines:
 
 ```
 page.tsx                      -- extend fetch to include rows + chips
