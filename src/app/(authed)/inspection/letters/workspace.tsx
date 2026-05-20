@@ -6364,23 +6364,24 @@ function AddEndingVariableMenu({
   // Keyboard-highlighted row; the search input owns nav, rows are not
   // tab stops.
   const [activeIndex, setActiveIndex] = useState(0);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const popupRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const filtered = filterVariables(variables, query);
 
-  const computePos = useCallback(() => {
-    const btn = buttonRef.current;
-    if (!btn) return;
-    const r = btn.getBoundingClientRect();
-    // Over-estimate the popup width so the right-edge clamp stays safe.
-    const width = 260;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-    setPos({ top: r.bottom + 4, left });
-  }, []);
+  // Position via the shared hook: flips up when there isn't room below,
+  // clamps to viewport on both axes. `deps: [filtered.length]` re-measures
+  // whenever the result list grows/shrinks (search input filter).
+  const {
+    triggerRef: buttonRef,
+    menuRef: popupRef,
+    pos,
+  } = useMenuPosition({
+    open,
+    align: "left",
+    preferredPlacement: "down",
+    deps: [filtered.length],
+  });
 
   // Outside-click closes. The popup is portaled out of `wrapRef`, so the
   // check has to cover both the trigger and the portaled popup.
@@ -6394,20 +6395,7 @@ function AddEndingVariableMenu({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
-
-  // Keep the fixed popup pinned to the trigger as the page scrolls or
-  // resizes — the rect coords are viewport-relative and otherwise stale.
-  useLayoutEffect(() => {
-    if (!open) return;
-    computePos();
-    window.addEventListener("scroll", computePos, true);
-    window.addEventListener("resize", computePos);
-    return () => {
-      window.removeEventListener("scroll", computePos, true);
-      window.removeEventListener("resize", computePos);
-    };
-  }, [open, computePos]);
+  }, [open, popupRef]);
 
   // Focus the search input once the popup is mounted (open + positioned).
   // Re-firing on a scroll-driven `pos` change is a no-op when the input
@@ -7917,6 +7905,34 @@ function StorylinesListPanel({
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
     () => new Set()
   );
+  // Presence: peer/self focus on a letter or group lights up a ring on the
+  // matching row so collaborators can see what each other is editing. Mirrors
+  // FieldHighlight's color selection (self wins over peer when both match).
+  const {
+    peers: presencePeers,
+    focus: localFocus,
+    selfColor,
+  } = usePresenceContext();
+  function rowFocusColor(
+    table: "inspection_letters" | "letter_groups",
+    recordId: string
+  ): string | undefined {
+    if (
+      localFocus &&
+      localFocus.table === table &&
+      localFocus.recordId === recordId &&
+      selfColor
+    ) {
+      return selfColor;
+    }
+    const peer = presencePeers.find(
+      (p) =>
+        p.focus &&
+        p.focus.table === table &&
+        p.focus.recordId === recordId
+    );
+    return peer?.profile?.avatarColorHex ?? peer?.color;
+  }
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -8023,6 +8039,7 @@ function StorylinesListPanel({
         if (va !== vb) return va.localeCompare(vb);
         return (a.piece ?? 0) - (b.piece ?? 0);
       });
+    const groupRingColor = rowFocusColor("letter_groups", g.id);
     return (
       <div
         key={g.id}
@@ -8031,7 +8048,14 @@ function StorylinesListPanel({
           active && "bg-accent/40"
         )}
       >
-        <div className="flex items-stretch">
+        <div
+          className="flex items-stretch"
+          style={
+            groupRingColor
+              ? { boxShadow: `inset 0 0 0 2px ${groupRingColor}` }
+              : undefined
+          }
+        >
           <button
             type="button"
             onClick={() => onSelectGroup(g.id)}
@@ -8088,6 +8112,7 @@ function StorylinesListPanel({
               const overrideDay = hasOverride
                 ? dayById.get(l.effective_day_id ?? "")
                 : null;
+              const ringColor = rowFocusColor("inspection_letters", l.id);
               return (
                 <button
                   key={l.id}
@@ -8097,6 +8122,11 @@ function StorylinesListPanel({
                     "flex items-center gap-2 px-6 py-1 text-left text-xs",
                     letterActive ? "bg-accent/40" : "hover:bg-accent/30"
                   )}
+                  style={
+                    ringColor
+                      ? { boxShadow: `inset 0 0 0 2px ${ringColor}` }
+                      : undefined
+                  }
                 >
                   {overrideDay ? (
                     <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">

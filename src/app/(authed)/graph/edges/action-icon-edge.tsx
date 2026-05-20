@@ -344,7 +344,7 @@ function ActionIconEdgeComponent({
               />
             ) : (
               <span className="text-[10px] font-mono font-semibold">
-                {d.actionName.slice(0, 1).toUpperCase()}
+                {(d.actionName ?? "?").slice(0, 1).toUpperCase()}
               </span>
             )}
           </button>

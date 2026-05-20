@@ -3789,7 +3789,7 @@ export function GraphView({
                     />
                   ) : (
                     <span className="text-[10px] font-mono font-semibold">
-                      {v.actionName.slice(0, 1).toUpperCase()}
+                      {(v.actionName ?? "?").slice(0, 1).toUpperCase()}
                     </span>
                   )}
                 </div>
