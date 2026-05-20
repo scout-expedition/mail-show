@@ -1504,9 +1504,11 @@ export async function patchLetterGroup(
   patch: Partial<LetterGroupPatchFields>
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { error } = await supabase
     .from("letter_groups")
-    .update(patch)
+    .update({ ...patch, updated_by: updatedBy })
     .eq("id", id);
   if (error) throw new Error(error.message);
   // letter_groups.name is mirrored to its report_group (matches saveGroup).
@@ -1537,7 +1539,12 @@ export async function patchAction(
   patch: Partial<ActionPatchFields>
 ) {
   const supabase = await createSupabaseServerClient();
-  const { error } = await supabase.from("actions").update(patch).eq("id", id);
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+  const { error } = await supabase
+    .from("actions")
+    .update({ ...patch, updated_by: updatedBy })
+    .eq("id", id);
   if (error) throw new Error(error.message);
 }
 
@@ -1628,6 +1635,8 @@ export async function addActionFromTemplate(
     .limit(1);
   let nextSort = (existing?.[0]?.sort_order ?? -1) + 1;
 
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const rows = templatesToInsert.map(({ tpl: t }) => ({
     inspection_letter_id: letterId,
     action_template_id: t.id,
@@ -1636,6 +1645,7 @@ export async function addActionFromTemplate(
     icon_value: t.icon_value,
     color_hex: t.color_hex,
     sort_order: nextSort++,
+    updated_by: updatedBy,
   }));
   const { error } = await supabase.from("actions").insert(rows);
   if (error) throw new Error(error.message);
@@ -1759,6 +1769,8 @@ export async function createLetterGroupInStoryline(
   const nextSort =
     Math.max(0, ...((existing ?? []).map((g) => Number(g.sort_order ?? 0)))) +
     1;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data, error } = await supabase
     .from("letter_groups")
     .insert({
@@ -1767,6 +1779,7 @@ export async function createLetterGroupInStoryline(
       sequence: nextSeq,
       sort_order: nextSort,
       delivery_day_id: deliveryDayId,
+      updated_by: updatedBy,
     })
     .select("*")
     .single();
