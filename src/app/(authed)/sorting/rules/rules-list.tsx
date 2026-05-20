@@ -148,11 +148,21 @@ function RulesWorkspace({
   // Optimistic ordering override after a drag-drop. Sits in front of the
   // server's `sort_order` until every rule's persisted value catches up —
   // this keeps the list from flickering back to old positions during the
-  // 26-row UPDATE round-trip that `reorderRules` performs.
+  // round-trip. Cleared when (a) every rule's actual sort_order matches the
+  // optimistic position, or (b) the rule set changes (an insert or delete
+  // means the snapshot is stale — fall back to server state immediately).
   const [optimisticOrder, setOptimisticOrder] =
     useState<Map<string, number> | null>(null);
   useEffect(() => {
     if (!optimisticOrder) return;
+    const ruleIds = new Set(rules.map((r) => r.id));
+    const sameRuleSet =
+      ruleIds.size === optimisticOrder.size &&
+      rules.every((r) => optimisticOrder.has(r.id));
+    if (!sameRuleSet) {
+      setOptimisticOrder(null);
+      return;
+    }
     const allMatch = rules.every(
       (r) => optimisticOrder.get(r.id) === (r.sort_order ?? 0)
     );
