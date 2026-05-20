@@ -223,6 +223,17 @@ function SmartVariablesEditorInner({
     });
   }
 
+  // Ref mirror of smartDocs so the postgres handler below always sees
+  // the latest set, even when an ending_documents INSERT for a new
+  // smart variable lands in the same tick as its first block INSERT.
+  // Declared BEFORE the subscription effect so react-hooks/immutability
+  // (which checks source order) doesn't see the ref being "used in a
+  // prior effect" before its sync useEffect runs.
+  const smartDocsRef = useRef(smartDocs);
+  useEffect(() => {
+    smartDocsRef.current = smartDocs;
+  }, [smartDocs]);
+
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       if (change.table === "ending_documents") {
@@ -317,17 +328,6 @@ function SmartVariablesEditorInner({
     });
   }, [onPostgresChanges, router]);
 
-  // Ref mirror of smartDocs so the postgres handler above always sees
-  // the latest set, even when an ending_documents INSERT for a new
-  // smart variable lands in the same tick as its first block INSERT.
-  // Synced in an effect to satisfy react-hooks/refs — the timing gap
-  // is benign because postgres events fire from microtasks that run
-  // after React commits, and the next prop reconcile (via the page's
-  // revalidate path) backfills anything that slipped through.
-  const smartDocsRef = useRef(smartDocs);
-  useEffect(() => {
-    smartDocsRef.current = smartDocs;
-  });
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [pending, runTransition] = useTransition();
 
