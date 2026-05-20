@@ -19,14 +19,6 @@ export type DragApi = {
   end: () => void;
 };
 
-/**
- * Class for a block's markdown content textarea — matches the endings
- * text-block editor: black body, `!text-sm` mono, ~2-line minimum that
- * grows with content.
- */
-export const BLOCK_TEXTAREA_CLASS =
-  "min-h-[3rem] border-transparent bg-[var(--block-result-bg)] !text-sm shadow-none focus:border-border focus-visible:ring-0";
-
 /** Thin blue insertion indicator shown above/below a drop target. */
 export function DropLine({ active }: { active: boolean }) {
   return (

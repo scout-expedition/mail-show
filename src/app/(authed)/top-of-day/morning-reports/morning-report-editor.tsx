@@ -238,7 +238,7 @@ export function MorningReportEditor({
         actionName: tpl?.name ?? a.name,
         actionIconType: tpl?.icon_type ?? a.icon_type,
         actionIconValue: tpl?.icon_value ?? a.icon_value,
-        actionColorHex: tpl?.color_hex ?? a.color_hex,
+        actionColorHex: tpl?.color_hex ?? a.color_hex ?? "#888888",
         letterContentId: letter.content_id,
         letterStoryline: storylinesById.get(letter.storyline_id),
         letterHref: letter.variant
