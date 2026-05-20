@@ -134,11 +134,17 @@ export function makeRuleContext(
 ): RuleContext {
   return {
     sender_name: null,
+    sender_first_name: null,
+    sender_middle_name: null,
+    sender_last_name: null,
     sender_citizen_id: null,
     sender_city_name: null,
     sender_city_code: null,
     sender_nation: null,
     recipient_name: null,
+    recipient_first_name: null,
+    recipient_middle_name: null,
+    recipient_last_name: null,
     recipient_citizen_id: null,
     recipient_city_name: null,
     recipient_city_code: null,

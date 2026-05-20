@@ -84,16 +84,41 @@ export const ADDRESS_TYPE_LABELS: Record<AddressType, string> = {
 export const CONTENT_REF_TYPES = ["sorting", "inspection"] as const;
 export type ContentRefType = (typeof CONTENT_REF_TYPES)[number];
 
-export const RULE_MATCH_MODES = ["all", "any"] as const;
+// `exclusive` (Or) was added by migration 0045 — exactly one condition must
+// be true (XOR over the set). `all` keeps the And semantics; `any` keeps the
+// And/Or semantics (≥ 1 true).
+export const RULE_MATCH_MODES = ["all", "any", "exclusive"] as const;
 export type RuleMatchMode = (typeof RULE_MATCH_MODES)[number];
+export const RULE_MATCH_MODE_LABELS: Record<RuleMatchMode, string> = {
+  all: "and",
+  any: "and/or",
+  exclusive: "or",
+};
 
+/** Hover-tooltip text explaining each match-mode option in plain English. */
+export const RULE_MATCH_MODE_DESCRIPTIONS: Record<RuleMatchMode, string> = {
+  all: "all conditions must be true",
+  any: "at least one condition must be true",
+  exclusive: "exactly one condition must be true",
+};
+
+// The `*_first_name` / `*_middle_name` / `*_last_name` values were added by
+// migration 0041. The legacy whole-name values `sender_name` / `recipient_name`
+// remain in the enum (Postgres can't drop enum values) but are migrated to
+// `*_first_name` by 0042 and excluded from the picker — see SELECTABLE_RULE_TARGETS.
 export const RULE_TARGETS = [
   "sender_name",
+  "sender_first_name",
+  "sender_middle_name",
+  "sender_last_name",
   "sender_citizen_id",
   "sender_city_name",
   "sender_city_code",
   "sender_nation",
   "recipient_name",
+  "recipient_first_name",
+  "recipient_middle_name",
+  "recipient_last_name",
   "recipient_citizen_id",
   "recipient_city_name",
   "recipient_city_code",
@@ -103,12 +128,18 @@ export const RULE_TARGETS = [
 ] as const;
 export type RuleTarget = (typeof RULE_TARGETS)[number];
 export const RULE_TARGET_LABELS: Record<RuleTarget, string> = {
-  sender_name: "Sender name",
+  sender_name: "Sender name (legacy)",
+  sender_first_name: "Sender first name",
+  sender_middle_name: "Sender middle name",
+  sender_last_name: "Sender last name",
   sender_citizen_id: "Sender citizen ID",
   sender_city_name: "Sender city name",
   sender_city_code: "Sender city code",
   sender_nation: "Sender nation",
-  recipient_name: "Recipient name",
+  recipient_name: "Recipient name (legacy)",
+  recipient_first_name: "Recipient first name",
+  recipient_middle_name: "Recipient middle name",
+  recipient_last_name: "Recipient last name",
   recipient_citizen_id: "Recipient citizen ID",
   recipient_city_name: "Recipient city name",
   recipient_city_code: "Recipient city code",
@@ -116,6 +147,39 @@ export const RULE_TARGET_LABELS: Record<RuleTarget, string> = {
   is_counterfeit: "Is counterfeit",
   current_day_of_week: "Current day of week",
 };
+
+/** Legacy whole-name targets — kept in the enum for back-compat but never
+ *  offered in the UI (migration 0042 rewrites existing rows to *_first_name). */
+export const LEGACY_RULE_TARGETS: readonly RuleTarget[] = [
+  "sender_name",
+  "recipient_name",
+];
+
+/** Targets the condition target picker may offer (legacy values excluded). */
+export const SELECTABLE_RULE_TARGETS: readonly RuleTarget[] =
+  RULE_TARGETS.filter((t) => !LEGACY_RULE_TARGETS.includes(t));
+
+/** Coarse classification of a target by the kind of data it holds. Drives the
+ *  per-target operator/comparator matrix in `src/lib/rules/normalize.ts`. */
+export type TargetKind =
+  | "name"
+  | "citizen_id"
+  | "city_name"
+  | "city_code"
+  | "nation"
+  | "day"
+  | "counterfeit";
+
+export function targetKind(t: RuleTarget): TargetKind {
+  if (t === "is_counterfeit") return "counterfeit";
+  if (t === "current_day_of_week") return "day";
+  if (t === "sender_nation" || t === "recipient_nation") return "nation";
+  if (t === "sender_city_name" || t === "recipient_city_name") return "city_name";
+  if (t === "sender_city_code" || t === "recipient_city_code") return "city_code";
+  if (t === "sender_citizen_id" || t === "recipient_citizen_id") return "citizen_id";
+  // First/middle/last name targets + the legacy whole-name targets.
+  return "name";
+}
 
 export const RULE_TARGET_SLICES = ["whole", "first_char", "last_char"] as const;
 export type RuleTargetSlice = (typeof RULE_TARGET_SLICES)[number];
@@ -125,10 +189,17 @@ export const RULE_TARGET_SLICE_LABELS: Record<RuleTargetSlice, string> = {
   last_char: "last character",
 };
 
+// `not_equals` / `not_contains` / `is_not` were added by migration 0043 for the
+// per-target operator matrix. `equals` / `not_equals` are paired with user-typed
+// values (text/number inputs); `is` / `is_not` are paired with predetermined-set
+// pickers (dropdowns of type-checks or known values like cities).
 export const RULE_OPERATORS = [
   "equals",
+  "not_equals",
   "contains",
+  "not_contains",
   "is",
+  "is_not",
   "gt",
   "gte",
   "lt",
@@ -137,14 +208,23 @@ export const RULE_OPERATORS = [
 export type RuleOperator = (typeof RULE_OPERATORS)[number];
 export const RULE_OPERATOR_LABELS: Record<RuleOperator, string> = {
   equals: "=",
+  not_equals: "≠",
   contains: "contains",
+  not_contains: "does not contain",
   is: "is",
+  is_not: "is not",
   gt: ">",
   gte: "≥",
   lt: "<",
   lte: "≤",
 };
 
+// `letter_set` was added by migration 0043 — used by `is`/`is_not` on a
+// sliced character to test membership in a comma-joined set (e.g. "A,B,C").
+// `digit` / `digit_set` were added by migration 0044 — the numeric counterparts
+// of `string` ("this letter") and `letter_set` ("these letters"). They take a
+// digit-masked value and are offered alongside their letter siblings on the
+// citizen-id and city-code first/last-char pickers.
 export const RULE_REFERENCE_TYPES = [
   "string",
   "number",
@@ -152,12 +232,17 @@ export const RULE_REFERENCE_TYPES = [
   "even",
   "odd",
   "letter",
+  "letter_set",
+  "digit",
+  "digit_set",
   "true",
   "false",
 ] as const;
 export type RuleReferenceType = (typeof RULE_REFERENCE_TYPES)[number];
 
-/** Human-readable label shown in the reference-type dropdown. */
+/** Default human-readable label for a reference type. The conditions editor
+ *  may override this with a context-aware label (e.g. `string` reads as
+ *  "this letter" in a first-char/last-char dropdown). */
 export const RULE_REFERENCE_TYPE_LABELS: Record<RuleReferenceType, string> = {
   string: "this string",
   number: "this number",
@@ -165,6 +250,9 @@ export const RULE_REFERENCE_TYPE_LABELS: Record<RuleReferenceType, string> = {
   even: "an even number",
   odd: "an odd number",
   letter: "a letter",
+  letter_set: "these letters",
+  digit: "this number",
+  digit_set: "these numbers",
   true: "true",
   false: "false",
 };
@@ -173,6 +261,9 @@ export const RULE_REFERENCE_TYPE_LABELS: Record<RuleReferenceType, string> = {
 export const REFERENCE_TYPES_WITH_VALUE: RuleReferenceType[] = [
   "string",
   "number",
+  "letter_set",
+  "digit",
+  "digit_set",
 ];
 
 /** Reference types that demand a numeric value when present. */
@@ -183,22 +274,8 @@ export const NUMERIC_REFERENCE_TYPES: RuleReferenceType[] = [
   "odd",
 ];
 
-/**
- * Valid operator × reference_type combinations.
- * equals  → this string / this number        (exact match)
- * contains → this string / this number
- * is      → a number / an even / an odd / a letter / true / false
- * gt/gte/lt/lte → this number
- */
-export const VALID_OPERATOR_REFERENCES: Record<RuleOperator, RuleReferenceType[]> = {
-  equals: ["string", "number"],
-  contains: ["string", "number"],
-  is: ["any_number", "even", "odd", "letter", "true", "false"],
-  gt: ["number"],
-  gte: ["number"],
-  lt: ["number"],
-  lte: ["number"],
-};
+// Operator/reference-type validity is now expressed as a target-aware matrix
+// in `src/lib/rules/normalize.ts` (`operatorsFor` + `referenceTypesFor`).
 
 /** Targets that never take a reference value (is_counterfeit only pairs with true/false). */
 export const BOOLEAN_TARGETS: RuleTarget[] = ["is_counterfeit"];

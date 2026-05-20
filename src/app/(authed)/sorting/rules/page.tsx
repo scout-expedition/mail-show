@@ -1,12 +1,21 @@
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { profileFromMetadata } from "@/lib/auth/profile";
-import type { Day, SortingRule, SortingRuleCondition } from "@/lib/db/types";
-import { createRule } from "./actions";
+import type {
+  City,
+  Day,
+  Nation,
+  SortingRule,
+  SortingRuleCondition,
+} from "@/lib/db/types";
 import { RulesList } from "./rules-list";
 
-export default async function RulesPage() {
+export default async function RulesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ rule?: string }>;
+}) {
+  const { rule: ruleParam } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
@@ -19,18 +28,33 @@ export default async function RulesPage() {
     avatarColorHex: meProfile.avatar_color_hex,
   };
 
-  const [{ data: rData }, { data: cData }, { data: dData }] = await Promise.all([
+  const [
+    { data: rData },
+    { data: cData },
+    { data: dData },
+    { data: nData },
+    { data: ctData },
+  ] = await Promise.all([
     supabase.from("sorting_rules").select("*").order("letter"),
     supabase.from("sorting_rule_conditions").select("*").order("position"),
     supabase.from("days").select("*").order("number"),
+    supabase.from("nations").select("*").order("sort_order"),
+    supabase.from("cities").select("*").order("name"),
   ]);
   const rules = (rData ?? []) as SortingRule[];
   const allConditions = (cData ?? []) as SortingRuleCondition[];
   const days = (dData ?? []) as Day[];
+  const nations = (nData ?? []) as Nation[];
+  const cities = (ctData ?? []) as City[];
   const conditionsByRule: Record<string, SortingRuleCondition[]> = {};
   for (const c of allConditions) {
     (conditionsByRule[c.rule_id] ??= []).push(c);
   }
+
+  // ?rule=<letter> deep-links a rule; resolve it to an id for the workspace.
+  const initialSelectedRuleId = ruleParam
+    ? (rules.find((r) => r.letter === ruleParam.toUpperCase())?.id ?? null)
+    : null;
 
   return (
     <div className="font-mono">
@@ -43,18 +67,13 @@ export default async function RulesPage() {
         rules={rules}
         conditionsByRule={conditionsByRule}
         days={days}
+        nations={nations}
+        cities={cities}
+        initialSelectedRuleId={initialSelectedRuleId}
         currentUserId={currentUserId}
         currentEmail={currentEmail}
         currentProfile={presenceProfile}
       />
-
-      <div className="mt-4 flex justify-center">
-        <form action={createRule}>
-          <Button type="submit" variant="outline" size="sm" disabled={rules.length >= 26}>
-            + Rule
-          </Button>
-        </form>
-      </div>
     </div>
   );
 }
