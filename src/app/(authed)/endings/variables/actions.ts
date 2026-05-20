@@ -380,7 +380,7 @@ export async function patchEndingVariableFolder(
     sort_order: number;
   }>
 ) {
-  await patchScopedFolder({ id, patch });
+  await patchScopedFolder({ scope: "variable", id, patch });
 }
 
 /**
@@ -432,6 +432,6 @@ export async function moveFolderToFolder(input: {
 export async function deleteEndingVariableFolder(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  await deleteScopedFolder({ id });
+  await deleteScopedFolder({ scope: "variable", id });
   revalidateEndings();
 }

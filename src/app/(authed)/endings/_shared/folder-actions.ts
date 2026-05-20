@@ -60,6 +60,7 @@ export async function createScopedFolder(input: {
  *  parent-picker. Scope is immutable post-create; trying to PATCH `scope`
  *  is silently dropped. */
 export async function patchScopedFolder(input: {
+  scope: FolderScope;
   id: string;
   patch: Partial<{
     name: string;
@@ -79,11 +80,23 @@ export async function patchScopedFolder(input: {
     throw new Error("A folder cannot be its own parent.");
   }
 
-  const { error } = await supabase
+  // Scope predicate prevents a smart-variable caller from accidentally
+  // patching a 'variable'-scope folder (or vice versa). The UPDATE
+  // simply matches zero rows on a mismatch and we surface a clear
+  // error instead of silently re-scoping a folder out from under its
+  // page.
+  const { data, error } = await supabase
     .from("ending_variable_folders")
     .update(sanitized)
-    .eq("id", input.id);
+    .eq("id", input.id)
+    .eq("scope", input.scope)
+    .select("id");
   if (error) throw new Error(error.message);
+  if (!data || data.length === 0) {
+    throw new Error(
+      `patchScopedFolder: no ${input.scope}-scope folder with id ${input.id}.`
+    );
+  }
 }
 
 /** Move a variable into `folder_id` at the position before `before_id`
@@ -103,11 +116,22 @@ export async function moveScopedVariable(input: {
     throw new Error("A row cannot be placed before itself.");
   }
 
-  const { error: moveErr } = await supabase
+  // Constrain by `kind` so a wrong-kind id (e.g. a 'text' variable
+  // passed through the smart-variable path) fails loudly rather than
+  // silently moving the row + leaving its true sibling group's
+  // sort_order untouched.
+  const { data: moved, error: moveErr } = await supabase
     .from("ending_variables")
     .update({ folder_id: folderId })
-    .eq("id", variableId);
+    .eq("id", variableId)
+    .eq("kind", variableKind)
+    .select("id");
   if (moveErr) throw new Error(moveErr.message);
+  if (!moved || moved.length === 0) {
+    throw new Error(
+      `moveScopedVariable: no ${variableKind} variable with id ${variableId}.`
+    );
+  }
 
   let q = supabase
     .from("ending_variables")
@@ -169,11 +193,20 @@ export async function moveScopedFolder(input: {
     }
   }
 
-  const { error: moveErr } = await supabase
+  // Scope predicate: a `smart_variable` caller can't move (or no-op
+  // touch) a `variable`-scope folder via this helper.
+  const { data: moved, error: moveErr } = await supabase
     .from("ending_variable_folders")
     .update({ parent_folder_id: parentFolderId })
-    .eq("id", folderId);
+    .eq("id", folderId)
+    .eq("scope", scope)
+    .select("id");
   if (moveErr) throw new Error(moveErr.message);
+  if (!moved || moved.length === 0) {
+    throw new Error(
+      `moveScopedFolder: no ${scope}-scope folder with id ${folderId}.`
+    );
+  }
 
   let q = supabase
     .from("ending_variable_folders")
@@ -200,18 +233,28 @@ export async function moveScopedFolder(input: {
  *  DB FK on parent_folder_id is `on delete restrict`, so the reparent
  *  must happen before the final delete. */
 export async function deleteScopedFolder(input: {
+  scope: FolderScope;
   id: string;
 }): Promise<void> {
   const supabase = await createSupabaseServerClient();
-  const { id } = input;
+  const { scope, id } = input;
   if (!id) return;
 
+  // Read the folder and confirm its scope matches the caller. A
+  // wrong-scope id is rejected loudly — the older silent-no-op
+  // behaviour would have masked routing bugs and (worse) let a
+  // smart-variable caller delete a regular folder by id collision.
   const { data: folder } = await supabase
     .from("ending_variable_folders")
-    .select("parent_folder_id")
+    .select("parent_folder_id, scope")
     .eq("id", id)
     .maybeSingle();
   if (!folder) return;
+  if (folder.scope !== scope) {
+    throw new Error(
+      `deleteScopedFolder: folder ${id} is ${folder.scope}-scope; caller expected ${scope}.`
+    );
+  }
   const newParent = folder.parent_folder_id ?? null;
 
   const { error: reparentFoldersErr } = await supabase

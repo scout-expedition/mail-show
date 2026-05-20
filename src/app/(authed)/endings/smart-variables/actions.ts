@@ -298,7 +298,11 @@ export async function renameSmartVariableFolder(input: {
   id: string;
   name: string;
 }): Promise<void> {
-  await patchScopedFolder({ id: input.id, patch: { name: input.name } });
+  await patchScopedFolder({
+    scope: "smart_variable",
+    id: input.id,
+    patch: { name: input.name },
+  });
   revalidateEndings();
 }
 
@@ -319,7 +323,7 @@ export async function moveSmartVariableFolder(input: {
 export async function deleteSmartVariableFolder(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
-  await deleteScopedFolder({ id });
+  await deleteScopedFolder({ scope: "smart_variable", id });
   revalidateEndings();
 }
 
