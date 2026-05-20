@@ -165,3 +165,90 @@ letter group to a new day"). Both pass locally on a clean stack.
 E2E selectors prefer ARIA roles / `data-testid`s xyflow already exposes
 over Tailwind class names — same "stable handles" rule
 `knowledge-base/testing/e2e.md` calls out.
+
+### Phase 5 — done (2026-05-19)
+
+Coverage ratchet on both Vitest runs. `@vitest/coverage-v8` added as a
+dev dep; floors set slightly below the measured baseline so the gate is
+"don't get worse", not "hit an aspirational target".
+
+- `vitest.config.ts` — `coverage.include` narrowed to `src/lib/**`
+  (unit tests don't exercise `src/app/**/actions.ts`; keeping it in
+  `include` was silently inflating the denominator). Global floor
+  60/55/53/60 plus per-glob floors on the well-covered subdirs
+  (`rules/endings/db/auth`) so an average can't mask a regression
+  there.
+- `vitest.integration.config.ts` — coverage block added, scoped to
+  `src/app/**/actions.ts`, output to `coverage-int/` so unit +
+  integration runs don't clobber. Global floor 52/44/50/55; no
+  per-file pins (two auth-flow files at 0% need a GoTrue session
+  harness we don't have, and `inspection/letters/actions.ts` at 13.5%
+  has ~2000 lines with the long tail uncovered — per-file pins would
+  either get circumvented or be aspirational).
+- `.github/workflows/ci.yml` — switched both runs to `--coverage`,
+  upload HTML reports as `coverage-unit` / `coverage-int` artifacts so
+  a breach is debuggable from the run page.
+- `tests/integration/_helpers.ts` — drive-by fix for a local-only
+  flake: `updateDay` with blank FormData values nulls the
+  `__INT_TEST__` marker, so the LIKE cleanup missed orphan days and a
+  follow-up `addDay` at the same number tripped the unique
+  constraint. Added a `gte("number", TEST_DAY_NUMBER_MIN)` backstop
+  (constant set to 9000, shared with `seedStoryline.dayNumberBase`'s
+  default). CI never saw the flake (fresh stack per run) but two
+  back-to-back local runs would surface it.
+- `docs/testing-inventory.md` — rewritten as a layer/runner map per
+  its own stated scope. Per-case lists removed (CI coverage is the
+  count-of-record now); new "Coverage ratchet" section with the
+  per-glob baseline + floor table.
+- `docs/testing-protocol.md` — § "Never" formalizes the
+  `src/lib/realtime/*` skip family so 0% there is policy, not
+  oversight. New § "Coverage" points at the ratchet without inlining
+  the numbers (those live in the inventory).
+
+**Codex review (PR #72)** flagged two items: (1) extract the `9000`
+sentinel into a named constant so the invariant is co-locatable, (2)
+add per-glob measured baselines to the inventory table alongside the
+floors so headroom is visible. Both folded into the same commit before
+merge.
+
+**Baselines (measured locally on PR #72 branch tip):**
+
+| Run | Stmts | Branches | Fns | Lines |
+| --- | ---: | ---: | ---: | ---: |
+| Unit (`src/lib/**`) | 61.46 | 56.72 | 54.92 | 62.9 |
+| Integration (`src/app/**/actions.ts`) | 53.8 | 45.79 | 52.71 | 57.64 |
+
+### Phase 6 — done (2026-05-19, no-op closure)
+
+Both Phase 6 bullets had already landed by the time the phase opened —
+this status entry is what closes the phase out as tracked debt:
+
+- **`endings-frameworks.spec.ts` skip pin** — the file already carries
+  an explanatory block comment (`tests/e2e/endings-frameworks.spec.ts:4-20`)
+  tying its `.skip` to Step 6 of `docs/endings-logic-v2-plan.md`. The
+  setup hooks still reference the dropped `ending_frameworks` table;
+  restoring this spec means a rewrite against the unified
+  `ending_documents` shape (and adding logic-tab coverage), not just
+  flipping `.skip` back off. Tracked debt, not silent rot.
+- **"What we deliberately don't unit-test" policy** — landed in Phase 5
+  as the new § "Never" bullet in `docs/testing-protocol.md` covering
+  `src/lib/realtime/*` (`presence`, `channel`, `avatar-stack`,
+  `use-flash`, `use-shared-view-state`, `use-instant-field`) plus the
+  matching note in `docs/testing-inventory.md`'s "What we deliberately
+  don't unit-test" section. The 0% these contribute to the unit
+  coverage report is now policy, and the floors are calibrated for it.
+
+**Out of scope of this roadmap and still open (tracked in
+`docs/testing-inventory.md` § "Burndown"):**
+
+- **Lint** — `pnpm lint` carries ~49 pre-existing errors (mostly
+  `react-hooks/*` rules from the Next 16 upgrade); CI runs it
+  `continue-on-error`. Burn down → drop that flag.
+- **E2E settings management** — `tests/e2e/auth-users.spec.ts` has 3
+  failing specs (admin user-management flows where a created user
+  never appears in `/settings`). CI runs E2E `continue-on-error`. Fix
+  or quarantine → drop that flag.
+
+Both are debt cleanup with diminishing test-architecture returns; they
+flip the existing advisory gates to blocking rather than introducing
+new tests. Out of scope of *this* roadmap, in scope of the next one.
