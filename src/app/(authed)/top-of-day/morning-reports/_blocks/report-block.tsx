@@ -32,7 +32,7 @@ import type { IconType } from "@/lib/db/enums";
 export type Trigger = {
   actionId: string;
   actionName: string;
-  actionIconType: IconType;
+  actionIconType: IconType | null;
   actionIconValue: string | null;
   actionColorHex: string;
   letterContentId: string;
@@ -158,7 +158,7 @@ export function ReportBlock({
                 />
                 <ActionPill
                   name={t.actionName}
-                  iconType={t.actionIconType}
+                  iconType={t.actionIconType ?? "lucide"}
                   iconValue={t.actionIconValue}
                   colorHex={t.actionColorHex}
                   iconOnly

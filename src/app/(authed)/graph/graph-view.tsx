@@ -25,13 +25,15 @@ import {
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Pin, PinOff, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Pin, PinOff, Replace, Trash2 } from "lucide-react";
 import { readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
+import { CompositeActionChip } from "@/components/composite-action-chip";
 import { useConfirm } from "@/components/confirm-dialog";
 import type {
   ActionRow,
   ActionTemplate,
+  ActionTemplateGroup,
   Day,
   EndingVariable,
   EndingVariableValue,
@@ -53,7 +55,9 @@ import {
 import { partitionGroupInstances } from "./layout-instances";
 import {
   addActionFromTemplate,
+  addActionsForGroup,
   batchMoveToDay,
+  changeActionType,
   createInspectionLettersInGroup,
   createLetterGroupInStoryline,
   createNextDay,
@@ -141,6 +145,7 @@ type Props = {
   letters: InspectionLetterView[];
   actions: ActionRow[];
   actionTemplates: ActionTemplate[];
+  actionTemplateGroups: ActionTemplateGroup[];
   days: Day[];
   segments: ReportSegmentView[];
   nations: Nation[];
@@ -473,6 +478,7 @@ export function GraphView({
   letters,
   actions,
   actionTemplates,
+  actionTemplateGroups,
   days,
   segments,
   nations,
@@ -701,6 +707,21 @@ export function GraphView({
   const [optimisticReportByAction, setOptimisticReportByAction] = useState<
     Record<string, string | null>
   >({});
+  // Optimistic action_template_id — drives the chip's color/icon and the
+  // edge resolveAction() call so a Change-Type click reflows the graph
+  // immediately. Cleared by the actions-effect below once the server
+  // payload matches.
+  const [optimisticTemplateByAction, setOptimisticTemplateByAction] =
+    useState<Record<string, string | null>>({});
+  // Optimistic action-row ghosts created by graph-side Add Actions clicks.
+  // Each row is a minimally-populated ActionRow keyed by a temp uuid; the
+  // layout treats them as real edges so a chip shows up immediately. They
+  // drop out of state once a real row with the same (letter, template)
+  // appears in `actions` — the partial unique index guarantees that pair
+  // uniquely identifies the persisted row.
+  const [optimisticActionAdds, setOptimisticActionAdds] = useState<
+    ActionRow[]
+  >([]);
 
   // Drop optimistic entries once the server-side actions list has caught
   // up. Looking at one `actions` snapshot at a time means we never strand
@@ -733,7 +754,131 @@ export function GraphView({
       }
       return changed ? next : prev;
     });
+    setOptimisticTemplateByAction((prev) => {
+      let changed = false;
+      const next: Record<string, string | null> = {};
+      for (const [aid, opt] of Object.entries(prev)) {
+        const action = actions.find((a) => a.id === aid);
+        if (action && (action.action_template_id ?? null) === opt) {
+          changed = true;
+        } else {
+          next[aid] = opt;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setOptimisticActionAdds((prev) => {
+      if (prev.length === 0) return prev;
+      const serverPairs = new Set(
+        actions
+          .filter((a) => a.action_template_id)
+          .map((a) => `${a.inspection_letter_id}|${a.action_template_id}`)
+      );
+      const next = prev.filter((g) => {
+        if (!g.action_template_id) return true;
+        return !serverPairs.has(
+          `${g.inspection_letter_id}|${g.action_template_id}`
+        );
+      });
+      return next.length === prev.length ? prev : next;
+    });
   }, [actions]);
+
+  // Build minimally-populated optimistic ActionRow ghosts so a brand-new
+  // chip can paint immediately. The id is a temp uuid; impact + report +
+  // next-letter fields are zero/null because nothing's been set on the new
+  // row yet.
+  const makeGhostAction = useCallback(
+    (letterId: string, templateId: string): ActionRow => {
+      return {
+        id: `ghost-action-${crypto.randomUUID()}`,
+        inspection_letter_id: letterId,
+        action_template_id: templateId,
+        report_segment_id: null,
+        next_letter_id: null,
+        impact_world_status: 0,
+        impact_demerits: 0,
+        impact_proletariat: 0,
+        impact_gentry: 0,
+        impact_epicenter: 0,
+        impact_folos: 0,
+        impact_emberlyn: 0,
+        impact_spokgrad: 0,
+        impact_pelico: 0,
+        sort_order: Number.MAX_SAFE_INTEGER,
+        updated_at: new Date().toISOString(),
+        updated_by: null,
+      };
+    },
+    []
+  );
+  const dispatchAddAction = useCallback(
+    async (
+      letterGroupId: string,
+      letterId: string,
+      templateId: string
+    ): Promise<void> => {
+      const realPresent = actions.some(
+        (a) =>
+          a.inspection_letter_id === letterId &&
+          a.action_template_id === templateId
+      );
+      const ghostPresent = optimisticActionAdds.some(
+        (g) =>
+          g.inspection_letter_id === letterId &&
+          g.action_template_id === templateId
+      );
+      if (realPresent || ghostPresent) return;
+      const ghost = makeGhostAction(letterId, templateId);
+      setOptimisticActionAdds((prev) => [...prev, ghost]);
+      try {
+        await addActionFromTemplate(letterGroupId, letterId, templateId);
+      } catch (err) {
+        setOptimisticActionAdds((prev) =>
+          prev.filter((g) => g.id !== ghost.id)
+        );
+        throw err;
+      }
+    },
+    [actions, optimisticActionAdds, makeGhostAction]
+  );
+  const dispatchAddActionsForGroup = useCallback(
+    async (
+      letterGroupId: string,
+      letterId: string,
+      templateGroupId: string
+    ): Promise<void> => {
+      const ghostedTemplateIdsHere = new Set(
+        optimisticActionAdds
+          .filter((g) => g.inspection_letter_id === letterId)
+          .map((g) => g.action_template_id)
+          .filter((id): id is string => !!id)
+      );
+      const members = actionTemplates
+        .filter((t) => t.group_id === templateGroupId)
+        .filter(
+          (t) =>
+            !actions.some(
+              (a) =>
+                a.inspection_letter_id === letterId &&
+                a.action_template_id === t.id
+            ) && !ghostedTemplateIdsHere.has(t.id)
+        );
+      const ghosts = members.map((t) => makeGhostAction(letterId, t.id));
+      if (ghosts.length === 0) return;
+      setOptimisticActionAdds((prev) => [...prev, ...ghosts]);
+      try {
+        await addActionsForGroup(letterGroupId, letterId, templateGroupId);
+      } catch (err) {
+        const ghostIds = new Set(ghosts.map((g) => g.id));
+        setOptimisticActionAdds((prev) =>
+          prev.filter((g) => !ghostIds.has(g.id))
+        );
+        throw err;
+      }
+    },
+    [actions, optimisticActionAdds, actionTemplates, makeGhostAction]
+  );
 
   // ── Optimistic day-move ──────────────────────────────────────────────
   // When the user drops a node on a new day row, we record the target
@@ -750,7 +895,7 @@ export function GraphView({
   // drop the entry so the ghost styling clears.
   // The guard ("return prev if nothing changed") prevents infinite re-renders.
   useEffect(() => {
-     
+
     setPendingDayMoves((prev) => {
       const keys = Object.keys(prev);
       if (keys.length === 0) return prev;
@@ -883,6 +1028,27 @@ export function GraphView({
       ghostDayIdSet.add(p.ghost.id);
     }
     augmentedDays.sort((a, b) => a.number - b.number);
+
+    // Ghost action rows from Add Actions clicks. Skip any whose
+    // (letter, template) pair already has a real row — the reconciler
+    // effect will drop it, but the in-flight render shouldn't double up.
+    const realPairs = new Set(
+      actions
+        .filter((a) => a.action_template_id)
+        .map((a) => `${a.inspection_letter_id}|${a.action_template_id}`)
+    );
+    const augmentedActions: ActionRow[] = actions.slice();
+    for (const ghost of optimisticActionAdds) {
+      if (
+        ghost.action_template_id &&
+        realPairs.has(
+          `${ghost.inspection_letter_id}|${ghost.action_template_id}`
+        )
+      ) {
+        continue;
+      }
+      augmentedActions.push(ghost);
+    }
 
     // -------------------------------------------------------------
     // Rows (days + unscheduled bucket) — flow top→down
@@ -1498,16 +1664,26 @@ export function GraphView({
       }
     }
 
-    // Build the effective (post-template-override) display fields for
-    // actions so template edits (color, icon) flow through live.
+    // Build the effective display fields for actions by resolving through
+    // the linked action_template. When the action has no template (the
+    // template was deleted, or the user duplicated an action), display
+    // falls back to a neutral "Unset" state — gray chip + no icon.
+    // The optimisticTemplateByAction overlay lets a chip's chip update
+    // immediately after a Change-Type click before the server roundtrip
+    // lands.
     const templateById = new Map(actionTemplates.map((t) => [t.id, t]));
     function resolveAction(a: ActionRow) {
-      const tpl = a.action_template_id ? templateById.get(a.action_template_id) : undefined;
+      const overlay = optimisticTemplateByAction[a.id];
+      const effectiveTemplateId =
+        overlay !== undefined ? overlay : a.action_template_id;
+      const tpl = effectiveTemplateId
+        ? templateById.get(effectiveTemplateId)
+        : undefined;
       return {
-        color: tpl?.color_hex ?? a.color_hex ?? "",
-        iconType: tpl?.icon_type ?? a.icon_type,
-        iconValue: tpl?.icon_value ?? a.icon_value,
-        name: tpl?.name ?? a.name,
+        color: tpl?.color_hex ?? "#3f3f46",
+        iconType: tpl?.icon_type ?? null,
+        iconValue: tpl?.icon_value ?? null,
+        name: tpl?.name ?? "Unset action",
       };
     }
 
@@ -1540,7 +1716,7 @@ export function GraphView({
     };
     const candidates: Candidate[] = [];
 
-    for (const a of actions) {
+    for (const a of augmentedActions) {
       const src = letterIndex.get(a.inspection_letter_id);
       if (!src) continue;
       const sourceId = makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
@@ -2143,9 +2319,88 @@ export function GraphView({
         if (!srcLetter) return;
         const aId = c.action.id;
         const groupId = srcLetter.groupId;
+        const letterId = c.action.inspection_letter_id;
+        // Templates already in use on this letter (excluding the chip's
+        // own row) — used to filter the change-type submenu so a click
+        // can't trip the partial unique index.
+        const siblingTemplateIds = new Set(
+          actions
+            .filter(
+              (a) =>
+                a.inspection_letter_id === letterId &&
+                a.id !== aId &&
+                a.action_template_id
+            )
+            .map((a) => a.action_template_id as string)
+        );
+        const currentTemplateId = c.action.action_template_id;
+        const eligibleByGroup = new Map<string, ActionTemplate[]>();
+        for (const t of actionTemplates) {
+          if (siblingTemplateIds.has(t.id)) continue;
+          if (t.id === currentTemplateId) continue;
+          if (!t.group_id) continue;
+          const arr = eligibleByGroup.get(t.group_id) ?? [];
+          arr.push(t);
+          eligibleByGroup.set(t.group_id, arr);
+        }
+        const changeTypeItems: GraphContextMenuItem[] =
+          eligibleByGroup.size === 0
+            ? [
+                {
+                  label: "(no other types available)",
+                  onClick: () => {},
+                  disabled: true,
+                },
+              ]
+            : actionTemplateGroups
+                .filter((g) => eligibleByGroup.has(g.id))
+                .map((g): GraphContextMenuItem => {
+                  const members = (
+                    eligibleByGroup.get(g.id) ?? []
+                  )
+                    .slice()
+                    .sort((a, b) => a.sort_order - b.sort_order);
+                  if (members.length === 1) {
+                    const m = members[0];
+                    return {
+                      label: m.name,
+                      icon: <CompositeActionChip members={[m]} size={14} />,
+                      onClick: () => {
+                        setOptimisticTemplateByAction((p) => ({ ...p, [aId]: m.id }));
+                        void changeActionType(aId, m.id).catch(() => setOptimisticTemplateByAction((p) => { const n = { ...p }; delete n[aId]; return n; }));
+                      },
+                    };
+                  }
+                  const label =
+                    g.name?.trim() ||
+                    members.map((m) => m.name).join(" + ");
+                  return {
+                    label,
+                    icon: (
+                      <CompositeActionChip members={members} size={14} />
+                    ),
+                    submenu: members.map((m) => ({
+                      label: m.name,
+                      icon: (
+                        <CompositeActionChip members={[m]} size={14} />
+                      ),
+                      onClick: () => {
+                        setOptimisticTemplateByAction((p) => ({ ...p, [aId]: m.id }));
+                        void changeActionType(aId, m.id).catch(() => setOptimisticTemplateByAction((p) => { const n = { ...p }; delete n[aId]; return n; }));
+                      },
+                    })),
+                  };
+                });
         setContextMenu({
           anchor: { x: event.clientX, y: event.clientY },
           items: [
+            {
+              label: "Change type to…",
+              icon: <Replace size={12} aria-hidden />,
+              trailing: <ChevronRight size={12} aria-hidden />,
+              submenu: changeTypeItems,
+            },
+            { divider: true },
             {
               label: "Delete Action",
               icon: <Trash2 size={12} aria-hidden />,
@@ -2357,6 +2612,9 @@ export function GraphView({
     select,
     optimisticNextByAction,
     optimisticReportByAction,
+    optimisticTemplateByAction,
+    optimisticActionAdds,
+    actionTemplateGroups,
     editingEnabled,
     selfRingColor,
     peerGroups,
@@ -4022,38 +4280,43 @@ export function GraphView({
                 (l.variant ?? "") === parsed.variantKey
             );
             if (!letter) return;
-            const hasActions = actions.some(
-              (a) => a.inspection_letter_id === letter.id
+            // Build picker entries: every group always shows. Members
+            // already on this letter are flagged `used` so the menu can
+            // grey them out instead of hiding them. Templates with no
+            // group are ignored — every template lives in a group now.
+            const usedTemplateIdsHere = new Set(
+              actions
+                .filter(
+                  (a) =>
+                    a.inspection_letter_id === letter.id &&
+                    a.action_template_id
+                )
+                .map((a) => a.action_template_id as string)
             );
-            // Dedup paired templates to single "A + B" entries (mirrors
-            // the inspector's action picker). The lower-sort_order
-            // template id is the canonical anchor and
-            // addActionFromTemplate inserts both halves server-side.
-            const templateById = new Map(
-              actionTemplates.map((t) => [t.id, t])
-            );
-            const templateEntries: Array<{ id: string; label: string }> = [];
-            const seenTemplateIds = new Set<string>();
-            for (const t of actionTemplates) {
-              if (seenTemplateIds.has(t.id)) continue;
-              const partner = t.paired_template_id
-                ? templateById.get(t.paired_template_id)
-                : undefined;
-              if (partner) {
-                const [a, b] =
-                  t.sort_order <= partner.sort_order
-                    ? [t, partner]
-                    : [partner, t];
-                templateEntries.push({
-                  id: a.id,
-                  label: `${a.name} + ${b.name}`,
-                });
-                seenTemplateIds.add(a.id);
-                seenTemplateIds.add(b.id);
-              } else {
-                templateEntries.push({ id: t.id, label: t.name });
-                seenTemplateIds.add(t.id);
-              }
+            type Entry = {
+              id: string;
+              label: string;
+              members: Array<{ template: ActionTemplate; used: boolean }>;
+              allUsed: boolean;
+            };
+            const templateEntries: Entry[] = [];
+            for (const g of actionTemplateGroups) {
+              const members = actionTemplates
+                .filter((t) => t.group_id === g.id)
+                .sort((a, b) => a.sort_order - b.sort_order);
+              if (members.length === 0) continue;
+              const decorated = members.map((m) => ({
+                template: m,
+                used: usedTemplateIdsHere.has(m.id),
+              }));
+              const label =
+                g.name ?? members.map((m) => m.name).join(" + ");
+              templateEntries.push({
+                id: g.id,
+                label,
+                members: decorated,
+                allUsed: decorated.every((m) => m.used),
+              });
             }
             const items: GraphContextMenuItem[] = [];
             // Pin / Unpin: commit this letter to an absolute day, or release
@@ -4097,22 +4360,69 @@ export function GraphView({
                 items.push({ divider: true });
               }
             }
-            if (!hasActions && templateEntries.length > 0) {
+            if (templateEntries.length > 0) {
               items.push({
                 label: "Add Actions",
                 icon: <IconBolt size={12} aria-hidden />,
                 trailing: <ChevronRight size={12} aria-hidden />,
-                submenu: templateEntries.map((entry) => ({
-                  label: entry.label,
-                  onClick: () =>
-                    void (async () => {
-                      await addActionFromTemplate(
-                        parsed.groupId,
-                        letter.id,
-                        entry.id
-                      );
-                    })(),
-                })),
+                submenu: templateEntries.map((entry) => {
+                  const memberTemplates = entry.members.map((m) => m.template);
+                  // Solo-member groups flatten to a single clickable item.
+                  if (memberTemplates.length === 1) {
+                    const t = memberTemplates[0];
+                    const used = entry.allUsed;
+                    return {
+                      label: entry.label,
+                      icon: <CompositeActionChip members={[t]} size={14} />,
+                      disabled: used,
+                      onClick: used
+                        ? () => {}
+                        : () =>
+                            void (async () => {
+                              await dispatchAddAction(
+                                parsed.groupId,
+                                letter.id,
+                                t.id
+                              );
+                            })(),
+                    };
+                  }
+                  return {
+                    label: entry.label,
+                    icon: (
+                      <CompositeActionChip
+                        members={memberTemplates}
+                        size={14}
+                      />
+                    ),
+                    disabled: entry.allUsed,
+                    onClick: entry.allUsed
+                      ? () => {}
+                      : () =>
+                          void (async () => {
+                            await dispatchAddActionsForGroup(
+                              parsed.groupId,
+                              letter.id,
+                              entry.id
+                            );
+                          })(),
+                    submenu: entry.members.map(({ template: m, used }) => ({
+                      label: m.name,
+                      icon: <CompositeActionChip members={[m]} size={14} />,
+                      disabled: used,
+                      onClick: used
+                        ? () => {}
+                        : () =>
+                            void (async () => {
+                              await dispatchAddAction(
+                                parsed.groupId,
+                                letter.id,
+                                m.id
+                              );
+                            })(),
+                    })),
+                  };
+                }),
               });
               items.push({ divider: true });
             }

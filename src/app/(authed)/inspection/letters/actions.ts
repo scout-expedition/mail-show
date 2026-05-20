@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { CitizenType, IconType } from "@/lib/db/enums";
+import type { CitizenType } from "@/lib/db/enums";
 import type { LetterGroup } from "@/lib/db/types";
 import { toStorageCitizenId } from "@/lib/citizen-id";
 
@@ -1530,6 +1530,7 @@ export async function patchLetterGroup(
 }
 
 type ActionPatchFields = {
+  action_template_id: string | null;
   report_segment_id: string | null;
   next_letter_id: string | null;
   impact_world_status: number;
@@ -1606,59 +1607,184 @@ export async function patchReportSegment(
   if (error) throw new Error(error.message);
 }
 
+/**
+ * Insert a single action row of the given template onto the letter. Skips
+ * silently if the letter already has an action of that template — the DB
+ * partial unique index `actions_letter_template_unique` enforces the same
+ * rule, but the pre-check makes the no-op case quieter.
+ */
 export async function addActionFromTemplate(
-  groupId: string,
+  _groupId: string,
   letterId: string,
-  templateId: string,
-  /** When false, only the picked template is inserted even if it has a
-   *  paired template — used by the "add just one of a pair" menu path.
-   *  Defaults true so the legacy "add the pair" behavior is preserved. */
-  includePair = true
+  templateId: string
 ) {
   const supabase = await createSupabaseServerClient();
-  const { data: tpl, error: tErr } = await supabase
+  await insertActionsForTemplates(supabase, letterId, [templateId]);
+  revalidatePath("/inspection/letters");
+}
+
+/**
+ * Insert one action row per group member that isn't already present on the
+ * letter. Members are ordered by `action_templates.sort_order` so they land
+ * in the same visual order as the admin page.
+ */
+export async function addActionsForGroup(
+  _groupId: string,
+  letterId: string,
+  templateGroupId: string
+) {
+  const supabase = await createSupabaseServerClient();
+  const { data: members, error: mErr } = await supabase
     .from("action_templates")
-    .select("*")
-    .eq("id", templateId)
-    .maybeSingle();
-  if (tErr) throw new Error(tErr.message);
-  if (!tpl) throw new Error("Template not found");
+    .select("id, sort_order")
+    .eq("group_id", templateGroupId)
+    .order("sort_order", { ascending: true });
+  if (mErr) throw new Error(mErr.message);
+  const ordered = (members ?? []).map((m) => m.id);
+  await insertActionsForTemplates(supabase, letterId, ordered);
+  revalidatePath("/inspection/letters");
+}
 
-  const templatesToInsert: Array<{ id: string; tpl: typeof tpl }> = [
-    { id: tpl.id, tpl },
-  ];
-  if (includePair && tpl.paired_template_id) {
-    const { data: partner } = await supabase
-      .from("action_templates")
-      .select("*")
-      .eq("id", tpl.paired_template_id)
-      .maybeSingle();
-    if (partner) templatesToInsert.push({ id: partner.id, tpl: partner });
-  }
+type SupabaseClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
 
+async function insertActionsForTemplates(
+  supabase: SupabaseClient,
+  letterId: string,
+  templateIds: string[]
+) {
+  if (templateIds.length === 0) return;
+  // Find templates already in use on this letter so the uniqueness rule
+  // doesn't trip; skip them server-side instead of surfacing the DB error.
   const { data: existing } = await supabase
     .from("actions")
-    .select("sort_order")
-    .eq("inspection_letter_id", letterId)
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  let nextSort = (existing?.[0]?.sort_order ?? -1) + 1;
-
+    .select("action_template_id, sort_order")
+    .eq("inspection_letter_id", letterId);
+  const used = new Set(
+    (existing ?? [])
+      .map((r: { action_template_id: string | null }) => r.action_template_id)
+      .filter((id: string | null): id is string => !!id)
+  );
+  const filtered = templateIds.filter((id) => !used.has(id));
+  if (filtered.length === 0) return;
+  let nextSort = (existing ?? []).reduce(
+    (acc: number, r: { sort_order: number }) =>
+      Math.max(acc, r.sort_order),
+    -1
+  ) + 1;
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
-  const rows = templatesToInsert.map(({ tpl: t }) => ({
+  const rows = filtered.map((id) => ({
     inspection_letter_id: letterId,
-    action_template_id: t.id,
-    name: t.name,
-    icon_type: t.icon_type as IconType,
-    icon_value: t.icon_value,
-    color_hex: t.color_hex,
+    action_template_id: id,
     sort_order: nextSort++,
     updated_by: updatedBy,
   }));
   const { error } = await supabase.from("actions").insert(rows);
   if (error) throw new Error(error.message);
+}
+
+/**
+ * Swap an existing action row's type. Preserves report_segment_id,
+ * next_letter_id, impact_* columns, and inspection_action_ending_assignments.
+ * Validates that the letter doesn't already have an action of the new type;
+ * the partial unique index would also reject the write, but the pre-check
+ * lets us surface a friendlier error in callers that care.
+ */
+export async function changeActionType(actionId: string, newTemplateId: string) {
+  if (!actionId || !newTemplateId) return;
+  const supabase = await createSupabaseServerClient();
+  const { data: row, error: rErr } = await supabase
+    .from("actions")
+    .select("id, inspection_letter_id, action_template_id")
+    .eq("id", actionId)
+    .maybeSingle();
+  if (rErr) throw new Error(rErr.message);
+  if (!row) throw new Error("Action not found");
+  if (row.action_template_id === newTemplateId) return;
+  const { data: clash } = await supabase
+    .from("actions")
+    .select("id")
+    .eq("inspection_letter_id", row.inspection_letter_id)
+    .eq("action_template_id", newTemplateId)
+    .neq("id", actionId)
+    .maybeSingle();
+  if (clash) {
+    throw new Error("That action type is already used on this letter.");
+  }
+  const { error } = await supabase
+    .from("actions")
+    .update({ action_template_id: newTemplateId })
+    .eq("id", actionId);
+  if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
+}
+
+/**
+ * Clone an action row. The clone preserves report_segment_id,
+ * next_letter_id, impact_* columns, and ending assignments, but its
+ * `action_template_id` is intentionally NULL so the uniqueness rule
+ * doesn't reject the insert — the UI surfaces the clone as "Unset" and
+ * expects the user to pick a type via "Change type to…".
+ */
+export async function duplicateAction(actionId: string): Promise<{ id: string }> {
+  const supabase = await createSupabaseServerClient();
+  const { data: src, error: sErr } = await supabase
+    .from("actions")
+    .select("*")
+    .eq("id", actionId)
+    .maybeSingle();
+  if (sErr) throw new Error(sErr.message);
+  if (!src) throw new Error("Action not found");
+
+  const { data: existing } = await supabase
+    .from("actions")
+    .select("sort_order")
+    .eq("inspection_letter_id", src.inspection_letter_id)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const nextSort = (existing?.[0]?.sort_order ?? -1) + 1;
+
+  const { data: inserted, error: iErr } = await supabase
+    .from("actions")
+    .insert({
+      inspection_letter_id: src.inspection_letter_id,
+      action_template_id: null,
+      report_segment_id: src.report_segment_id,
+      next_letter_id: src.next_letter_id,
+      impact_world_status: src.impact_world_status,
+      impact_demerits: src.impact_demerits,
+      impact_proletariat: src.impact_proletariat,
+      impact_gentry: src.impact_gentry,
+      impact_epicenter: src.impact_epicenter,
+      impact_folos: src.impact_folos,
+      impact_emberlyn: src.impact_emberlyn,
+      impact_spokgrad: src.impact_spokgrad,
+      impact_pelico: src.impact_pelico,
+      sort_order: nextSort,
+    })
+    .select("id")
+    .single();
+  if (iErr) throw new Error(iErr.message);
+
+  // Copy ending assignments.
+  const { data: assignments } = await supabase
+    .from("inspection_action_ending_assignments")
+    .select("variable_id, value_id")
+    .eq("action_id", actionId);
+  if (assignments && assignments.length > 0) {
+    const rows = assignments.map((a) => ({
+      action_id: inserted.id,
+      variable_id: a.variable_id,
+      value_id: a.value_id,
+    }));
+    const { error: aErr } = await supabase
+      .from("inspection_action_ending_assignments")
+      .insert(rows);
+    if (aErr) throw new Error(aErr.message);
+  }
+
+  revalidatePath("/inspection/letters");
+  return { id: inserted.id };
 }
 
 export async function deleteActionRow(groupId: string, actionId: string) {

@@ -2,6 +2,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   ActionRow,
   ActionTemplate,
+  ActionTemplateGroup,
   Citizen,
   City,
   Day,
@@ -57,6 +58,7 @@ export default async function InspectionLettersPage({
     { data: lData },
     { data: actionsData },
     { data: templatesData },
+    { data: templateGroupsData },
     { data: citizensData },
     { data: allCitizenIdsData },
     { data: citiesData },
@@ -75,6 +77,7 @@ export default async function InspectionLettersPage({
       .order("sort_order", { ascending: true }),
     supabase.from("actions").select("*").order("sort_order"),
     supabase.from("action_templates").select("*").order("sort_order"),
+    supabase.from("action_template_groups").select("*").order("sort_order"),
     supabase.from("citizens").select("*").eq("type", "hero").order("last_name").order("first_name"),
     supabase.from("citizens").select("citizen_id").not("citizen_id", "is", null),
     supabase.from("cities").select("*"),
@@ -91,6 +94,7 @@ export default async function InspectionLettersPage({
   const letters = (lData ?? []) as InspectionLetterView[];
   const allActions = (actionsData ?? []) as ActionRow[];
   const templates = (templatesData ?? []) as ActionTemplate[];
+  const templateGroups = (templateGroupsData ?? []) as ActionTemplateGroup[];
   const heroes = (citizensData ?? []) as Citizen[];
   const allCitizenIds = ((allCitizenIdsData ?? []) as Array<{
     citizen_id: string | null;
@@ -201,6 +205,7 @@ export default async function InspectionLettersPage({
       letters={letters}
       actions={allActions}
       templates={templates}
+      templateGroups={templateGroups}
       heroes={heroes}
       allCitizenIds={allCitizenIds}
       cities={cities}
