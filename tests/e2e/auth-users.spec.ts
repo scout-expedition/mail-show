@@ -190,8 +190,18 @@ test.describe("settings user management", () => {
       await page.goto("/settings");
       const row = page.locator("li", { hasText: email });
       await expect(row).toBeVisible();
-      await row.getByRole("button", { name: "Delete" }).click();
-      await page.getByRole("button", { name: "Delete user" }).click();
+      // Per-user destructive actions live behind a `<OverflowMenu>` ("More
+      // actions" button → `role="menuitem"` items); open it, click the
+      // destructive item, then confirm in the dialog. The confirm button's
+      // accessible name happens to also be "Delete user" — getByRole scoped
+      // to the dialog avoids ambiguity with the menu item that was just
+      // dismissed.
+      await row.getByRole("button", { name: "More actions" }).click();
+      await page.getByRole("menuitem", { name: "Delete user" }).click();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Delete user" })
+        .click();
       await expect(row).toHaveCount(0);
 
       const { data } = await admin.auth.admin.listUsers({ perPage: 200 });
@@ -201,12 +211,21 @@ test.describe("settings user management", () => {
     }
   });
 
-  test("self-delete is blocked (no delete button on own row)", async ({ page }) => {
+  test("self-delete is blocked (no Delete user item on own row's menu)", async ({
+    page,
+  }) => {
     await page.goto("/settings");
     const ownRow = page.locator("li", { hasText: STORAGE_USER });
     await expect(ownRow).toBeVisible();
-    await expect(ownRow.getByRole("button", { name: "Delete" })).toHaveCount(0);
     await expect(ownRow.getByText("you")).toBeVisible();
+    // Open the own-row menu and confirm "Delete user" isn't an item. The
+    // wrapper UI was refactored away from a flat Delete button (which the
+    // pre-refactor spec checked the absence of) — checking the absence of the
+    // menu item is the equivalent invariant under the new UI.
+    await ownRow.getByRole("button", { name: "More actions" }).click();
+    await expect(
+      page.getByRole("menuitem", { name: "Delete user" })
+    ).toHaveCount(0);
   });
 
   test("admin sends a password reset from /settings", async ({ page }) => {
@@ -223,7 +242,8 @@ test.describe("settings user management", () => {
       await page.goto("/settings");
       const row = page.locator("li", { hasText: email });
       await expect(row).toBeVisible();
-      await row.getByRole("button", { name: "Send reset link" }).click();
+      await row.getByRole("button", { name: "More actions" }).click();
+      await page.getByRole("menuitem", { name: "Send reset link" }).click();
       await expect(
         page.getByText(`Reset link sent to ${email}`)
       ).toBeVisible();
@@ -245,7 +265,8 @@ test.describe("settings user management", () => {
       await page.goto("/settings");
       const row = page.locator("li", { hasText: email });
       await expect(row).toBeVisible();
-      await row.getByRole("button", { name: "Send magic link" }).click();
+      await row.getByRole("button", { name: "More actions" }).click();
+      await page.getByRole("menuitem", { name: "Send magic link" }).click();
       await expect(
         page.getByText(`Magic link sent to ${email}`)
       ).toBeVisible();
