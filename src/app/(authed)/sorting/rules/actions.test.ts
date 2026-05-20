@@ -29,8 +29,6 @@ import {
   duplicateRule,
   patchSortingRule,
   saveConditions,
-  saveRuleAll,
-  updateRule,
 } from "./actions";
 
 const ALL_LETTERS = Array.from({ length: 26 }, (_, i) =>
@@ -79,69 +77,25 @@ describe("createRule", () => {
     expect((data ?? []).map((r) => r.letter).sort()).toEqual(["A", "B", "C"]);
   });
 
-  it("should redirect to the new rule's edit page", async () => {
-    await createRule();
-
-    const { data } = await sb.from("sorting_rules").select("id").single();
-    expect(redirect).toHaveBeenCalledWith(`/sorting/rules/${data?.id}`);
+  it("returns the new rule's {id, letter} (no redirect)", async () => {
+    // Revamp: createRule no longer redirects to /sorting/rules/{id} (that
+    // route is gone). The list panel reads {id, letter} from the return
+    // value and selects the new rule in a transition.
+    const result = await createRule();
+    expect(result.letter).toBe("A");
+    expect(typeof result.id).toBe("string");
+    expect(redirect).not.toHaveBeenCalled();
   });
 });
 
-describe("updateRule", () => {
-  it("should apply form fields and revalidate both rule paths", async () => {
-    const ruleId = await addRule(sb, { letter: "A" });
+// `updateRule` and `saveRuleAll` were removed by the sorting-rules revamp —
+// the panel now writes via `patchSortingRule` (scalar fields, instant-save)
+// and `saveConditions` (set-replace + match_mode). The kebab → Duplicate
+// path covers what `saveRuleAll`'s rewrite-from-scratch used to handle.
 
-    const fd = new FormData();
-    fd.set("id", ruleId);
-    fd.set("letter", "Q");
-    fd.set("storage_location", "Shelf 3");
-    fd.set("summary", "Reroute Folos mail");
-    fd.set("destination_slot", "5");
-    fd.set("match_mode", "any");
-
-    await updateRule(fd);
-
-    const { data } = await sb
-      .from("sorting_rules")
-      .select("letter, storage_location, summary, destination_slot, match_mode")
-      .eq("id", ruleId)
-      .single();
-    expect(data).toEqual({
-      letter: "Q",
-      storage_location: "Shelf 3",
-      summary: "Reroute Folos mail",
-      destination_slot: 5,
-      match_mode: "any",
-    });
-    expect(revalidatePath).toHaveBeenCalledWith(`/sorting/rules/${ruleId}`);
-    expect(revalidatePath).toHaveBeenCalledWith("/sorting/rules");
-  });
-
-  it("should uppercase and take the first char of the letter field", async () => {
-    const ruleId = await addRule(sb, { letter: "A" });
-
-    const fd = new FormData();
-    fd.set("id", ruleId);
-    fd.set("letter", "zebra");
-    fd.set("match_mode", "all");
-
-    await updateRule(fd);
-
-    const { data } = await sb
-      .from("sorting_rules")
-      .select("letter")
-      .eq("id", ruleId)
-      .single();
-    expect(data?.letter).toBe("Z");
-  });
-
-  it("should no-op when no id is provided", async () => {
-    const fd = new FormData();
-    fd.set("letter", "Z");
-
-    await updateRule(fd);
-
-    expect(revalidatePath).not.toHaveBeenCalled();
+describe("updateRule (removed)", () => {
+  it.skip("should no-op when no id is provided", () => {
+    // Kept as a tombstone — the action is gone.
   });
 });
 
@@ -245,7 +199,10 @@ describe("duplicateRule", () => {
 });
 
 describe("deleteRule", () => {
-  it("should delete the rule and redirect to the list", async () => {
+  it("should delete the rule and revalidate /sorting/rules (no redirect)", async () => {
+    // Revamp: deleteRule revalidates instead of redirecting — a hard
+    // redirect tears down the realtime channel. The client closes the panel
+    // via its own onClose handler.
     const ruleId = await addRule(sb, { letter: "A" });
 
     const fd = new FormData();
@@ -258,7 +215,8 @@ describe("deleteRule", () => {
       .eq("id", ruleId)
       .maybeSingle();
     expect(data).toBeNull();
-    expect(redirect).toHaveBeenCalledWith("/sorting/rules");
+    expect(revalidatePath).toHaveBeenCalledWith("/sorting/rules");
+    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("should cascade-delete the rule's conditions", async () => {
@@ -277,103 +235,9 @@ describe("deleteRule", () => {
   });
 });
 
-describe("saveRuleAll", () => {
-  it("should update the rule, replace conditions with 1-based positions, and revalidate", async () => {
-    const ruleId = await addRule(sb, { letter: "A" });
-    // Pre-existing condition that must be wiped by the replace.
-    await addRuleCondition(sb, {
-      ruleId,
-      position: 1,
-      target: "sender_name",
-      referenceValue: "stale",
-    });
-
-    await saveRuleAll({
-      id: ruleId,
-      letter: "M",
-      destination_slot: 7,
-      day_implemented_id: null,
-      storage_location: "Vault",
-      summary: "Replaced",
-      match_mode: "any",
-      conditions: [
-        {
-          target: "recipient_name",
-          target_slice: "whole",
-          operator: "equals",
-          reference_type: "string",
-          reference_value: "Carol",
-        },
-        {
-          target: "sender_name",
-          target_slice: "first_char",
-          operator: "contains",
-          reference_type: "string",
-          reference_value: "Dave",
-        },
-      ],
-    });
-
-    const { data: rule } = await sb
-      .from("sorting_rules")
-      .select("letter, destination_slot, storage_location, summary, match_mode")
-      .eq("id", ruleId)
-      .single();
-    expect(rule).toEqual({
-      letter: "M",
-      destination_slot: 7,
-      storage_location: "Vault",
-      summary: "Replaced",
-      match_mode: "any",
-    });
-
-    const { data: conds } = await sb
-      .from("sorting_rule_conditions")
-      .select("position, target, target_slice, operator, reference_value")
-      .eq("rule_id", ruleId)
-      .order("position");
-    expect(conds).toEqual([
-      {
-        position: 1,
-        target: "recipient_name",
-        target_slice: "whole",
-        operator: "equals",
-        reference_value: "Carol",
-      },
-      {
-        position: 2,
-        target: "sender_name",
-        target_slice: "first_char",
-        operator: "contains",
-        reference_value: "Dave",
-      },
-    ]);
-    expect(revalidatePath).toHaveBeenCalledWith("/sorting/rules");
-  });
-
-  it("should remove every condition when given an empty conditions array", async () => {
-    const ruleId = await addRule(sb, { letter: "A" });
-    await addRuleCondition(sb, { ruleId, position: 1 });
-    await addRuleCondition(sb, { ruleId, position: 2 });
-
-    await saveRuleAll({
-      id: ruleId,
-      letter: "A",
-      destination_slot: null,
-      day_implemented_id: null,
-      storage_location: null,
-      summary: null,
-      match_mode: "all",
-      conditions: [],
-    });
-
-    const { count } = await sb
-      .from("sorting_rule_conditions")
-      .select("id", { count: "exact", head: true })
-      .eq("rule_id", ruleId);
-    expect(count).toBe(0);
-  });
-});
+// `saveRuleAll` was removed by the revamp. Its scalar-field updates moved to
+// `patchSortingRule` (instant-save), and the conditions set-replace moved to
+// `saveConditions`. Both are tested in their own describes below.
 
 describe("patchSortingRule", () => {
   it("should apply the patch without calling revalidatePath", async () => {
@@ -392,7 +256,7 @@ describe("patchSortingRule", () => {
 });
 
 describe("saveConditions", () => {
-  it("should replace all conditions and revalidate both rule paths", async () => {
+  it("should replace all conditions and revalidate /sorting/rules", async () => {
     const ruleId = await addRule(sb, { letter: "A" });
     await addRuleCondition(sb, {
       ruleId,
@@ -419,7 +283,9 @@ describe("saveConditions", () => {
     expect(data).toEqual([
       { position: 1, target: "sender_name", reference_value: "Eve" },
     ]);
-    expect(revalidatePath).toHaveBeenCalledWith(`/sorting/rules/${ruleId}`);
+    // Revamp: the dead /sorting/rules/[id] route is gone, so saveConditions
+    // only revalidates the list path. The realtime channel handles per-rule
+    // fanout to other tabs.
     expect(revalidatePath).toHaveBeenCalledWith("/sorting/rules");
   });
 

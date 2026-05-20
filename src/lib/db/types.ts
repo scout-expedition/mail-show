@@ -246,7 +246,10 @@ export interface SortingRule {
   storage_location: string | null;
   summary: string | null;
   day_implemented_id: string | null;
+  day_cancelled_id: string | null;
   destination_slot: number | null;
+  /** When true the rule routes to Reporting; mutually exclusive with destination_slot. */
+  routes_to_reporting: boolean;
   match_mode: RuleMatchMode;
 }
 

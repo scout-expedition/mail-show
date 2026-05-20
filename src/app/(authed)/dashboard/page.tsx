@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export default async function DashboardPage() {
-  let counts = {
+  const counts = {
     storylines: 0,
     letterGroups: 0,
     inspectionLetters: 0,

@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Plus, Star, Users } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { PanelHeader } from "@/components/panel";
-import { readableOnHex } from "@/components/pills";
+import { CityPill, NationPill } from "@/components/pills";
 import { useToast } from "@/components/toast";
 import { cn } from "@/lib/utils";
 import type {
@@ -131,11 +132,13 @@ function CitizensEditorInner({
   const { toast, toaster } = useToast();
   const [, startMutation] = useTransition();
 
-  // Local mirror of citizens, seeded from server props. The useEffect
-  // reconciles when the server prop changes (e.g. after a bulk-paste
-  // revalidate adds rows).
+  // Local mirror of citizens, seeded from server props. The "adjust state in
+  // render" pattern resyncs when the server prop changes (e.g. after a
+  // bulk-paste revalidate adds rows).
   const [rows, setRows] = useState<Citizen[]>(initialCitizens);
-  useEffect(() => {
+  const [prevInitialCitizens, setPrevInitialCitizens] = useState(initialCitizens);
+  if (initialCitizens !== prevInitialCitizens) {
+    setPrevInitialCitizens(initialCitizens);
     setRows((prev) => {
       const prevById = new Map(prev.map((r) => [r.id, r]));
       const serverIds = new Set(initialCitizens.map((c) => c.id));
@@ -147,7 +150,7 @@ function CitizensEditorInner({
       if (additions.length === 0 && kept.length === prev.length) return prev;
       return [...kept, ...additions];
     });
-  }, [initialCitizens]);
+  }
 
   const [sortMode, setSortMode] = useState<SortMode>("name");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
@@ -157,6 +160,53 @@ function CitizensEditorInner({
   // (a freshly created citizen stays on top while it remains selected).
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
+
+  // Two-way sync between `selectedId` and the `?citizen=<citizen_id>` URL
+  // param so cross-page links (e.g. from a city inspector) deep-link a
+  // record open. Matches by `citizen_id` first, falls back to the row's
+  // `id` (UUID) so older links + citizens without a citizen_id still work.
+  // `appliedParamRef` tracks the last URL value we've reconciled to avoid
+  // an infinite ping-pong between the two effects below.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const appliedParamRef = useRef<string | null>(null);
+  // URL → state (honor external navigation). Citizen IDs commonly start
+  // with a `#` sigil ("#G3X9"); the URL form drops that prefix so the
+  // querystring stays readable, hence the `.replace(/^#/, "")` on both
+  // sides of the match. URL search params are an external system; reading
+  // them here and calling setState to mirror the URL is the correct pattern.
+  useEffect(() => {
+    const param = searchParams.get("citizen");
+    if (param === appliedParamRef.current) return;
+    appliedParamRef.current = param;
+    if (param) {
+      const match =
+        rows.find(
+          (r) => (r.citizen_id ?? "").replace(/^#/, "") === param
+        ) ??
+        rows.find((r) => r.id === param) ??
+        null;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedId(match?.id ?? null);
+    } else {
+      setSelectedId(null);
+    }
+  }, [searchParams, rows]);
+  // state → URL (reflect user clicks).
+  useEffect(() => {
+    const row = selectedId ? rows.find((r) => r.id === selectedId) : null;
+    const desired = row
+      ? row.citizen_id?.replace(/^#/, "").trim() || row.id
+      : null;
+    if (desired === appliedParamRef.current) return;
+    appliedParamRef.current = desired;
+    const params = new URLSearchParams(searchParams);
+    if (desired) params.set("citizen", desired);
+    else params.delete("citizen");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [selectedId, rows, searchParams, pathname, router]);
 
   // Responsive column layout, driven by the list panel's measured width.
   const panelRef = useRef<HTMLDivElement>(null);
@@ -606,41 +656,3 @@ function CitizenRow({
   );
 }
 
-function NationPill({ nation }: { nation: Nation }) {
-  return (
-    <span
-      className="inline-flex h-6 max-w-full items-center truncate rounded-md px-1.5 font-mono text-[11px]"
-      style={{
-        background: nation.color_hex,
-        color: readableOnHex(nation.color_hex),
-      }}
-    >
-      {nation.name}
-    </span>
-  );
-}
-
-/** City rendered as a nation-colored pill — used once the standalone Nation
- *  column is dropped. Falls back to plain text when the citizen has no
- *  nation. */
-function CityPill({
-  cityName,
-  nation,
-}: {
-  cityName: string;
-  nation: Nation | null;
-}) {
-  if (!cityName) return <span className="text-muted-foreground">—</span>;
-  if (!nation) return <span className="max-w-full truncate">{cityName}</span>;
-  return (
-    <span
-      className="inline-flex h-6 max-w-full items-center truncate rounded-md px-1.5 font-mono text-[11px]"
-      style={{
-        background: nation.color_hex,
-        color: readableOnHex(nation.color_hex),
-      }}
-    >
-      {cityName}
-    </span>
-  );
-}

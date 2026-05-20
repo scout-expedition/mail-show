@@ -89,6 +89,18 @@ export function MentionTriggerPlugin({
     [tree, path, trigger?.query]
   );
 
+  // Reset the keyboard highlight whenever the rendered items list
+  // changes shape (different query or different nav level). Uses the
+  // "adjust state in render" pattern (vs. a useEffect) so the new
+  // react-hooks/set-state-in-effect rule stays happy. The string token
+  // collapses both deps into a single equality check.
+  const itemsToken = `${trigger?.query ?? ""}::${path.join("/")}`;
+  const [prevItemsToken, setPrevItemsToken] = useState(itemsToken);
+  if (itemsToken !== prevItemsToken) {
+    setPrevItemsToken(itemsToken);
+    setActiveIndex(0);
+  }
+
   // Pair every trigger-null transition with a path reset so subsequent
   // open-events start from the top level. Inlined into the close paths
   // below (closeTrigger helper) rather than chained via useEffect, since
@@ -98,16 +110,6 @@ export function MentionTriggerPlugin({
     setPath([]);
     setActiveIndex(0);
   }, []);
-
-  // Reset the keyboard highlight whenever the rendered items list
-  // changes shape (different query or different nav level). Matches the
-  // existing setActiveIndex(0) reset pattern used throughout this file's
-  // sibling pickers; the set-state-in-effect rule is a repo-wide warning
-  // not enforced for these incremental resets.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setActiveIndex(0);
-  }, [trigger?.query, path]);
 
   // -----------------------------------------------------------------
   // Trigger detection: re-run on every editor update.

@@ -292,6 +292,8 @@ export function useInstantField<T>(
   // The reducer enforces the LWW rule (drops when dirty/saving).
   useEffect(() => {
     dispatch({ type: "remote", value });
+  // dispatch is a plain function redefined each render — adding it would re-run on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   // On unmount: flush any pending edit synchronously so a card remount

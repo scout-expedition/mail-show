@@ -111,30 +111,46 @@ export async function adminSendMagicLink(formData: FormData) {
   if (error) throw new Error(error.message);
 }
 
-export async function changeOwnPassword(formData: FormData) {
+export type ChangePasswordResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Returns a tagged result rather than throwing so the form error path works
+ * in production builds. Next.js redacts thrown Server Action error messages
+ * on the client (a generic "An error occurred…" replaces the original
+ * message + only the digest survives), which breaks user-facing error UX
+ * like "Current password is incorrect". Returning a value is the Next.js-
+ * idiomatic shape for form-level error reporting.
+ */
+export async function changeOwnPassword(
+  formData: FormData
+): Promise<ChangePasswordResult> {
   const currentPassword = String(formData.get("currentPassword") ?? "");
   const passwordCheck = validatePassword(
     formData.get("password"),
     formData.get("confirm")
   );
-  if (!passwordCheck.ok) throw new Error(passwordCheck.error);
+  if (!passwordCheck.ok) return { ok: false, error: passwordCheck.error };
 
   const supabase = await createSupabaseServerClient();
   const { data: me } = await supabase.auth.getUser();
   const email = me.user?.email;
-  if (!email) throw new Error("Not signed in");
+  if (!email) return { ok: false, error: "Not signed in" };
 
   // Verify current password by signing in (refreshes session as a side effect).
   const { error: signInErr } = await supabase.auth.signInWithPassword({
     email,
     password: currentPassword,
   });
-  if (signInErr) throw new Error("Current password is incorrect");
+  if (signInErr) return { ok: false, error: "Current password is incorrect" };
 
   const { error: updateErr } = await supabase.auth.updateUser({
     password: String(formData.get("password")),
   });
-  if (updateErr) throw new Error(updateErr.message);
+  if (updateErr) return { ok: false, error: updateErr.message };
+
+  return { ok: true };
 }
 
 export async function updateOwnProfile(formData: FormData) {

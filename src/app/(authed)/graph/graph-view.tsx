@@ -14,7 +14,6 @@ import {
   type Connection,
   type ConnectionLineComponentProps,
   type Edge,
-  type FinalConnectionState,
   type Node,
   type NodeChange,
   type ReactFlowInstance,
@@ -781,6 +780,11 @@ export function GraphView({
     },
     []
   );
+
+  // Custom overlay confirm() used by every destructive context-menu item.
+  // Hoisted before the layout useMemo so it can be included as a dep.
+  const { confirm, dialog: confirmDialog } = useConfirm();
+
   const {
     nodes,
     edges,
@@ -2324,6 +2328,8 @@ export function GraphView({
     peerActions,
     pendingDeletes,
     pendingAdds,
+    markPendingDelete,
+    confirm,
   ]);
 
   const [vp, setVp] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -2539,9 +2545,6 @@ export function GraphView({
       queueFocus,
     ]
   );
-
-  // Custom overlay confirm() used by every destructive context-menu item.
-  const { confirm, dialog: confirmDialog } = useConfirm();
 
   // Helpers used by drag-drop handlers. They close over the current
   // memoized layout — recomputed on every render, which is fine because
@@ -2850,6 +2853,9 @@ export function GraphView({
       }
       setHoveredGroupId(null);
     },
+    // rowAtFlowY is a plain render-time function that closes over rowMeta;
+    // adding it would cause this callback to re-create on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [groupMeta, storylineOfDraggedNode]
   );
 
@@ -3080,6 +3086,9 @@ export function GraphView({
         void moveLetterToGroup(resolvedLetterId, targetGid);
       }
     },
+    // rowAtFlowY is a plain render-time function that closes over rowMeta;
+    // adding it would cause this callback to re-create on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [rowMeta, groupMeta, letters, segments, recordUndo, nodes]
   );
 
@@ -3264,9 +3273,7 @@ export function GraphView({
   const onReconnectEnd = useCallback(
     (
       _evt: MouseEvent | TouchEvent,
-      edge: Edge,
-      _handleType: "source" | "target",
-      _state: FinalConnectionState
+      edge: Edge
     ) => {
       if (!edgeReconnectSuccessful.current) {
         const m = edge.id.match(/^a:([^:]+):(ls|sn|ln|stub)$/);
@@ -3960,7 +3967,7 @@ export function GraphView({
                   // via a one-shot lookup in the focus-flush effect:
                   // store the letter's group + a sentinel variant of
                   // "" and let the effect resolve via id matching.
-                  const _ = newLetterId; // for now, no focus until we resolve via id
+                  void newLetterId; // for now, no focus until we resolve via id
                 })(),
             });
             items.push({ divider: true });

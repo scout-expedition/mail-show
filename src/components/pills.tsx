@@ -1,7 +1,7 @@
 import { Mail, MailOpen, Mails, Megaphone, Pin } from "lucide-react";
 import { IconDisplay } from "@/components/icon-display";
 import { cn } from "@/lib/utils";
-import type { Storyline } from "@/lib/db/types";
+import type { Nation, Storyline } from "@/lib/db/types";
 import type { IconType } from "@/lib/db/enums";
 
 /** Compute a readable foreground (#000 or #fff) for a given hex background. */
@@ -14,6 +14,110 @@ export function readableOnHex(hex: string): string {
   const b = parseInt(full.slice(4, 6), 16);
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminance > 0.65 ? "#0b0d10" : "#ffffff";
+}
+
+/**
+ * Nation rendered as a small color-filled pill — name on the nation's color,
+ * with the nation icon inline before the name when icon_type/icon_value are
+ * provided. `nameOnly` hides the text (e.g. inside a compact swatch).
+ */
+export function NationPill({
+  nation,
+  className,
+  iconOnly,
+}: {
+  nation: Pick<Nation, "name" | "color_hex"> &
+    Partial<Pick<Nation, "icon_type" | "icon_value">>;
+  className?: string;
+  /** Render just the icon on the nation color (no text). Falls back to the
+   *  pill's text form when the nation has no icon. */
+  iconOnly?: boolean;
+}) {
+  const hasIcon = !!(nation.icon_type && nation.icon_value);
+  if (iconOnly) {
+    // Square icon-chip: nation color background, icon centered when present;
+    // otherwise an empty colored square (still visually identifies the nation).
+    return (
+      <span
+        aria-hidden
+        className={cn(
+          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+          className
+        )}
+        style={{
+          background: nation.color_hex,
+          color: readableOnHex(nation.color_hex),
+        }}
+        title={nation.name}
+      >
+        {hasIcon ? (
+          <IconDisplay
+            type={nation.icon_type!}
+            value={nation.icon_value!}
+            size={12}
+          />
+        ) : null}
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 max-w-full items-center gap-1 truncate rounded-md px-1.5 font-mono text-[11px]",
+        className
+      )}
+      style={{
+        background: nation.color_hex,
+        color: readableOnHex(nation.color_hex),
+      }}
+    >
+      {hasIcon ? (
+        <IconDisplay
+          type={nation.icon_type!}
+          value={nation.icon_value!}
+          size={11}
+          className="shrink-0"
+        />
+      ) : null}
+      <span className="truncate">{nation.name}</span>
+    </span>
+  );
+}
+
+/**
+ * City rendered as a nation-colored pill — used wherever a city should pick
+ * up its nation's color (e.g. citizen rows when the Nation column is dropped,
+ * or the cities list's leading nation swatch). Falls back to plain text when
+ * the city has no nation; renders an em-dash when the city name is empty.
+ */
+export function CityPill({
+  cityName,
+  nation,
+  className,
+}: {
+  cityName: string;
+  nation: Pick<Nation, "color_hex"> | null;
+  className?: string;
+}) {
+  if (!cityName) return <span className="text-muted-foreground">—</span>;
+  if (!nation)
+    return (
+      <span className={cn("max-w-full truncate", className)}>{cityName}</span>
+    );
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 max-w-full items-center truncate rounded-md px-1.5 font-mono text-[11px]",
+        className
+      )}
+      style={{
+        background: nation.color_hex,
+        color: readableOnHex(nation.color_hex),
+      }}
+    >
+      {cityName}
+    </span>
+  );
 }
 
 /**

@@ -40,7 +40,9 @@ export async function updateDay(formData: FormData) {
   if (!id) return;
   const payload = {
     number: nilNum(formData.get("number")) ?? undefined,
-    name: nilStr(formData.get("name")),
+    // Note: `days` has no `name` column; the form's `name` input (if any)
+    // is intentionally ignored. The display label is auto-generated as
+    // `identifier` (`D<n>`).
     notes: nilStr(formData.get("notes")),
     until_qup: nilNum(formData.get("until_qup")),
     month: nilNum(formData.get("month")),

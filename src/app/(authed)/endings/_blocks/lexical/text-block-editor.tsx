@@ -98,7 +98,7 @@ export function LexicalTextBlockEditor({
       nodes: [MentionNode],
       onError(error: Error) {
         // Surface Lexical errors so they don't get swallowed silently.
-        // eslint-disable-next-line no-console
+         
         console.error("[LexicalTextBlockEditor]", error);
       },
       theme: {

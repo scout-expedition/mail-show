@@ -18,15 +18,16 @@ export function ChangePasswordSection() {
 
   function onSubmit(formData: FormData) {
     startTransition(async () => {
-      try {
-        await changeOwnPassword(formData);
+      // changeOwnPassword returns a tagged result rather than throwing —
+      // see its docblock; the throw-and-catch shape silently drops the
+      // specific message in production builds (Next.js redacts thrown
+      // Server Action errors).
+      const result = await changeOwnPassword(formData);
+      if (result.ok) {
         setState({ status: "success" });
         formRef.current?.reset();
-      } catch (e) {
-        setState({
-          status: "error",
-          error: e instanceof Error ? e.message : "Failed to update password",
-        });
+      } else {
+        setState({ status: "error", error: result.error });
       }
     });
   }

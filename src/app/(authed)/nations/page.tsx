@@ -1,9 +1,7 @@
 import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { profileFromMetadata } from "@/lib/auth/profile";
-import type { Nation } from "@/lib/db/types";
-import { createNation } from "./actions";
+import type { City, Nation } from "@/lib/db/types";
 import { NationsEditor } from "./nations-editor";
 
 export default async function NationsPage() {
@@ -18,12 +16,19 @@ export default async function NationsPage() {
     avatarIconValue: meProfile.avatar_icon_value,
     avatarColorHex: meProfile.avatar_color_hex,
   };
-  const { data } = await supabase
-    .from("nations")
-    .select("*")
-    .order("sort_order", { ascending: true })
-    .order("name", { ascending: true });
-  const nations = (data ?? []) as Nation[];
+  const [{ data: nationData }, { data: cityData }] = await Promise.all([
+    supabase
+      .from("nations")
+      .select("id, name, abbreviation, color_hex, sort_order, icon_type, icon_value")
+      .order("sort_order", { ascending: true })
+      .order("name", { ascending: true }),
+    supabase
+      .from("cities")
+      .select("id, name, code, nation_id")
+      .order("code"),
+  ]);
+  const nations = (nationData ?? []) as Nation[];
+  const cities = (cityData ?? []) as City[];
 
   return (
     <div>
@@ -34,18 +39,11 @@ export default async function NationsPage() {
 
       <NationsEditor
         nations={nations}
+        cities={cities}
         currentUserId={currentUserId}
         currentEmail={currentEmail}
         currentProfile={presenceProfile}
       />
-
-      <div className="mt-4 flex justify-center">
-        <form action={createNation}>
-          <Button type="submit" variant="outline" size="sm">
-            + Nation
-          </Button>
-        </form>
-      </div>
     </div>
   );
 }

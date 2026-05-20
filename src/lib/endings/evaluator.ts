@@ -28,7 +28,6 @@ import {
 } from "@/lib/db/enums";
 import type { EndingVariableValue } from "@/lib/db/types";
 import {
-  substituteVariables,
   substituteVariablesToSegments,
   type SubstitutionSegment,
 } from "./text-substitution";

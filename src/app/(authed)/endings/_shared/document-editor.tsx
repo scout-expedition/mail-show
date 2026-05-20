@@ -77,7 +77,6 @@ import { BlockList, type LeafComponents } from "../_blocks/block-list";
 import { FallbackBlock } from "../_blocks/fallback-block";
 import {
   deleteFrameworkDocument,
-  patchBlock,
   patchChip,
   patchDocument,
   reorderTree,
@@ -288,7 +287,7 @@ export function DocumentEditor({
   const [blockVariableState, setBlockVariableState] = useState<
     BlockVariableState[]
   >(initial.blockVariables);
-  const [pending, startDeleteTransition] = useTransition();
+  const [, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const { toast, toaster } = useToast();
 
@@ -297,10 +296,13 @@ export function DocumentEditor({
   const [target, setTargetState] = useState<DragTarget | null>(null);
 
   // Refs mirror state so window-level listeners (whose closures are
-  // captured at mount) can read the latest values.
+  // captured at mount) can read the latest values. Writing to ref.current
+  // during render is the standard "latest-value ref" pattern for event handlers.
   const dragIdRef = useRef<string | null>(null);
   const targetRef = useRef<DragTarget | null>(null);
+  // eslint-disable-next-line react-hooks/refs
   dragIdRef.current = dragId;
+  // eslint-disable-next-line react-hooks/refs
   targetRef.current = target;
 
   // Preview is a shared session: the toggle + the variable-value picks are
@@ -895,8 +897,10 @@ export function DocumentEditor({
   // Keep blockState in a ref so doCommit can compute the new structural
   // layout from the current mirror without going through setState's
   // updater-callback (where firing an async server action would risk
-  // duplicates under StrictMode).
+  // duplicates under StrictMode). Writing to ref.current during render
+  // is the standard "latest-value ref" pattern for async callbacks.
   const blockStateRef = useRef<BlockState[]>(blockState);
+  // eslint-disable-next-line react-hooks/refs
   blockStateRef.current = blockState;
   const doCommit = useCallback(
     (dragIdNow: string, targetNow: DragTarget) => {

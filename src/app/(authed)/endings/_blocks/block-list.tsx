@@ -247,7 +247,7 @@ export function BlockList({
           />
         )
       ) : null}
-      {blocks.map((b, i) => {
+      {blocks.map((b) => {
         const blockNode =
           b.block_type === "text" ? (
             TextLeaf ? (

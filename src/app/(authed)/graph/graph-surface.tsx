@@ -16,10 +16,8 @@ import {
   IconInfoCircle,
 } from "@tabler/icons-react";
 import {
-  batchMoveToDay,
   moveLetterGroupToDay,
   moveLetterToGroup,
-  moveReportSegmentToDay,
   restoreReportSegmentDelivery,
   setActionNextLetterByLetterId,
   setActionReportSegment,
@@ -219,7 +217,11 @@ function GraphSurfaceInner({
   // Replay an undo entry by calling the same server action that produced
   // it in reverse. Recursive for batch entries (multi-select drags). No
   // "redo" — applying an undo doesn't push the inverse back onto the
-  // stack, since today's flows don't need it.
+  // stack, since today's flows don't need it. The ref lets the batch branch
+  // call the function recursively without a forward-reference lint error.
+  const dispatchUndoRef = useRef<(entry: UndoEntry) => Promise<void>>(
+    async () => {}
+  );
   const dispatchUndo = useCallback(async (entry: UndoEntry): Promise<void> => {
     switch (entry.kind) {
       case "moveLetterGroup":
@@ -249,11 +251,15 @@ function GraphSurfaceInner({
         return;
       case "batch":
         for (let i = entry.entries.length - 1; i >= 0; i--) {
-          await dispatchUndo(entry.entries[i]);
+          await dispatchUndoRef.current(entry.entries[i]);
         }
         return;
     }
   }, []);
+  // Keep the ref in sync so the batch branch always calls the latest closure.
+  // Writing to ref.current during render is the standard "latest-value ref" pattern.
+  // eslint-disable-next-line react-hooks/refs
+  dispatchUndoRef.current = dispatchUndo;
   const recordUndo = useCallback((entry: UndoEntry) => {
     // Cap the stack so a long session doesn't accumulate forever.
     setUndoStack((prev) => {

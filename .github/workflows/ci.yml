@@ -35,19 +35,31 @@ jobs:
 
       - run: pnpm typecheck
 
-      # Advisory: the suite carries pre-existing lint debt (~49 errors, mostly
-      # react-hooks rules surfaced by the Next 16 upgrade). Reported on every
-      # run but non-blocking until the debt is burned down — then drop
-      # `continue-on-error` to make it a hard gate.
-      - name: Lint (advisory)
+      # Blocking gate. `pnpm lint` runs `eslint --max-warnings 0`, so any new
+      # warning (not just errors) fails the build — the cleanup that brought
+      # this to zero is locked in by the ratchet, no warning-drift.
+      - name: Lint
         run: pnpm lint
-        continue-on-error: true
 
       # Unit layer only — server-action + view tests need the DB and run in
-      # the integration-e2e job. Coverage reporting is added in a later phase
-      # once @vitest/coverage-v8 is a dependency.
-      - name: Unit tests
-        run: pnpm test
+      # the integration-e2e job. `--coverage` enforces the regression-ratchet
+      # thresholds defined in vitest.config.ts; updating them is a deliberate
+      # change in a PR, not a default behaviour.
+      - name: Unit tests + coverage
+        run: pnpm test --coverage
+
+      # Persist the HTML report so a failing threshold is debuggable from the
+      # CI run page — open the artifact and the per-file table tells you which
+      # module regressed. Path matches vitest.config.ts `coverage` (default
+      # `./coverage`).
+      - name: Upload unit coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage/
+          retention-days: 7
+          if-no-files-found: ignore
 
   integration-e2e:
     name: integration · e2e
@@ -99,8 +111,19 @@ jobs:
             echo "SUPABASE_TEST_ANON_KEY=$ANON_KEY"
           } >> "$GITHUB_ENV"
 
-      - name: Integration tests
-        run: pnpm test:int
+      - name: Integration tests + coverage
+        run: pnpm test:int --coverage
+
+      # Persist the HTML report — vitest.integration.config.ts writes to
+      # `coverage-int/` so it doesn't clobber the unit run's `coverage/`.
+      - name: Upload integration coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-int
+          path: coverage-int/
+          retention-days: 7
+          if-no-files-found: ignore
 
       # E2E runs against a prebuilt production server: playwright.config.ts
       # uses `next start` when CI is set (steadier than on-demand `next dev`
@@ -114,13 +137,14 @@ jobs:
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
 
-      # Advisory: 3 settings user-management specs in auth-users.spec.ts
-      # have pre-existing failures (a created user never shows in the
-      # /settings list). Reported on every run but non-blocking until the
-      # debt is burned down — then drop `continue-on-error` to make it gate.
-      - name: E2E tests (advisory)
+      # Blocking gate. The settings user-management specs that were failing
+      # under the pre-refactor flat-button selectors were updated to drive the
+      # OverflowMenu dropdown instead — see auth-users.spec.ts; the cause was
+      # never a /settings listing bug, just selector drift. The deferred
+      # endings-frameworks.spec.ts stays `test.skip` until the unified
+      # ending_documents schema rewrite (Step 6 of endings-logic-v2-plan.md).
+      - name: E2E tests
         run: pnpm test:e2e
-        continue-on-error: true
 
       # Screenshots from failing specs (Playwright's default outputDir).
       - name: Upload Playwright artifacts
