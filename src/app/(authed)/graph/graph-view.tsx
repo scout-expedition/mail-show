@@ -19,12 +19,13 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
+  IconBolt,
   IconFocusCentered,
   IconMinus,
   IconPlus,
   IconZoomScan,
 } from "@tabler/icons-react";
-import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Milestone, Pin, PinOff, Trash2 } from "lucide-react";
+import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Pin, PinOff, Trash2 } from "lucide-react";
 import { readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -589,6 +590,7 @@ export function GraphView({
 
   // Drop resolved ghosts once the matching real entity has landed.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingAdds((prev) => {
       const realGroupIds = new Set(letterGroups.map((g) => g.id));
       const realSegIds = new Set(segments.map((s) => s.id));
@@ -652,6 +654,7 @@ export function GraphView({
   // Drop pending-delete ids the moment the entity is no longer in the
   // server-side list (i.e. revalidation has caught up).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingDeletes((prev) => {
       const letterIds = new Set(letters.map((l) => l.id));
       const segmentIds = new Set(segments.map((s) => s.id));
@@ -702,6 +705,7 @@ export function GraphView({
   // up. Looking at one `actions` snapshot at a time means we never strand
   // a stale optimistic value visually past the revalidation.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setOptimisticNextByAction((prev) => {
       let changed = false;
       const next: Record<string, string | null> = {};
@@ -729,6 +733,49 @@ export function GraphView({
       return changed ? next : prev;
     });
   }, [actions]);
+
+  // ── Optimistic day-move ──────────────────────────────────────────────
+  // When the user drops a node on a new day row, we record the target
+  // day here so the layout renders the node in the new row immediately —
+  // before the server confirms the move. Keys are entity ids (letter-
+  // group id, segment id); values are the target day id (or "unscheduled").
+  // Entries are pruned once server data agrees with the pending value.
+  const [pendingDayMoves, setPendingDayMoves] = useState<
+    Record<string, string>
+  >({});
+
+  // Reconcile pendingDayMoves: once the server-side delivery_day_id /
+  // effective_day_id agrees with the pending value (i.e. revalidation landed),
+  // drop the entry so the ghost styling clears.
+  // The guard ("return prev if nothing changed") prevents infinite re-renders.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPendingDayMoves((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.length === 0) return prev;
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const id of keys) {
+        const targetRowId = prev[id];
+        const grp = letterGroups.find((g) => g.id === id);
+        if (grp) {
+          if ((grp.delivery_day_id ?? "unscheduled") === targetRowId) { changed = true; continue; }
+          next[id] = targetRowId;
+          continue;
+        }
+        const seg = segments.find((s) => s.id === id);
+        if (seg) {
+          if ((seg.effective_day_id ?? "unscheduled") === targetRowId) { changed = true; continue; }
+          next[id] = targetRowId;
+          continue;
+        }
+        // Entity deleted — drop stale entry.
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [letterGroups, segments]);
+  // ────────────────────────────────────────────────────────────────────
 
   // Wrap the next-letter / report-segment server calls in an optimistic
   // overlay + error-recovery clear. On success, the overlay sticks until
@@ -903,7 +950,9 @@ export function GraphView({
       const groupLetters = augmentedLetters.filter(
         (l) => l.letter_group_id === g.id
       );
-      const gDayKey = g.delivery_day_id ?? "unscheduled";
+      // Consult pendingDayMoves first so the node renders in its target
+      // row immediately after a drop, before the server confirms.
+      const gDayKey = pendingDayMoves[g.id] ?? g.delivery_day_id ?? "unscheduled";
 
       // Partition variants by their effective day. A variant can have
       // multiple letters (different pieces); they should always share an
@@ -1045,7 +1094,8 @@ export function GraphView({
           a.variant.localeCompare(b.variant)
       );
     for (const s of orderedSegments) {
-      const rowId = s.effective_day_id ?? "unscheduled";
+      // pendingDayMoves overrides effective_day_id for in-flight drops.
+      const rowId = pendingDayMoves[s.id] ?? s.effective_day_id ?? "unscheduled";
       const cell = getCell(rowId, s.storyline_id);
       cell.segmentIds.push(s.id);
     }
@@ -1262,7 +1312,7 @@ export function GraphView({
               selfRingColor: segSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerSegments?.get(sid),
               pendingDelete: pendingDeletes.segments[sid] === true,
-              pendingAdd: ghostSegmentIdSet.has(sid),
+              pendingAdd: ghostSegmentIdSet.has(sid) || sid in pendingDayMoves,
               pinned: seg.delivery_day_override_id != null,
               offsetText:
                 seg.delivery_day_offset != null
@@ -1335,7 +1385,7 @@ export function GraphView({
               selfRingColor: groupSelected ? selfRingColor ?? undefined : undefined,
               peerRingColors: peerGroups?.get(gid),
               pendingDelete: pendingDeletes.groups[gid] === true,
-              pendingAdd: ghostGroupIdSet.has(gid),
+              pendingAdd: ghostGroupIdSet.has(gid) || gid in pendingDayMoves,
               // Pin only the group's primary (home-day) instance — faux
               // instances render letters pulled away by overrides, so the
               // group-delivery pin doesn't belong on them.
@@ -2328,6 +2378,7 @@ export function GraphView({
     peerActions,
     pendingDeletes,
     pendingAdds,
+    pendingDayMoves,
     markPendingDelete,
     confirm,
   ]);
@@ -2671,6 +2722,8 @@ export function GraphView({
         sequence: nextSeq,
         sort_order: nextSort,
         delivery_day_id: targetDayId,
+        updated_at: new Date(0).toISOString(),
+        updated_by: null,
       };
       setPendingAdds((prev) => ({
         ...prev,
@@ -2745,24 +2798,53 @@ export function GraphView({
     });
   }
 
-  // Record live drag positions emitted by ReactFlow's drag. Only position
-  // changes matter here; dimension/select changes are left to ReactFlow's
-  // internal store. Bails once Escape has cancelled the drag.
+  // Record live drag positions emitted by ReactFlow's drag.
+  //
+  // ReactFlow fires `position` changes from TWO sources: (a) the user
+  // physically dragging a node (the case this handler exists to capture)
+  // and (b) the controlled `nodes` prop being re-supplied with a new
+  // array identity, which ReactFlow's internal store reconciles by
+  // emitting per-node position changes — even when the resolved x/y is
+  // unchanged from what we just rendered. Case (b) happens on every
+  // layout recompute (selection change, peer presence tick, postgres
+  // refresh, etc.). If we write THOSE positions into `dragPositions`,
+  // `decoratedNodes` re-runs with a new `dragPositions` reference →
+  // emits a new `nodes` array → ReactFlow re-syncs → another
+  // onNodesChange → "Maximum update depth exceeded".
+  //
+  // Two guards stop the feedback loop:
+  //   1. Skip the setter unless an active drag is in progress
+  //      (`isDraggingRef` so the callback identity stays stable). The
+  //      layout useMemo is the source of truth when no drag is running.
+  //   2. Within an active drag, only write positions that actually
+  //      changed from `prev` — ReactFlow can re-emit a position
+  //      identical to the one we just rendered when its internal store
+  //      reconciles with the controlled prop.
+  // Ref-sync runs in an effect (not during render) so this doesn't
+  // tickle the react-hooks/refs rule.
+  const isDraggingRef = useRef(isDragging);
+  useEffect(() => {
+    isDraggingRef.current = isDragging;
+  }, [isDragging]);
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     if (dragCanceledRef.current) return;
+    if (!isDraggingRef.current) return;
     setDragPositions((prev) => {
       let next = prev;
       for (const ch of changes) {
-        if (ch.type === "position" && ch.position) {
-          if (next === prev) next = { ...prev };
-          next[ch.id] = ch.position;
-        }
+        if (ch.type !== "position" || !ch.position) continue;
+        const cur = prev[ch.id];
+        if (cur && cur.x === ch.position.x && cur.y === ch.position.y) continue;
+        if (next === prev) next = { ...prev };
+        next[ch.id] = ch.position;
       }
       return next;
     });
   }, []);
 
   const onNodeDragStart = useCallback(
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization
     (_event: React.MouseEvent, node: Node) => {
       setIsDragging(true);
       setHoveredRowId(null);
@@ -2874,11 +2956,37 @@ export function GraphView({
       dragOriginRef.current = null;
       const rf = rfRef.current;
       if (!rf) return;
-      // Escape-cancel: skip the server-side move and snap nodes back to
-      // their pre-drag positions via the memoized layout.
+      // Escape-cancel: skip the server-side move, snap nodes back, and
+      // clear any pending day-move entries for the cancelled items.
       if (dragCanceledRef.current) {
         dragCanceledRef.current = false;
         rf.setNodes(nodes);
+        // Clear pending day-move entries for everything that was being dragged.
+        const canceledIds = new Set<string>();
+        for (const dn of draggedNodes) {
+          if (dn.id.startsWith("group:")) {
+            const pg = parseGroupNodeId(dn.id);
+            if (pg) canceledIds.add(pg.groupId);
+          } else if (dn.id.startsWith("report:")) {
+            canceledIds.add(dn.id.slice("report:".length));
+          } else if (dn.id.startsWith("letter:")) {
+            const parsed = parseLetterNodeId(dn.id);
+            if (parsed) canceledIds.add(parsed.groupId);
+          }
+        }
+        if (canceledIds.size > 0) {
+          setPendingDayMoves((prev) => {
+            const next = { ...prev };
+            let changed = false;
+            for (const id of canceledIds) {
+              if (id in next) {
+                delete next[id];
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
+        }
         return;
       }
       // Batch move: when the user drags more than one selected node,
@@ -2910,10 +3018,15 @@ export function GraphView({
             previousDayId,
           });
         };
+        // Collect all entity ids being moved for the optimistic overlay.
+        const batchPendingIds: Record<string, string> = {};
         for (const dn of draggedNodes) {
           if (dn.id.startsWith("group:")) {
             const pg = parseGroupNodeId(dn.id);
-            if (pg) recordGroupMove(pg.groupId);
+            if (pg) {
+              recordGroupMove(pg.groupId);
+              batchPendingIds[pg.groupId] = targetRowId;
+            }
           } else if (dn.id.startsWith("report:")) {
             const sid = dn.id.slice("report:".length);
             const seg = segments.find((s) => s.id === sid);
@@ -2928,16 +3041,26 @@ export function GraphView({
               previousOverrideId: seg?.delivery_day_override_id ?? null,
               previousOffset: seg?.delivery_day_offset ?? null,
             });
+            batchPendingIds[sid] = targetRowId;
           } else if (dn.id.startsWith("letter:")) {
             // Letters follow their group; collapse to the group move.
             const parsed = parseLetterNodeId(dn.id);
             if (!parsed) continue;
             recordGroupMove(parsed.groupId);
+            batchPendingIds[parsed.groupId] = targetRowId;
           }
         }
         if (moves.length > 0) {
           if (undoEntries.length > 0) {
             recordUndo?.({ kind: "batch", entries: undoEntries });
+          }
+          // Optimistically move all nodes to the target row before the
+          // server call so the layout reacts immediately.
+          if (Object.keys(batchPendingIds).length > 0) {
+            setPendingDayMoves((prev) => {
+              const next = { ...prev, ...batchPendingIds };
+              return next;
+            });
           }
           void batchMoveToDay(moves);
         }
@@ -2985,6 +3108,11 @@ export function GraphView({
           groupId: gid,
           previousDayId,
         });
+        // Optimistically place the group in the target row before the server
+        // confirms so the card appears to land immediately on drop.
+        setPendingDayMoves((prev) =>
+          prev[gid] === targetRowId ? prev : { ...prev, [gid]: targetRowId }
+        );
         void moveLetterGroupToDay(
           gid,
           targetRowId === "unscheduled" ? null : targetRowId
@@ -3004,6 +3132,11 @@ export function GraphView({
           previousOverrideId: seg?.delivery_day_override_id ?? null,
           previousOffset: seg?.delivery_day_offset ?? null,
         });
+        // Optimistically place the report in the target row before the server
+        // confirms so the card appears to land immediately on drop.
+        setPendingDayMoves((prev) =>
+          prev[sid] === targetRowId ? prev : { ...prev, [sid]: targetRowId }
+        );
         void moveReportSegmentToDay(
           sid,
           targetRowId === "unscheduled" ? null : targetRowId
@@ -3503,6 +3636,7 @@ export function GraphView({
   // remote edit by a peer would re-center the canvas for everyone with
   // a selection, which is jarring.
   const selectionCenterRef = useRef(selectionCenter);
+  // eslint-disable-next-line react-hooks/refs
   selectionCenterRef.current = selectionCenter;
   const selectionKey = selection
     ? selection.kind === "letter" || selection.kind === "actions"
@@ -3516,6 +3650,7 @@ export function GraphView({
           : "other"
     : null;
   const autozoomEnabledRef = useRef(autozoomEnabled);
+  // eslint-disable-next-line react-hooks/refs
   autozoomEnabledRef.current = autozoomEnabled;
   useEffect(() => {
     const rf = rfRef.current;
@@ -3938,7 +4073,7 @@ export function GraphView({
             if (!hasActions && templateEntries.length > 0) {
               items.push({
                 label: "Add Actions",
-                icon: <Milestone size={12} aria-hidden />,
+                icon: <IconBolt size={12} aria-hidden />,
                 trailing: <ChevronRight size={12} aria-hidden />,
                 submenu: templateEntries.map((entry) => ({
                   label: entry.label,
