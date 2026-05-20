@@ -72,19 +72,23 @@ describe("createActionTemplate", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/inspection/letters");
   });
 
-  it("should set sort_order to one past the current top-level max", async () => {
-    // Seed a high sort_order so the action's nextSort is deterministically
-    // `9999 + 1`, regardless of how many production seed rows occupy lower
-    // sort_order values.
-    await addActionTemplate(sb, { suffix: "max-probe", sortOrder: 9999 });
-
-    await createActionTemplate();
-
-    const { data: created } = await sb
+  it("should land the new template inside the 'Ungrouped' group", async () => {
+    // The new template always goes into a (find-or-create) group named
+    // "Ungrouped" — the shared bucket for fresh actions. sort_order is
+    // relative to that group's existing members, not the top-level max.
+    const { templateId, groupId } = await createActionTemplate();
+    const { data: ungroupedGroup } = await sb
+      .from("action_template_groups")
+      .select("id, name")
+      .eq("id", groupId)
+      .single();
+    expect(ungroupedGroup?.name).toBe("Ungrouped");
+    const { data: tpl } = await sb
       .from("action_templates")
-      .select("id")
-      .eq("sort_order", 10000);
-    expect(created?.length ?? 0).toBeGreaterThanOrEqual(1);
+      .select("group_id")
+      .eq("id", templateId)
+      .single();
+    expect(tpl?.group_id).toBe(groupId);
   });
 });
 
@@ -132,7 +136,7 @@ describe("patchActionTemplate", () => {
 });
 
 describe("duplicateActionTemplate", () => {
-  it("should clone name + icon + color with '(copy)' appended and place at top level", async () => {
+  it("should clone name + icon + color with '(copy)' appended and land in a new solo group", async () => {
     const id = await addActionTemplate(sb, {
       suffix: "src",
       colorHex: "#112233",
@@ -145,7 +149,9 @@ describe("duplicateActionTemplate", () => {
       .eq("name", "__INT_TEST__src (copy)")
       .single();
     expect(data?.color_hex).toBe("#112233");
-    expect(data?.group_id).toBeNull();
+    // Every template lives in a group; the duplicate gets its own fresh
+    // solo group rather than landing ungrouped.
+    expect(data?.group_id).toBeTruthy();
   });
 });
 
@@ -175,7 +181,11 @@ describe("group operations", () => {
     expect(data?.name).toBe("My Group");
   });
 
-  it("deleteActionTemplateGroup removes the group but keeps members (ON DELETE SET NULL)", async () => {
+  it("deleteActionTemplateGroup removes the group AND its member templates", async () => {
+    // Under the "every action lives in a group" rule, deleting a group
+    // takes its members with it — leaving them orphaned would violate the
+    // invariant. The UI's confirm copy reflects this ("group AND its N
+    // actions"); this test is the structural counterpart.
     const gid = await addActionTemplateGroup(sb);
     const tid = await addActionTemplate(sb, { suffix: "member", groupId: gid });
 
@@ -190,14 +200,15 @@ describe("group operations", () => {
 
     const { data: tplRow } = await sb
       .from("action_templates")
-      .select("id, group_id")
+      .select("id")
       .eq("id", tid)
-      .single();
-    expect(tplRow?.id).toBe(tid);
-    expect(tplRow?.group_id).toBeNull();
+      .maybeSingle();
+    expect(tplRow).toBeNull();
   });
 
-  it("moveTemplateToGroup transitions a template into and back out of a group", async () => {
+  it("moveTemplateToGroup(null) spawns a fresh solo group for the template", async () => {
+    // Dragging an action to the top-level "root" doesn't orphan it —
+    // server creates a new solo group and lands the template inside.
     const tid = await addActionTemplate(sb, { suffix: "moving" });
     const gid = await addActionTemplateGroup(sb);
 
@@ -211,13 +222,15 @@ describe("group operations", () => {
     expect(inGroup?.sort_order).toBe(0);
 
     await moveTemplateToGroup(tid, null, 42);
-    const { data: ungrouped } = await sb
+    const { data: regrouped } = await sb
       .from("action_templates")
       .select("group_id, sort_order")
       .eq("id", tid)
       .single();
-    expect(ungrouped?.group_id).toBeNull();
-    expect(ungrouped?.sort_order).toBe(42);
+    // Not back to null — the server minted a new solo group for it.
+    expect(regrouped?.group_id).toBeTruthy();
+    expect(regrouped?.group_id).not.toBe(gid);
+    expect(regrouped?.sort_order).toBe(42);
   });
 });
 
