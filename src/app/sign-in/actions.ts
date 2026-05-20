@@ -22,12 +22,12 @@ async function siteOrigin(): Promise<string> {
 }
 
 function confirmUrl(origin: string, next: string): string {
-  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
   return `${origin}/auth/confirm?next=${encodeURIComponent(safeNext)}`;
 }
 
 export async function signInWithMagicLink(formData: FormData) {
-  const next = String(formData.get("next") ?? "/dashboard");
+  const next = String(formData.get("next") ?? "/");
   const emailCheck = validateEmail(formData.get("email"));
   if (!emailCheck.ok) {
     redirect(buildRedirect({ error: emailCheck.error, next }));
@@ -52,7 +52,7 @@ export async function signInWithMagicLink(formData: FormData) {
 }
 
 export async function signInWithPassword(formData: FormData) {
-  const next = String(formData.get("next") ?? "/dashboard");
+  const next = String(formData.get("next") ?? "/");
   const emailCheck = validateEmail(formData.get("email"));
   if (!emailCheck.ok) {
     redirect(buildRedirect({ error: "Invalid email or password", next }));
@@ -74,7 +74,7 @@ export async function signInWithPassword(formData: FormData) {
 }
 
 export async function requestPasswordReset(formData: FormData) {
-  const next = String(formData.get("next") ?? "/dashboard");
+  const next = String(formData.get("next") ?? "/");
   const emailCheck = validateEmail(formData.get("email"));
 
   // Always land on /sign-in?reset=1 — generic banner avoids leaking which

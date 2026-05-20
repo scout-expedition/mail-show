@@ -85,7 +85,7 @@ test.describe("password sign-in", () => {
   // No storageState — these tests drive the sign-in form anonymously.
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test("password happy path → /dashboard", async ({ page }) => {
+  test("password happy path → home", async ({ page }) => {
     const admin = makeAdmin();
     const email = `pw-ok-${Date.now()}@e2e.test`;
     const password = "hunter22-strong";
@@ -101,7 +101,7 @@ test.describe("password sign-in", () => {
       await page.getByLabel("Email").fill(email);
       await page.getByLabel("Password").fill(password);
       await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
       await expect(page).not.toHaveURL(/\/sign-in/);
     } finally {
       await deleteUserByEmail(admin, email);
@@ -142,7 +142,7 @@ test.describe("set-password flow", () => {
       await page.getByLabel("New password").fill(password);
       await page.getByLabel("Confirm password").fill(password);
       await page.getByRole("button", { name: "Save password" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
 
       // Sign out, then sign back in with the new password.
       await page.goto("/settings");
@@ -152,7 +152,7 @@ test.describe("set-password flow", () => {
       await page.getByLabel("Email").fill(email);
       await page.getByLabel("Password").fill(password);
       await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
     } finally {
       await deleteUserByEmail(admin, email);
     }
@@ -313,7 +313,7 @@ test.describe("change own password", () => {
       await page.getByLabel("Email").fill(email);
       await page.getByLabel("Password").fill(newPassword);
       await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
     } finally {
       await deleteUserByEmail(admin, email);
     }
@@ -392,7 +392,7 @@ test.describe("password reset flow", () => {
       await page.getByLabel("New password").fill(newPassword);
       await page.getByLabel("Confirm password").fill(newPassword);
       await page.getByRole("button", { name: "Save password" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
 
       // Sign out and sign back in with the new password.
       await page.goto("/settings");
@@ -401,7 +401,7 @@ test.describe("password reset flow", () => {
       await page.getByLabel("Email").fill(email);
       await page.getByLabel("Password").fill(newPassword);
       await page.getByRole("button", { name: "Sign in" }).click();
-      await expect(page).toHaveURL(/\/dashboard/);
+      await expect(page).toHaveURL(/\/$/);
     } finally {
       await deleteUserByEmail(admin, email);
     }
