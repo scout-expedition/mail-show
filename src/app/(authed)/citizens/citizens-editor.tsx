@@ -23,6 +23,7 @@ import {
   citizenIssues,
   citizenSortKey,
 } from "@/lib/citizen-name";
+import { displayCitizenId } from "@/lib/citizen-id";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
@@ -171,11 +172,10 @@ function CitizensEditorInner({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const appliedParamRef = useRef<string | null>(null);
-  // URL → state (honor external navigation). Citizen IDs commonly start
-  // with a `#` sigil ("#G3X9"); the URL form drops that prefix so the
-  // querystring stays readable, hence the `.replace(/^#/, "")` on both
-  // sides of the match. URL search params are an external system; reading
-  // them here and calling setState to mirror the URL is the correct pattern.
+  // URL → state (honor external navigation). Citizen IDs are stored raw;
+  // the URL uses the raw form. URL search params are an external system;
+  // reading them here and calling setState to mirror the URL is the correct
+  // pattern.
   useEffect(() => {
     const param = searchParams.get("citizen");
     if (param === appliedParamRef.current) return;
@@ -183,7 +183,7 @@ function CitizensEditorInner({
     if (param) {
       const match =
         rows.find(
-          (r) => (r.citizen_id ?? "").replace(/^#/, "") === param
+          (r) => (r.citizen_id ?? "") === param
         ) ??
         rows.find((r) => r.id === param) ??
         null;
@@ -197,7 +197,7 @@ function CitizensEditorInner({
   useEffect(() => {
     const row = selectedId ? rows.find((r) => r.id === selectedId) : null;
     const desired = row
-      ? row.citizen_id?.replace(/^#/, "").trim() || row.id
+      ? row.citizen_id?.trim() || row.id
       : null;
     if (desired === appliedParamRef.current) return;
     appliedParamRef.current = desired;
@@ -629,7 +629,7 @@ function CitizenRow({
       </span>
       {cols.citizenId ? (
         <span className="w-[68px] shrink-0 truncate text-center font-mono text-xs">
-          {row.citizen_id || <span className="text-muted-foreground">—</span>}
+          {displayCitizenId(row.citizen_id) || <span className="text-muted-foreground">—</span>}
         </span>
       ) : null}
       {cols.city ? (

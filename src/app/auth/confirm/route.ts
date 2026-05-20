@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
   const fallback =
     type === "recovery" || type === "invite" || type === "signup"
       ? "/auth/set-password"
-      : "/dashboard";
+      : "/";
   const next =
     nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
       ? nextParam

@@ -237,6 +237,7 @@ function ActivePresenceProvider({
       color: selfColor,
       focus,
       selection,
+       
       lastActiveAt: Date.now(),
     }),
     [userId, email, profile, selfColor, focus, selection]

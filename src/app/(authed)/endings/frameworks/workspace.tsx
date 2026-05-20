@@ -250,7 +250,9 @@ function FrameworksWorkspaceInner({
   // re-renders the effect with the new doc list, and the block gets
   // dropped from the returns map.
   const smartVariableDocsRef = useRef(smartVariableDocs);
-  smartVariableDocsRef.current = smartVariableDocs;
+  useEffect(() => {
+    smartVariableDocsRef.current = smartVariableDocs;
+  }, [smartVariableDocs]);
 
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {

@@ -8,6 +8,7 @@
 import { useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { FlashRing } from "@/lib/realtime/flash-ring";
+import { RichTextReadonly } from "@/components/rich-text/rich-text-readonly";
 import {
   ActionPill,
   InspectionLetterPill,
@@ -345,15 +346,14 @@ export function PreviewView({
 }
 
 function PreviewBody({ body }: { body: string | null }) {
-  const empty = !body || body.trim() === "";
   return (
-    <pre className="m-0 min-h-[3rem] whitespace-pre-wrap rounded-md bg-[var(--block-result-bg)] px-3 py-2 font-mono text-sm text-foreground">
-      {empty ? (
+    <RichTextReadonly
+      value={body}
+      className="min-h-[3rem] rounded-md bg-[var(--block-result-bg)] px-3 py-2 font-mono text-sm text-foreground"
+      emptyFallback={
         <span className="italic text-muted-foreground/50">(empty)</span>
-      ) : (
-        body
-      )}
-    </pre>
+      }
+    />
   );
 }
 

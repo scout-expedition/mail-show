@@ -6,6 +6,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
   useTransition,
@@ -30,9 +31,11 @@ import { DaySelect } from "@/components/day-select";
 import { filterVariables } from "@/components/variable-picker/variable-filter";
 import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 import {
+  displayCitizenId,
   formatCitizenIdInput,
   generateRandomCitizenId,
   isValidCitizenId,
+  toStorageCitizenId,
 } from "@/lib/citizen-id";
 import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
@@ -74,6 +77,8 @@ import {
   deleteGroup,
   deleteInspectionLetter,
   deleteReportSegment,
+  duplicateInspectionLetter,
+  duplicateReportSegment,
   patchAction,
   patchActionEndingAssignments,
   patchInspectionLetter,
@@ -134,7 +139,9 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Hash,
+  MailCheck,
   MailOpen,
   Mails,
   Megaphone,
@@ -153,6 +160,7 @@ import {
   IconWorldBolt,
 } from "@tabler/icons-react";
 import { formatDistanceToNow } from "date-fns";
+import { useMenuPosition } from "@/components/use-menu-position";
 
 /**
  * Selection shape used when this workspace is embedded into another page
@@ -279,6 +287,8 @@ type ActionState = ActionImpacts & {
   report_segment_id: string | null;
   next_letter_id: string | null;
   ending_assignments: EndingAssignmentState[];
+  updated_at: string;
+  updated_by: string | null;
 };
 
 type LetterState = {
@@ -329,6 +339,8 @@ function toLetterState(
         impact_emberlyn: a.impact_emberlyn,
         impact_spokgrad: a.impact_spokgrad,
         impact_pelico: a.impact_pelico,
+        updated_at: a.updated_at,
+        updated_by: a.updated_by,
         ending_assignments: endingAssignments
           .filter((e) => e.action_id === a.id)
           .map((e) => ({
@@ -563,6 +575,27 @@ function LettersWorkspaceInner({
     [storylines]
   );
 
+  // ── Optimistic-create state ──────────────────────────────────────────
+  // Ghost rows with `__optimistic: true` are appended to the server lists
+  // on click and disappear naturally on the next render after revalidation.
+  //
+  // letters/segments are dispatched from handleAddLetters/handleAddSegments
+  // (inside this component). Letter groups and actions dispatch from their
+  // respective child components (StorylineInspector / LetterActionsCard)
+  // which own their own useOptimistic hooks for cleaner encapsulation.
+  type OptLetter = InspectionLetterView & { __optimistic?: true };
+  type OptSegment = ReportSegmentView & { __optimistic?: true };
+
+  const [optimisticLetters, addOptimisticLetter] = useOptimistic(
+    allLetters as OptLetter[],
+    (prev: OptLetter[], ghost: OptLetter) => [...prev, ghost]
+  );
+  const [optimisticSegments, addOptimisticSegment] = useOptimistic(
+    allSegments as OptSegment[],
+    (prev: OptSegment[], ghost: OptSegment) => [...prev, ghost]
+  );
+  // ────────────────────────────────────────────────────────────────────
+
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(
     initialGroupId
   );
@@ -572,19 +605,35 @@ function LettersWorkspaceInner({
   );
 
   const letters = useMemo(
-    () => allLetters.filter((l) => l.letter_group_id === selectedGroupId),
-    [allLetters, selectedGroupId]
+    () => optimisticLetters.filter((l) => l.letter_group_id === selectedGroupId),
+    [optimisticLetters, selectedGroupId]
   );
   const actions = useMemo(() => {
     const letterIds = new Set(letters.map((l) => l.id));
     return allActions.filter((a) => letterIds.has(a.inspection_letter_id));
   }, [allActions, letters]);
+
+  /** Per-letter action stats for the group-panel row badges. */
+  const letterActionStats = useMemo(() => {
+    const m = new Map<string, { a: number; r: number; n: number }>();
+    for (const action of actions) {
+      const id = action.inspection_letter_id;
+      const prev = m.get(id) ?? { a: 0, r: 0, n: 0 };
+      m.set(id, {
+        a: prev.a + 1,
+        r: prev.r + (action.report_segment_id != null ? 1 : 0),
+        n: prev.n + (action.next_letter_id != null ? 1 : 0),
+      });
+    }
+    return m;
+  }, [actions]);
+
   const segments = useMemo(
     () =>
       group
-        ? allSegments.filter((s) => s.letter_group_id === group.id)
-        : ([] as ReportSegmentView[]),
-    [allSegments, group]
+        ? optimisticSegments.filter((s) => s.letter_group_id === group.id)
+        : ([] as OptSegment[]),
+    [optimisticSegments, group]
   );
   const dayById = useMemo(
     () => new Map(days.map((d) => [d.id, d])),
@@ -654,6 +703,7 @@ function LettersWorkspaceInner({
   }));
   useEffect(() => {
     if (!group) {
+       
       setGroupState({
         storyline_id: "",
         name: "",
@@ -828,10 +878,13 @@ function LettersWorkspaceInner({
   // Latest-selection refs — the postgres_changes handler reads these without
   // re-registering itself on every selection change.
   const selectedGroupIdRef = useRef(selectedGroupId);
+   
   selectedGroupIdRef.current = selectedGroupId;
   const selectedIdRef = useRef(selectedId);
+   
   selectedIdRef.current = selectedId;
   const selectedSegmentIdRef = useRef(selectedSegmentId);
+   
   selectedSegmentIdRef.current = selectedSegmentId;
 
   // Coalesce bursts of INSERTs (e.g. a single create-action that inserts a
@@ -1110,6 +1163,7 @@ function LettersWorkspaceInner({
       return letter.id;
     }
     if (!sel) {
+       
       setSelectedGroupId(null);
       setSelectedId(null);
       setSelectedSegmentId(null);
@@ -1443,26 +1497,42 @@ function LettersWorkspaceInner({
 
   // Heroes may grow via quick-create.
   const [heroes, setHeroes] = useState<Citizen[]>(initialHeroes);
+   
   useEffect(() => setHeroes(initialHeroes), [initialHeroes]);
 
   // When server data reloads, reconcile the selected letter if still present.
+  // Depend on the un-optimistic base (allLetters/allActions), not the
+  // useOptimistic-derived `letters`/`actions`: React 19 re-runs the optimistic
+  // reducer on every render while a transition is pending, yielding new array
+  // references each render. Depending on the derived lists here re-fires the
+  // effect every render → setLetterState → re-render → Maximum-update-depth.
   useEffect(() => {
     // Clear local drag order once server data matches.
+     
     setOrderOverride(null);
     if (!selectedId) {
       return;
     }
-    const found = letters.find((l) => l.id === selectedId);
+    const groupLetters = selectedGroupId
+      ? allLetters.filter((l) => l.letter_group_id === selectedGroupId)
+      : allLetters;
+    const groupLetterIds = new Set(groupLetters.map((l) => l.id));
+    const groupActions = allActions.filter((a) =>
+      groupLetterIds.has(a.inspection_letter_id)
+    );
+    const found = groupLetters.find((l) => l.id === selectedId);
     if (!found) {
       // Deleted server-side; fall back to first.
-      setSelectedId(letters[0]?.id ?? null);
+      setSelectedId(groupLetters[0]?.id ?? null);
       setLetterState(
-        letters[0] ? toLetterState(letters[0], actions, endingAssignments) : null
+        groupLetters[0]
+          ? toLetterState(groupLetters[0], groupActions, endingAssignments)
+          : null
       );
       return;
     }
-    setLetterState(toLetterState(found, actions, endingAssignments));
-  }, [letters, actions, endingAssignments, selectedId]);
+    setLetterState(toLetterState(found, groupActions, endingAssignments));
+  }, [allLetters, allActions, endingAssignments, selectedId, selectedGroupId]);
 
   function selectLetter(id: string) {
     if (id === selectedId) {
@@ -1691,7 +1761,36 @@ function LettersWorkspaceInner({
   async function handleAddLetters(count: number) {
     if (!group) return;
     const groupId = group.id;
+    const storyAbbr = currentStoryline?.abbreviation ?? "";
+    const groupSeq = group.sequence;
+    const storyId = group.storyline_id;
+    // Dispatch ghost letter rows immediately for each letter being added.
     startRowAction(async () => {
+      for (let i = 0; i < count; i++) {
+        const tmpId = `tmp-${crypto.randomUUID()}`;
+        addOptimisticLetter({
+          __optimistic: true,
+          id: tmpId,
+          letter_group_id: groupId,
+          variant: null,
+          piece: null,
+          sort_order: 9999 + i,
+          delivery_day_override_id: null,
+          delivery_day_offset: null,
+          summary: null,
+          content: null,
+          sender_citizen_id: null,
+          receiver_citizen_id: null,
+          notes: null,
+          updated_at: new Date().toISOString(),
+          updated_by: null,
+          effective_day_id: group.delivery_day_id,
+          storyline_abbreviation: storyAbbr,
+          group_sequence: groupSeq,
+          storyline_id: storyId,
+          content_id: "…",
+        } satisfies OptLetter);
+      }
       const ids = await createInspectionLettersInGroup(groupId, count);
       if (ids[0]) setSelectedId(ids[0]);
     });
@@ -1700,7 +1799,33 @@ function LettersWorkspaceInner({
   async function handleAddSegments(count: number) {
     if (!group) return;
     const groupId = group.id;
+    const storyAbbr = currentStoryline?.abbreviation ?? "";
+    const groupSeq = group.sequence;
+    const storyId = group.storyline_id;
+    // Dispatch ghost segment rows immediately.
     startRowAction(async () => {
+      for (let i = 0; i < count; i++) {
+        const tmpId = `tmp-${crypto.randomUUID()}`;
+        addOptimisticSegment({
+          __optimistic: true,
+          id: tmpId,
+          report_group_id: "",
+          variant: "…",
+          summary: null,
+          content: null,
+          delivery_day_override_id: null,
+          delivery_day_offset: null,
+          sort_order: 9999 + i,
+          updated_at: new Date().toISOString(),
+          updated_by: null,
+          letter_group_id: groupId,
+          storyline_id: storyId,
+          storyline_abbreviation: storyAbbr,
+          group_sequence: groupSeq,
+          report_id: "…",
+          effective_day_id: group.delivery_day_id,
+        } satisfies OptSegment);
+      }
       for (let i = 0; i < count; i++) {
         await createReportSegmentForGroup(groupId);
       }
@@ -1735,6 +1860,19 @@ function LettersWorkspaceInner({
         setSelectedId(null);
         setLetterState(null);
       }
+    });
+  }
+
+  function handleDuplicateLetter(letterId: string) {
+    startRowAction(async () => {
+      const { newLetterId } = await duplicateInspectionLetter(letterId);
+      setSelectedId(newLetterId);
+    });
+  }
+
+  function handleDuplicateSegment(segmentId: string) {
+    startRowAction(async () => {
+      await duplicateReportSegment(segmentId);
     });
   }
 
@@ -1919,11 +2057,22 @@ function LettersWorkspaceInner({
     });
   }
 
-  function handleAddAction(templateId: string, includePair = true) {
+  function handleAddAction(
+    templateId: string,
+    includePair = true,
+    onOptimistic?: () => void
+  ) {
     if (!group) return;
     const groupId = group.id;
     if (!selectedId || !templateId) return;
+    // `onOptimistic` (when supplied) dispatches the child's
+    // useOptimistic ghost inside this transition — keeping the ghost,
+    // the rowPending flag (which drives the AddActionMenu disabled
+    // state), and the awaited server call all tied to the same
+    // startRowAction. If onOptimistic ran in its own transition the
+    // ghost would flicker off before the server returns.
     startRowAction(async () => {
+      onOptimistic?.();
       await addActionFromTemplate(groupId, selectedId, templateId, includePair);
     });
   }
@@ -2656,9 +2805,21 @@ function LettersWorkspaceInner({
               {(orderOverride
                 ? (orderOverride
                     .map((id) => letters.find((x) => x.id === id))
-                    .filter(Boolean) as InspectionLetterView[])
+                    .filter(Boolean) as OptLetter[])
                 : letters
               ).map((l, i) => {
+                // Ghost rows (optimistic creates) render as a simple
+                // non-interactive placeholder.
+                if ((l as OptLetter).__optimistic) {
+                  return (
+                    <div
+                      key={l.id}
+                      className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0 opacity-60 italic pointer-events-none"
+                    >
+                      <CreatingPill />
+                    </div>
+                  );
+                }
                 const active = l.id === selectedId;
                 const isGhost = !listLocked && dragIndex === i;
                 return (
@@ -2712,7 +2873,7 @@ function LettersWorkspaceInner({
                       });
                     }}
                     className={cn(
-                      "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                      "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
                       isGhost
                         ? null
                         : active
@@ -2770,6 +2931,66 @@ function LettersWorkspaceInner({
                           >
                             + Piece
                           </button>
+                        ) : null}
+                        {(() => {
+                          const stats = letterActionStats.get(l.id);
+                          const aC = stats?.a ?? 0;
+                          const rC = stats?.r ?? 0;
+                          const nC = stats?.n ?? 0;
+                          return (aC > 0 || rC > 0 || nC > 0) ? (
+                            <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                              {aC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <IconBolt size={11} aria-hidden />
+                                  {aC}
+                                </span>
+                              ) : null}
+                              {rC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <Megaphone size={11} aria-hidden />
+                                  {rC}
+                                </span>
+                              ) : null}
+                              {nC > 0 ? (
+                                <span className="flex items-center gap-0.5">
+                                  <MailCheck size={11} aria-hidden />
+                                  {nC}
+                                </span>
+                              ) : null}
+                            </span>
+                          ) : null;
+                        })()}
+                        {listLocked ? (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                              "shrink-0 transition-opacity",
+                              active
+                                ? "opacity-100"
+                                : "opacity-0 group-hover/row:opacity-100"
+                            )}
+                          >
+                            <OverflowMenu
+                              items={[
+                                {
+                                  label: "Edit ID",
+                                  icon: <Hash size={12} aria-hidden />,
+                                  onClick: () => handleEditLetterId(l.id),
+                                },
+                                {
+                                  label: "Duplicate",
+                                  icon: <Copy size={12} aria-hidden />,
+                                  onClick: () => handleDuplicateLetter(l.id),
+                                },
+                                {
+                                  label: "Delete",
+                                  intent: "destructive",
+                                  icon: <Trash2 size={12} aria-hidden />,
+                                  onClick: () => handleDeleteLetter(l.id),
+                                },
+                              ]}
+                            />
+                          </div>
                         ) : null}
                       </>
                     )}
@@ -2846,9 +3067,21 @@ function LettersWorkspaceInner({
               {(segmentOrderOverride
                 ? (segmentOrderOverride
                     .map((id) => segments.find((x) => x.id === id))
-                    .filter(Boolean) as ReportSegmentView[])
+                    .filter(Boolean) as OptSegment[])
                 : segments
               ).map((seg, i) => {
+                // Ghost rows (optimistic creates) render as a simple
+                // non-interactive placeholder.
+                if ((seg as OptSegment).__optimistic) {
+                  return (
+                    <div
+                      key={seg.id}
+                      className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0 opacity-60 italic pointer-events-none"
+                    >
+                      <CreatingPill />
+                    </div>
+                  );
+                }
                 const active = seg.id === selectedSegmentId;
                 const preview = (seg.summary ?? "").trim();
                 const isGhost =
@@ -2902,7 +3135,7 @@ function LettersWorkspaceInner({
                       });
                     }}
                     className={cn(
-                      "flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                      "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
                       isGhost
                         ? null
                         : active
@@ -2951,6 +3184,47 @@ function LettersWorkspaceInner({
                           seg.delivery_day_override_id,
                           seg.effective_day_id
                         )}
+                        {segmentListLocked ? (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                              "shrink-0 transition-opacity",
+                              active
+                                ? "opacity-100"
+                                : "opacity-0 group-hover/row:opacity-100"
+                            )}
+                          >
+                            <OverflowMenu
+                              items={[
+                                {
+                                  label: "Edit ID",
+                                  icon: <Hash size={12} aria-hidden />,
+                                  onClick: () => handleEditSegmentId(seg.id),
+                                },
+                                {
+                                  label: "Duplicate",
+                                  icon: <Copy size={12} aria-hidden />,
+                                  onClick: () => handleDuplicateSegment(seg.id),
+                                },
+                                {
+                                  label: "Delete",
+                                  intent: "destructive",
+                                  icon: <Trash2 size={12} aria-hidden />,
+                                  onClick: async () => {
+                                    const ok = await confirmDialog({
+                                      title: "Delete report segment?",
+                                      message: `Segment ${seg.report_id} will be removed from the report. This cannot be undone.`,
+                                      confirmLabel: "Delete",
+                                      intent: "destructive",
+                                    });
+                                    if (!ok) return;
+                                    handleDeleteSegment(seg.id);
+                                  },
+                                },
+                              ]}
+                            />
+                          </div>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -2964,6 +3238,12 @@ function LettersWorkspaceInner({
             </div>
               </div>
             </div>
+
+            <LastUpdatedFooter
+              at={group.updated_at}
+              by={group.updated_by}
+              hidden={peers.some((p) => p.focus?.recordId === group.id)}
+            />
           </div>
           </>
           )}
@@ -2988,6 +3268,7 @@ function LettersWorkspaceInner({
               onQuickCreateHero={(role) => setHeroDialogRole(role)}
               onEditCitizen={(c) => setEditingCitizen(c)}
               onDelete={() => handleDeleteLetter(letterState.id)}
+              onDuplicate={() => handleDuplicateLetter(letterState.id)}
               onEditId={() => handleEditLetterId(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
@@ -3051,6 +3332,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onDuplicate={handleDuplicateSegment}
               onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
@@ -3115,6 +3397,7 @@ function LettersWorkspaceInner({
               templates={templates}
               onBack={closeSegmentPanel}
               onDelete={handleDeleteSegment}
+              onDuplicate={handleDuplicateSegment}
               onEditId={handleEditSegmentId}
               onJumpToTrigger={jumpToTrigger}
               onConfirmDialog={confirmDialog}
@@ -3166,6 +3449,7 @@ function LetterFieldsCard({
   onQuickCreateHero,
   onEditCitizen,
   onDelete,
+  onDuplicate,
   onEditId,
   onBack,
   actionsCount,
@@ -3184,6 +3468,7 @@ function LetterFieldsCard({
   onQuickCreateHero: (role: "sender" | "receiver") => void;
   onEditCitizen: (citizen: Citizen) => void;
   onDelete: () => void;
+  onDuplicate: () => void;
   /** Opens the Edit-ID popup for this letter's variant. */
   onEditId: () => void;
   /** Called by the back-arrow in the panel header — typically
@@ -3301,6 +3586,11 @@ function LetterFieldsCard({
                 label: "Edit ID",
                 icon: <Hash size={12} aria-hidden />,
                 onClick: onEditId,
+              },
+              {
+                label: "Duplicate",
+                icon: <Copy size={12} aria-hidden />,
+                onClick: onDuplicate,
               },
               {
                 label: "Delete Inspection Letter",
@@ -3552,7 +3842,11 @@ function LetterActionsCard({
    *  this true moves keyboard focus into the panel. */
   active: boolean;
   onActionChange: (idx: number, patch: Partial<ActionState>) => void;
-  onAddAction: (templateId: string, includePair?: boolean) => void;
+  onAddAction: (
+    templateId: string,
+    includePair?: boolean,
+    onOptimistic?: () => void
+  ) => void;
   onDeleteAction: (actionId: string) => void;
   onOpenSegment: (actionIdx: number) => void;
   openSegmentId: string | null;
@@ -3576,6 +3870,15 @@ function LetterActionsCard({
     }
     wasActiveRef.current = active;
   }, [active]);
+
+  // Optimistic action create: appends a ghost ActionState immediately on
+  // click so the panel reacts before the server round-trip completes.
+  type OptActionState = ActionState & { __optimistic?: true };
+  const [optimisticActions, addOptimisticAction] = useOptimistic(
+    actions as OptActionState[],
+    (prev: OptActionState[], ghost: OptActionState) => [...prev, ghost]
+  );
+
   return (
     <div
       ref={panelRef}
@@ -3602,7 +3905,20 @@ function LetterActionsCard({
         />
       </div>
       <div className="flex flex-col gap-3">
-        {actions.map((a, i) => (
+        {optimisticActions.map((a, i) => {
+          // Ghost rows (optimistic creates) render as a simple
+          // non-interactive placeholder.
+          if ((a as OptActionState).__optimistic) {
+            return (
+              <div
+                key={a.id}
+                className="opacity-60 italic pointer-events-none rounded-md border bg-black/20 p-3"
+              >
+                <CreatingPill />
+              </div>
+            );
+          }
+          return (
           <ActionEditor
             key={a.id}
             action={a}
@@ -3630,17 +3946,50 @@ function LetterActionsCard({
             }
             highlighted={a.id === highlightedActionId}
           />
-        ))}
-        {actions.length === 0 ? (
+          );
+        })}
+        {optimisticActions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No actions yet.</p>
         ) : null}
         <div className="flex justify-center pt-1">
           <AddActionMenu
             templates={templates}
             disabled={rowPending || templates.length === 0}
-            onAdd={(templateId, includePair) =>
-              onAddAction(templateId, includePair)
-            }
+            onAdd={(templateId, includePair) => {
+              const tmpId = `tmp-${crypto.randomUUID()}`;
+              const tpl = templates.find((t) => t.id === templateId);
+              // The parent's `handleAddAction` calls `onOptimistic`
+              // inside its `startRowAction(async () => {...})`, tying
+              // the useOptimistic ghost to the same transition as the
+              // awaited server action. That keeps the ghost visible
+              // until the server returns AND keeps `rowPending` true
+              // for the AddActionMenu's disabled state.
+              onAddAction(templateId, includePair, () => {
+                addOptimisticAction({
+                  __optimistic: true,
+                  id: tmpId,
+                  action_template_id: templateId,
+                  name: tpl?.name ?? "",
+                  icon_type: tpl?.icon_type ?? "emoji",
+                  icon_value: tpl?.icon_value ?? null,
+                  color_hex: tpl?.color_hex ?? "#888888",
+                  report_segment_id: null,
+                  next_letter_id: null,
+                  impact_world_status: 0,
+                  impact_demerits: 0,
+                  impact_proletariat: 0,
+                  impact_gentry: 0,
+                  impact_epicenter: 0,
+                  impact_folos: 0,
+                  impact_emberlyn: 0,
+                  impact_spokgrad: 0,
+                  impact_pelico: 0,
+                  updated_at: new Date().toISOString(),
+                  updated_by: null,
+                  ending_assignments: [],
+                });
+              });
+            }}
           />
         </div>
       </div>
@@ -3659,6 +4008,7 @@ function LetterSegmentCard({
   templates,
   onBack,
   onDelete,
+  onDuplicate,
   onEditId,
   onJumpToTrigger,
   onConfirmDialog,
@@ -3672,6 +4022,7 @@ function LetterSegmentCard({
   templates: ActionTemplate[];
   onBack: () => void;
   onDelete: (segmentId: string) => void;
+  onDuplicate: (segmentId: string) => void;
   /** Opens the Edit-ID popup for this report segment's variant. */
   onEditId: (segmentId: string) => void;
   onJumpToTrigger: (letterId: string) => void;
@@ -3864,6 +4215,11 @@ function LetterSegmentCard({
                 label: "Edit ID",
                 icon: <Hash size={12} aria-hidden />,
                 onClick: () => onEditId(segment.id),
+              },
+              {
+                label: "Duplicate",
+                icon: <Copy size={12} aria-hidden />,
+                onClick: () => onDuplicate(segment.id),
               },
               {
                 label: "Delete Report Segment",
@@ -4198,7 +4554,7 @@ function HeroSearch({
             value={
               selected && !editing
                 ? `${citizenDisplayName(selected)}${
-                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                    selected.citizen_id ? ` ${displayCitizenId(selected.citizen_id)}` : ""
                   }`
                 : query
             }
@@ -4398,7 +4754,7 @@ function CitizenDialog({
   const [suffix, setSuffix] = useState(existing?.suffix ?? "");
   const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
   const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
-  const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
+  const [citizenId, setCitizenId] = useState(displayCitizenId(existing?.citizen_id));
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
   const [pending, startTransition] = useTransition();
@@ -4433,7 +4789,7 @@ function CitizenDialog({
   }
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
-  const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
+  const cidDuplicate = citizenId.length > 0 && takenIds.has(toStorageCitizenId(citizenId) ?? "");
   const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
@@ -4451,7 +4807,7 @@ function CitizenDialog({
       await onSubmit({
         first_name: firstName.trim(),
         last_name: lastName.trim(),
-        citizen_id: citizenId.trim() || null,
+        citizen_id: toStorageCitizenId(citizenId),
         city_id: cityId || null,
         nation_id: nationId || null,
         middle_name: middleName.trim() || null,
@@ -4594,7 +4950,7 @@ function CitizenDialog({
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setCitizenId(generateRandomCitizenId(takenIds))}
+                onClick={() => setCitizenId(displayCitizenId(generateRandomCitizenId(takenIds)))}
                 aria-label="Generate random citizen ID"
                 title="Generate random ID"
                 className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -4991,6 +5347,7 @@ function HighlightableImpactTile({
   }, [value]);
 
   function handleChange(v: number) {
+     
     lastLocalChangeAtRef.current = Date.now();
     onChange(v);
   }
@@ -5013,6 +5370,7 @@ function HighlightableImpactTile({
             : undefined
         }
       >
+        { }
         {children(value, handleChange)}
       </div>
     </FieldHighlight>
@@ -5381,6 +5739,12 @@ function ActionEditor({
           />
         </div>
       </div>
+
+      <LastUpdatedFooter
+        at={action.updated_at}
+        by={action.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === action.id)}
+      />
 
       {/* Kebab is the card's last DOM child → the last tab stop in the
           row. Positioned to sit visually in the header's top-right. */}
@@ -6028,23 +6392,24 @@ function AddEndingVariableMenu({
   // Keyboard-highlighted row; the search input owns nav, rows are not
   // tab stops.
   const [activeIndex, setActiveIndex] = useState(0);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const popupRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const filtered = filterVariables(variables, query);
 
-  const computePos = useCallback(() => {
-    const btn = buttonRef.current;
-    if (!btn) return;
-    const r = btn.getBoundingClientRect();
-    // Over-estimate the popup width so the right-edge clamp stays safe.
-    const width = 260;
-    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
-    setPos({ top: r.bottom + 4, left });
-  }, []);
+  // Position via the shared hook: flips up when there isn't room below,
+  // clamps to viewport on both axes. `deps: [filtered.length]` re-measures
+  // whenever the result list grows/shrinks (search input filter).
+  const {
+    triggerRef: buttonRef,
+    menuRef: popupRef,
+    pos,
+  } = useMenuPosition({
+    open,
+    align: "left",
+    preferredPlacement: "down",
+    deps: [filtered.length],
+  });
 
   // Outside-click closes. The popup is portaled out of `wrapRef`, so the
   // check has to cover both the trigger and the portaled popup.
@@ -6058,20 +6423,7 @@ function AddEndingVariableMenu({
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
-
-  // Keep the fixed popup pinned to the trigger as the page scrolls or
-  // resizes — the rect coords are viewport-relative and otherwise stale.
-  useLayoutEffect(() => {
-    if (!open) return;
-    computePos();
-    window.addEventListener("scroll", computePos, true);
-    window.addEventListener("resize", computePos);
-    return () => {
-      window.removeEventListener("scroll", computePos, true);
-      window.removeEventListener("resize", computePos);
-    };
-  }, [open, computePos]);
+  }, [open, popupRef]);
 
   // Focus the search input once the popup is mounted (open + positioned).
   // Re-firing on a scroll-driven `pos` change is a no-op when the input
@@ -6287,6 +6639,71 @@ function ActionTemplateSwatch({
 }
 
 /**
+ * Flyout submenu for a paired entry in AddActionMenu. Portaled to document.body
+ * so it escapes the panel's overflow:hidden clipping.
+ */
+function PairFlyout({
+  entry,
+  onAdd,
+}: {
+  entry: { id: string; label: string; templates: ActionTemplate[] };
+  onAdd: (templateId: string, includePair: boolean) => void;
+}) {
+  const { triggerRef, menuRef, pos } = useMenuPosition<HTMLSpanElement>({
+    open: true,
+    align: "adjacent-right",
+    preferredPlacement: "up",
+  });
+
+  return (
+    <>
+      {/* Invisible sentinel that we attach to the row div so the hook can read its rect */}
+      <span ref={triggerRef} className="pointer-events-none absolute inset-0" />
+      {createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-50 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
+          style={{
+            top: pos?.top ?? -9999,
+            left: pos?.left ?? -9999,
+            visibility: pos ? "visible" : "hidden",
+          }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => onAdd(entry.id, true)}
+            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+          >
+            <span className="flex items-center gap-1">
+              {entry.templates.map((t) => (
+                <ActionTemplateSwatch key={t.id} template={t} />
+              ))}
+            </span>
+            <span>Add both</span>
+          </button>
+          <div className="border-t border-border" />
+          {entry.templates.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="menuitem"
+              onClick={() => onAdd(t.id, false)}
+              className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
+            >
+              <ActionTemplateSwatch template={t} />
+              <span>{t.name}</span>
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </>
+  );
+}
+
+/**
  * "+" add-action menu. Trigger matches the frameworks "+ block" button.
  * Each menu row is an ActionPickerEntry: a single template, or a pair.
  * For a pair, both action icons render before the label, clicking the
@@ -6306,18 +6723,25 @@ function AddActionMenu({
   const [open, setOpen] = useState(false);
   const [hoverPairId, setHoverPairId] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const { triggerRef, menuRef, pos } = useMenuPosition({
+    open,
+    align: "right",
+    preferredPlacement: "up",
+  });
   const entries = useMemo(() => pickerEntries(templates), [templates]);
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) {
-        setOpen(false);
-        setHoverPairId(null);
-      }
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+      setHoverPairId(null);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [menuRef]);
 
   function add(templateId: string, includePair: boolean) {
     onAdd(templateId, includePair);
@@ -6328,6 +6752,7 @@ function AddActionMenu({
   return (
     <div ref={ref} className="relative inline-flex">
       <button
+        ref={triggerRef}
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
@@ -6343,50 +6768,28 @@ function AddActionMenu({
       >
         <Plus size={14} aria-hidden />
       </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute bottom-full left-1/2 z-30 mb-1 w-max -translate-x-1/2 overflow-visible rounded-md border border-border bg-popover shadow-md"
-        >
-          {entries.map((entry) => {
-            const isPair = entry.templates.length === 2;
-            return (
-              <div
-                key={entry.id}
-                className="relative"
-                onMouseEnter={() =>
-                  setHoverPairId(isPair ? entry.id : null)
-                }
-                onMouseLeave={() => setHoverPairId(null)}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => add(entry.id, true)}
-                  className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
-                >
-                  <span className="flex items-center gap-1">
-                    {entry.templates.map((t) => (
-                      <ActionTemplateSwatch key={t.id} template={t} />
-                    ))}
-                  </span>
-                  <span className="flex-1">{entry.label}</span>
-                  {isPair ? (
-                    <ChevronRight
-                      size={12}
-                      aria-hidden
-                      className="text-muted-foreground"
-                    />
-                  ) : null}
-                </button>
-                {isPair && hoverPairId === entry.id ? (
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 w-max overflow-visible rounded-md border border-border bg-popover shadow-md"
+              style={{
+                top: pos?.top ?? -9999,
+                left: pos?.left ?? -9999,
+                visibility: pos ? "visible" : "hidden",
+              }}
+            >
+              {entries.map((entry) => {
+                const isPair = entry.templates.length === 2;
+                return (
                   <div
-                    role="menu"
-                    /* Anchored to the item's bottom so the flyout grows
-                       upward — the menu itself opens upward from a
-                       bottom-of-panel "+", so a downward flyout would be
-                       clipped by the panel-slide's overflow. */
-                    className="absolute bottom-0 left-full z-40 ml-0.5 w-max overflow-hidden rounded-md border border-border bg-popover shadow-md"
+                    key={entry.id}
+                    className="relative"
+                    onMouseEnter={() =>
+                      setHoverPairId(isPair ? entry.id : null)
+                    }
+                    onMouseLeave={() => setHoverPairId(null)}
                   >
                     <button
                       type="button"
@@ -6399,28 +6802,25 @@ function AddActionMenu({
                           <ActionTemplateSwatch key={t.id} template={t} />
                         ))}
                       </span>
-                      <span>Add both</span>
+                      <span className="flex-1">{entry.label}</span>
+                      {isPair ? (
+                        <ChevronRight
+                          size={12}
+                          aria-hidden
+                          className="text-muted-foreground"
+                        />
+                      ) : null}
                     </button>
-                    <div className="border-t border-border" />
-                    {entry.templates.map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => add(t.id, false)}
-                        className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left font-mono text-xs text-foreground transition-colors hover:bg-accent/40"
-                      >
-                        <ActionTemplateSwatch template={t} />
-                        <span>{t.name}</span>
-                      </button>
-                    ))}
+                    {isPair && hoverPairId === entry.id ? (
+                      <PairFlyout entry={entry} onAdd={add} />
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+                );
+              })}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -6662,17 +7062,25 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   const [open, setOpen] = useState(false);
   const [path, setPath] = useState<number[]>([]);
   const ref = useRef<HTMLDivElement>(null);
+  const { triggerRef, menuRef, pos } = useMenuPosition({
+    open,
+    align: "right",
+    preferredPlacement: "down",
+    deps: [items.length],
+  });
+
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) {
-        setOpen(false);
-        setPath([]);
-      }
+      const target = e.target as Node;
+      if (ref.current.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+      setPath([]);
     }
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  }, [menuRef]);
 
   const currentItems = useMemo(() => {
     let cur: OverflowMenuItem[] = items;
@@ -6688,6 +7096,7 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
   return (
     <div ref={ref} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => {
           setOpen((o) => !o);
@@ -6700,64 +7109,73 @@ function OverflowMenu({ items }: { items: OverflowMenuItem[] }) {
       >
         <MoreVertical size={14} aria-hidden />
       </button>
-      {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 top-full z-30 mt-1 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
-        >
-          {inSubmenu ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => setPath((p) => p.slice(0, -1))}
-              className="flex w-full items-center gap-2 whitespace-nowrap border-b border-border px-3 py-1 text-left font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 w-max max-w-[260px] overflow-hidden rounded-md border border-border bg-popover shadow-md"
+              style={{
+                top: pos?.top ?? -9999,
+                left: pos?.left ?? -9999,
+                visibility: pos ? "visible" : "hidden",
+              }}
             >
-              <ChevronLeft size={11} aria-hidden />
-              Back
-            </button>
-          ) : null}
-          {currentItems.map((item, i) =>
-            item.separator ? (
-              <div
-                key={i}
-                role="separator"
-                className="my-1 border-t border-border"
-              />
-            ) : (
-              <button
-                key={i}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  if (item.submenu) {
-                    setPath((p) => [...p, i]);
-                    return;
-                  }
-                  item.onClick?.();
-                  setOpen(false);
-                  setPath([]);
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
-                  item.intent === "destructive"
-                    ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                    : "text-foreground hover:bg-accent/40"
-                )}
-              >
-                {item.icon}
-                <span className="flex-1">{item.label}</span>
-                {item.submenu ? (
-                  <ChevronRight
-                    size={11}
-                    aria-hidden
-                    className="text-muted-foreground"
+              {inSubmenu ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => setPath((p) => p.slice(0, -1))}
+                  className="flex w-full items-center gap-2 whitespace-nowrap border-b border-border px-3 py-1 text-left font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                >
+                  <ChevronLeft size={11} aria-hidden />
+                  Back
+                </button>
+              ) : null}
+              {currentItems.map((item, i) =>
+                item.separator ? (
+                  <div
+                    key={i}
+                    role="separator"
+                    className="my-1 border-t border-border"
                   />
-                ) : null}
-              </button>
-            )
-          )}
-        </div>
-      ) : null}
+                ) : (
+                  <button
+                    key={i}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      if (item.submenu) {
+                        setPath((p) => [...p, i]);
+                        return;
+                      }
+                      item.onClick?.();
+                      setOpen(false);
+                      setPath([]);
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-2 whitespace-nowrap px-3 py-1 text-left font-mono text-[10px] transition-colors",
+                      item.intent === "destructive"
+                        ? "text-destructive hover:bg-destructive hover:text-destructive-foreground"
+                        : "text-foreground hover:bg-accent/40"
+                    )}
+                  >
+                    {item.icon}
+                    <span className="flex-1">{item.label}</span>
+                    {item.submenu ? (
+                      <ChevronRight
+                        size={11}
+                        aria-hidden
+                        className="text-muted-foreground"
+                      />
+                    ) : null}
+                  </button>
+                )
+              )}
+            </div>,
+            document.body
+          )
+        : null}
     </div>
   );
 }
@@ -6867,13 +7285,26 @@ function StorylineInspector({
   const [state, setState] = useState(() => ({
     name: storyline.name,
     abbreviation: storyline.abbreviation,
-    description: storyline.description,
+    notes: storyline.notes,
     icon_type: storyline.icon_type,
     icon_value: storyline.icon_value,
     color_hex: storyline.color_hex,
   }));
   const [, startRowAction] = useTransition();
   const [pickerOpen, setPickerOpen] = useState(false);
+
+  // Optimistic create: appends a ghost LetterGroup row immediately when
+  // the user clicks "Add". The ghost disappears on the next render that
+  // includes the real row (after revalidation).
+  type InspectorOptGroup = LetterGroup & { __optimistic?: true };
+  const [optimisticInspectorGroups, addOptimisticInspectorGroup] =
+    useOptimistic(
+      groups as InspectorOptGroup[],
+      (prev: InspectorOptGroup[], ghost: InspectorOptGroup) => [
+        ...prev,
+        ghost,
+      ]
+    );
 
   // Resync the local mirror when a different storyline is selected.
   // Instant-save hooks are remounted via key={storyline.id} at the call site,
@@ -6884,7 +7315,7 @@ function StorylineInspector({
     setState({
       name: storyline.name,
       abbreviation: storyline.abbreviation,
-      description: storyline.description,
+      notes: storyline.notes,
       icon_type: storyline.icon_type,
       icon_value: storyline.icon_value,
       color_hex: storyline.color_hex,
@@ -6928,10 +7359,10 @@ function StorylineInspector({
       ),
     onActivity: pingActivity,
   });
-  const descriptionField = useInstantField<string | null>({
-    value: storyline.description,
+  const storylineNotesField = useInstantField<string | null>({
+    value: storyline.notes,
     onCommit: async (next) => {
-      await patchStoryline(storyline.id, { description: next });
+      await patchStoryline(storyline.id, { notes: next });
     },
     onFocusChange: (focused) =>
       setFocus(
@@ -6939,7 +7370,7 @@ function StorylineInspector({
           ? {
               table: "storylines",
               recordId: storyline.id,
-              field: "description",
+              field: "notes",
             }
           : null
       ),
@@ -6992,10 +7423,10 @@ function StorylineInspector({
     recordId: storyline.id,
     field: "abbreviation",
   };
-  const descriptionFocus: PresenceFocus = {
+  const storylineNotesFocus: PresenceFocus = {
     table: "storylines",
     recordId: storyline.id,
-    field: "description",
+    field: "notes",
   };
   const iconColorFocus: PresenceFocus = {
     table: "storylines",
@@ -7004,7 +7435,20 @@ function StorylineInspector({
   };
 
   function handleAddGroup() {
+    const tmpId = `tmp-${crypto.randomUUID()}`;
     startRowAction(async () => {
+      addOptimisticInspectorGroup({
+        __optimistic: true,
+        id: tmpId,
+        storyline_id: storyline.id,
+        name: "",
+        notes: null,
+        sequence: 9999,
+        sort_order: 9999,
+        delivery_day_id: null,
+        updated_at: new Date().toISOString(),
+        updated_by: null,
+      });
       const { group } = await createLetterGroupInStoryline(storyline.id);
       onCreateGroup(group);
     });
@@ -7061,8 +7505,11 @@ function StorylineInspector({
   const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
 
   const sortedGroups = useMemo(
-    () => groups.slice().sort((a, b) => a.sort_order - b.sort_order),
-    [groups]
+    () =>
+      optimisticInspectorGroups
+        .slice()
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [optimisticInspectorGroups]
   );
 
   // --- Instant-save reorder for the letter-groups list ---
@@ -7213,17 +7660,17 @@ function StorylineInspector({
 
       <div className="grid grid-cols-6 gap-3">
         <div className="col-span-6 flex flex-col gap-1">
-          <Label>Description</Label>
-          <FieldHighlight peers={peers} focusKey={descriptionFocus}>
+          <Label>Notes</Label>
+          <FieldHighlight peers={peers} focusKey={storylineNotesFocus}>
             <AutoTextarea
-              value={descriptionField.value ?? ""}
+              value={storylineNotesField.value ?? ""}
               onChange={(e) => {
                 const next = e.target.value || null;
-                setState((s) => ({ ...s, description: next }));
-                descriptionField.set(next);
+                setState((s) => ({ ...s, notes: next }));
+                storylineNotesField.set(next);
               }}
-              onFocus={descriptionField.onFocus}
-              onBlur={descriptionField.onBlur}
+              onFocus={storylineNotesField.onFocus}
+              onBlur={storylineNotesField.onBlur}
               minRows={2}
               className={GHOST_FIELD}
             />
@@ -7309,6 +7756,18 @@ function StorylineInspector({
         </div>
         <div className="flex flex-col overflow-hidden rounded-b-md">
           {viewOrderedGroups.map((g, i) => {
+            // Ghost rows (optimistic creates) render as a simple
+            // non-interactive placeholder.
+            if ((g as InspectorOptGroup).__optimistic) {
+              return (
+                <div
+                  key={g.id}
+                  className="flex items-center gap-2 border-t border-border px-3 py-1.5 text-left text-sm first:border-t-0 opacity-60 italic pointer-events-none"
+                >
+                  <CreatingPill />
+                </div>
+              );
+            }
             const count = letterCountByGroup.get(g.id) ?? 0;
             const day = g.delivery_day_id
               ? dayById.get(g.delivery_day_id)
@@ -7435,6 +7894,12 @@ function StorylineInspector({
           ) : null}
         </div>
       </div>
+
+      <LastUpdatedFooter
+        at={storyline.updated_at}
+        by={storyline.updated_by}
+        hidden={peers.some((p) => p.focus?.recordId === storyline.id)}
+      />
       </div>
     </div>
   );
@@ -7468,6 +7933,34 @@ function StorylinesListPanel({
   const [openBuckets, setOpenBuckets] = useState<Set<string>>(
     () => new Set()
   );
+  // Presence: peer/self focus on a letter or group lights up a ring on the
+  // matching row so collaborators can see what each other is editing. Mirrors
+  // FieldHighlight's color selection (self wins over peer when both match).
+  const {
+    peers: presencePeers,
+    focus: localFocus,
+    selfColor,
+  } = usePresenceContext();
+  function rowFocusColor(
+    table: "inspection_letters" | "letter_groups",
+    recordId: string
+  ): string | undefined {
+    if (
+      localFocus &&
+      localFocus.table === table &&
+      localFocus.recordId === recordId &&
+      selfColor
+    ) {
+      return selfColor;
+    }
+    const peer = presencePeers.find(
+      (p) =>
+        p.focus &&
+        p.focus.table === table &&
+        p.focus.recordId === recordId
+    );
+    return peer?.profile?.avatarColorHex ?? peer?.color;
+  }
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -7574,6 +8067,7 @@ function StorylinesListPanel({
         if (va !== vb) return va.localeCompare(vb);
         return (a.piece ?? 0) - (b.piece ?? 0);
       });
+    const groupRingColor = rowFocusColor("letter_groups", g.id);
     return (
       <div
         key={g.id}
@@ -7582,7 +8076,14 @@ function StorylinesListPanel({
           active && "bg-accent/40"
         )}
       >
-        <div className="flex items-stretch">
+        <div
+          className="flex items-stretch"
+          style={
+            groupRingColor
+              ? { boxShadow: `inset 0 0 0 2px ${groupRingColor}` }
+              : undefined
+          }
+        >
           <button
             type="button"
             onClick={() => onSelectGroup(g.id)}
@@ -7639,6 +8140,7 @@ function StorylinesListPanel({
               const overrideDay = hasOverride
                 ? dayById.get(l.effective_day_id ?? "")
                 : null;
+              const ringColor = rowFocusColor("inspection_letters", l.id);
               return (
                 <button
                   key={l.id}
@@ -7648,6 +8150,11 @@ function StorylinesListPanel({
                     "flex items-center gap-2 px-6 py-1 text-left text-xs",
                     letterActive ? "bg-accent/40" : "hover:bg-accent/30"
                   )}
+                  style={
+                    ringColor
+                      ? { boxShadow: `inset 0 0 0 2px ${ringColor}` }
+                      : undefined
+                  }
                 >
                   {overrideDay ? (
                     <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">

@@ -314,4 +314,37 @@ describe("saveConditions", () => {
       .single();
     expect(data?.match_mode).toBe("any");
   });
+
+  it("should strip the # prefix from whole citizen-id reference values", async () => {
+    const ruleId = await addRule(sb, { letter: "A" });
+
+    await saveConditions(ruleId, [
+      {
+        position: 1,
+        target: "sender_citizen_id",
+        target_slice: "whole",
+        operator: "equals",
+        reference_type: "string",
+        reference_value: "#A1B2",
+      },
+      {
+        position: 2,
+        target: "recipient_citizen_id",
+        target_slice: "whole",
+        operator: "equals",
+        reference_type: "string",
+        reference_value: "C3D4",
+      },
+    ]);
+
+    const { data } = await sb
+      .from("sorting_rule_conditions")
+      .select("position, reference_value")
+      .eq("rule_id", ruleId)
+      .order("position");
+    expect(data).toEqual([
+      { position: 1, reference_value: "A1B2" },
+      { position: 2, reference_value: "C3D4" },
+    ]);
+  });
 });
