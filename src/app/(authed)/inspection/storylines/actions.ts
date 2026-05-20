@@ -262,6 +262,8 @@ export async function createLetterGroup(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const storyline_id = String(formData.get("storyline_id") ?? "");
   if (!storyline_id) return;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { data: existing } = await supabase
     .from("letter_groups")
     .select("sequence, sort_order")
@@ -278,6 +280,7 @@ export async function createLetterGroup(formData: FormData) {
       name: `Group ${nextSeq}`,
       sequence: nextSeq,
       sort_order: nextSort,
+      updated_by: updatedBy,
     });
   if (error) throw new Error(error.message);
   const { data: storyline } = await supabase
@@ -296,12 +299,15 @@ export async function updateLetterGroup(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   const storyline_id = String(formData.get("storyline_id") ?? "");
   if (!id) return;
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   // `sequence` is intentionally NOT updated here — the display ID is changed
   // only through the Edit-ID popup (applyLetterGroupSequences).
   const payload = {
     name: String(formData.get("name") ?? "").trim(),
     notes: nilStr(formData.get("notes")),
     delivery_day_id: nilStr(formData.get("delivery_day_id")),
+    updated_by: updatedBy,
   };
   const { error } = await supabase.from("letter_groups").update(payload).eq("id", id);
   if (error) throw new Error(error.message);

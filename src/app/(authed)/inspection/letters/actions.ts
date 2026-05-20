@@ -180,9 +180,11 @@ export async function moveLetterGroupToDay(
   dayId: string | null
 ) {
   const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
   const { error } = await supabase
     .from("letter_groups")
-    .update({ delivery_day_id: dayId })
+    .update({ delivery_day_id: dayId, updated_by: updatedBy })
     .eq("id", groupId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
@@ -683,7 +685,7 @@ export async function batchMoveToDay(
     if (m.kind === "group") {
       const { error } = await supabase
         .from("letter_groups")
-        .update({ delivery_day_id: m.targetDayId })
+        .update({ delivery_day_id: m.targetDayId, updated_by: updatedBy })
         .eq("id", m.id);
       if (error) throw new Error(error.message);
     } else {
