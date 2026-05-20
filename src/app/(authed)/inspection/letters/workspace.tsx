@@ -18,6 +18,7 @@ import { usePresenceUser } from "@/components/presence-user-context";
 import { useBreadcrumbExtension } from "@/lib/breadcrumb-context";
 import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
+import { VariableKindIcon } from "@/lib/endings/variable-kind-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,9 +30,11 @@ import { DaySelect } from "@/components/day-select";
 import { filterVariables } from "@/components/variable-picker/variable-filter";
 import { VariableOptionList } from "@/components/variable-picker/variable-option-list";
 import {
+  displayCitizenId,
   formatCitizenIdInput,
   generateRandomCitizenId,
   isValidCitizenId,
+  toStorageCitizenId,
 } from "@/lib/citizen-id";
 import { citizenDisplayName, citizenFullName } from "@/lib/citizen-name";
 import { cn } from "@/lib/utils";
@@ -4197,7 +4200,7 @@ function HeroSearch({
             value={
               selected && !editing
                 ? `${citizenDisplayName(selected)}${
-                    selected.citizen_id ? ` ${selected.citizen_id}` : ""
+                    selected.citizen_id ? ` ${displayCitizenId(selected.citizen_id)}` : ""
                   }`
                 : query
             }
@@ -4397,7 +4400,7 @@ function CitizenDialog({
   const [suffix, setSuffix] = useState(existing?.suffix ?? "");
   const [nameDisplayFormat, setNameDisplayFormat] = useState(existing?.name_display_format ?? "");
   const [addressLine, setAddressLine] = useState(existing?.address_line ?? "");
-  const [citizenId, setCitizenId] = useState(existing?.citizen_id ?? "");
+  const [citizenId, setCitizenId] = useState(displayCitizenId(existing?.citizen_id));
   const [cityId, setCityId] = useState(existing?.city_id ?? "");
   const [nationId, setNationId] = useState(existing?.nation_id ?? "");
   const [pending, startTransition] = useTransition();
@@ -4432,7 +4435,7 @@ function CitizenDialog({
   }
 
   const cidInvalid = citizenId.length > 0 && !isValidCitizenId(citizenId);
-  const cidDuplicate = citizenId.length > 0 && takenIds.has(citizenId);
+  const cidDuplicate = citizenId.length > 0 && takenIds.has(toStorageCitizenId(citizenId) ?? "");
   const canSubmit = (firstName.trim().length > 0 || lastName.trim().length > 0) && !cidInvalid && !cidDuplicate && !pending;
   const title =
     mode === "edit"
@@ -4450,7 +4453,7 @@ function CitizenDialog({
       await onSubmit({
         first_name: firstName.trim(),
         last_name: lastName.trim(),
-        citizen_id: citizenId.trim() || null,
+        citizen_id: toStorageCitizenId(citizenId),
         city_id: cityId || null,
         nation_id: nationId || null,
         middle_name: middleName.trim() || null,
@@ -4593,7 +4596,7 @@ function CitizenDialog({
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setCitizenId(generateRandomCitizenId(takenIds))}
+                onClick={() => setCitizenId(displayCitizenId(generateRandomCitizenId(takenIds)))}
                 aria-label="Generate random citizen ID"
                 title="Generate random ID"
                 className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -5940,13 +5943,18 @@ function ActionVariableChip({
             across chips) so the name|value divider aligns vertically;
             the name is right-aligned so it sits against the divider. */}
         <span
-          className="flex shrink-0 items-center justify-end px-1.5"
+          className="flex shrink-0 items-center justify-end gap-1 px-1.5"
           style={{
             backgroundColor: color,
             color: readableOnHex(color),
             width: `calc(${nameColCh}ch + 0.75rem)`,
           }}
         >
+          <VariableKindIcon
+            kind={variable.kind}
+            size={10}
+            className="shrink-0 opacity-80"
+          />
           <span className="truncate text-right">{variable.name}</span>
         </span>
         {/* Right: value + chevron + invisible overlay select. Fills the

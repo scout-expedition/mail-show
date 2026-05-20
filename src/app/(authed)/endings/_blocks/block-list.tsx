@@ -71,6 +71,7 @@ export function BlockList({
   variableIndex,
   variables,
   values,
+  smartVariableReturns,
   folders,
   document_id,
   leaves,
@@ -87,6 +88,10 @@ export function BlockList({
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Powers the chip value dropdown for
+   *  smart_ref chips. Optional — falls back to empty when absent. */
+  smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
   document_id: string;
   leaves: LeafComponents;
@@ -286,6 +291,7 @@ export function BlockList({
               variableIndex={variableIndex}
               variables={variables}
               values={values}
+              smartVariableReturns={smartVariableReturns}
               folders={folders}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
@@ -307,6 +313,7 @@ export function BlockList({
                     variableIndex={variableIndex}
                     variables={variables}
                     values={values}
+                    smartVariableReturns={smartVariableReturns}
                     folders={folders}
                     document_id={document_id}
                     leaves={leaves}

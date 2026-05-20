@@ -2,6 +2,7 @@
 
 import { useContext, useEffect, useState } from "react";
 import { Minus, Plus, X } from "lucide-react";
+import { VARIABLE_KIND_ICON } from "@/lib/endings/variable-kind-icon";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -137,6 +138,7 @@ export function ChipPill({
   variable,
   variables,
   values,
+  smartVariableReturns,
   onChange,
   onRemove,
   closeRight,
@@ -148,6 +150,11 @@ export function ChipPill({
    *  class/nation impact column). */
   variables: VariableState[];
   values: EndingVariableValue[];
+  /** Unique result strings per smart_variable doc, keyed by the paired
+   *  smart_ref variable's id. Powers the value dropdown when this
+   *  chip's variable is smart_ref. Optional — chip falls back to a
+   *  display-only label when missing. */
+  smartVariableReturns?: Map<string, string[]>;
   /** Carried over from the previous chrome; the redesign always
    *  renders compact (variable name lives in the header chip). */
   compact?: boolean;
@@ -241,11 +248,29 @@ export function ChipPill({
     else valueLabel = "—";
   } else if (variable.kind === "number_ref") {
     valueLabel = chip.number_value == null ? "—" : String(chip.number_value);
+  } else if (variable.kind === "smart_ref") {
+    // Empty-string seed (chip added before the smart variable defined
+    // any results) renders as "—". Stale values (chip references an
+    // aggregate_value the smart variable no longer produces because
+    // the result block was renamed/removed) also render as "—" so the
+    // chip reads "unset" rather than showing a value that no longer
+    // resolves. The DB row keeps its literal aggregate_value — only
+    // the presentation changes.
+    const returnsForVar = smartVariableReturns?.get(variable.id) ?? [];
+    if (chip.aggregate_value && returnsForVar.includes(chip.aggregate_value)) {
+      valueLabel = chip.aggregate_value;
+    } else {
+      valueLabel = "—";
+    }
   } else {
     valueLabel = chip.aggregate_value
       ? aggregateOptionLabel(chip.aggregate_value)
       : "—";
   }
+  const smartReturnsForVar =
+    variable.kind === "smart_ref"
+      ? smartVariableReturns?.get(variable.id) ?? []
+      : [];
 
   // Both segments share text-[10px] leading-[16px] so the operator
   // baseline aligns with the value baseline — no per-size shrinking.
@@ -330,7 +355,48 @@ export function ChipPill({
 
       {/* Value segment — dark cell with white text. Click-through
           select / number input depending on variable.kind. */}
-      {variable.kind === "text" ? (
+      {variable.kind === "smart_ref" ? (
+        <span className="relative inline-flex flex-1 items-center pl-2 text-white">
+          <span
+            aria-hidden
+            className="block truncate leading-[16px] tracking-[0.025em]"
+          >
+            {valueLabel}
+          </span>
+          <select
+            // Only bind `value` when the chip's aggregate_value is a
+            // valid current return string. A stale value would have no
+            // matching <option> and browsers fall back to the first
+            // option, which misrepresents the selection — instead
+            // leave the placeholder "" selected so the pill shows "—".
+            value={
+              chip.aggregate_value &&
+              smartReturnsForVar.includes(chip.aggregate_value)
+                ? chip.aggregate_value
+                : ""
+            }
+            onChange={(e) => {
+              const next = e.target.value;
+              if (!next) return; // "—" display-only; can't clear to null
+              onChange({ aggregate_value: next });
+            }}
+            onFocus={onChipFocus}
+            onBlur={onChipBlur}
+            aria-label="Value"
+            disabled={smartReturnsForVar.length === 0}
+            className="absolute inset-0 cursor-pointer opacity-0"
+          >
+            <option value="" disabled>
+              —
+            </option>
+            {smartReturnsForVar.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </span>
+      ) : variable.kind === "text" ? (
         <span className="relative inline-flex flex-1 items-center pl-2 text-white">
           <span
             aria-hidden
@@ -487,11 +553,13 @@ export function VariableChip({
 }) {
   const color =
     variable.color_hex ?? paletteColor(variable.color_index);
+  const KindIcon = VARIABLE_KIND_ICON[variable.kind];
   return (
     <span
-      className="inline-flex h-5 items-center gap-1 rounded-md pl-2 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
+      className="inline-flex h-5 items-center gap-1 rounded-md pl-1.5 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
       style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
+      <KindIcon size={10} aria-hidden className="shrink-0 opacity-80" />
       <span>{chipDisplayName(variable)}</span>
       {onRemove ? (
         <button

@@ -86,6 +86,11 @@ export interface EvalVariable {
   kind: EndingVariableKind;
   /** Set when kind === 'aggregate_ref'. */
   aggregate_ref: AggregateRef | null;
+  /** Set when kind === 'smart_ref'. Paired ending_documents row of
+   *  kind='smart_variable' holding this variable's condition tree.
+   *  Optional so existing test fixtures + non-smart EvalVariable
+   *  literals keep compiling. */
+  smart_variable_doc_id?: string | null;
 }
 
 export interface PreviewSelections {
@@ -93,6 +98,15 @@ export interface PreviewSelections {
   textValueIds: Record<string, string | null>;
   /** numeric input for each number_ref variable. Missing/null means unset. */
   numbers: Record<string, number | null>;
+  /**
+   * Resolved string value for each smart_ref variable. Missing/null means
+   * the smart variable's tree didn't pick a value (no condition matched
+   * and the fallback is empty), so chips on it evaluate to false. Pre-
+   * compute via `resolveSmartVariables` before running the framework /
+   * logic evaluator so every chip on the same smart var sees the same
+   * resolution.
+   */
+  smartVariableResults?: Record<string, string | null>;
   /**
    * Map from impact-column name (e.g. 'gentry') to the variable_id of the
    * seeded number_ref variable that wraps it. Aggregate chips use this to
@@ -174,6 +188,18 @@ export function evaluateChip(
     if (chip.operator === "=") return equal;
     if (chip.operator === "≠") return !equal;
     return false; // numeric operators not valid for text variables
+  }
+  if (variable.kind === "smart_ref") {
+    // Smart variables resolve to a free-form string. The chip's
+    // comparand lives in `aggregate_value` (we reuse the existing free-
+    // text column to avoid widening the chip schema). Unset → false,
+    // matching the no-fall-through rule for the other kinds.
+    const resolved = selections.smartVariableResults?.[variable.id];
+    if (resolved == null || chip.aggregate_value == null) return false;
+    const equal = resolved === chip.aggregate_value;
+    if (chip.operator === "=") return equal;
+    if (chip.operator === "≠") return !equal;
+    return false;
   }
   if (variable.kind === "aggregate_ref") {
     if (chip.operator === "set_includes" || chip.operator === "set_excludes") {
@@ -558,6 +584,36 @@ export function resolveAggregates(
       new Set()
     );
     out.set(key, resolved && tiedCols.includes(resolved) ? resolved : null);
+  }
+  return out;
+}
+
+/**
+ * Pre-resolve every smart variable to its current string value.
+ *
+ * Walks each smart_variable doc top-to-bottom: first condition block
+ * whose row matches wins, and its result_value is the smart variable's
+ * resolved string. If nothing matches, the doc's fallback block wins
+ * (per the no-starting-value design choice — fallback IS the default).
+ *
+ * Smart Variables only reference text/number/aggregate variables in v1
+ * (no chaining), so one pass over the per-doc EvalInputs is sufficient.
+ * The returned map is keyed by the paired smart_ref variable's id —
+ * stash it into `selections.smartVariableResults` before running the
+ * framework / logic evaluator so chips on smart_ref variables resolve.
+ */
+export function resolveSmartVariables(
+  smartVariables: ReadonlyArray<{
+    variable_id: string;
+    inputs: EvalInputs;
+  }>
+): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  for (const sv of smartVariables) {
+    const paragraphs = evaluateDocument(sv.inputs);
+    const resolved =
+      paragraphs.length > 0 && paragraphs[0] !== "" ? paragraphs[0] : null;
+    out.set(sv.variable_id, resolved);
   }
   return out;
 }
@@ -1090,6 +1146,8 @@ function isVariableSet(
       return selections.textValueIds[variable.id] != null;
     case "number_ref":
       return selections.numbers[variable.id] != null;
+    case "smart_ref":
+      return selections.smartVariableResults?.[variable.id] != null;
     case "aggregate_ref": {
       const ref = variable.aggregate_ref;
       if (ref == null) return false;

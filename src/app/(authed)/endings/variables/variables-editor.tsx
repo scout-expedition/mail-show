@@ -473,6 +473,7 @@ function VariablesEditorInner({
       kind: "text",
       number_ref: null,
       aggregate_ref: null,
+      smart_variable_doc_id: null,
       color_index: colorIndexFor(id),
       color_hex: null,
       folder_id: folderId,

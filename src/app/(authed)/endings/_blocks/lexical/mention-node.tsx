@@ -19,6 +19,7 @@ import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext
 import { createContext, useContext, type JSX } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
 import { paletteColor } from "@/lib/endings/color-palette";
+import { VARIABLE_KIND_ICON } from "@/lib/endings/variable-kind-icon";
 import { cn } from "@/lib/utils";
 
 export type SerializedMentionNode = Spread<
@@ -178,15 +179,17 @@ function MentionPillView({ nodeKey, variableName }: MentionPillViewProps) {
     );
   }
   const color = variable.color_hex ?? paletteColor(variable.color_index);
+  const KindIcon = VARIABLE_KIND_ICON[variable.kind];
   return (
     <span
       className={cn(
-        "inline-flex h-5 cursor-pointer items-center rounded-md px-1.5 align-baseline text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] select-none"
+        "inline-flex h-5 cursor-pointer items-center gap-1 rounded-md pl-1.5 pr-1.5 align-baseline text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em] select-none"
       )}
       style={{ backgroundColor: color, color: "var(--block-card)" }}
       contentEditable={false}
       onClick={handleClick}
     >
+      <KindIcon size={10} aria-hidden className="shrink-0 opacity-80" />
       {variableName}
     </span>
   );

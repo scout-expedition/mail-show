@@ -12,6 +12,7 @@ import { useConfirm } from "@/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type { Citizen, City, Nation } from "@/lib/db/types";
 import { citizenDisplayName, citizenSortKey } from "@/lib/citizen-name";
+import { displayCitizenId } from "@/lib/citizen-id";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
@@ -255,7 +256,7 @@ export function CityInspector({
             cityCitizens.map((c) => (
               <Link
                 key={c.id}
-                href={`/citizens?citizen=${encodeURIComponent(c.citizen_id?.replace(/^#/, "").trim() || c.id)}`}
+                href={`/citizens?citizen=${encodeURIComponent(c.citizen_id?.trim() || c.id)}`}
                 className="flex items-center gap-2 border-t border-border px-3 py-2 text-xs transition-colors first:border-t-0 hover:bg-accent/15"
               >
                 <span className="min-w-0 flex-1 truncate">
@@ -267,7 +268,7 @@ export function CityInspector({
                 </span>
                 {c.citizen_id ? (
                   <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                    {c.citizen_id}
+                    {displayCitizenId(c.citizen_id)}
                   </span>
                 ) : null}
               </Link>

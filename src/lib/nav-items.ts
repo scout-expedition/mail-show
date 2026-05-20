@@ -1,7 +1,9 @@
 import type { ComponentType, SVGProps } from "react";
 import {
+  Atom,
   CalendarDays,
   BookOpen,
+  Focus,
   Mail,
   Users,
   Map as MapIcon,
@@ -15,7 +17,6 @@ import {
   PlayCircle,
   ScrollText,
   Settings,
-  Variable,
 } from "lucide-react";
 import { IconBolt, IconMailOpened } from "@tabler/icons-react";
 export type NavIcon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
@@ -58,7 +59,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { href: "/top-of-day/morning-reports", label: "Morning Reports", icon: Megaphone, section: "Top of Day" },
   { href: "/endings/frameworks", label: "Frameworks", icon: ScrollText, section: "Endings" },
   { href: "/endings/logic", label: "Logic", icon: Network, section: "Endings" },
-  { href: "/endings/variables", label: "Variables", icon: Variable, section: "Endings" },
+  { href: "/endings/variables", label: "Variables", icon: Focus, section: "Endings" },
+  { href: "/endings/smart-variables", label: "Smart Variables", icon: Atom, section: "Endings" },
   { href: "/citizens", label: "Citizens", icon: Users, section: "Data" },
   { href: "/cities", label: "Cities", icon: MapPin, section: "Data" },
   { href: "/nations", label: "Nations", icon: Flag, section: "Data" },

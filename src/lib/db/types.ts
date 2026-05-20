@@ -302,6 +302,10 @@ export interface EndingVariable {
   kind: EndingVariableKind;
   number_ref: string | null;
   aggregate_ref: string | null;
+  /** Set when kind === 'smart_ref'. FK to the paired
+   *  ending_documents row of kind='smart_variable' that holds the
+   *  variable's condition tree. */
+  smart_variable_doc_id: string | null;
   color_index: number;
   /** User-set color override; null falls back to `paletteColor(color_index)`. */
   color_hex: string | null;

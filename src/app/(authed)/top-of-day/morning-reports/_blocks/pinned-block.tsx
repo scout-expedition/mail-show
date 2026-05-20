@@ -6,8 +6,10 @@
 // bottom of the working area, and cannot be dragged or deleted.
 
 import { Lock } from "lucide-react";
-import { BLOCK_TEXTAREA_CLASS, BlockFrame, HeaderTitle } from "./block-shell";
-import { MarkdownTextarea } from "@/components/markdown-textarea";
+import { BlockFrame, HeaderTitle } from "./block-shell";
+import { RichTextEditor } from "@/components/rich-text/rich-text-editor";
+import { GHOST_FIELD } from "@/components/panel";
+import { cn } from "@/lib/utils";
 import { ReportSegmentPill } from "@/components/pills";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
@@ -75,14 +77,14 @@ export function PinnedBlock({
         peers={peers}
         focusKey={{ table: "days", recordId: dayId, field }}
       >
-        <div onFocus={text.onFocus} onBlur={text.onBlur}>
-          <MarkdownTextarea
-            value={text.value}
-            onChange={(e) => text.set(e.target.value)}
-            minRows={2}
-            className={`font-mono ${BLOCK_TEXTAREA_CLASS}`}
-          />
-        </div>
+        <RichTextEditor
+          value={text.value}
+          onChange={(next) => text.set(next)}
+          onFocus={text.onFocus}
+          onBlur={text.onBlur}
+          minRows={2}
+          className={cn("font-mono text-xs", GHOST_FIELD)}
+        />
       </FieldHighlight>
     </BlockFrame>
   );
