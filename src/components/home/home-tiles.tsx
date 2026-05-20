@@ -406,12 +406,9 @@ function PagePickerMenu({
     }).filter(({ rows }) => rows.length > 0);
   }, [isHidden, subOptions]);
 
-  // Close on outside-click and Escape.
+  // Close on outside-click and Escape (only wires listeners while open).
   useEffect(() => {
-    if (!open) {
-      setSubmenu(null);
-      return;
-    }
+    if (!open) return;
     const onDocPointerDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
@@ -433,19 +430,6 @@ function PagePickerMenu({
   // Clear any pending close timer on unmount so we never fire setState
   // after the picker is gone.
   useEffect(() => cancelClose, [cancelClose]);
-
-  // If the current submenu's parent disappears (because the matching tile
-  // was added elsewhere), close the submenu.
-  useEffect(() => {
-    if (!submenu) return;
-    const stillVisible = sections.some(({ rows }) =>
-      rows.some(
-        ({ item, visibleSubs }) =>
-          item.href === submenu.href && visibleSubs.length > 0
-      )
-    );
-    if (!stillVisible) setSubmenu(null);
-  }, [sections, submenu]);
 
   const pick = (href: string) => {
     onSelect(href);
