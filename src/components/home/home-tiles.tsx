@@ -2,7 +2,9 @@
 
 import {
   type CSSProperties,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -45,6 +47,13 @@ const TILE_GRID = "grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6";
 
 const AUTOSAVE_DELAY_MS = 500;
 const FALLBACK_ACCENT = "#3b82f6";
+
+/**
+ * Per-user accent color. Provided at the HomeTiles root and consumed by
+ * portaled descendants (SubmenuPortal) that can't inherit the parent
+ * subtree's CSS variable via the DOM.
+ */
+const AccentContext = createContext<string>(FALLBACK_ACCENT);
 
 function pathnameOf(href: string): string {
   const noHash = href.split("#")[0] ?? "";
@@ -136,8 +145,9 @@ export function HomeTiles({
   );
 
   return (
-    <div className="flex flex-col gap-4" style={rootStyle}>
-      <div className="flex items-center justify-end gap-2">
+    <AccentContext.Provider value={userAccent}>
+      <div className="flex flex-col gap-4" style={rootStyle}>
+        <div className="flex items-center justify-end gap-2">
         {error ? (
           <span className="text-xs text-destructive">{error}</span>
         ) : null}
@@ -165,7 +175,8 @@ export function HomeTiles({
           subOptions={subOptions}
         />
       )}
-    </div>
+      </div>
+    </AccentContext.Provider>
   );
 }
 
@@ -514,13 +525,6 @@ function PagePickerMenu({
           onPick={pick}
           onHoverIn={cancelClose}
           onHoverOut={scheduleClose}
-          accent={
-            typeof document !== "undefined" && wrapperRef.current
-              ? getComputedStyle(wrapperRef.current)
-                  .getPropertyValue("--accent")
-                  .trim()
-              : ""
-          }
         />
       ) : null}
     </div>
@@ -624,7 +628,6 @@ function SubmenuPortal({
   onPick,
   onHoverIn,
   onHoverOut,
-  accent,
 }: {
   placement: SubmenuPlacement;
   parent: NavItem;
@@ -634,8 +637,10 @@ function SubmenuPortal({
   onPick: (href: string) => void;
   onHoverIn: () => void;
   onHoverOut: () => void;
-  accent: string;
 }) {
+  // Portals escape the parent subtree's CSS variables, so re-inject the
+  // accent on the portal's own style from context.
+  const accent = useContext(AccentContext);
   if (typeof document === "undefined") return null;
   const Icon = parent.icon;
   const parentWip = WIP_PATHS.has(parent.href);

@@ -31,9 +31,7 @@ function normalizeHref(raw: unknown): string | null {
   if (!subKey) return pathname;
   const params = new URLSearchParams(query);
   // Allow only the single known sub-key, nothing else.
-  let count = 0;
-  for (const _ of params.keys()) count++;
-  if (count !== 1) return pathname;
+  if (params.size !== 1) return pathname;
   const value = params.get(subKey);
   if (!value || !SAFE_SUB_VALUE.test(value)) return pathname;
   return `${pathname}?${subKey}=${value}`;
