@@ -462,4 +462,106 @@ describe("Cluster 2 negated-operator clashes", () => {
     expect(result.length).toBe(1);
     expect(hasConflict(result, [0, 1])).toBe(true);
   });
+
+  // ── Post-review fixes (claude #3 + codex #11): the implied-equality
+  // detector now covers all value-bearing is/is_not ref-types. ───────────────
+
+  it("citizen-id first_char is digit 5 + is digit 7 is a contradiction (different values)", () => {
+    const conds: RuleCondition[] = [
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is",
+        target_slice: "first_char",
+        reference_type: "digit",
+        reference_value: "5",
+      }),
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is",
+        target_slice: "first_char",
+        reference_type: "digit",
+        reference_value: "7",
+      }),
+    ];
+    const result = detectContradictions(conds, "all");
+    expect(result.length).toBe(1);
+    expect(hasConflict(result, [0, 1])).toBe(true);
+  });
+
+  it("citizen-id first_char is digit 5 + is_not digit 5 is a contradiction", () => {
+    const conds: RuleCondition[] = [
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is",
+        target_slice: "first_char",
+        reference_type: "digit",
+        reference_value: "5",
+      }),
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is_not",
+        target_slice: "first_char",
+        reference_type: "digit",
+        reference_value: "5",
+      }),
+    ];
+    const result = detectContradictions(conds, "all");
+    expect(result.length).toBe(1);
+    expect(hasConflict(result, [0, 1])).toBe(true);
+  });
+
+  it("name first_char is letter_set A,B + is_not letter_set A,B is a contradiction", () => {
+    const conds: RuleCondition[] = [
+      makeRuleCondition({
+        target: "sender_first_name",
+        operator: "is",
+        target_slice: "first_char",
+        reference_type: "letter_set",
+        reference_value: "A,B",
+      }),
+      makeRuleCondition({
+        target: "sender_first_name",
+        operator: "is_not",
+        target_slice: "first_char",
+        reference_type: "letter_set",
+        reference_value: "A,B",
+      }),
+    ];
+    const result = detectContradictions(conds, "all");
+    expect(result.length).toBe(1);
+    expect(hasConflict(result, [0, 1])).toBe(true);
+  });
+
+  it("citizen-id first_char is digit_set 1,3 + is_not digit_set 1,3 is a contradiction", () => {
+    const conds: RuleCondition[] = [
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is",
+        target_slice: "first_char",
+        reference_type: "digit_set",
+        reference_value: "1,3",
+      }),
+      makeRuleCondition({
+        target: "sender_citizen_id",
+        operator: "is_not",
+        target_slice: "first_char",
+        reference_type: "digit_set",
+        reference_value: "1,3",
+      }),
+    ];
+    const result = detectContradictions(conds, "all");
+    expect(result.length).toBe(1);
+    expect(hasConflict(result, [0, 1])).toBe(true);
+  });
+
+  // Match-mode suppression: contradictions only fire under `all`. `exclusive`
+  // (XOR) is intentionally treated like `any` — a "can't both be true" pair
+  // is consistent with "exactly one must be true".
+  it("returns [] under exclusive mode even with a definite contradiction", () => {
+    const conds: RuleCondition[] = [
+      makeRuleCondition({ target: "sender_first_name", operator: "equals", reference_value: "Alice" }),
+      makeRuleCondition({ target: "sender_first_name", operator: "not_equals", reference_value: "Alice" }),
+    ];
+    expect(detectContradictions(conds, "exclusive")).toEqual([]);
+  });
 });

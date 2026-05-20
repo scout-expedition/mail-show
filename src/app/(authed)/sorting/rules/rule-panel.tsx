@@ -33,6 +33,7 @@ export function RulePanel({
   allRules,
   onClose,
   onSelectRule,
+  onConditionsError,
 }: {
   rule: SortingRule;
   conditions: SortingRuleCondition[];
@@ -42,6 +43,9 @@ export function RulePanel({
   allRules: SortingRule[];
   onClose: () => void;
   onSelectRule: (id: string) => void;
+  /** Surfaced when the conditions editor fails to autosave — the workspace
+   *  owns the shared toaster, so we just hand the message up. */
+  onConditionsError?: (message: string) => void;
 }) {
   const { peers, setFocus, pingActivity } = usePresenceContext();
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -85,7 +89,17 @@ export function RulePanel({
         setRejectedLetter(next);
         throw new Error("That Rule ID is already in use.");
       }
-      await patchSortingRule(rule.id, { letter: next });
+      try {
+        await patchSortingRule(rule.id, { letter: next });
+      } catch (err) {
+        // Server-side `/unique/i` guard caught a peer race (two browsers
+        // grabbed the same letter between their in-memory pre-checks). Show
+        // the same struck-through indicator we would have for a local
+        // collision, then re-throw so `useInstantField` reverts the input.
+        const message = err instanceof Error ? err.message : String(err);
+        if (/unique/i.test(message)) setRejectedLetter(next);
+        throw err;
+      }
     },
     onFocusChange: (f) => setFocus(f ? makeFocusKey("letter") : null),
     onActivity: pingActivity,
@@ -158,8 +172,14 @@ export function RulePanel({
     storageField,
     summaryField,
   ];
+  // Include `error` so the panel header stays "Unsaved" after a rejected
+  // commit instead of flashing "Saved" — `useInstantField` reverts the input
+  // on error but the only signal beyond that revert is right here.
   const anyFieldBusy = scalarFields.some(
-    (f) => f.status === "dirty" || f.status === "saving"
+    (f) =>
+      f.status === "dirty" ||
+      f.status === "saving" ||
+      f.status === "error"
   );
   const panelDirty = conditionsDirty || anyFieldBusy;
   // Once we've ever shown the "Unsaved" badge, render "Saved" for a moment
@@ -353,6 +373,7 @@ export function RulePanel({
           nations={nations}
           cities={cities}
           onDirtyChange={handleConditionsDirty}
+          onSaveError={onConditionsError}
         />
       </div>
       {confirmDialog}

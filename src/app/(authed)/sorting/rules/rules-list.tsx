@@ -70,6 +70,7 @@ export function RulesList({
         nations={nations}
         cities={cities}
         initialSelectedRuleId={initialSelectedRuleId}
+        currentEmail={currentEmail}
       />
     </WorkspacePresenceProvider>
   );
@@ -84,6 +85,7 @@ function RulesWorkspace({
   nations,
   cities,
   initialSelectedRuleId,
+  currentEmail,
 }: {
   rules: SortingRule[];
   conditionsByRule: Record<string, SortingRuleCondition[]>;
@@ -91,6 +93,7 @@ function RulesWorkspace({
   nations: Nation[];
   cities: City[];
   initialSelectedRuleId: string | null;
+  currentEmail?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -165,10 +168,15 @@ function RulesWorkspace({
           });
           setSelectedRuleId((cur) => (cur === id ? null : cur));
           const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
-          toast({
-            intent: "destructive",
-            message: `${by} deleted a sorting rule`,
-          });
+          // Suppress the toast when WE were the one who deleted — the kebab
+          // confirm already conveyed intent and the panel closes on its own.
+          // Peers still get the destructive heads-up.
+          if (by !== currentEmail) {
+            toast({
+              intent: "destructive",
+              message: `${by} deleted a sorting rule`,
+            });
+          }
           return;
         }
         if (eventType === "INSERT") {
@@ -201,7 +209,7 @@ function RulesWorkspace({
         }
       }
     });
-  }, [onPostgresChanges, toast, scheduleRefresh]);
+  }, [onPostgresChanges, toast, scheduleRefresh, currentEmail]);
 
   const [creating, startCreate] = useTransition();
   function handleCreate() {
@@ -254,6 +262,9 @@ function RulesWorkspace({
               allRules={rules}
               onClose={() => setSelectedRuleId(null)}
               onSelectRule={(id) => setSelectedRuleId(id)}
+              onConditionsError={(m) =>
+                toast({ intent: "destructive", message: m })
+              }
             />
           ) : null}
         </div>

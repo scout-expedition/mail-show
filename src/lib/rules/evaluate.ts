@@ -154,6 +154,11 @@ export function evaluateCondition(cond: RuleCondition, ctx: RuleContext): boolea
   switch (cond.operator) {
     case "equals":
       return evalEquals(cond, ctx);
+    // Negated operators are pure boolean negations. Note: when the target
+    // field is null on the context, evalEquals / evalContains / evalIs all
+    // return false, so `not_*` returns true — i.e. "sender_middle_name not_
+    // equals 'Lee'" matches every citizen with no middle name. This is the
+    // documented semantic; tests pin it.
     case "not_equals":
       return !evalEquals(cond, ctx);
     case "contains":

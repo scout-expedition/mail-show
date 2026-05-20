@@ -207,6 +207,31 @@ export function displayLetterSet(stored: string | null): string {
 
 // ─── normalization ───────────────────────────────────────────────────────────
 
+/** Operators in negation-paired families. When the matrix forces a snap, we
+ *  prefer to land in the same column of this table so a user's polarity isn't
+ *  silently flipped (e.g. moving from `name first_char is_not letter` to a
+ *  whole-string target should land on `not_equals`, not `equals`). */
+const POSITIVE_OPS: readonly RuleOperator[] = ["equals", "contains", "is"];
+const NEGATIVE_OPS: readonly RuleOperator[] = [
+  "not_equals",
+  "not_contains",
+  "is_not",
+];
+
+function snapOperator(
+  prev: RuleOperator,
+  allowed: readonly RuleOperator[]
+): RuleOperator {
+  if (allowed.includes(prev)) return prev;
+  const wasNegative = NEGATIVE_OPS.includes(prev);
+  // Prefer a negation from `allowed` when the prior op was negated, else a
+  // positive op. Falls back to whatever the matrix offers first if neither
+  // family is represented (e.g. numeric-only operators like `gt`/`lt`).
+  const preferred = wasNegative ? NEGATIVE_OPS : POSITIVE_OPS;
+  for (const op of preferred) if (allowed.includes(op)) return op;
+  return allowed[0];
+}
+
 /** Force a condition into a self-consistent shape per the matrix. */
 export function normalizeCondition(c: EditableCondition): EditableCondition {
   const allowedSlices = slicesFor(c.target);
@@ -215,7 +240,7 @@ export function normalizeCondition(c: EditableCondition): EditableCondition {
     : allowedSlices[0];
 
   const allowedOps = operatorsFor(c.target, target_slice);
-  const operator = allowedOps.includes(c.operator) ? c.operator : allowedOps[0];
+  const operator = snapOperator(c.operator, allowedOps);
 
   const allowedRefs = referenceTypesFor(c.target, target_slice, operator);
   const reference_type = allowedRefs.includes(c.reference_type)

@@ -72,6 +72,13 @@ export function detectContradictions(
     //   not_equals V         → neq V
     //   is "..." (string)    → eq V       (value-equals via picker, e.g. city)
     //   is_not "..." (string) → neq V
+    //   is "5" (digit)       → eq "5"     (numeric value-equals on a sliced
+    //                                       digit — same eq semantics as string)
+    //   is_not "5" (digit)   → neq "5"
+    //   is "A,B" (letter_set / digit_set) → eq <set>  (set membership, but
+    //                                       compared by canonical key so two
+    //                                       different sets contradict each
+    //                                       other as `eq` pairs)
     //   is true / is false   → eq "true" / eq "false"
     //   is_not true/false    → eq "false" / eq "true"  (bool has only two values)
     //
@@ -81,6 +88,14 @@ export function detectContradictions(
     // -----------------------------------------------------------------------
     type Implied = { kind: "eq" | "neq"; value: string; i: number };
     const implied: Implied[] = [];
+    /** Ref types that pair with `is`/`is_not` as direct value-equals — they
+     *  add to the implied list the same way `string` does. */
+    const VALUE_EQUALS_REF_TYPES = new Set<string>([
+      "string",
+      "digit",
+      "letter_set",
+      "digit_set",
+    ]);
     for (const { i, c } of group) {
       const r = c.reference_value;
       if (c.operator === "is" && c.reference_type === "true") {
@@ -93,13 +108,14 @@ export function detectContradictions(
         implied.push({ kind: "eq", value: "true", i });
       } else if (
         (c.operator === "equals" ||
-          (c.operator === "is" && c.reference_type === "string")) &&
+          (c.operator === "is" && VALUE_EQUALS_REF_TYPES.has(c.reference_type))) &&
         r != null
       ) {
         implied.push({ kind: "eq", value: r, i });
       } else if (
         (c.operator === "not_equals" ||
-          (c.operator === "is_not" && c.reference_type === "string")) &&
+          (c.operator === "is_not" &&
+            VALUE_EQUALS_REF_TYPES.has(c.reference_type))) &&
         r != null
       ) {
         implied.push({ kind: "neq", value: r, i });

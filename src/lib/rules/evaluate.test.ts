@@ -315,6 +315,44 @@ describe("evaluateRule", () => {
 
   // ─── exclusive (Or — XOR over conditions) ──────────────────────────────────
 
+  // Pinned semantic: negated operators on a null-valued field return true,
+  // because the inner positive eval returns false. This is documented in
+  // evaluate.ts. If a future change flips to SQL three-valued logic, this
+  // test should be updated alongside.
+  describe("negated operator on null field", () => {
+    it("not_equals matches a null target field", () => {
+      const ctx = makeRuleContext({ sender_middle_name: null });
+      const cond = makeRuleCondition({
+        target: "sender_middle_name",
+        operator: "not_equals",
+        reference_type: "string",
+        reference_value: "Lee",
+      });
+      expect(evaluateCondition(cond, ctx)).toBe(true);
+    });
+    it("not_contains matches a null target field", () => {
+      const ctx = makeRuleContext({ sender_middle_name: null });
+      const cond = makeRuleCondition({
+        target: "sender_middle_name",
+        operator: "not_contains",
+        reference_type: "string",
+        reference_value: "Lee",
+      });
+      expect(evaluateCondition(cond, ctx)).toBe(true);
+    });
+    it("is_not + letter matches a null target field", () => {
+      const ctx = makeRuleContext({ sender_middle_name: null });
+      const cond = makeRuleCondition({
+        target: "sender_middle_name",
+        operator: "is_not",
+        target_slice: "first_char",
+        reference_type: "letter",
+        reference_value: null,
+      });
+      expect(evaluateCondition(cond, ctx)).toBe(true);
+    });
+  });
+
   describe("'exclusive' mode", () => {
     it("returns false when zero conditions pass", () => {
       const ctx = makeRuleContext({

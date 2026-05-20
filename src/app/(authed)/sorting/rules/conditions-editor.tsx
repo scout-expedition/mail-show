@@ -59,10 +59,14 @@ function toEditable(c: SortingRuleCondition): EditableCondition {
 }
 
 function defaultCondition(): EditableCondition {
+  // Recipient nation is a `is`/`is_not` matrix per `operatorsFor` — `equals`
+  // would briefly render as a stray select value before `commit()` normalizes
+  // it 600ms later. Start in a valid (operator, reference_type) shape so the
+  // OperatorPill picks the right option from frame one.
   return {
     target: "recipient_nation",
     target_slice: "whole",
-    operator: "equals",
+    operator: "is",
     reference_type: "string",
     reference_value: null,
   };
@@ -143,7 +147,18 @@ const COMPARATOR_PILL = {
 
 function comparatorColor(t: RuleReferenceType) {
   if (t === "true" || t === "false") return COMPARATOR_PILL.bool;
-  if (t === "string" || t === "number" || t === "letter_set") {
+  // Every value-bearing ref-type renders with the purple "value-input" palette;
+  // type-check-only ref-types (letter / any_number / even / odd) get orange.
+  // `digit` / `digit_set` are user-typed values just like `number` /
+  // `letter_set`, so they share the value palette — without this branch the
+  // pill rendered orange and broke the documented color invariant.
+  if (
+    t === "string" ||
+    t === "number" ||
+    t === "letter_set" ||
+    t === "digit" ||
+    t === "digit_set"
+  ) {
     return COMPARATOR_PILL.value;
   }
   return COMPARATOR_PILL.typecheck;
@@ -609,6 +624,15 @@ function ComparatorPill({
       next = raw.replace(/\D/g, "").slice(0, 1);
     } else if (refType === "digit_set") {
       next = raw.replace(/[^0-9,\s]/g, "");
+    } else if (isSingleCharString) {
+      // "this letter" single-char input. The render has `text-center
+      // uppercase` for visual polish, but CSS text-transform doesn't change
+      // the value on `e.target.value` — so without an explicit `toUpperCase`
+      // here the stored value would stay lowercase and the strict
+      // `str === ref` check in `evalIs` would silently never match an
+      // uppercase character (e.g. user types "a", value compared against
+      // "Amsterdam".charAt(0) = "A" → false). Cap at one char too.
+      next = raw.toUpperCase().slice(0, 1);
     }
     onChange({ reference_value: next });
   }
@@ -733,9 +757,18 @@ function ConditionRow({
           target={condition.target}
           slice={condition.target_slice}
           onChange={({ composite: next, slice }) => {
+            const nextTarget = encodeTarget(next);
+            // Clear the value when the subject or field changes — a stale
+            // name like "Alice" would otherwise persist into a nation /
+            // weekday / counterfeit condition where it's meaningless (the
+            // dedicated pickers mark it as "missing" but it'd still write
+            // to the DB on save). Mirrors the same clear we already do
+            // when the comparator-type picker changes.
+            const targetChanged = nextTarget !== condition.target;
             patch({
-              target: encodeTarget(next),
+              target: nextTarget,
               target_slice: slice,
+              ...(targetChanged ? { reference_value: null } : {}),
             });
           }}
         />
@@ -774,6 +807,7 @@ export function ConditionsEditor({
   nations,
   cities,
   onDirtyChange,
+  onSaveError,
 }: {
   ruleId: string;
   conditions: SortingRuleCondition[];
@@ -785,6 +819,10 @@ export function ConditionsEditor({
    *  this keeps the conditions area itself from reflowing as a save badge
    *  toggles on each keystroke. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Bubble up a failed autosave so the workspace can surface a toast. The
+   *  editor itself doesn't render its own toaster — the rules-list provider
+   *  owns the one shared portal. */
+  onSaveError?: (message: string) => void;
 }) {
   const [conds, setConds] = useState<EditableCondition[]>(() =>
     conditions.map(toEditable)
@@ -835,14 +873,45 @@ export function ConditionsEditor({
     onDirtyChangeRef.current?.(dirty);
   }, [dirty]);
 
-  const commit = useCallback(() => {
+  const onSaveErrorRef = useRef(onSaveError);
+  useEffect(() => {
+    onSaveErrorRef.current = onSaveError;
+  }, [onSaveError]);
+
+  // Re-entrancy guard: prevents two saves from being in flight at the same
+  // time. When a save is awaiting on the server and the user keeps editing,
+  // `schedule()` re-arms the debounce — the next timer fire is held by this
+  // flag until the current save resolves, then commits the latest state.
+  const savingRef = useRef(false);
+
+  const commit = useCallback(async () => {
     if (!dirtyRef.current) return;
+    if (savingRef.current) return;
     const current = condsRef.current.map(normalizeCondition);
     if (current.some(hasNumericError)) return; // hold — never drop a row
     const payload = current.map((c, i) => ({ ...c, position: i + 1 }));
+
+    // Optimistic clear: the panel flips to "Saved" while the server round-
+    // trip is in flight. Restored on failure below — see the catch.
+    savingRef.current = true;
     setDirty(false);
     dirtyRef.current = false;
-    void saveConditions(ruleId, payload, modeRef.current);
+
+    try {
+      await saveConditions(ruleId, payload, modeRef.current);
+    } catch (err) {
+      // The user's edits are still in local `conds` — re-mark dirty so the
+      // header keeps showing "Unsaved", and bubble a toast up to the
+      // workspace. The next debounce or unmount-flush will retry.
+      console.error("[sorting-rules] saveConditions failed:", err);
+      setDirty(true);
+      dirtyRef.current = true;
+      onSaveErrorRef.current?.(
+        "Couldn't save the rule's conditions. Edits are still here — try again."
+      );
+    } finally {
+      savingRef.current = false;
+    }
   }, [ruleId]);
 
   const schedule = useCallback(() => {
