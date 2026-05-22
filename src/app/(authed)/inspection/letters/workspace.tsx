@@ -67,7 +67,14 @@ import {
   addActionFromTemplate,
   addActionsForGroup,
   addPieceToLetter,
+  applyInspectionLetterPieces,
   applyInspectionLetterVariants,
+  deletePieceGroup,
+  duplicatePieceGroup,
+  extractLetterFromPieceGroup,
+  mergeLetters,
+  renumberPiecesSequentially,
+  sortPiecesById,
   applyLetterGroupSequences,
   applyReportSegmentVariants,
   createInspectionLettersInGroup,
@@ -103,6 +110,13 @@ import {
   sortReportSegmentsChronologically,
   updateCitizen,
 } from "./actions";
+import {
+  displayNextLetterId,
+  groupLettersByPieceGroup,
+  isInPieceGroup,
+  pieceGroupContentId,
+  pieceGroupKey,
+} from "@/lib/piece-groups";
 import {
   deleteStoryline,
   patchStoryline,
@@ -573,6 +587,8 @@ function LettersWorkspaceInner({
   const { openRenumber, dialog: renumberDialogEl } = useRenumberDialog({
     scoped: true,
   });
+  const { openRenumber: openPieceRenumber, dialog: pieceRenumberDialogEl } =
+    useRenumberDialog({ scoped: true });
   const storylineById = useMemo(
     () => new Map(storylines.map((s) => [s.id, s])),
     [storylines]
@@ -823,6 +839,8 @@ function LettersWorkspaceInner({
   const [listLocked, setListLocked] = useState(true);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [orderOverride, setOrderOverride] = useState<string[] | null>(null);
+  // Which piece-group buckets are expanded in slot 2. Key: `piece-group:${lgId}:${variant}`.
+  const [openBuckets, setOpenBuckets] = useState<Set<string>>(() => new Set());
   const [segmentListLocked, setSegmentListLocked] = useState(true);
   const [segmentDragIndex, setSegmentDragIndex] = useState<number | null>(null);
   const [segmentOrderOverride, setSegmentOrderOverride] = useState<
@@ -1999,6 +2017,96 @@ function LettersWorkspaceInner({
     });
   }
 
+  async function handleEditPieceId(letterId: string) {
+    if (!group) return;
+    const target = letters.find((l) => l.id === letterId);
+    if (!target || !isInPieceGroup(target) || !target.variant) return;
+    const members = letters
+      .filter((l) => l.variant === target.variant && isInPieceGroup(l))
+      .slice()
+      .sort((a, b) => (a.piece ?? 0) - (b.piece ?? 0));
+    const items: RenumberItem[] = members.map((m) => ({
+      id: m.id,
+      numberToken: String(m.piece ?? 1),
+      name: m.summary || "(no summary)",
+    }));
+    const result = await openPieceRenumber({
+      kind: "piece",
+      items,
+      targetId: letterId,
+      prefix: `${pieceGroupContentId(target)}#`,
+    });
+    if (!result) return;
+    const groupId = group.id;
+    const variant = target.variant;
+    if (!variant) return;
+    const assignments = result.edits.map((e) => ({
+      id: e.id,
+      newPiece: Number(e.newNumberToken),
+    }));
+    startRowAction(async () => {
+      await applyInspectionLetterPieces(groupId, variant, assignments);
+    });
+  }
+
+  async function handleSortPiecesById(variant: string) {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await sortPiecesById(groupId, variant);
+    });
+  }
+
+  async function handleRenumberPieces(variant: string) {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await renumberPiecesSequentially(groupId, variant);
+    });
+  }
+
+  async function handleDuplicatePieceGroup(variant: string) {
+    if (!group) return;
+    const groupId = group.id;
+    startRowAction(async () => {
+      await duplicatePieceGroup(groupId, variant);
+    });
+  }
+
+  async function handleDeletePieceGroup(variant: string) {
+    if (!group) return;
+    const groupId = group.id;
+    const members = letters
+      .filter((l) => l.variant === variant && isInPieceGroup(l))
+      .slice()
+      .sort((a, b) => (a.piece ?? 0) - (b.piece ?? 0));
+    const label = members[0] ? pieceGroupContentId(members[0]) : variant;
+    const ok = await confirmDialog({
+      title: "Delete piece group?",
+      message: `${label} and all its pieces (${members.length}) will be permanently removed, along with all their actions. Any actions that reference these letters will be cleared.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    startRowAction(async () => {
+      await deletePieceGroup(groupId, variant);
+    });
+  }
+
+  async function handleMergeLetters(sourceId: string, targetId: string) {
+    if (!group) return;
+    startRowAction(async () => {
+      await mergeLetters(sourceId, targetId);
+    });
+  }
+
+  async function handleExtractLetter(letterId: string) {
+    if (!group) return;
+    startRowAction(async () => {
+      await extractLetterFromPieceGroup(letterId);
+    });
+  }
+
   async function handleEditSegmentId(segmentId: string) {
     const target = segments.find((s) => s.id === segmentId);
     if (!target) return;
@@ -2924,16 +3032,33 @@ function LettersWorkspaceInner({
               </div>
             </div>
             <div className="flex flex-col overflow-hidden rounded-b-md">
-              {(orderOverride
-                ? (orderOverride
-                    .map((id) => letters.find((x) => x.id === id))
-                    .filter(Boolean) as OptLetter[])
-                : letters
-              ).map((l, i) => {
-                // Ghost rows (optimistic creates) render as a simple
-                // non-interactive placeholder.
-                if ((l as OptLetter).__optimistic) {
-                  return (
+              {(() => {
+                // Build a display list: if we have an orderOverride, reconstruct
+                // a letter list from it, then group into slots. Otherwise use
+                // the server-ordered letters directly.
+                const displayLetters: OptLetter[] = orderOverride
+                  ? (orderOverride
+                      .map((id) => letters.find((x) => x.id === id))
+                      .filter(Boolean) as OptLetter[])
+                  : (letters as OptLetter[]);
+
+                // Optimistic ghost letters are rendered before slot grouping.
+                const ghosts = displayLetters.filter(
+                  (l) => (l as OptLetter).__optimistic
+                );
+                const realLetters = displayLetters.filter(
+                  (l) => !(l as OptLetter).__optimistic
+                );
+
+                // Group real letters into piece-group and standalone slots.
+                const slots = groupLettersByPieceGroup(realLetters);
+
+                // For drag-reorder we need a flat index that maps to the slot list.
+                // Dragging moves slots (not individual letters within a piece group).
+                const rows: React.ReactNode[] = [];
+
+                ghosts.forEach((l) => {
+                  rows.push(
                     <div
                       key={l.id}
                       className="flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0 opacity-60 italic pointer-events-none"
@@ -2941,189 +3066,497 @@ function LettersWorkspaceInner({
                       <CreatingPill />
                     </div>
                   );
-                }
-                const active = l.id === selectedId;
-                const isGhost = !listLocked && dragIndex === i;
-                return (
-                  <div
-                    key={l.id}
-                    draggable={!listLocked}
-                    onDragStart={(e) => {
-                      e.dataTransfer.effectAllowed = "move";
-                      // Defer blanking the in-list row by a frame so the
-                      // browser captures the drag image (which travels with
-                      // the cursor) while the row still has its content.
-                      dragRafRef.current = requestAnimationFrame(() => {
-                        dragRafRef.current = null;
-                        setDragIndex(i);
-                      });
-                    }}
-                    onDragOver={(e) => {
-                      if (listLocked || dragIndex === null) return;
-                      // preventDefault + dropEffect always (even over the
-                      // dragged row's own slot) so the release counts as a
-                      // valid "move" drop and the browser plays no snap-back.
-                      e.preventDefault();
-                      e.dataTransfer.dropEffect = "move";
-                      if (dragIndex === i) return;
-                      const current = orderOverride ?? letters.map((x) => x.id);
-                      const next = current.slice();
-                      const [moved] = next.splice(dragIndex, 1);
-                      next.splice(i, 0, moved);
-                      setOrderOverride(next);
-                      setDragIndex(i);
-                    }}
-                    onDrop={(e) => e.preventDefault()}
-                    onDragEnd={() => {
-                      // Cancel a still-pending blank-the-row frame so it
-                      // can't re-blank this row after the drag has ended.
-                      if (dragRafRef.current !== null) {
-                        cancelAnimationFrame(dragRafRef.current);
-                        dragRafRef.current = null;
-                      }
-                      setDragIndex(null);
-                      if (listLocked || !orderOverride) return;
-                      const serverIds = letters.map((x) => x.id);
-                      const unchanged =
-                        serverIds.length === orderOverride.length &&
-                        serverIds.every((id, idx) => id === orderOverride[idx]);
-                      if (unchanged) return;
-                      const final = orderOverride;
-                      const groupId = group.id;
-                      startRowAction(async () => {
-                        await reorderInspectionLetters(groupId, final);
-                      });
-                    }}
-                    className={cn(
-                      "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
-                      isGhost
-                        ? null
-                        : active
-                          ? "bg-accent/40"
-                          : "hover:bg-accent/15",
-                      !listLocked && "cursor-grab active:cursor-grabbing"
-                    )}
-                  >
-                    {isGhost ? (
+                });
+
+                slots.forEach((slot, slotIndex) => {
+                  const isGhost = !listLocked && dragIndex === slotIndex;
+
+                  if (slot.kind === "pieceGroup") {
+                    const { key: bucketKey, variant, letterGroupId, members } = slot;
+                    const pgBucketKey = `piece-group:${letterGroupId}:${variant}`;
+                    const pgOpen = openBuckets.has(pgBucketKey);
+                    const firstMember = members[0];
+
+                    rows.push(
                       <div
-                        aria-hidden
-                        className="h-6 flex-1 rounded-sm bg-accent/10"
-                      />
-                    ) : (
-                      <>
-                        {!listLocked ? (
-                          <span
-                            aria-hidden
-                            className="text-muted-foreground"
-                            title="Drag to reorder"
-                          >
-                            ⋮⋮
-                          </span>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => selectLetter(l.id)}
-                          disabled={!listLocked}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
-                        >
-                          <InspectionLetterPill
-                            storyline={currentStoryline}
-                            contentId={l.content_id}
-                          />
-                          <span className="min-w-0 flex-1 truncate text-xs">
-                            {l.summary || (
-                              <span className="text-muted-foreground italic">
-                                (no summary)
-                              </span>
-                            )}
-                          </span>
-                        </button>
-                        {deliveryBadge(
-                          l.delivery_day_override_id,
-                          l.effective_day_id
+                        key={bucketKey}
+                        draggable={!listLocked}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          dragRafRef.current = requestAnimationFrame(() => {
+                            dragRafRef.current = null;
+                            setDragIndex(slotIndex);
+                          });
+                        }}
+                        onDragOver={(e) => {
+                          if (listLocked || dragIndex === null) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          if (dragIndex === slotIndex) return;
+                          const current =
+                            orderOverride ?? letters.map((x) => x.id);
+                          const next = current.slice();
+                          const [moved] = next.splice(dragIndex, 1);
+                          next.splice(slotIndex, 0, moved);
+                          setOrderOverride(next);
+                          setDragIndex(slotIndex);
+                        }}
+                        onDrop={(e) => e.preventDefault()}
+                        onDragEnd={() => {
+                          if (dragRafRef.current !== null) {
+                            cancelAnimationFrame(dragRafRef.current);
+                            dragRafRef.current = null;
+                          }
+                          setDragIndex(null);
+                          if (listLocked || !orderOverride) return;
+                          const serverIds = letters.map((x) => x.id);
+                          const unchanged =
+                            serverIds.length === orderOverride.length &&
+                            serverIds.every(
+                              (id, idx) => id === orderOverride[idx]
+                            );
+                          if (unchanged) return;
+                          const final = orderOverride;
+                          const gId = group.id;
+                          startRowAction(async () => {
+                            await reorderInspectionLetters(gId, final);
+                          });
+                        }}
+                        className={cn(
+                          "border-t border-border first:border-t-0",
+                          isGhost && "opacity-60",
+                          !listLocked && "cursor-grab active:cursor-grabbing"
                         )}
-                        {listLocked && active ? (
-                          <button
-                            type="button"
-                            onClick={() => handleAddPiece(l.id)}
-                            disabled={rowPending}
-                            aria-label="Add piece"
-                            title="Add piece"
-                            className="inline-flex h-5 items-center rounded-sm border border-border/40 px-1.5 text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground disabled:opacity-40"
-                          >
-                            + Piece
-                          </button>
-                        ) : null}
-                        {(() => {
-                          const stats = letterActionStats.get(l.id);
-                          const aC = stats?.a ?? 0;
-                          const rC = stats?.r ?? 0;
-                          const nC = stats?.n ?? 0;
-                          return (aC > 0 || rC > 0 || nC > 0) ? (
-                            <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
-                              {aC > 0 ? (
-                                <span className="flex items-center gap-0.5">
-                                  <IconBolt size={11} aria-hidden />
-                                  {aC}
-                                </span>
-                              ) : null}
-                              {rC > 0 ? (
-                                <span className="flex items-center gap-0.5">
-                                  <Megaphone size={11} aria-hidden />
-                                  {rC}
-                                </span>
-                              ) : null}
-                              {nC > 0 ? (
-                                <span className="flex items-center gap-0.5">
-                                  <MailCheck size={11} aria-hidden />
-                                  {nC}
-                                </span>
-                              ) : null}
-                            </span>
-                          ) : null;
-                        })()}
-                        {listLocked ? (
+                      >
+                        {isGhost ? (
                           <div
-                            onClick={(e) => e.stopPropagation()}
-                            className={cn(
-                              "shrink-0 transition-opacity",
-                              active
-                                ? "opacity-100"
-                                : "opacity-0 group-hover/row:opacity-100"
-                            )}
+                            aria-hidden
+                            className="flex items-center gap-2 px-3 py-2"
                           >
-                            <OverflowMenu
-                              items={[
-                                {
-                                  label: "Edit ID",
-                                  icon: <Hash size={12} aria-hidden />,
-                                  onClick: () => handleEditLetterId(l.id),
-                                },
-                                {
-                                  label: "Duplicate",
-                                  icon: <Copy size={12} aria-hidden />,
-                                  onClick: () => handleDuplicateLetter(l.id),
-                                },
-                                {
-                                  label: "Delete",
-                                  intent: "destructive",
-                                  icon: <Trash2 size={12} aria-hidden />,
-                                  onClick: () => handleDeleteLetter(l.id),
-                                },
-                              ]}
-                            />
+                            <div className="h-6 flex-1 rounded-sm bg-accent/10" />
                           </div>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-              {letters.length === 0 ? (
-                <p className="px-4 py-4 text-center text-sm text-muted-foreground">
-                  No letters in this group yet.
-                </p>
-              ) : null}
+                        ) : (
+                          <>
+                            {/* Piece-group header row */}
+                            <div className="group/pgrow flex items-center gap-2 px-3 py-2">
+                              {!listLocked ? (
+                                <span
+                                  aria-hidden
+                                  className="text-muted-foreground"
+                                  title="Drag to reorder"
+                                >
+                                  ⋮⋮
+                                </span>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenBuckets((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(pgBucketKey))
+                                      next.delete(pgBucketKey);
+                                    else next.add(pgBucketKey);
+                                    return next;
+                                  })
+                                }
+                                className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                                aria-expanded={pgOpen}
+                                aria-label={
+                                  pgOpen
+                                    ? "Collapse piece group"
+                                    : "Expand piece group"
+                                }
+                              >
+                                <ChevronDown
+                                  size={12}
+                                  aria-hidden
+                                  className={cn(
+                                    "transition-transform",
+                                    !pgOpen && "-rotate-90"
+                                  )}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => firstMember && selectLetter(firstMember.id)}
+                                disabled={!listLocked}
+                                className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                              >
+                                <InspectionLetterPill
+                                  storyline={currentStoryline}
+                                  contentId={
+                                    firstMember
+                                      ? pieceGroupContentId(firstMember)
+                                      : variant
+                                  }
+                                />
+                                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                                  {members.length} pieces
+                                </span>
+                              </button>
+                              {listLocked ? (
+                                <div
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="shrink-0 opacity-0 transition-opacity group-hover/pgrow:opacity-100"
+                                >
+                                  <OverflowMenu
+                                    items={[
+                                      {
+                                        label: "Sort by ID",
+                                        icon: (
+                                          <Hash size={12} aria-hidden />
+                                        ),
+                                        onClick: () =>
+                                          handleSortPiecesById(variant),
+                                      },
+                                      {
+                                        label: "Renumber pieces",
+                                        icon: (
+                                          <ArrowDownWideNarrow
+                                            size={12}
+                                            aria-hidden
+                                          />
+                                        ),
+                                        onClick: () =>
+                                          handleRenumberPieces(variant),
+                                      },
+                                      {
+                                        label: "Duplicate",
+                                        icon: (
+                                          <Copy size={12} aria-hidden />
+                                        ),
+                                        onClick: () =>
+                                          handleDuplicatePieceGroup(variant),
+                                      },
+                                      {
+                                        label: "Delete",
+                                        intent: "destructive",
+                                        icon: (
+                                          <Trash2 size={12} aria-hidden />
+                                        ),
+                                        onClick: () =>
+                                          handleDeletePieceGroup(variant),
+                                      },
+                                    ]}
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                            {/* Expanded piece member rows */}
+                            {pgOpen
+                              ? members.map((m) => {
+                                  const memberActive = m.id === selectedId;
+                                  return (
+                                    <div
+                                      key={m.id}
+                                      className={cn(
+                                        "group/row flex items-center gap-2 border-t border-border pl-8 pr-3 py-1.5",
+                                        memberActive
+                                          ? "bg-accent/40"
+                                          : "hover:bg-accent/15"
+                                      )}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => selectLetter(m.id)}
+                                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                                      >
+                                        <InspectionLetterPill
+                                          storyline={currentStoryline}
+                                          contentId={m.content_id}
+                                        />
+                                        <span className="min-w-0 flex-1 truncate text-xs">
+                                          {m.summary || (
+                                            <span className="text-muted-foreground italic">
+                                              (no summary)
+                                            </span>
+                                          )}
+                                        </span>
+                                      </button>
+                                      {deliveryBadge(
+                                        m.delivery_day_override_id,
+                                        m.effective_day_id
+                                      )}
+                                      {listLocked ? (
+                                        <div
+                                          onClick={(e) => e.stopPropagation()}
+                                          className={cn(
+                                            "shrink-0 transition-opacity",
+                                            memberActive
+                                              ? "opacity-100"
+                                              : "opacity-0 group-hover/row:opacity-100"
+                                          )}
+                                        >
+                                          <OverflowMenu
+                                            items={[
+                                              {
+                                                label: "+ Piece",
+                                                icon: (
+                                                  <Plus
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleAddPiece(m.id),
+                                              },
+                                              { separator: true },
+                                              {
+                                                label: "Edit Variant ID",
+                                                icon: (
+                                                  <Hash
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleEditLetterId(m.id),
+                                              },
+                                              {
+                                                label: "Edit Piece ID",
+                                                icon: (
+                                                  <Hash
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleEditPieceId(m.id),
+                                              },
+                                              {
+                                                label: "Extract from group",
+                                                icon: (
+                                                  <Replace
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleExtractLetter(m.id),
+                                              },
+                                              {
+                                                label: "Duplicate",
+                                                icon: (
+                                                  <Copy
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleDuplicateLetter(m.id),
+                                              },
+                                              {
+                                                label: "Delete",
+                                                intent: "destructive",
+                                                icon: (
+                                                  <Trash2
+                                                    size={12}
+                                                    aria-hidden
+                                                  />
+                                                ),
+                                                onClick: () =>
+                                                  handleDeleteLetter(m.id),
+                                              },
+                                            ]}
+                                          />
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })
+                              : null}
+                          </>
+                        )}
+                      </div>
+                    );
+                  } else {
+                    // Standalone letter slot
+                    const l = slot.letter;
+                    const active = l.id === selectedId;
+                    rows.push(
+                      <div
+                        key={l.id}
+                        draggable={!listLocked}
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = "move";
+                          dragRafRef.current = requestAnimationFrame(() => {
+                            dragRafRef.current = null;
+                            setDragIndex(slotIndex);
+                          });
+                        }}
+                        onDragOver={(e) => {
+                          if (listLocked || dragIndex === null) return;
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          if (dragIndex === slotIndex) return;
+                          const current =
+                            orderOverride ?? letters.map((x) => x.id);
+                          const next = current.slice();
+                          const [moved] = next.splice(dragIndex, 1);
+                          next.splice(slotIndex, 0, moved);
+                          setOrderOverride(next);
+                          setDragIndex(slotIndex);
+                        }}
+                        onDrop={(e) => e.preventDefault()}
+                        onDragEnd={() => {
+                          if (dragRafRef.current !== null) {
+                            cancelAnimationFrame(dragRafRef.current);
+                            dragRafRef.current = null;
+                          }
+                          setDragIndex(null);
+                          if (listLocked || !orderOverride) return;
+                          const serverIds = letters.map((x) => x.id);
+                          const unchanged =
+                            serverIds.length === orderOverride.length &&
+                            serverIds.every(
+                              (id, idx) => id === orderOverride[idx]
+                            );
+                          if (unchanged) return;
+                          const final = orderOverride;
+                          const gId = group.id;
+                          startRowAction(async () => {
+                            await reorderInspectionLetters(gId, final);
+                          });
+                        }}
+                        className={cn(
+                          "group/row flex items-center gap-2 border-t border-border px-3 py-2 first:border-t-0",
+                          isGhost
+                            ? null
+                            : active
+                              ? "bg-accent/40"
+                              : "hover:bg-accent/15",
+                          !listLocked && "cursor-grab active:cursor-grabbing"
+                        )}
+                      >
+                        {isGhost ? (
+                          <div
+                            aria-hidden
+                            className="h-6 flex-1 rounded-sm bg-accent/10"
+                          />
+                        ) : (
+                          <>
+                            {!listLocked ? (
+                              <span
+                                aria-hidden
+                                className="text-muted-foreground"
+                                title="Drag to reorder"
+                              >
+                                ⋮⋮
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => selectLetter(l.id)}
+                              disabled={!listLocked}
+                              className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                            >
+                              <InspectionLetterPill
+                                storyline={currentStoryline}
+                                contentId={l.content_id}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-xs">
+                                {l.summary || (
+                                  <span className="text-muted-foreground italic">
+                                    (no summary)
+                                  </span>
+                                )}
+                              </span>
+                            </button>
+                            {deliveryBadge(
+                              l.delivery_day_override_id,
+                              l.effective_day_id
+                            )}
+                            {(() => {
+                              const stats = letterActionStats.get(l.id);
+                              const aC = stats?.a ?? 0;
+                              const rC = stats?.r ?? 0;
+                              const nC = stats?.n ?? 0;
+                              return aC > 0 || rC > 0 || nC > 0 ? (
+                                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                                  {aC > 0 ? (
+                                    <span className="flex items-center gap-0.5">
+                                      <IconBolt size={11} aria-hidden />
+                                      {aC}
+                                    </span>
+                                  ) : null}
+                                  {rC > 0 ? (
+                                    <span className="flex items-center gap-0.5">
+                                      <Megaphone size={11} aria-hidden />
+                                      {rC}
+                                    </span>
+                                  ) : null}
+                                  {nC > 0 ? (
+                                    <span className="flex items-center gap-0.5">
+                                      <MailCheck size={11} aria-hidden />
+                                      {nC}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              ) : null;
+                            })()}
+                            {listLocked ? (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className={cn(
+                                  "shrink-0 transition-opacity",
+                                  active
+                                    ? "opacity-100"
+                                    : "opacity-0 group-hover/row:opacity-100"
+                                )}
+                              >
+                                <OverflowMenu
+                                  items={[
+                                    {
+                                      label: "+ Piece",
+                                      icon: <Plus size={12} aria-hidden />,
+                                      onClick: () => handleAddPiece(l.id),
+                                    },
+                                    { separator: true },
+                                    {
+                                      label: "Edit ID",
+                                      icon: <Hash size={12} aria-hidden />,
+                                      onClick: () =>
+                                        handleEditLetterId(l.id),
+                                    },
+                                    {
+                                      label: "Duplicate",
+                                      icon: <Copy size={12} aria-hidden />,
+                                      onClick: () =>
+                                        handleDuplicateLetter(l.id),
+                                    },
+                                    {
+                                      label: "Delete",
+                                      intent: "destructive",
+                                      icon: (
+                                        <Trash2 size={12} aria-hidden />
+                                      ),
+                                      onClick: () =>
+                                        handleDeleteLetter(l.id),
+                                    },
+                                  ]}
+                                />
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    );
+                  }
+                });
+
+                if (letters.length === 0) {
+                  rows.push(
+                    <p
+                      key="empty"
+                      className="px-4 py-4 text-center text-sm text-muted-foreground"
+                    >
+                      No letters in this group yet.
+                    </p>
+                  );
+                }
+
+                return rows;
+              })()}
             </div>
               </div>
 
@@ -3391,7 +3824,9 @@ function LettersWorkspaceInner({
               onEditCitizen={(c) => setEditingCitizen(c)}
               onDelete={() => handleDeleteLetter(letterState.id)}
               onDuplicate={() => handleDuplicateLetter(letterState.id)}
+              onAddPiece={() => handleAddPiece(letterState.id)}
               onEditId={() => handleEditLetterId(letterState.id)}
+              onEditPieceId={() => handleEditPieceId(letterState.id)}
               onBack={() => {
                 // From actions/segment views, "back" steps up one level
                 // to the letter detail. From the letter detail itself,
@@ -3563,6 +3998,7 @@ function LettersWorkspaceInner({
       ) : null}
       {confirmDialogEl}
       {renumberDialogEl}
+      {pieceRenumberDialogEl}
       {toaster}
     </div>
   );
@@ -3582,7 +4018,9 @@ function LetterFieldsCard({
   onEditCitizen,
   onDelete,
   onDuplicate,
+  onAddPiece,
   onEditId,
+  onEditPieceId,
   onBack,
   actionsCount,
   actionsActive,
@@ -3601,8 +4039,11 @@ function LetterFieldsCard({
   onEditCitizen: (citizen: Citizen) => void;
   onDelete: () => void;
   onDuplicate: () => void;
+  onAddPiece: () => void;
   /** Opens the Edit-ID popup for this letter's variant. */
   onEditId: () => void;
+  /** Opens the Edit-Piece-ID popup (only when in a piece group). */
+  onEditPieceId: () => void;
   /** Called by the back-arrow in the panel header — typically
    * deselects the current letter, dropping the panel view back to
    * the group card. */
@@ -3715,10 +4156,27 @@ function LetterFieldsCard({
           <OverflowMenu
             items={[
               {
-                label: "Edit ID",
+                label: "+ Piece",
+                icon: <Plus size={12} aria-hidden />,
+                onClick: onAddPiece,
+              },
+              { separator: true },
+              {
+                label: isInPieceGroup(letterView)
+                  ? "Edit Variant ID"
+                  : "Edit ID",
                 icon: <Hash size={12} aria-hidden />,
                 onClick: onEditId,
               },
+              ...(isInPieceGroup(letterView)
+                ? [
+                    {
+                      label: "Edit Piece ID",
+                      icon: <Hash size={12} aria-hidden />,
+                      onClick: onEditPieceId,
+                    },
+                  ]
+                : []),
               {
                 label: "Duplicate",
                 icon: <Copy size={12} aria-hidden />,
@@ -3726,7 +4184,7 @@ function LetterFieldsCard({
               },
               {
                 label: "Delete Inspection Letter",
-                intent: "destructive",
+                intent: "destructive" as const,
                 icon: <Trash2 size={12} aria-hidden />,
                 onClick: onDelete,
               },
@@ -5570,9 +6028,19 @@ function ActionEditor({
   const currentNextLetter = action.next_letter_id
     ? allLetters.find((l) => l.id === action.next_letter_id) ?? null
     : null;
+  // When currentNextLetter is in a piece group, nextDayLetters already holds
+  // the canonical (lowest-piece) sibling — compare by piece-group key so we
+  // don't inject a duplicate entry for a non-canonical piece.
+  const currentNextLetterKey = currentNextLetter
+    ? pieceGroupKey(currentNextLetter)
+    : null;
   const pickableLetters =
     currentNextLetter &&
-    !nextDayLetters.some((l) => l.id === currentNextLetter.id)
+    !nextDayLetters.some((l) =>
+      currentNextLetterKey !== null
+        ? pieceGroupKey(l) === currentNextLetterKey
+        : l.id === currentNextLetter.id
+    )
       ? [currentNextLetter, ...nextDayLetters]
       : nextDayLetters;
 
@@ -5626,7 +6094,7 @@ function ActionEditor({
       currentNextLetter ? (
         <InspectionLetterPill
           storyline={storyline}
-          contentId={currentNextLetter.content_id}
+          contentId={displayNextLetterId(currentNextLetter)}
         />
       ) : (
         // The FK auto-nulls on target delete, so an unresolvable link is
@@ -5654,24 +6122,35 @@ function ActionEditor({
     ) : null;
 
   const nextLetterItems: PillSelectItem[] = [
-    ...pickableLetters.map<PillSelectItem>((l) => ({
-      key: l.id,
-      active: action.next_letter_id === l.id,
-      label: (
-        <>
-          <InspectionLetterPill
-            storyline={storyline}
-            contentId={l.content_id}
-          />
-          {l.summary ? (
-            <span className="truncate text-muted-foreground">
-              {l.summary.slice(0, 24)}
-            </span>
-          ) : null}
-        </>
-      ),
-      onPick: () => onChange({ next_letter_id: l.id }),
-    })),
+    ...pickableLetters.map<PillSelectItem>((l) => {
+      // An option is active if the FK matches directly, or if the FK points at
+      // any sibling within the same piece group (pre-Phase-1 data or an
+      // in-flight optimistic value before the server rewrites to canonical).
+      const lKey = pieceGroupKey(l);
+      const isActive =
+        action.next_letter_id === l.id ||
+        (lKey !== null &&
+          currentNextLetterKey !== null &&
+          lKey === currentNextLetterKey);
+      return {
+        key: l.id,
+        active: isActive,
+        label: (
+          <>
+            <InspectionLetterPill
+              storyline={storyline}
+              contentId={displayNextLetterId(l)}
+            />
+            {l.summary ? (
+              <span className="truncate text-muted-foreground">
+                {l.summary.slice(0, 24)}
+              </span>
+            ) : null}
+          </>
+        ),
+        onPick: () => onChange({ next_letter_id: l.id }),
+      };
+    }),
     nextGroup
       ? {
           key: "__new_letter",
