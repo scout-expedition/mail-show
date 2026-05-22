@@ -38,6 +38,7 @@ import {
 } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableFolder } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import { buildVariableTree } from "@/lib/endings/variable-categories";
 import {
   buildPickerItems,
@@ -63,9 +64,11 @@ interface ActiveTrigger {
 export function MentionTriggerPlugin({
   variables,
   folders,
+  nations,
 }: {
   variables: VariableState[];
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
 }) {
   const [editor] = useLexicalComposerContext();
   const [trigger, setTrigger] = useState<ActiveTrigger | null>(null);
@@ -80,8 +83,8 @@ export function MentionTriggerPlugin({
   } | null>(null);
 
   const tree = useMemo(
-    () => buildVariableTree(variables, folders),
-    [variables, folders]
+    () => buildVariableTree(variables, folders, nations),
+    [variables, folders, nations]
   );
 
   const items = useMemo(
@@ -328,6 +331,7 @@ export function MentionTriggerPlugin({
           activeIndex={activeIndex}
           onChangeActiveIndex={setActiveIndex}
           onCommitItem={handleItemCommit}
+          nations={nations}
           ariaLabel="Variable autocomplete"
           style={{
             position: "fixed",
