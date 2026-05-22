@@ -68,6 +68,8 @@ import {
   deleteReportSegment,
   duplicateInspectionLetter,
   duplicateReportSegment,
+  extractLetterFromPieceGroup,
+  mergeLetters,
   moveInspectionLetterToDay,
   moveLetterGroupToDay,
   moveLetterToGroup,
@@ -76,6 +78,7 @@ import {
   pinReportSegmentToDay,
   setActionNextLetterByLetterId,
   setActionReportSegment,
+  setPieceGroupDelivery,
 } from "../inspection/letters/actions";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { ActionIconEdge, type ActionIconEdgeData } from "./edges/action-icon-edge";
@@ -87,6 +90,7 @@ import {
 } from "./graph-context-menu";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
+import PieceGroupNode, { type PieceGroupData } from "./nodes/piece-group";
 import ReportNode from "./nodes/report-node";
 import ReportClusterNode from "./nodes/report-cluster";
 import StubTargetNode from "./nodes/stub-target";
@@ -323,6 +327,7 @@ const nodeTypes = {
   columnBand: ColumnBandNode,
   letterGroup: LetterGroupNode,
   letter: LetterNode,
+  pieceGroup: PieceGroupNode,
   report: ReportNode,
   reportCluster: ReportClusterNode,
   stubTarget: StubTargetNode,
@@ -468,6 +473,37 @@ function parseLetterNodeId(
   return {
     groupId,
     variantKey: tail.slice(0, at),
+    dayKey: tail.slice(at + 1),
+  };
+}
+
+// Piece-group node IDs encode (letterGroupId, variant) so the drag
+// handler can resolve the cluster without a full letter search.
+//   pieceGroup:GID:VARIANT        (primary — on the group's home day)
+//   pieceGroup:GID:VARIANT@DAY    (secondary — letter override day)
+function makePieceGroupNodeId(
+  groupId: string,
+  variant: string,
+  dayKey: string | null
+): string {
+  return dayKey
+    ? `pieceGroup:${groupId}:${variant}@${dayKey}`
+    : `pieceGroup:${groupId}:${variant}`;
+}
+function parsePieceGroupNodeId(
+  id: string
+): { groupId: string; variant: string; dayKey: string | null } | null {
+  if (!id.startsWith("pieceGroup:")) return null;
+  const rest = id.slice("pieceGroup:".length);
+  const colon = rest.indexOf(":");
+  if (colon === -1) return null;
+  const groupId = rest.slice(0, colon);
+  const tail = rest.slice(colon + 1);
+  const at = tail.indexOf("@");
+  if (at === -1) return { groupId, variant: tail, dayKey: null };
+  return {
+    groupId,
+    variant: tail.slice(0, at),
     dayKey: tail.slice(at + 1),
   };
 }
@@ -1103,6 +1139,26 @@ export function GraphView({
       }
     }
 
+    // For each (group, variant) that is a piece group (piece >= 1, ≥2 members),
+    // record the full sorted member list. This drives the pieceGroup node type
+    // in the layout below: variants with ≥2 piece members render as a muted
+    // parent block containing the individual piece pills.
+    const pieceGroupMembersMap = new Map<string, InspectionLetterView[]>();
+    for (const l of augmentedLetters) {
+      if ((l.piece ?? 0) < 1) continue; // standalone — not a piece
+      const key = `${l.letter_group_id}:${variantKey(l.variant)}`;
+      const bucket = pieceGroupMembersMap.get(key) ?? [];
+      bucket.push(l);
+      pieceGroupMembersMap.set(key, bucket);
+    }
+    // Sort each bucket by sort_order ascending (display order).
+    for (const [key, members] of pieceGroupMembersMap) {
+      pieceGroupMembersMap.set(
+        key,
+        members.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      );
+    }
+
     // groupInstancesById indexed by instance node id ("group:GID" or
     // "group:GID@DAY"). instancesByGroup gives all instances for a group.
     const groupInstancesById = new Map<string, GroupInstance>();
@@ -1558,69 +1614,132 @@ export function GraphView({
           const onlyVariant = gi.variants.length === 1;
           let relX = GROUP_PAD_LEADING;
           gi.variants.forEach((vk, i) => {
-            const letterNodeId = makeLetterNodeId(gid, vk, gi.dayKey);
-            const contentId = letterDisplayId(
-              abbr,
-              gi.group.sequence,
-              vk || null,
-              onlyVariant
-            );
             const cardH = gi.variantHeights[i];
             // Align variant cards by their TOP edge inside the group so
             // rows of variants read consistently even when summary lengths
             // produce different card heights.
             const relY = GROUP_PAD_TOP;
             const primary = primaryLetterByGroupVariant.get(`${gid}:${vk}`);
-            const summary = primary?.summary ?? null;
-            letterAbsPos.set(letterNodeId, {
-              x: groupsX + relX,
-              y: bottomY + relY,
-              h: cardH,
-            });
-            const letterSelected =
-              selection?.kind === "letter" &&
-              selection.groupId === gid &&
-              selection.variantKey === vk;
-            n.push({
-              id: letterNodeId,
-              type: "letter",
-              parentId: groupNodeId,
-              // extent stays unconstrained so the letter can be dragged out
-              // of its group and dropped onto a different one.
-              position: { x: relX, y: relY },
-              data: {
-                contentId,
-                storyline: gi.storyline,
-                summary,
-                widthPx: PILL_W,
-                selected: letterSelected,
-                selfRingColor: letterSelected
-                  ? selfRingColor ?? undefined
-                  : undefined,
-                peerRingColors: peerLetters?.get(`${gid}:${vk}`),
-                pendingDelete: (() => {
-                  // A letter's primary instance is also marked pending
-                  // when its parent group is being deleted (server
-                  // cascades). Cover both so the whole group reads as
-                  // greyed out during the delete.
-                  const lid = primaryLetterByGroupVariant.get(`${gid}:${vk}`)
-                    ?.id;
-                  if (lid && pendingDeletes.letters[lid] === true) return true;
-                  return pendingDeletes.groups[gid] === true;
-                })(),
-                pendingAdd: !!primary && ghostLetterIdSet.has(primary.id),
-                pinned: primary?.delivery_day_override_id != null,
-                offsetText:
-                  primary?.delivery_day_offset != null
-                    ? formatDeliveryOffset(primary.delivery_day_offset)
-                    : null,
-                onSelect: () =>
-                  select({ kind: "letter", groupId: gid, variantKey: vk }),
-              },
-              draggable: editingEnabled,
-              selectable: false,
-              focusable: false,
-            });
+
+            // Piece group: a variant with ≥2 members that all carry piece >= 1.
+            // These render as a muted parent block (pieceGroup node type) rather
+            // than the standard letter card.
+            const pieceMembers = pieceGroupMembersMap.get(`${gid}:${vk}`);
+            const isPieceGroup = pieceMembers && pieceMembers.length >= 2;
+
+            if (isPieceGroup && primary?.variant) {
+              const pgNodeId = makePieceGroupNodeId(gid, primary.variant, gi.dayKey);
+              const contentId = letterDisplayId(
+                abbr,
+                gi.group.sequence,
+                vk || null,
+                onlyVariant
+              );
+              // Strip trailing piece digit from the content_id to get the
+              // variant-only label (e.g. "L-W1/a1" → "L-W1/a").
+              const variantOnlyId = contentId.replace(/\d+$/, "");
+              letterAbsPos.set(pgNodeId, {
+                x: groupsX + relX,
+                y: bottomY + relY,
+                h: cardH,
+              });
+              const pendingDeleteFlag = (() => {
+                if (pendingDeletes.groups[gid] === true) return true;
+                return pieceMembers.some(
+                  (m) => pendingDeletes.letters[m.id] === true
+                );
+              })();
+              const pendingAddFlag = pieceMembers.some((m) =>
+                ghostLetterIdSet.has(m.id)
+              );
+              // Canonical delivery state: use the primary (lowest-piece) member.
+              const pinned = primary.delivery_day_override_id != null;
+              const offsetText =
+                primary.delivery_day_offset != null
+                  ? formatDeliveryOffset(primary.delivery_day_offset)
+                  : null;
+              const pgData: PieceGroupData = {
+                letterGroupId: gid,
+                variant: primary.variant,
+                members: pieceMembers,
+                storyline: { color_hex: gi.storyline.color_hex, id: gi.storyline.id },
+                contentId: variantOnlyId,
+                pendingDelete: pendingDeleteFlag,
+                pendingAdd: pendingAddFlag,
+                pinned,
+                offsetText,
+              };
+              n.push({
+                id: pgNodeId,
+                type: "pieceGroup",
+                parentId: groupNodeId,
+                position: { x: relX, y: relY },
+                data: pgData as unknown as Record<string, unknown>,
+                draggable: editingEnabled,
+                selectable: false,
+                focusable: false,
+              });
+            } else {
+              // Standard standalone letter (or a single-member "group" before
+              // a second piece is added — render as a plain letter card).
+              const letterNodeId = makeLetterNodeId(gid, vk, gi.dayKey);
+              const contentId = letterDisplayId(
+                abbr,
+                gi.group.sequence,
+                vk || null,
+                onlyVariant
+              );
+              const summary = primary?.summary ?? null;
+              letterAbsPos.set(letterNodeId, {
+                x: groupsX + relX,
+                y: bottomY + relY,
+                h: cardH,
+              });
+              const letterSelected =
+                selection?.kind === "letter" &&
+                selection.groupId === gid &&
+                selection.variantKey === vk;
+              n.push({
+                id: letterNodeId,
+                type: "letter",
+                parentId: groupNodeId,
+                // extent stays unconstrained so the letter can be dragged out
+                // of its group and dropped onto a different one.
+                position: { x: relX, y: relY },
+                data: {
+                  contentId,
+                  storyline: gi.storyline,
+                  summary,
+                  widthPx: PILL_W,
+                  selected: letterSelected,
+                  selfRingColor: letterSelected
+                    ? selfRingColor ?? undefined
+                    : undefined,
+                  peerRingColors: peerLetters?.get(`${gid}:${vk}`),
+                  pendingDelete: (() => {
+                    // A letter's primary instance is also marked pending
+                    // when its parent group is being deleted (server
+                    // cascades). Cover both so the whole group reads as
+                    // greyed out during the delete.
+                    const lid = primaryLetterByGroupVariant.get(`${gid}:${vk}`)
+                      ?.id;
+                    if (lid && pendingDeletes.letters[lid] === true) return true;
+                    return pendingDeletes.groups[gid] === true;
+                  })(),
+                  pendingAdd: !!primary && ghostLetterIdSet.has(primary.id),
+                  pinned: primary?.delivery_day_override_id != null,
+                  offsetText:
+                    primary?.delivery_day_offset != null
+                      ? formatDeliveryOffset(primary.delivery_day_offset)
+                      : null,
+                  onSelect: () =>
+                    select({ kind: "letter", groupId: gid, variantKey: vk }),
+                },
+                draggable: editingEnabled,
+                selectable: false,
+                focusable: false,
+              });
+            }
             relX += CARD_W + VARIANT_GAP;
           });
 
@@ -1719,7 +1838,14 @@ export function GraphView({
     for (const a of augmentedActions) {
       const src = letterIndex.get(a.inspection_letter_id);
       if (!src) continue;
-      const sourceId = makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
+      // If this letter belongs to a piece group (≥2 piece members), the
+      // canvas node is a pieceGroup node, not a letter node. Use the
+      // appropriate node ID so edge anchors resolve to the right position.
+      const isPieceGroupMember =
+        (pieceGroupMembersMap.get(`${src.groupId}:${src.variantKey}`)?.length ?? 0) >= 2;
+      const sourceId = isPieceGroupMember
+        ? makePieceGroupNodeId(src.groupId, src.variantKey, src.dayKey)
+        : makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
 
       // Optimistic overrides win over server state during in-flight
       // reconnects so the edge follows the drop without round-tripping.
@@ -1746,11 +1872,11 @@ export function GraphView({
       if (effectiveNextLetterId) {
         const tgt = letterIndex.get(effectiveNextLetterId);
         if (tgt) {
-          nextLetterId = makeLetterNodeId(
-            tgt.groupId,
-            tgt.variantKey,
-            tgt.dayKey
-          );
+          const tgtIsPieceGroup =
+            (pieceGroupMembersMap.get(`${tgt.groupId}:${tgt.variantKey}`)?.length ?? 0) >= 2;
+          nextLetterId = tgtIsPieceGroup
+            ? makePieceGroupNodeId(tgt.groupId, tgt.variantKey, tgt.dayKey)
+            : makeLetterNodeId(tgt.groupId, tgt.variantKey, tgt.dayKey);
         }
       }
 
