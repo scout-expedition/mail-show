@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Plus, Trash2 } from "lucide-react";
+import { slugify } from "@/lib/slug";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/confirm-dialog";
 import { paletteColor } from "@/lib/endings/color-palette";
@@ -263,7 +264,7 @@ function SmartVariablesEditorInner({
   } | null>(null);
 
   // Resolve which smart variable is active. Default to the first when
-  // the URL doesn't carry a `?doc=`, but fall back to null when the
+  // the URL doesn't carry a `?name=`, but fall back to null when the
   // list is empty (we show the empty state).
   const activeDoc = useMemo(() => {
     if (selectedDocId) {
@@ -296,6 +297,25 @@ function SmartVariablesEditorInner({
       payload: { smartDocId: activeDoc.id },
     });
   }, [activeDoc, setSelection]);
+
+  // Keep ?name= in sync when the active doc is renamed. We compare the
+  // current URL param to the slug of the active doc's name; if they
+  // differ we push the corrected URL. Guard: skip when no doc is active
+  // (nothing to sync) and skip when no ?name= is currently set (the
+  // default-first-doc case shouldn't add a param until the user clicks).
+  const activeDocName = activeDoc?.name ?? null;
+  useEffect(() => {
+    if (!activeDocName) return;
+    const currentSlug = searchParams?.get("name");
+    if (!currentSlug) return; // no param — nothing to keep in sync
+    const expectedSlug = slugify(activeDocName);
+    if (currentSlug === expectedSlug) return;
+    const qs = new URLSearchParams(searchParams?.toString() ?? "");
+    qs.set("name", expectedSlug);
+    router.replace(
+      `/endings/smart-variables?${qs.toString()}`,
+    );
+  }, [activeDocName, searchParams, router]);
 
   // Pre-slice the per-doc block/row/chip/header arrays so the
   // DocumentEditor only sees its own document's data — same pattern as
@@ -360,18 +380,18 @@ function SmartVariablesEditorInner({
     return m;
   }, [variables]);
 
-  function navigateToDoc(docId: string | null) {
+  function navigateToDocName(docName: string | null) {
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
-    if (docId) qs.set("doc", docId);
-    else qs.delete("doc");
+    if (docName) qs.set("name", slugify(docName));
+    else qs.delete("name");
     const search = qs.toString();
     router.push(`/endings/smart-variables${search ? `?${search}` : ""}`);
   }
 
   function handleCreate() {
     startTransition(async () => {
-      const { documentId } = await createSmartVariable();
-      navigateToDoc(documentId);
+      const { name: createdName } = await createSmartVariable();
+      navigateToDocName(createdName);
     });
   }
 
@@ -388,7 +408,7 @@ function SmartVariablesEditorInner({
       const fd = new FormData();
       fd.set("id", doc.id);
       await deleteSmartVariable(fd);
-      if (activeDoc?.id === doc.id) navigateToDoc(null);
+      if (activeDoc?.id === doc.id) navigateToDocName(null);
     });
   }
 
@@ -470,7 +490,7 @@ function SmartVariablesEditorInner({
                     </span>
                     <button
                       type="button"
-                      onClick={() => navigateToDoc(doc.id)}
+                      onClick={() => navigateToDocName(doc.name ?? null)}
                       className={cn(
                         "flex-1 truncate text-left text-[12px]",
                         active
@@ -534,7 +554,7 @@ function SmartVariablesEditorInner({
                 const fd = new FormData();
                 fd.set("id", activeDoc.id);
                 await deleteSmartVariable(fd);
-                navigateToDoc(null);
+                navigateToDocName(null);
               });
             }}
           />

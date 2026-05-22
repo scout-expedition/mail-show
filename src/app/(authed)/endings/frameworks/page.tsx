@@ -14,13 +14,14 @@ import type {
 } from "@/lib/db/types";
 import { FrameworksWorkspace } from "./workspace";
 import type { EndingLogicKind } from "@/lib/db/enums";
+import { slugify } from "@/lib/slug";
 
 export default async function FrameworksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ framework?: string }>;
+  searchParams: Promise<{ name?: string }>;
 }) {
-  const { framework: selectedId } = await searchParams;
+  const { name: slug } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
@@ -72,6 +73,14 @@ export default async function FrameworksPage({
   // docs — saves a JOIN at the cost of a tiny client-side filter.
   const allDocs = (allDocData ?? []) as EndingDocument[];
   const frameworkDocs = allDocs.filter((d) => d.kind === "framework");
+
+  // Resolve ?name=<slug> → selectedId. Fall back to first by sort_order
+  // when the slug matches nothing (stale link, renamed framework, etc.).
+  const selectedId = slug
+    ? (frameworkDocs.find((f) => slugify(f.name ?? "") === slug)?.id ??
+        frameworkDocs[0]?.id ??
+        null)
+    : null;
   const frameworkIds = new Set(frameworkDocs.map((d) => d.id));
   const frameworkBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
     frameworkIds.has(b.document_id)
