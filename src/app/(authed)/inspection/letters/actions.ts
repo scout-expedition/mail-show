@@ -432,17 +432,54 @@ export async function moveInspectionLetterToDay(
     }
   }
 
-  const { error } = await supabase
-    .from("inspection_letters")
-    .update({
-      delivery_day_override_id: overrideId,
-      delivery_day_offset: offset,
-      updated_by: updatedBy,
-    })
-    .eq("id", letterId);
-  if (error) throw new Error(error.message);
+  await writeDeliveryAcrossPieceGroup(supabase, letterId, {
+    delivery_day_override_id: overrideId,
+    delivery_day_offset: offset,
+    updated_by: updatedBy,
+  });
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
+}
+
+/**
+ * Apply a delivery patch to one letter — and if it belongs to a piece group,
+ * to every sibling — in a single SQL UPDATE per scope. Keeps siblings in
+ * lockstep so "all pieces deliver together" stays an invariant.
+ */
+async function writeDeliveryAcrossPieceGroup(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  letterId: string,
+  patch: {
+    delivery_day_override_id: string | null;
+    delivery_day_offset: number | null;
+    updated_by: string | null;
+  }
+): Promise<void> {
+  const { data: letter } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id, variant, piece")
+    .eq("id", letterId)
+    .maybeSingle();
+  if (
+    letter &&
+    typeof letter.variant === "string" &&
+    typeof letter.piece === "number" &&
+    letter.piece >= 1
+  ) {
+    const { error } = await supabase
+      .from("inspection_letters")
+      .update(patch)
+      .eq("letter_group_id", letter.letter_group_id as string)
+      .eq("variant", letter.variant)
+      .gte("piece", 1);
+    if (error) throw new Error(error.message);
+    return;
+  }
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update(patch)
+    .eq("id", letterId);
+  if (error) throw new Error(error.message);
 }
 
 /** Pin an inspection letter to an absolute delivery day (clears any offset). */
@@ -453,15 +490,11 @@ export async function pinInspectionLetterToDay(
   const supabase = await createSupabaseServerClient();
   const { data: userData } = await supabase.auth.getUser();
   const updatedBy = userData.user?.email ?? null;
-  const { error } = await supabase
-    .from("inspection_letters")
-    .update({
-      delivery_day_override_id: dayId,
-      delivery_day_offset: null,
-      updated_by: updatedBy,
-    })
-    .eq("id", letterId);
-  if (error) throw new Error(error.message);
+  await writeDeliveryAcrossPieceGroup(supabase, letterId, {
+    delivery_day_override_id: dayId,
+    delivery_day_offset: null,
+    updated_by: updatedBy,
+  });
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }
@@ -586,13 +619,41 @@ export async function setActionNextLetterByLetterId(
     .maybeSingle();
   if (!act) return;
   const srcLetterId = act.inspection_letter_id as string;
+
+  // If the target is a piece-group member, rewrite to the lowest-piece sibling
+  // so the FK lands on the canonical row. Display elsewhere collapses to the
+  // variant-only label via displayNextLetterId.
+  let resolvedLetterId = letterId;
+  const { data: tgtPiece } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id, variant, piece")
+    .eq("id", letterId)
+    .maybeSingle();
+  if (
+    tgtPiece &&
+    typeof tgtPiece.variant === "string" &&
+    typeof tgtPiece.piece === "number" &&
+    tgtPiece.piece >= 1
+  ) {
+    const { data: lowest } = await supabase
+      .from("inspection_letters")
+      .select("id")
+      .eq("letter_group_id", tgtPiece.letter_group_id as string)
+      .eq("variant", tgtPiece.variant)
+      .gte("piece", 1)
+      .order("piece", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (lowest?.id) resolvedLetterId = lowest.id as string;
+  }
+
   // Resolve both letters' storyline + effective day from the view.
   const { data: letterRows } = await supabase
     .from("inspection_letters_view")
     .select("id, storyline_id, effective_day_id")
-    .in("id", [srcLetterId, letterId]);
+    .in("id", [srcLetterId, resolvedLetterId]);
   const src = letterRows?.find((l) => l.id === srcLetterId);
-  const tgt = letterRows?.find((l) => l.id === letterId);
+  const tgt = letterRows?.find((l) => l.id === resolvedLetterId);
   if (!src || !tgt) return;
   if (src.storyline_id !== tgt.storyline_id) return;
   if (!src.effective_day_id || !tgt.effective_day_id) return;
@@ -607,7 +668,7 @@ export async function setActionNextLetterByLetterId(
   if (Number(tgtDay.number) <= Number(srcDay.number)) return;
   const { error } = await supabase
     .from("actions")
-    .update({ next_letter_id: letterId })
+    .update({ next_letter_id: resolvedLetterId })
     .eq("id", actionId);
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/letters");
@@ -882,6 +943,14 @@ export async function deleteInspectionLetter(
   letterId: string
 ) {
   const supabase = await createSupabaseServerClient();
+  // Read piece-group membership before delete so we can reconcile the cluster
+  // afterwards (auto-demote a lone survivor, rewrite inbound FKs).
+  const { data: pre } = await supabase
+    .from("inspection_letters")
+    .select("letter_group_id, variant, piece")
+    .eq("id", letterId)
+    .maybeSingle();
+
   // Stamp updated_by before the delete so peers' deletion toasts can name
   // the deleter (the row vanishes before realtime sees the new value
   // otherwise). The variant / piece columns are intentionally left alone —
@@ -903,6 +972,20 @@ export async function deleteInspectionLetter(
     .delete()
     .eq("id", letterId);
   if (error) throw new Error(error.message);
+
+  if (
+    pre &&
+    typeof pre.variant === "string" &&
+    typeof pre.piece === "number" &&
+    pre.piece >= 1
+  ) {
+    await reconcilePieceGroup(
+      supabase,
+      pre.letter_group_id as string,
+      pre.variant
+    );
+  }
+
   revalidatePath("/inspection/letters");
   revalidatePath("/graph");
 }
@@ -991,7 +1074,12 @@ export async function addPieceToLetter(
   if (error) throw new Error(error.message);
   const newLetterId = inserted!.id as string;
 
+  if (variant) {
+    await reconcilePieceGroup(supabase, groupId, variant);
+  }
+
   revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
   return { newLetterId };
 }
 
@@ -1493,6 +1581,34 @@ export async function patchInspectionLetter(
     normalized.delivery_day_override_id !== undefined
   ) {
     normalized.delivery_day_offset = null;
+  }
+  const touchesDelivery =
+    "delivery_day_override_id" in normalized ||
+    "delivery_day_offset" in normalized;
+  if (touchesDelivery) {
+    // Read the cluster once, then propagate the *whole* normalized patch
+    // (delivery fields plus anything else in the same call) to all siblings
+    // if this letter is in a piece group.
+    const { data: letter } = await supabase
+      .from("inspection_letters")
+      .select("letter_group_id, variant, piece")
+      .eq("id", id)
+      .maybeSingle();
+    if (
+      letter &&
+      typeof letter.variant === "string" &&
+      typeof letter.piece === "number" &&
+      letter.piece >= 1
+    ) {
+      const { error } = await supabase
+        .from("inspection_letters")
+        .update({ ...normalized, updated_by: updatedBy })
+        .eq("letter_group_id", letter.letter_group_id as string)
+        .eq("variant", letter.variant)
+        .gte("piece", 1);
+      if (error) throw new Error(error.message);
+      return;
+    }
   }
   const { error } = await supabase
     .from("inspection_letters")
@@ -2167,4 +2283,472 @@ export async function quickCreateCitizen(data: {
   if (error) throw new Error(error.message);
   revalidatePath("/citizens");
   return row;
+}
+
+// ---------------------------------------------------------------------------
+// Piece-group actions (Phase 1 — used by Agent C graph drag/drop and future
+// list-view merge/extract flows).
+// ---------------------------------------------------------------------------
+
+/**
+ * Internal helper: call the `reconcile_piece_group` RPC and throw on error.
+ * Idempotent — safe to call after any cluster mutation.
+ */
+async function reconcilePieceGroup(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  letterGroupId: string,
+  variant: string
+): Promise<void> {
+  const { error } = await supabase.rpc("reconcile_piece_group", {
+    p_letter_group_id: letterGroupId,
+    p_variant: variant,
+  });
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Merge `sourceLetterId` into the piece-group that contains `targetLetterId`
+ * (or create a new group if target is standalone). Both letters must belong
+ * to the same `letter_group_id`. The merged result always adopts the target's
+ * variant. Handles all four cases:
+ *
+ *   standalone → standalone   : promote both to piece 1 / 2 under target variant.
+ *   standalone → grouped      : append source after last member of target group.
+ *   grouped A  → standalone   : move all A members into target, piece 1..n+1.
+ *   grouped A  → grouped B    : append all A members after last member of group B.
+ *
+ * After the merge, reconciles both the old source variant (if it changed) and
+ * the target variant to fix inbound `next_letter_id` FKs and auto-demote lone
+ * survivors.
+ */
+export async function mergeLetters(
+  sourceLetterId: string,
+  targetLetterId: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  // Load both letters.
+  const { data: rows, error: rErr } = await supabase
+    .from("inspection_letters")
+    .select("id, letter_group_id, variant, piece, sort_order")
+    .in("id", [sourceLetterId, targetLetterId]);
+  if (rErr) throw new Error(rErr.message);
+  const src = rows?.find((r) => r.id === sourceLetterId);
+  const tgt = rows?.find((r) => r.id === targetLetterId);
+  if (!src || !tgt) throw new Error("letter not found");
+  if (src.letter_group_id !== tgt.letter_group_id) {
+    throw new Error("cannot merge letters from different groups");
+  }
+  const groupId = src.letter_group_id as string;
+  const oldSourceVariant = src.variant as string | null;
+  const targetVariant = tgt.variant as string | null;
+
+  if (!targetVariant) {
+    // Target has no variant yet — assign the next available one.
+    const { data: allLetters } = await supabase
+      .from("inspection_letters")
+      .select("variant")
+      .eq("letter_group_id", groupId);
+    const [newVariant] = nextVariantAfterHighest(
+      (allLetters ?? []).map((l) => l.variant as string | null)
+    );
+    await supabase
+      .from("inspection_letters")
+      .update({ variant: newVariant, updated_by: updatedBy })
+      .eq("id", targetLetterId);
+    // Re-read tgt with new variant set.
+    const { data: refreshed } = await supabase
+      .from("inspection_letters")
+      .select("id, letter_group_id, variant, piece, sort_order")
+      .eq("id", targetLetterId)
+      .maybeSingle();
+    if (refreshed) {
+      (tgt as typeof refreshed).variant = refreshed.variant;
+      (tgt as typeof refreshed).piece = refreshed.piece;
+    }
+  }
+
+  const resolvedTargetVariant = (
+    tgt.variant ?? targetVariant
+  ) as string;
+
+  // Load all current members of the target variant cluster.
+  const { data: tgtCluster } = await supabase
+    .from("inspection_letters")
+    .select("id, piece")
+    .eq("letter_group_id", groupId)
+    .eq("variant", resolvedTargetVariant)
+    .gte("piece", 1)
+    .order("piece", { ascending: true });
+  const tgtMembers = tgtCluster ?? [];
+  const maxTgtPiece = tgtMembers.length > 0
+    ? Math.max(...tgtMembers.map((m) => Number(m.piece ?? 0)))
+    : 0;
+
+  // If target itself is standalone (piece null / 0), promote it to piece 1.
+  if (!tgt.piece || Number(tgt.piece) < 1) {
+    await supabase
+      .from("inspection_letters")
+      .update({ piece: 1, updated_by: updatedBy })
+      .eq("id", targetLetterId);
+  }
+
+  // Load source's cluster members (if source is grouped under oldSourceVariant).
+  const srcInGroup =
+    oldSourceVariant && src.piece && Number(src.piece) >= 1;
+  let srcClusterIds: string[] = [];
+  if (srcInGroup && oldSourceVariant) {
+    const { data: srcCluster } = await supabase
+      .from("inspection_letters")
+      .select("id, piece")
+      .eq("letter_group_id", groupId)
+      .eq("variant", oldSourceVariant)
+      .gte("piece", 1)
+      .order("piece", { ascending: true });
+    srcClusterIds = (srcCluster ?? []).map((m) => m.id as string);
+  } else {
+    srcClusterIds = [sourceLetterId];
+  }
+
+  // Assign each source member its new piece number starting after the target
+  // cluster's max. Park first (negative) to avoid unique-constraint conflicts.
+  const newPieceBase = maxTgtPiece + 1;
+  for (let i = 0; i < srcClusterIds.length; i++) {
+    await supabase
+      .from("inspection_letters")
+      .update({ piece: -(newPieceBase + i), updated_by: updatedBy })
+      .eq("id", srcClusterIds[i]);
+  }
+  for (let i = 0; i < srcClusterIds.length; i++) {
+    await supabase
+      .from("inspection_letters")
+      .update({
+        variant: resolvedTargetVariant,
+        piece: newPieceBase + i,
+        updated_by: updatedBy,
+      })
+      .eq("id", srcClusterIds[i]);
+  }
+
+  // Reconcile old source variant (if it changed and was a group).
+  if (
+    srcInGroup &&
+    oldSourceVariant &&
+    oldSourceVariant !== resolvedTargetVariant
+  ) {
+    await reconcilePieceGroup(supabase, groupId, oldSourceVariant);
+  }
+  // Always reconcile the target variant to fix inbound FK pointers.
+  await reconcilePieceGroup(supabase, groupId, resolvedTargetVariant);
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Extract a single letter from its piece group, giving it a fresh standalone
+ * variant. Its `piece` is set to `null`. The letter keeps its `sort_order`
+ * position. After extraction, the group's old variant is reconciled (a lone
+ * survivor is demoted to standalone; inbound FKs are rewritten if the lowest
+ * piece changed).
+ */
+export async function extractLetterFromPieceGroup(
+  letterId: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  // Load the letter.
+  const { data: letter, error: lErr } = await supabase
+    .from("inspection_letters")
+    .select("id, letter_group_id, variant, piece")
+    .eq("id", letterId)
+    .maybeSingle();
+  if (lErr) throw new Error(lErr.message);
+  if (!letter) throw new Error("letter not found");
+
+  const groupId = letter.letter_group_id as string;
+  const oldVariant = letter.variant as string | null;
+
+  // Find a fresh variant for the extracted letter.
+  const { data: allLetters } = await supabase
+    .from("inspection_letters")
+    .select("variant")
+    .eq("letter_group_id", groupId);
+  const [newVariant] = nextVariantAfterHighest(
+    (allLetters ?? []).map((l) => l.variant as string | null)
+  );
+
+  // Assign new variant + clear piece.
+  const { error: uErr } = await supabase
+    .from("inspection_letters")
+    .update({ variant: newVariant, piece: null, updated_by: updatedBy })
+    .eq("id", letterId);
+  if (uErr) throw new Error(uErr.message);
+
+  // Reconcile the old cluster — lone survivor gets demoted; FKs rewired.
+  if (oldVariant) {
+    await reconcilePieceGroup(supabase, groupId, oldVariant);
+  }
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Set the delivery day for all members of a piece group atomically.
+ *
+ * `mode: "absolute"` writes `delivery_day_override_id = dayId` and clears
+ * `delivery_day_offset` (mirrors `pinInspectionLetterToDay`).
+ *
+ * `mode: "offset"` writes `delivery_day_offset = offset` and clears
+ * `delivery_day_override_id` (mirrors `moveInspectionLetterToDay` when the
+ * group's home day is known). Passing `offset: null` resets both (clears the
+ * override entirely, so the group's canonical day applies).
+ */
+export async function setPieceGroupDelivery(
+  letterGroupId: string,
+  variant: string,
+  options:
+    | { mode: "absolute"; dayId: string | null }
+    | { mode: "offset"; offset: number | null }
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  let patch: Record<string, string | number | null>;
+  if (options.mode === "absolute") {
+    patch = {
+      delivery_day_override_id: options.dayId,
+      delivery_day_offset: null,
+      updated_by: updatedBy,
+    };
+  } else {
+    patch = {
+      delivery_day_override_id: null,
+      delivery_day_offset: options.offset,
+      updated_by: updatedBy,
+    };
+  }
+
+  const { error } = await supabase
+    .from("inspection_letters")
+    .update(patch)
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Renumber the pieces in one piece group to 1..n in current `sort_order`
+ * order. Uses park→final via the existing `apply_inspection_letter_variants`
+ * RPC (variant stays the same; only piece values change).
+ */
+export async function renumberPiecesSequentially(
+  letterGroupId: string,
+  variant: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: members, error } = await supabase
+    .from("inspection_letters")
+    .select("id, sort_order, piece")
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1)
+    .order("sort_order", { ascending: true });
+  if (error) throw new Error(error.message);
+  const list = members ?? [];
+  if (list.length === 0) return;
+
+  const assignments = list.map((m, i) => ({
+    letterId: m.id as string,
+    newVariant: variant,
+    newPiece: i + 1,
+  }));
+  await applyInspectionLetterVariants(letterGroupId, assignments);
+  await reconcilePieceGroup(supabase, letterGroupId, variant);
+}
+
+/**
+ * Rewrite `sort_order` within one piece group so pieces are ordered piece-asc.
+ * No piece-number changes.
+ */
+export async function sortPiecesById(
+  letterGroupId: string,
+  variant: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  const { data: members, error } = await supabase
+    .from("inspection_letters")
+    .select("id, piece, sort_order")
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1);
+  if (error) throw new Error(error.message);
+  const sorted = (members ?? [])
+    .map((m) => ({
+      id: m.id as string,
+      piece: Number(m.piece ?? 0),
+      sort_order: Number(m.sort_order ?? 0),
+    }))
+    .sort((a, b) => a.piece - b.piece);
+
+  // Reuse existing sort_order values, but assign them in piece-asc order.
+  const slots = sorted
+    .map((s) => s.sort_order)
+    .slice()
+    .sort((a, b) => a - b);
+  for (let i = 0; i < sorted.length; i++) {
+    const target = slots[i];
+    if (sorted[i].sort_order === target) continue;
+    const { error: e } = await supabase
+      .from("inspection_letters")
+      .update({ sort_order: target, updated_by: updatedBy })
+      .eq("id", sorted[i].id);
+    if (e) throw new Error(e.message);
+  }
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Duplicate every member of a piece group as a new piece group under the
+ * next-after-highest variant. Pieces 1..n preserve the source ordering.
+ * New rows append at the end of the parent letter-group's sort_order list.
+ */
+export async function duplicatePieceGroup(
+  letterGroupId: string,
+  variant: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data: userData } = await supabase.auth.getUser();
+  const updatedBy = userData.user?.email ?? null;
+
+  const { data: members, error } = await supabase
+    .from("inspection_letters")
+    .select("*")
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1)
+    .order("piece", { ascending: true });
+  if (error) throw new Error(error.message);
+  const list = members ?? [];
+  if (list.length === 0) return;
+
+  const { data: allVariants } = await supabase
+    .from("inspection_letters")
+    .select("variant")
+    .eq("letter_group_id", letterGroupId);
+  const [newVariant] = nextVariantAfterHighest(
+    (allVariants ?? []).map((l) => l.variant as string | null)
+  );
+
+  const { data: maxSortRows } = await supabase
+    .from("inspection_letters")
+    .select("sort_order")
+    .eq("letter_group_id", letterGroupId)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const baseSort = Number(maxSortRows?.[0]?.sort_order ?? 0);
+
+  const rows = list.map((m, i) => {
+    const copy = { ...(m as Record<string, unknown>) };
+    delete copy.id;
+    copy.variant = newVariant;
+    copy.piece = i + 1;
+    copy.sort_order = baseSort + i + 1;
+    copy.updated_by = updatedBy;
+    return copy;
+  });
+
+  const { error: iErr } = await supabase
+    .from("inspection_letters")
+    .insert(rows);
+  if (iErr) throw new Error(iErr.message);
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Delete every member of a piece group in a single SQL DELETE. Inbound
+ * `actions.next_letter_id` references fall to NULL via the FK's ON DELETE
+ * SET NULL — that's the intended semantics for wholesale-group delete.
+ */
+export async function deletePieceGroup(
+  letterGroupId: string,
+  variant: string
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("inspection_letters")
+    .delete()
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1);
+  if (error) throw new Error(error.message);
+
+  // Symmetric reconcile (no-op for 0 members) keeps the invariant centralized.
+  await reconcilePieceGroup(supabase, letterGroupId, variant);
+
+  revalidatePath("/inspection/letters");
+  revalidatePath("/graph");
+}
+
+/**
+ * Apply a conflict-free set of piece-number edits within one piece group.
+ * Uses park→final via the existing `apply_inspection_letter_variants` RPC
+ * (variant stays the same; only piece values change). Validates every id
+ * belongs to the cluster and that the target piece set is collision-free.
+ */
+export async function applyInspectionLetterPieces(
+  letterGroupId: string,
+  variant: string,
+  assignments: Array<{ id: string; newPiece: number }>
+): Promise<void> {
+  if (assignments.length === 0) return;
+  for (const a of assignments) {
+    if (!Number.isInteger(a.newPiece) || a.newPiece < 1) {
+      throw new Error("piece must be an integer >= 1");
+    }
+  }
+  const pieces = assignments.map((a) => a.newPiece);
+  if (new Set(pieces).size !== pieces.length) {
+    throw new Error("duplicate target piece");
+  }
+
+  const supabase = await createSupabaseServerClient();
+  const { data: members, error } = await supabase
+    .from("inspection_letters")
+    .select("id")
+    .eq("letter_group_id", letterGroupId)
+    .eq("variant", variant)
+    .gte("piece", 1);
+  if (error) throw new Error(error.message);
+  const memberIds = new Set((members ?? []).map((m) => m.id as string));
+  for (const a of assignments) {
+    if (!memberIds.has(a.id)) {
+      throw new Error("letter does not belong to the piece group");
+    }
+  }
+
+  const variantAssignments = assignments.map((a) => ({
+    letterId: a.id,
+    newVariant: variant,
+    newPiece: a.newPiece,
+  }));
+  await applyInspectionLetterVariants(letterGroupId, variantAssignments);
+  await reconcilePieceGroup(supabase, letterGroupId, variant);
 }
