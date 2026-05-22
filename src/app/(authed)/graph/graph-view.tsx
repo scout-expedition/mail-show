@@ -107,7 +107,17 @@ import EndpointTargetNode from "./nodes/endpoint-target";
  */
 export type GraphSelection =
   | { kind: "group"; groupId: string }
-  | { kind: "letter"; groupId: string; variantKey: string }
+  | {
+      kind: "letter";
+      groupId: string;
+      variantKey: string;
+      /**
+       * Optional specific letter id within the variant. Provided when the
+       * variant is a piece group and the user clicked a specific piece pill
+       * — the workspace hydrates to this id rather than the first sibling.
+       */
+      pieceId?: string;
+    }
   | { kind: "segment"; segmentId: string }
   | {
       kind: "actions";
@@ -1674,20 +1684,20 @@ export function GraphView({
                 pinned,
                 offsetText,
                 selected: pgSelected,
+                selfRingColor: pgSelected ? selfRingColor ?? undefined : undefined,
+                peerRingColors: peerLetters?.get(`${gid}:${pgVariantKey}`),
                 onSelect: () =>
                   select({
                     kind: "letter",
                     groupId: gid,
                     variantKey: pgVariantKey,
                   }),
-                onSelectMember: () =>
-                  // All piece members share the same variant, so the
-                  // workspace's variant-keyed inspector lands on the same
-                  // letter regardless of which piece pill was clicked.
+                onSelectMember: (memberId: string) =>
                   select({
                     kind: "letter",
                     groupId: gid,
                     variantKey: pgVariantKey,
+                    pieceId: memberId,
                   }),
               };
               n.push({
@@ -2000,6 +2010,14 @@ export function GraphView({
         );
         return inst?.rowId ?? null;
       }
+      const parsedPg = parsePieceGroupNodeId(nodeId);
+      if (parsedPg) {
+        if (parsedPg.dayKey) return parsedPg.dayKey;
+        const inst = groupInstancesById.get(
+          makeGroupNodeId(parsedPg.groupId, null)
+        );
+        return inst?.rowId ?? null;
+      }
       if (nodeId.startsWith("report:")) {
         const segId = nodeId.slice("report:".length);
         return segmentById.get(segId)?.effective_day_id ?? "unscheduled";
@@ -2008,9 +2026,11 @@ export function GraphView({
     }
     // Anchor chips / edge endpoints to the horizontal center of the card's
     // top-edge handle (target enters from top, source exits from bottom; both
-    // are pinned at left: 50% of the card width by xyflow defaults).
+    // are pinned at left: 50% of the card width by xyflow defaults). Piece-
+    // group nodes use the same letterAbsPos map and the same CARD_W width as
+    // letter cards, so the same math applies.
     function nodeCenterX(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.x + CARD_W / 2 : null;
       }
@@ -2021,7 +2041,7 @@ export function GraphView({
       return null;
     }
     function nodeBottomY(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.y + p.h : null;
       }
@@ -2032,7 +2052,7 @@ export function GraphView({
       return null;
     }
     function nodeTopY(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.y : null;
       }
@@ -2067,7 +2087,8 @@ export function GraphView({
     }
 
     for (const [sourceId, list] of candidatesBySource) {
-      const isLetterSource = sourceId.startsWith("letter:");
+      const isLetterSource =
+        sourceId.startsWith("letter:") || sourceId.startsWith("pieceGroup:");
       const srcBottomY = nodeBottomY(sourceId);
       const srcCenterX = nodeCenterX(sourceId);
       if (srcBottomY == null || srcCenterX == null) continue;
@@ -2243,7 +2264,11 @@ export function GraphView({
     // straight from under its chip.
     const letterSourceBySource = new Map<string, ChipPlacement[]>();
     for (const p of placements) {
-      if (!p.candidate.source.startsWith("letter:")) continue;
+      if (
+        !p.candidate.source.startsWith("letter:") &&
+        !p.candidate.source.startsWith("pieceGroup:")
+      )
+        continue;
       const list = letterSourceBySource.get(p.candidate.source) ?? [];
       list.push(p);
       letterSourceBySource.set(p.candidate.source, list);
@@ -2332,7 +2357,11 @@ export function GraphView({
     if (editingEnabled) {
       const CONNECT_BELOW_GAP = 14; // chip half-height (10) + gap below
       for (const p of placements) {
-        if (!p.candidate.source.startsWith("letter:")) continue;
+        if (
+          !p.candidate.source.startsWith("letter:") &&
+          !p.candidate.source.startsWith("pieceGroup:")
+        )
+          continue;
         const a = p.candidate.action;
         const resolved = resolveAction(a);
         // Use the optimistic-overlaid values so connector positioning

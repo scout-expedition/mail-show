@@ -190,7 +190,17 @@ import { useMenuPosition } from "@/components/use-menu-position";
  */
 export type ControlledSelection =
   | { kind: "group"; groupId: string }
-  | { kind: "letter"; groupId: string; variantKey: string }
+  | {
+      kind: "letter";
+      groupId: string;
+      variantKey: string;
+      /**
+       * Optional specific letter id within the variant. Provided when the
+       * variant is a piece group and the caller wants to land on a specific
+       * piece (not the lowest-piece sibling).
+       */
+      pieceId?: string;
+    }
   | { kind: "segment"; segmentId: string }
   | {
       kind: "actions";
@@ -1175,14 +1185,20 @@ function LettersWorkspaceInner({
     // group's letter list.
     function hydrateLetterState(
       groupId: string,
-      variantKey: string
+      variantKey: string,
+      preferredId?: string
     ): string | null {
       const groupLetters = allLetters.filter(
         (l) => l.letter_group_id === groupId
       );
-      const letter = groupLetters.find(
-        (l) => (l.variant ?? "") === variantKey
-      );
+      // For piece groups the variant is shared across siblings — when the
+      // graph clicks a specific piece pill we want to land on that exact
+      // letter, not the lowest-piece sibling.
+      const letter =
+        (preferredId
+          ? groupLetters.find((l) => l.id === preferredId)
+          : null) ??
+        groupLetters.find((l) => (l.variant ?? "") === variantKey);
       if (!letter) {
         setLetterState(null);
         return null;
@@ -1213,7 +1229,11 @@ function LettersWorkspaceInner({
       setView("group");
     } else if (sel.kind === "letter") {
       setSelectedGroupId(sel.groupId);
-      const letterId = hydrateLetterState(sel.groupId, sel.variantKey);
+      const letterId = hydrateLetterState(
+        sel.groupId,
+        sel.variantKey,
+        sel.pieceId
+      );
       setSelectedId(letterId);
       setSelectedSegmentId(null);
       setSelectedActionId(null);
@@ -1260,6 +1280,8 @@ function LettersWorkspaceInner({
     if (selectedId && selectedGroupId) {
       const letter = allLetters.find((l) => l.id === selectedId);
       const variantKey = letter?.variant ?? "";
+      const pieceId =
+        letter && (letter.piece ?? 0) >= 1 ? selectedId : undefined;
       if (view === "actions") {
         onSelectionChange({
           kind: "actions",
@@ -1272,6 +1294,7 @@ function LettersWorkspaceInner({
           kind: "letter",
           groupId: selectedGroupId,
           variantKey,
+          pieceId,
         });
       }
       return;

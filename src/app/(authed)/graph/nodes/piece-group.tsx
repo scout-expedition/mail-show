@@ -110,6 +110,25 @@ function PieceGroupNode({ data }: NodeProps) {
             // as ReportSegmentPill, so the block reads recessive against
             // the brightly-filled individual piece pills inside it.
             backgroundColor: `color-mix(in srgb, ${color} 40%, var(--card))`,
+            // Selection ring + multi-user presence rings, mirroring the
+            // letter-card pattern. Each ring sits 1px outside the previous
+            // one; selection takes precedence over self-edit, which takes
+            // precedence over peer rings.
+            boxShadow: (() => {
+              const layers: string[] = [];
+              if (d.selected) {
+                layers.push("0 0 0 2px var(--ring, #60a5fa)");
+              } else if (d.selfRingColor) {
+                layers.push(`0 0 0 2px ${d.selfRingColor}`);
+              }
+              if (d.peerRingColors) {
+                for (let i = 0; i < d.peerRingColors.length; i++) {
+                  const offset = (layers.length === 0 ? 0 : 2) + i * 2;
+                  layers.push(`0 0 0 ${offset + 2}px ${d.peerRingColors[i]}`);
+                }
+              }
+              return layers.length ? layers.join(", ") : undefined;
+            })(),
           }}
         >
           {/* Title bar — variant-only label at the same height/position as
