@@ -1890,9 +1890,21 @@ function LettersWorkspaceInner({
   async function handleAddPiece(letterId: string) {
     if (!group) return;
     const groupId = group.id;
+    const source = letters.find((l) => l.id === letterId);
+    const variant = source?.variant ?? null;
     startRowAction(async () => {
       const { newLetterId } = await addPieceToLetter(groupId, letterId);
       setSelectedId(newLetterId);
+      // After the server resolves we know the variant the cluster lives
+      // under. Auto-expand the piece-group bucket so the user sees the
+      // new sibling immediately.
+      if (variant) {
+        setOpenBuckets((prev) => {
+          const next = new Set(prev);
+          next.add(`piece-group:${groupId}:${variant}`);
+          return next;
+        });
+      }
     });
   }
 
@@ -3178,21 +3190,31 @@ function LettersWorkspaceInner({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => firstMember && selectLetter(firstMember.id)}
+                                onClick={() =>
+                                  setOpenBuckets((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(pgBucketKey))
+                                      next.delete(pgBucketKey);
+                                    else next.add(pgBucketKey);
+                                    return next;
+                                  })
+                                }
                                 disabled={!listLocked}
                                 className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-grab"
+                                aria-label={
+                                  pgOpen
+                                    ? "Collapse piece group"
+                                    : "Expand piece group"
+                                }
                               >
                                 <InspectionLetterPill
                                   storyline={currentStoryline}
                                   contentId={
                                     firstMember
-                                      ? pieceGroupContentId(firstMember)
+                                      ? `${pieceGroupContentId(firstMember)} (${members.length})`
                                       : variant
                                   }
                                 />
-                                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                                  {members.length} pieces
-                                </span>
                               </button>
                               {listLocked ? (
                                 <div
@@ -3250,7 +3272,7 @@ function LettersWorkspaceInner({
                                     <div
                                       key={m.id}
                                       className={cn(
-                                        "group/row flex items-center gap-2 border-t border-border pl-8 pr-3 py-1.5",
+                                        "group/row flex items-center gap-2 border-t border-border pl-14 pr-3 py-1.5",
                                         memberActive
                                           ? "bg-accent/40"
                                           : "hover:bg-accent/15"
@@ -3290,7 +3312,7 @@ function LettersWorkspaceInner({
                                           <OverflowMenu
                                             items={[
                                               {
-                                                label: "+ Piece",
+                                                label: "Piece",
                                                 icon: (
                                                   <Plus
                                                     size={12}
@@ -3507,7 +3529,7 @@ function LettersWorkspaceInner({
                                 <OverflowMenu
                                   items={[
                                     {
-                                      label: "+ Piece",
+                                      label: "Piece",
                                       icon: <Plus size={12} aria-hidden />,
                                       onClick: () => handleAddPiece(l.id),
                                     },
@@ -4065,13 +4087,19 @@ function LetterFieldsCard({
   // The delivery picker emits a discriminated union; we mirror it into a single
   // instant field so debounce + LWW conflict handling apply atomically to the
   // two underlying columns. The server action normalizes the patch so writing
-  // an offset clears any leftover absolute pin and vice versa.
-  const serverOverride: DeliveryOverride =
-    letterView.delivery_day_override_id != null
-      ? { kind: "absolute", dayId: letterView.delivery_day_override_id }
-      : letterView.delivery_day_offset != null
-        ? { kind: "offset", offset: letterView.delivery_day_offset }
-        : { kind: "none" };
+  // an offset clears any leftover absolute pin and vice versa. Memoized
+  // because useInstantField's remote-effect depends on this prop's reference,
+  // and re-deriving the object on every parent render triggers Maximum
+  // update-depth via the dirty/saving pendingRemote stash.
+  const serverOverride = useMemo<DeliveryOverride>(
+    () =>
+      letterView.delivery_day_override_id != null
+        ? { kind: "absolute", dayId: letterView.delivery_day_override_id }
+        : letterView.delivery_day_offset != null
+          ? { kind: "offset", offset: letterView.delivery_day_offset }
+          : { kind: "none" },
+    [letterView.delivery_day_override_id, letterView.delivery_day_offset]
+  );
   const deliveryField = useInstantField<DeliveryOverride>({
     value: serverOverride,
     equals: (a, b) =>
@@ -4156,7 +4184,7 @@ function LetterFieldsCard({
           <OverflowMenu
             items={[
               {
-                label: "+ Piece",
+                label: "Piece",
                 icon: <Plus size={12} aria-hidden />,
                 onClick: onAddPiece,
               },
@@ -6044,6 +6072,56 @@ function ActionEditor({
       ? [currentNextLetter, ...nextDayLetters]
       : nextDayLetters;
 
+  // Count members in each piece-group across the full letter set so the picker
+  // (and the current-target pill) can render `L-X1/a (2)` for collapsed groups.
+  const pieceGroupCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of allLetters) {
+      const k = pieceGroupKey(l);
+      if (k !== null) m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  }, [allLetters]);
+  function letterPickerLabel(l: InspectionLetterView): string {
+    const k = pieceGroupKey(l);
+    if (k === null) return l.content_id;
+    const count = pieceGroupCounts.get(k) ?? 0;
+    return count > 1
+      ? `${pieceGroupContentId(l)} (${count})`
+      : pieceGroupContentId(l);
+  }
+  // Collapse piece-group siblings to a single option keyed by the lowest-piece
+  // member id. Standalone letters pass through untouched.
+  const collapsedPickable = useMemo(() => {
+    const seenKey = new Set<string>();
+    const seenId = new Set<string>();
+    const out: InspectionLetterView[] = [];
+    // Sort piece members ascending so the first occurrence of a key is the
+    // canonical (lowest-piece) sibling.
+    const sorted = pickableLetters
+      .slice()
+      .sort((a, b) => (a.piece ?? 0) - (b.piece ?? 0));
+    for (const l of sorted) {
+      const k = pieceGroupKey(l);
+      if (k !== null) {
+        if (seenKey.has(k)) continue;
+        seenKey.add(k);
+      } else {
+        if (seenId.has(l.id)) continue;
+        seenId.add(l.id);
+      }
+      out.push(l);
+    }
+    // Restore the upstream display order (chronological by day, then by id)
+    // by re-sorting against the original pickableLetters index.
+    const orderIdx = new Map(pickableLetters.map((l, i) => [l.id, i]));
+    out.sort(
+      (a, b) =>
+        (orderIdx.get(a.id) ?? 0) - (orderIdx.get(b.id) ?? 0)
+    );
+    return out;
+  }, [pickableLetters]);
+
   // Resolve "which sub-field just got focus" by walking up from `e.target`
   // to the nearest `[data-focus-field]` marker (stamped by FieldHighlight).
   // Falls back to a generic "editing" field so peers still see the action is
@@ -6094,7 +6172,7 @@ function ActionEditor({
       currentNextLetter ? (
         <InspectionLetterPill
           storyline={storyline}
-          contentId={displayNextLetterId(currentNextLetter)}
+          contentId={letterPickerLabel(currentNextLetter)}
         />
       ) : (
         // The FK auto-nulls on target delete, so an unresolvable link is
@@ -6122,7 +6200,7 @@ function ActionEditor({
     ) : null;
 
   const nextLetterItems: PillSelectItem[] = [
-    ...pickableLetters.map<PillSelectItem>((l) => {
+    ...collapsedPickable.map<PillSelectItem>((l) => {
       // An option is active if the FK matches directly, or if the FK points at
       // any sibling within the same piece group (pre-Phase-1 data or an
       // in-flight optimistic value before the server rewrites to canonical).
@@ -6139,7 +6217,7 @@ function ActionEditor({
           <>
             <InspectionLetterPill
               storyline={storyline}
-              contentId={displayNextLetterId(l)}
+              contentId={letterPickerLabel(l)}
             />
             {l.summary ? (
               <span className="truncate text-muted-foreground">

@@ -1658,6 +1658,11 @@ export function GraphView({
                 primary.delivery_day_offset != null
                   ? formatDeliveryOffset(primary.delivery_day_offset)
                   : null;
+              const pgVariantKey = primary.variant ?? "";
+              const pgSelected =
+                selection?.kind === "letter" &&
+                selection.groupId === gid &&
+                selection.variantKey === pgVariantKey;
               const pgData: PieceGroupData = {
                 letterGroupId: gid,
                 variant: primary.variant,
@@ -1668,6 +1673,22 @@ export function GraphView({
                 pendingAdd: pendingAddFlag,
                 pinned,
                 offsetText,
+                selected: pgSelected,
+                onSelect: () =>
+                  select({
+                    kind: "letter",
+                    groupId: gid,
+                    variantKey: pgVariantKey,
+                  }),
+                onSelectMember: () =>
+                  // All piece members share the same variant, so the
+                  // workspace's variant-keyed inspector lands on the same
+                  // letter regardless of which piece pill was clicked.
+                  select({
+                    kind: "letter",
+                    groupId: gid,
+                    variantKey: pgVariantKey,
+                  }),
               };
               n.push({
                 id: pgNodeId,
@@ -3870,12 +3891,13 @@ export function GraphView({
     const src = conn.source;
     const tgt = conn.target;
     if (!src || !tgt) return false;
+    const tgtIsLetterLike =
+      tgt.startsWith("letter:") || tgt.startsWith("pieceGroup:");
     if (src.startsWith("connect:")) {
       const m = src.match(/^connect:[^:]+:(report|next|any)$/);
       if (m?.[1] === "report") return tgt.startsWith("report:");
-      if (m?.[1] === "next") return tgt.startsWith("letter:");
-      if (m?.[1] === "any")
-        return tgt.startsWith("letter:") || tgt.startsWith("report:");
+      if (m?.[1] === "next") return tgtIsLetterLike;
+      if (m?.[1] === "any") return tgtIsLetterLike || tgt.startsWith("report:");
       return false;
     }
     // Edge reconnects:
@@ -3886,9 +3908,9 @@ export function GraphView({
     //     onReconnect (which no-ops it) instead of being treated as a
     //     drop-on-empty-space and clearing the link.
     if (src.startsWith("letter:")) {
-      return tgt.startsWith("letter:") || tgt.startsWith("report:");
+      return tgtIsLetterLike || tgt.startsWith("report:");
     }
-    return tgt.startsWith("letter:") || tgt.startsWith("report:");
+    return tgtIsLetterLike || tgt.startsWith("report:");
   }, []);
 
   // New connection (from a connect-source handle): create a brand-new
@@ -3924,16 +3946,34 @@ export function GraphView({
         return;
       }
       // kind === "next"
-      if (!tgt.startsWith("letter:")) return;
-      const tm = parseLetterNodeId(tgt);
-      if (!tm) return;
-      const targetGid = tm.groupId;
-      const targetVariantKey = tm.variantKey;
-      const tgtLetter = letters.find(
+      let targetGid: string;
+      let targetVariantKey: string;
+      if (tgt.startsWith("pieceGroup:")) {
+        const pgm = parsePieceGroupNodeId(tgt);
+        if (!pgm) return;
+        targetGid = pgm.groupId;
+        targetVariantKey = pgm.variant;
+      } else if (tgt.startsWith("letter:")) {
+        const tm = parseLetterNodeId(tgt);
+        if (!tm) return;
+        targetGid = tm.groupId;
+        targetVariantKey = tm.variantKey;
+      } else {
+        return;
+      }
+      // Resolve the canonical target letter: for piece groups, the lowest-
+      // piece sibling — the server's setActionNextLetterByLetterId will also
+      // rewrite to canonical, but landing on it here keeps the optimistic
+      // edge pointing at the same row that ends up persisted.
+      const groupMembers = letters.filter(
         (l) =>
           l.letter_group_id === targetGid &&
           (l.variant ?? "") === targetVariantKey
       );
+      const tgtLetter =
+        groupMembers
+          .slice()
+          .sort((a, b) => (a.piece ?? 0) - (b.piece ?? 0))[0] ?? null;
       if (!tgtLetter) return;
       // Same client-side guard as onReconnect so we paint an optimistic
       // edge only for links the server will accept: same storyline +

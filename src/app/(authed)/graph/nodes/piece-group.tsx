@@ -3,7 +3,7 @@
 import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Pin } from "lucide-react";
-import { InspectionLetterPill } from "@/components/pills";
+import { InspectionLetterCard } from "@/components/pills";
 import type { InspectionLetterView, Storyline } from "@/lib/db/types";
 
 export type PieceGroupData = {
@@ -26,6 +26,17 @@ export type PieceGroupData = {
   pinned?: boolean;
   /** Signed offset text (e.g. "+2") — members carry a relative override. */
   offsetText?: string | null;
+  /** Selects the piece group for the inspector. Routed via the parent
+   *  graph's `onNodeClick` (xyflow node-level `selectable` is off so the
+   *  inspector selection is driven by callbacks, not RF selection state). */
+  onSelect?: () => void;
+  /** Selects a specific piece member when its nested pill is clicked.
+   *  Falls back to onSelect (group-level) when omitted. */
+  onSelectMember?: (memberId: string) => void;
+  /** Pre-computed peer-edit ring colors for the piece-group surface. */
+  selfRingColor?: string;
+  peerRingColors?: string[];
+  selected?: boolean;
 };
 
 // Max pieces to show before showing a "+N" overflow chip.
@@ -121,16 +132,36 @@ function PieceGroupNode({ data }: NodeProps) {
               </span>
             ) : null}
           </div>
-          {/* Individual piece pills in a horizontal row. Each pill uses
-              the full storyline color so they pop against the muted parent. */}
-          <div className="flex flex-row items-center gap-[3px] px-1.5 pb-1.5">
+          {/* Individual piece cards in a horizontal row. Each card uses
+              the full storyline color + the letter's summary so they pop
+              against the muted parent and surface the letter's content
+              the same way standalone letter nodes do. */}
+          <div
+            className="flex flex-row items-stretch gap-[3px] px-1.5 pb-1.5"
+            onClickCapture={(e) => {
+              // Per-piece click → select that member. Without this the
+              // parent piece-group selection swallows every click.
+              const target = e.target as HTMLElement | null;
+              const memberEl = target?.closest("[data-piece-id]");
+              const memberId = memberEl?.getAttribute("data-piece-id");
+              if (memberId && d.onSelectMember) {
+                e.stopPropagation();
+                d.onSelectMember(memberId);
+              }
+            }}
+          >
             {visibleMembers.map((member) => (
-              <InspectionLetterPill
+              <div
                 key={member.id}
-                storyline={{ color_hex: color }}
-                contentId={member.content_id}
-                className="!h-5 !rounded-sm !px-1 !text-[9px]"
-              />
+                data-piece-id={member.id}
+                className="cursor-pointer"
+              >
+                <InspectionLetterCard
+                  storyline={{ color_hex: color }}
+                  contentId={member.content_id}
+                  summary={member.summary}
+                />
+              </div>
             ))}
             {overflowCount > 0 ? (
               <span className="inline-flex h-5 items-center rounded px-1 font-mono text-[9px] text-white/60">
