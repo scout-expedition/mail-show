@@ -33,10 +33,15 @@ export type PieceGroupData = {
   /** Selects a specific piece member when its nested pill is clicked.
    *  Falls back to onSelect (group-level) when omitted. */
   onSelectMember?: (memberId: string) => void;
-  /** Pre-computed peer-edit ring colors for the piece-group surface. */
-  selfRingColor?: string;
-  peerRingColors?: string[];
-  selected?: boolean;
+  /** The piece member currently selected by the local user — drives the
+   *  letter-card ring on just that piece's pill, not the whole group. */
+  selectedPieceId?: string;
+  /** Local user's avatar color, applied to the selectedPieceId pill's ring. */
+  pieceSelfRingColor?: string;
+  /** Peer rings keyed by piece member id; each pill in the group can show
+   *  its own stack of peer-color rings if multiple peers are editing
+   *  different pieces. */
+  pieceRingColorsByMember?: Record<string, string[]>;
 };
 
 // Max pieces to show before showing a "+N" overflow chip.
@@ -108,27 +113,10 @@ function PieceGroupNode({ data }: NodeProps) {
           style={{
             // Muted backdrop: 40% storyline color + 60% card — same recipe
             // as ReportSegmentPill, so the block reads recessive against
-            // the brightly-filled individual piece pills inside it.
+            // the brightly-filled individual piece pills inside it. The
+            // selection / presence rings sit on the SPECIFIC piece pill
+            // (see below), not on this group container.
             backgroundColor: `color-mix(in srgb, ${color} 40%, var(--card))`,
-            // Selection ring + multi-user presence rings, mirroring the
-            // letter-card pattern. Each ring sits 1px outside the previous
-            // one; selection takes precedence over self-edit, which takes
-            // precedence over peer rings.
-            boxShadow: (() => {
-              const layers: string[] = [];
-              if (d.selected) {
-                layers.push("0 0 0 2px var(--ring, #60a5fa)");
-              } else if (d.selfRingColor) {
-                layers.push(`0 0 0 2px ${d.selfRingColor}`);
-              }
-              if (d.peerRingColors) {
-                for (let i = 0; i < d.peerRingColors.length; i++) {
-                  const offset = (layers.length === 0 ? 0 : 2) + i * 2;
-                  layers.push(`0 0 0 ${offset + 2}px ${d.peerRingColors[i]}`);
-                }
-              }
-              return layers.length ? layers.join(", ") : undefined;
-            })(),
           }}
         >
           {/* Title bar — variant-only label at the same height/position as
@@ -169,19 +157,34 @@ function PieceGroupNode({ data }: NodeProps) {
               }
             }}
           >
-            {visibleMembers.map((member) => (
-              <div
-                key={member.id}
-                data-piece-id={member.id}
-                className="cursor-pointer"
-              >
-                <InspectionLetterCard
-                  storyline={{ color_hex: color }}
-                  contentId={member.content_id}
-                  summary={member.summary}
-                />
-              </div>
-            ))}
+            {visibleMembers.map((member) => {
+              const isSelf = d.selectedPieceId === member.id;
+              const peerRings =
+                d.pieceRingColorsByMember?.[member.id] ?? undefined;
+              return (
+                <div
+                  key={member.id}
+                  data-piece-id={member.id}
+                  className="cursor-pointer"
+                  onClick={(e) => {
+                    // Per-piece select; the parent's onNodeClick checks for
+                    // [data-piece-id] descendants and skips its group-level
+                    // onSelect when one fires here (see graph-view.tsx).
+                    e.stopPropagation();
+                    d.onSelectMember?.(member.id);
+                  }}
+                >
+                  <InspectionLetterCard
+                    storyline={{ color_hex: color }}
+                    contentId={member.content_id}
+                    summary={member.summary}
+                    selected={isSelf}
+                    selfRingColor={isSelf ? d.pieceSelfRingColor : undefined}
+                    peerRingColors={peerRings}
+                  />
+                </div>
+              );
+            })}
             {overflowCount > 0 ? (
               <span className="inline-flex h-5 items-center rounded px-1 font-mono text-[9px] text-white/60">
                 +{overflowCount}

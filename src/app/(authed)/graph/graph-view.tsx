@@ -209,6 +209,10 @@ type Props = {
 export type PeerRingMap = {
   groups: Map<string, string[]>;
   letters: Map<string, string[]>;
+  /** Per-piece rings keyed by the specific letter id (only populated when a
+   *  peer has selected a piece that belongs to a piece group). Lets the
+   *  PieceGroupNode tint just the matching pill instead of the whole group. */
+  pieceLetters: Map<string, string[]>;
   segments: Map<string, string[]>;
   actions: Map<string, string[]>;
 };
@@ -544,6 +548,7 @@ export function GraphView({
   // disabled or when no peers are co-selecting any nodes.
   const peerGroups = peerRings?.groups;
   const peerLetters = peerRings?.letters;
+  const peerPieceLetters = peerRings?.pieceLetters;
   const peerSegments = peerRings?.segments;
   const peerActions = peerRings?.actions;
   const select = useCallback(
@@ -1457,6 +1462,12 @@ export function GraphView({
     // corner; h is the card's height so consumers can compute the bottom
     // edge for source-target midpoint chip placement.
     const letterAbsPos = new Map<string, { x: number; y: number; h: number }>();
+    // Per-piece anchors keyed by letter id: lets chip placement land on the
+    // specific piece pill rather than the parent piece-group container.
+    const pieceMemberAnchor = new Map<
+      string,
+      { x: number; y: number; h: number }
+    >();
     const segmentAbsPos = new Map<string, { x: number; y: number; h: number }>();
 
     // Groups + letters + segments per cell. Reports center horizontally in
@@ -1653,6 +1664,22 @@ export function GraphView({
                 y: bottomY + relY,
                 h: cardH,
               });
+              // Per-piece anchors: chips on actions sourced from a specific
+              // piece member need to sit under that pill, not centered under
+              // the whole group. Approximation: split the group's allocated
+              // CARD_W width evenly across members; piece i's center sits at
+              // pgX + (i + 0.5) * (CARD_W / N).
+              {
+                const N = pieceMembers.length;
+                const slotW = CARD_W / Math.max(1, N);
+                pieceMembers.forEach((m, i) => {
+                  pieceMemberAnchor.set(m.id, {
+                    x: groupsX + relX + slotW * (i + 0.5),
+                    y: bottomY + relY,
+                    h: cardH,
+                  });
+                });
+              }
               const pendingDeleteFlag = (() => {
                 if (pendingDeletes.groups[gid] === true) return true;
                 return pieceMembers.some(
@@ -1673,6 +1700,22 @@ export function GraphView({
                 selection?.kind === "letter" &&
                 selection.groupId === gid &&
                 selection.variantKey === pgVariantKey;
+              // selectedPieceId: when the local user has clicked a specific
+              // piece pill the inspector tracks that letter id; the ring is
+              // applied to ONLY that pill, not the whole group container.
+              const selectedPieceId =
+                pgSelected && selection?.kind === "letter"
+                  ? selection.pieceId ?? null
+                  : null;
+              const pieceRingColorsByMember: Record<string, string[]> = {};
+              if (peerPieceLetters) {
+                for (const m of pieceMembers) {
+                  const ring = peerPieceLetters.get(m.id);
+                  if (ring && ring.length > 0) {
+                    pieceRingColorsByMember[m.id] = ring;
+                  }
+                }
+              }
               const pgData: PieceGroupData = {
                 letterGroupId: gid,
                 variant: primary.variant,
@@ -1683,9 +1726,12 @@ export function GraphView({
                 pendingAdd: pendingAddFlag,
                 pinned,
                 offsetText,
-                selected: pgSelected,
-                selfRingColor: pgSelected ? selfRingColor ?? undefined : undefined,
-                peerRingColors: peerLetters?.get(`${gid}:${pgVariantKey}`),
+                selectedPieceId: selectedPieceId ?? undefined,
+                pieceSelfRingColor:
+                  pgSelected && selectedPieceId
+                    ? selfRingColor ?? undefined
+                    : undefined,
+                pieceRingColorsByMember,
                 onSelect: () =>
                   select({
                     kind: "letter",
@@ -2079,18 +2125,44 @@ export function GraphView({
     };
     const placements: ChipPlacement[] = [];
 
-    const candidatesBySource = new Map<string, Candidate[]>();
+    // Group candidates by chip anchor. For letter / report sources that's
+    // the source node id. For piece-group sources we split further by the
+    // action's specific letter id so each piece pill anchors its own chips
+    // rather than all members' chips piling up at the group's center.
+    type AnchorBucket = {
+      sourceId: string;
+      pieceMemberId: string | null;
+      list: Candidate[];
+    };
+    const candidatesByAnchor = new Map<string, AnchorBucket>();
     for (const c of candidates) {
-      const list = candidatesBySource.get(c.source) ?? [];
-      list.push(c);
-      candidatesBySource.set(c.source, list);
+      let key = c.source;
+      let pieceMemberId: string | null = null;
+      if (c.source.startsWith("pieceGroup:")) {
+        pieceMemberId = c.action.inspection_letter_id;
+        key = `${c.source}#piece:${pieceMemberId}`;
+      }
+      const bucket = candidatesByAnchor.get(key) ?? {
+        sourceId: c.source,
+        pieceMemberId,
+        list: [],
+      };
+      bucket.list.push(c);
+      candidatesByAnchor.set(key, bucket);
     }
 
-    for (const [sourceId, list] of candidatesBySource) {
+    for (const { sourceId, pieceMemberId, list } of candidatesByAnchor.values()) {
       const isLetterSource =
         sourceId.startsWith("letter:") || sourceId.startsWith("pieceGroup:");
-      const srcBottomY = nodeBottomY(sourceId);
-      const srcCenterX = nodeCenterX(sourceId);
+      let srcBottomY = nodeBottomY(sourceId);
+      let srcCenterX = nodeCenterX(sourceId);
+      if (pieceMemberId) {
+        const anchor = pieceMemberAnchor.get(pieceMemberId);
+        if (anchor) {
+          srcCenterX = anchor.x;
+          srcBottomY = anchor.y + anchor.h;
+        }
+      }
       if (srcBottomY == null || srcCenterX == null) continue;
 
       // All chips for letter sources in the same day row share a single Y
@@ -2257,32 +2329,49 @@ export function GraphView({
       }
     }
 
-    // For every letter with multiple outgoing edges (one per action that
-    // starts there), spread the source X to match each action's chip X.
-    // Without this, both lines emerge from the letter's bottom-center
-    // and diverge into a "V" — the user wants each line to drop
-    // straight from under its chip.
-    const letterSourceBySource = new Map<string, ChipPlacement[]>();
+    // For every letter (or piece member) with multiple outgoing edges (one
+    // per action that starts there), spread the source X to match each
+    // action's chip X. Without this, both lines emerge from the letter's
+    // bottom-center and diverge into a "V" — the user wants each line to
+    // drop straight from under its chip. Piece-group sources bucket by the
+    // action's specific letter id so each piece's lines anchor under that
+    // piece's pill.
+    const letterSourceBySource = new Map<
+      string,
+      { centerX: number; placements: ChipPlacement[] }
+    >();
     for (const p of placements) {
-      if (
-        !p.candidate.source.startsWith("letter:") &&
-        !p.candidate.source.startsWith("pieceGroup:")
-      )
+      const src = p.candidate.source;
+      if (!src.startsWith("letter:") && !src.startsWith("pieceGroup:")) {
         continue;
-      const list = letterSourceBySource.get(p.candidate.source) ?? [];
-      list.push(p);
-      letterSourceBySource.set(p.candidate.source, list);
+      }
+      let key = src;
+      let centerX: number | null = null;
+      if (src.startsWith("pieceGroup:")) {
+        const memberId = p.candidate.action.inspection_letter_id;
+        key = `${src}#piece:${memberId}`;
+        const anchor = pieceMemberAnchor.get(memberId);
+        if (anchor) centerX = anchor.x;
+      }
+      if (centerX == null) {
+        const letterPos = letterAbsPos.get(src);
+        if (letterPos) centerX = letterPos.x + CARD_W / 2;
+      }
+      if (centerX == null) continue;
+      const bucket = letterSourceBySource.get(key) ?? {
+        centerX,
+        placements: [],
+      };
+      bucket.placements.push(p);
+      letterSourceBySource.set(key, bucket);
     }
     const sourceXOffsetByEdgeId = new Map<string, number>();
-    for (const [sourceId, list] of letterSourceBySource) {
+    for (const { centerX, placements: list } of letterSourceBySource.values()) {
       if (list.length < 2) continue;
-      const letterPos = letterAbsPos.get(sourceId);
-      if (!letterPos) continue;
-      const letterCenterX = letterPos.x + CARD_W / 2;
       for (const p of list) {
-        // Source offset = chip X relative to the letter's center, so
-        // the bezier exits the letter directly under the chip.
-        sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - letterCenterX);
+        // Source offset = chip X relative to the source pill's center, so
+        // the bezier exits directly under the chip.
+        sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - centerX);
       }
     }
 
@@ -4378,13 +4467,22 @@ export function GraphView({
         zoomOnScroll
         zoomActivationKeyCode="Meta"
         panOnDrag={true}
-        onNodeClick={(_, node) => {
+        onNodeClick={(event, node) => {
           // Column bands cover the canvas and are purely visual day-row
           // separators — a click on one reads as a click on blank
           // background, so it deselects.
           if (node.type === "columnBand") {
             select(null);
             return;
+          }
+          // A click landing inside a [data-piece-id] descendant of a
+          // pieceGroup node was already handled by that piece's onClick
+          // (which dispatches onSelectMember). Skipping the parent's
+          // onSelect here prevents it from overwriting the per-piece
+          // selection back to the lowest-piece sibling.
+          if (node.type === "pieceGroup") {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest("[data-piece-id]")) return;
           }
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
