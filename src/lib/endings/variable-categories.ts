@@ -35,8 +35,12 @@ const SMART_VARIABLES_ID = "cat:smart_variables";
  * tolerated: each folder is visited at most once, and orphans (whose
  * parent is missing) are surfaced at root rather than dropped.
  *
- * The `nations` parameter is threaded through for caller compatibility
- * (Agent A's panel uses it for icon resolution) but is not consumed here.
+ * `nations` is NOT consumed here — callers should pass the same array
+ * straight to `<VariablePickerPanel nations={…} />`, which uses it for
+ * per-nation icon resolution. Threaded through this signature so the
+ * call-sites have a single source of truth and can't accidentally
+ * default to `[]` (which would make every nation row fall back to a
+ * generic globe icon).
  */
 export function buildVariableTree(
   variables: ReadonlyArray<VariableState>,

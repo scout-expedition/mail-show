@@ -11,7 +11,7 @@
 
 import type { ComponentType, SVGProps } from "react";
 import { Atom, Globe, Hash, Play, Sigma } from "lucide-react";
-import type { EndingVariableKind } from "@/lib/db/enums";
+import type { EndingVariableKind, IconType } from "@/lib/db/enums";
 import type { Nation } from "@/lib/db/types";
 import type { VariableState } from "./block-state";
 import { IconDisplay } from "@/components/icon-display";
@@ -67,8 +67,12 @@ export type NationIconRef = Pick<
 >;
 
 export type ResolvedVariableIcon =
+  // Built-in lucide glyph (text / smart / aggregate / fallback).
   | { source: "lucide"; name: "Hash" | "Atom" | "Sigma" | "Globe" }
-  | { source: "tabler"; name: string };
+  // Stored icon descriptor from the DB — used for nation rows. Renders
+  // via `IconDisplay`, which knows how to draw every `IconType`
+  // (lucide / tabler / animal / emoji / svg).
+  | { source: "stored"; iconType: IconType; iconValue: string };
 
 const LUCIDE_ICONS = { Hash, Atom, Sigma, Globe } as const;
 
@@ -85,16 +89,18 @@ export function resolveVariableIcon(
       return { source: "lucide", name: "Sigma" };
     case "number_ref": {
       const ref = variable.number_ref;
-      if (ref === "world_status") return { source: "tabler", name: "IconWorldBolt" };
-      if (ref === "demerits") return { source: "tabler", name: "IconCircleMinus" };
-      if (ref === "proletariat") return { source: "tabler", name: "IconHammer" };
-      if (ref === "gentry") return { source: "tabler", name: "IconDiamond" };
-      // Nation column lookup by lowercased name.
+      if (ref === "world_status") return { source: "stored", iconType: "tabler", iconValue: "IconWorldBolt" };
+      if (ref === "demerits") return { source: "stored", iconType: "tabler", iconValue: "IconCircleMinus" };
+      if (ref === "proletariat") return { source: "stored", iconType: "tabler", iconValue: "IconHammer" };
+      if (ref === "gentry") return { source: "stored", iconType: "tabler", iconValue: "IconDiamond" };
+      // Nation column lookup by lowercased name. Honor whatever
+      // icon_type the nation row is configured with (lucide / tabler /
+      // animal / emoji / svg) — IconDisplay handles all of them.
       const nation = ref
         ? nations.find((n) => n.name.toLowerCase() === ref.toLowerCase())
         : undefined;
-      if (nation && nation.icon_type === "tabler" && nation.icon_value) {
-        return { source: "tabler", name: nation.icon_value };
+      if (nation && nation.icon_value) {
+        return { source: "stored", iconType: nation.icon_type, iconValue: nation.icon_value };
       }
       return { source: "lucide", name: "Globe" };
     }
@@ -123,16 +129,16 @@ export function ResolvedVariableIconView({
       />
     );
   }
-  // Tabler icons render as a wrapping span via IconDisplay; the icon
-  // itself uses `currentColor`, so coloring the wrapper colors the
-  // strokes.
+  // Stored icons render through IconDisplay (lucide / tabler / animal /
+  // emoji / svg). Most of those use `currentColor` for their strokes,
+  // so coloring the wrapper span colors the glyph.
   return (
     <span
       className={className}
       style={color ? { color, display: "inline-flex" } : { display: "inline-flex" }}
       aria-hidden
     >
-      <IconDisplay type="tabler" value={icon.name} size={size} />
+      <IconDisplay type={icon.iconType} value={icon.iconValue} size={size} />
     </span>
   );
 }
