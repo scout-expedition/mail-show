@@ -487,6 +487,14 @@ function ConditionRow({
         </span>
       ) : null}
       <div className="group/chips mt-1 flex flex-col gap-2 pb-2">
+        {declaredVariables.length === 0 && chips.length === 0 ? (
+          <span
+            className="inline-flex h-5 items-center self-start rounded-md border border-dashed border-[var(--block-border)] px-2 text-[10px] uppercase tracking-[0.025em] text-muted-foreground/70"
+            title="This row has no condition pills. Add a variable to the block header to populate."
+          >
+            no variable
+          </span>
+        ) : null}
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -541,7 +549,7 @@ function ConditionRow({
       <div className="flex flex-col gap-1 [&>*]:flex-1 [&>*]:min-h-0">{children}</div>
       <div
         data-row-kebab
-        className="ml-0.5 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100"
+        className="ml-0.5 mt-1 self-start opacity-0 transition-opacity focus-within:opacity-100"
       >
         <OverflowMenu
           items={[
@@ -876,10 +884,12 @@ function HeaderVariableStrip({
             variable={v}
             disabled={pending}
             onRemove={async () => {
+              const isLast = declaredVariables.length === 1;
               const ok = await confirm({
                 title: `Remove ${v.name} from this condition block?`,
-                message:
-                  "This also removes every chip on the block's rows that referenced this variable.",
+                message: isLast
+                  ? "This removes every chip on the block's rows. The rows remain — they'll have no condition pills until you add a variable back."
+                  : "This also removes every chip on the block's rows that referenced this variable.",
                 confirmLabel: "Remove",
                 intent: "destructive",
               });
