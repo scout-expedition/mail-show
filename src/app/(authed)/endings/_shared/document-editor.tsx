@@ -1300,6 +1300,7 @@ export function DocumentEditor({
                 values={values}
                 smartVariableReturns={smartVariableReturns}
                 folders={folders}
+                nations={nations}
                 document_id={document.id}
                 leaves={leaves}
                 onUpdateBlock={updateBlock}
