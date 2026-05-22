@@ -2329,50 +2329,30 @@ export function GraphView({
       }
     }
 
-    // For every letter (or piece member) with multiple outgoing edges (one
-    // per action that starts there), spread the source X to match each
-    // action's chip X. Without this, both lines emerge from the letter's
-    // bottom-center and diverge into a "V" — the user wants each line to
-    // drop straight from under its chip. Piece-group sources bucket by the
-    // action's specific letter id so each piece's lines anchor under that
-    // piece's pill.
-    const letterSourceBySource = new Map<
-      string,
-      { centerX: number; placements: ChipPlacement[] }
-    >();
+    // Source-X spread: each outgoing bezier should exit directly under its
+    // chip rather than from the source node's bottom-center. Without this,
+    // a letter with two outgoing edges sends both lines from its center,
+    // diverging into a "V"; piece-group sources are even worse — every
+    // member's lines collapse to the group's center.
+    //
+    // The bezier source position in the edge component is
+    //   `props.fromX + sourceXOffset`
+    // and `props.fromX` is the *source RF node's* bottom-center. So the
+    // offset is `desired chip X − source node center X`. For piece-group
+    // sources the source node is the pieceGroup container; we want each
+    // line to exit at the specific piece pill, so the offset is
+    // `piece.anchor.x − pieceGroup.center.x` (constant per piece) plus
+    // any per-chip nudge when a single piece has multiple actions.
+    const sourceXOffsetByEdgeId = new Map<string, number>();
     for (const p of placements) {
       const src = p.candidate.source;
       if (!src.startsWith("letter:") && !src.startsWith("pieceGroup:")) {
         continue;
       }
-      let key = src;
-      let centerX: number | null = null;
-      if (src.startsWith("pieceGroup:")) {
-        const memberId = p.candidate.action.inspection_letter_id;
-        key = `${src}#piece:${memberId}`;
-        const anchor = pieceMemberAnchor.get(memberId);
-        if (anchor) centerX = anchor.x;
-      }
-      if (centerX == null) {
-        const letterPos = letterAbsPos.get(src);
-        if (letterPos) centerX = letterPos.x + CARD_W / 2;
-      }
-      if (centerX == null) continue;
-      const bucket = letterSourceBySource.get(key) ?? {
-        centerX,
-        placements: [],
-      };
-      bucket.placements.push(p);
-      letterSourceBySource.set(key, bucket);
-    }
-    const sourceXOffsetByEdgeId = new Map<string, number>();
-    for (const { centerX, placements: list } of letterSourceBySource.values()) {
-      if (list.length < 2) continue;
-      for (const p of list) {
-        // Source offset = chip X relative to the source pill's center, so
-        // the bezier exits directly under the chip.
-        sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - centerX);
-      }
+      const nodePos = letterAbsPos.get(src);
+      if (!nodePos) continue;
+      const nodeCenter = nodePos.x + CARD_W / 2;
+      sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - nodeCenter);
     }
 
     // Mirror the arrowhead spread on the EXIT side: for every report
