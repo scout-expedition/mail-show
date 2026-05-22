@@ -83,6 +83,18 @@ export function BlockList({
   onChangeChip,
   disableInsertion,
   rowContext,
+  addOptimisticBlock,
+  addOptimisticRow,
+  addOptimisticChip,
+  addOptimisticBlockVariable,
+  removeOptimisticBlock,
+  removeOptimisticRow,
+  removeOptimisticChip,
+  removeOptimisticBlockVariable,
+  clearOptimisticBlockDelete,
+  clearOptimisticRowDelete,
+  clearOptimisticChipDelete,
+  clearOptimisticBlockVariableDelete,
 }: {
   parent: ParentLoc;
   byParent: Map<string, BlockState[]>;
@@ -110,6 +122,24 @@ export function BlockList({
    *  shows. Authoring inside a condition row rarely needs to insert
    *  ahead of an existing block; the simplified UI keeps the row tight. */
   rowContext?: boolean;
+  /** Optimistic adders from DocumentEditor's useOptimistic reducers. */
+  addOptimisticBlock?: (ghost: BlockState) => void;
+  addOptimisticRow?: (ghost: RowState) => void;
+  addOptimisticChip?: (ghost: ChipState) => void;
+  addOptimisticBlockVariable?: (ghost: BlockVariableState) => void;
+  /** Optimistic removers — mark a record with __optimistic_delete so
+   *  the render path greys it while the delete server action runs. */
+  removeOptimisticBlock?: (id: string) => void;
+  removeOptimisticRow?: (id: string) => void;
+  removeOptimisticChip?: (id: string) => void;
+  removeOptimisticBlockVariable?: (id: string) => void;
+  /** Rollback companions — clear the pending-delete flag when the
+   *  server action errors so the row doesn't stay grey/disabled
+   *  forever waiting for a realtime DELETE that will never arrive. */
+  clearOptimisticBlockDelete?: (id: string) => void;
+  clearOptimisticRowDelete?: (id: string) => void;
+  clearOptimisticChipDelete?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const drag = useDrag();
   const collapse = useCollapseCtx();
@@ -124,6 +154,28 @@ export function BlockList({
   function handleAdd(kind: BlockKind, beforeBlockId: string | null) {
     if (kind === "text") {
       startTransition(async () => {
+        if (addOptimisticBlock) {
+          const siblings =
+            byParent.get(
+              `${parent.parent_block_id ?? "root"}:${parent.parent_row_id ?? "root"}`
+            ) ?? [];
+          const maxOrder = siblings.reduce(
+            (m, b) => Math.max(m, b.sort_order),
+            -1
+          );
+          addOptimisticBlock({
+            id: `tmp-${crypto.randomUUID()}`,
+            document_id,
+            parent_block_id: parent.parent_block_id,
+            parent_row_id: parent.parent_row_id,
+            block_type: "text",
+            text: "",
+            result_value: null,
+            summary: "",
+            sort_order: maxOrder + 1,
+            __optimistic: true,
+          });
+        }
         await addBlock({
           document_id,
           parent_block_id: parent.parent_block_id,
@@ -137,6 +189,28 @@ export function BlockList({
     }
     if (kind === "condition") {
       startTransition(async () => {
+        if (addOptimisticBlock) {
+          const siblings =
+            byParent.get(
+              `${parent.parent_block_id ?? "root"}:${parent.parent_row_id ?? "root"}`
+            ) ?? [];
+          const maxOrder = siblings.reduce(
+            (m, b) => Math.max(m, b.sort_order),
+            -1
+          );
+          addOptimisticBlock({
+            id: `tmp-${crypto.randomUUID()}`,
+            document_id,
+            parent_block_id: parent.parent_block_id,
+            parent_row_id: parent.parent_row_id,
+            block_type: "condition",
+            text: "",
+            result_value: null,
+            summary: "",
+            sort_order: maxOrder + 1,
+            __optimistic: true,
+          });
+        }
         await addBlock({
           document_id,
           parent_block_id: parent.parent_block_id,
@@ -151,6 +225,28 @@ export function BlockList({
       const defaultValue = leaves.result?.defaultValue;
       if (defaultValue == null) return;
       startTransition(async () => {
+        if (addOptimisticBlock) {
+          const siblings =
+            byParent.get(
+              `${parent.parent_block_id ?? "root"}:${parent.parent_row_id ?? "root"}`
+            ) ?? [];
+          const maxOrder = siblings.reduce(
+            (m, b) => Math.max(m, b.sort_order),
+            -1
+          );
+          addOptimisticBlock({
+            id: `tmp-${crypto.randomUUID()}`,
+            document_id,
+            parent_block_id: parent.parent_block_id,
+            parent_row_id: parent.parent_row_id,
+            block_type: "result",
+            text: "",
+            result_value: defaultValue,
+            summary: "",
+            sort_order: maxOrder + 1,
+            __optimistic: true,
+          });
+        }
         await addBlock({
           document_id,
           parent_block_id: parent.parent_block_id,
@@ -163,10 +259,22 @@ export function BlockList({
     }
   }
 
-  async function handleDeleteBlock(id: string) {
-    const fd = new FormData();
-    fd.set("id", id);
-    await deleteBlock(fd);
+  function handleDeleteBlock(id: string) {
+    startTransition(async () => {
+      // Mark the block as pending-delete so the render path greys it
+      // out and ignores interactions until revalidatePath drops it.
+      removeOptimisticBlock?.(id);
+      const fd = new FormData();
+      fd.set("id", id);
+      try {
+        await deleteBlock(fd);
+      } catch (err) {
+        // Server rejected the delete — roll the ghost back so the block
+        // isn't stuck greyed forever.
+        clearOptimisticBlockDelete?.(id);
+        throw err;
+      }
+    });
   }
 
   const isEmptyTarget =
@@ -258,6 +366,29 @@ export function BlockList({
         )
       ) : null}
       {blocks.map((b) => {
+        // Ghost optimistic block — render a minimal placeholder.
+        if (b.__optimistic) {
+          const ghostLabel =
+            b.block_type === "text"
+              ? "Adding text block…"
+              : b.block_type === "result"
+                ? "Adding result block…"
+                : "Adding condition block…";
+          return (
+            <Fragment key={b.id}>
+              {!hasResultBlock && !insertionDisabled && !rowContext ? (
+                <InsertionZone
+                  options={addOptions}
+                  onAdd={(kind) => handleAdd(kind, b.id)}
+                  disabled={pending}
+                />
+              ) : null}
+              <div className="opacity-60 italic pointer-events-none rounded-md border border-[var(--block-border)] bg-[var(--block-card)] px-3 py-2 text-sm text-muted-foreground">
+                {ghostLabel}
+              </div>
+            </Fragment>
+          );
+        }
         const blockNode =
           b.block_type === "text" ? (
             TextLeaf ? (
@@ -305,6 +436,17 @@ export function BlockList({
               getRowBlockCount={(rowId) =>
                 (byParent.get(parentKey(b.id, rowId)) ?? []).length
               }
+              addOptimisticRow={addOptimisticRow}
+              addOptimisticChip={addOptimisticChip}
+              addOptimisticBlockVariable={addOptimisticBlockVariable}
+              removeOptimisticRow={removeOptimisticRow}
+              removeOptimisticChip={removeOptimisticChip}
+              removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+              clearOptimisticRowDelete={clearOptimisticRowDelete}
+              clearOptimisticChipDelete={clearOptimisticChipDelete}
+              clearOptimisticBlockVariableDelete={
+                clearOptimisticBlockVariableDelete
+              }
               renderRowContent={(row) => {
                 const rowChipCount = (chipsByRow.get(row.id) ?? []).length;
                 return (
@@ -327,6 +469,20 @@ export function BlockList({
                     leaves={leaves}
                     onUpdateBlock={onUpdateBlock}
                     onChangeChip={onChangeChip}
+                    addOptimisticBlock={addOptimisticBlock}
+                    addOptimisticRow={addOptimisticRow}
+                    addOptimisticChip={addOptimisticChip}
+                    addOptimisticBlockVariable={addOptimisticBlockVariable}
+                    removeOptimisticBlock={removeOptimisticBlock}
+                    removeOptimisticRow={removeOptimisticRow}
+                    removeOptimisticChip={removeOptimisticChip}
+                    removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+                    clearOptimisticBlockDelete={clearOptimisticBlockDelete}
+                    clearOptimisticRowDelete={clearOptimisticRowDelete}
+                    clearOptimisticChipDelete={clearOptimisticChipDelete}
+                    clearOptimisticBlockVariableDelete={
+                      clearOptimisticBlockVariableDelete
+                    }
                     disableInsertion={rowChipCount === 0}
                     rowContext
                   />
@@ -348,7 +504,13 @@ export function BlockList({
                 disabled={pending}
               />
             ) : null}
-            {blockNode}
+            {b.__optimistic_delete ? (
+              <div className="opacity-60 italic pointer-events-none">
+                {blockNode}
+              </div>
+            ) : (
+              blockNode
+            )}
           </Fragment>
         );
       })}

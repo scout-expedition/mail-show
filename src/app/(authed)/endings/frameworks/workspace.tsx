@@ -23,6 +23,7 @@ import {
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import { buildSmartReturnsByVariable } from "@/lib/endings/smart-variable-returns";
+import { slugify } from "@/lib/slug";
 
 export function FrameworksWorkspace({
   frameworks,
@@ -404,11 +405,31 @@ function FrameworksWorkspaceInner({
     // window may swallow a quick tab switch right after a keystroke; the
     // saving-gate followup will await idle before navigating.
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
-    if (frameworkId) qs.set("framework", frameworkId);
-    else qs.delete("framework");
+    if (frameworkId) {
+      const fw = frameworks.find((f) => f.id === frameworkId);
+      const slug = fw ? slugify(fw.name ?? "") : "";
+      if (slug) qs.set("name", slug);
+      else qs.delete("name");
+    } else {
+      qs.delete("name");
+    }
     const suffix = qs.toString();
     router.push(`/endings/frameworks${suffix ? `?${suffix}` : ""}`);
   }
+
+  // When the selected framework is renamed, sync the URL slug so
+  // ?name= stays consistent with the current name. Guard against the
+  // no-change case to avoid render loops.
+  useEffect(() => {
+    if (!selected) return;
+    const newSlug = slugify(selected.name ?? "");
+    if (!newSlug) return;
+    const currentSlug = searchParams?.get("name") ?? "";
+    if (currentSlug === newSlug) return;
+    const qs = new URLSearchParams(searchParams?.toString() ?? "");
+    qs.set("name", newSlug);
+    router.replace(`/endings/frameworks?${qs.toString()}`);
+  }, [selected?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="grid gap-3 md:grid-cols-[240px_1fr]">
