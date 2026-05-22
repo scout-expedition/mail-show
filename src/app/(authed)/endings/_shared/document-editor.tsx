@@ -18,10 +18,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
   useTransition,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import {
   ChevronsDownUp,
@@ -333,6 +336,125 @@ export function DocumentEditor({
   const [blockVariableState, setBlockVariableState] = useState<
     BlockVariableState[]
   >(initial.blockVariables);
+
+  // Optimistic ADD overlay — ghosts append to the base array while a
+  // server action is in-flight. React 19 discards them once the
+  // surrounding transition settles and revalidatePath brings back the
+  // real server state.
+  const [optimisticBlocks, addOptimisticBlock] = useOptimistic(
+    blockState,
+    (state: BlockState[], ghost: BlockState) => [...state, ghost]
+  );
+  const [optimisticRows, addOptimisticRow] = useOptimistic(
+    rowState,
+    (state: RowState[], ghost: RowState) => [...state, ghost]
+  );
+  const [optimisticChips, addOptimisticChip] = useOptimistic(
+    chipState,
+    (state: ChipState[], ghost: ChipState) => [...state, ghost]
+  );
+  const [optimisticBlockVariables, addOptimisticBlockVariable] = useOptimistic(
+    blockVariableState,
+    (state: BlockVariableState[], ghost: BlockVariableState) => [
+      ...state,
+      ghost,
+    ]
+  );
+
+  // Optimistic DELETE overlay — held in plain useState<Set<string>> so
+  // it survives independently of `useOptimistic`'s rebase semantics. We
+  // can't use the same reducer pattern for delete because postgres_changes
+  // can wipe the underlying entity from base state mid-transition, which
+  // would erase the `__optimistic_delete` flag and pop the ghost out
+  // instantly. The Set holds the id until the local server-action
+  // promise resolves; render path checks the Set + marks the entity
+  // with __optimistic_delete on the fly.
+  const [pendingDeleteBlocks, setPendingDeleteBlocks] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteRows, setPendingDeleteRows] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteChips, setPendingDeleteChips] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteBlockVariables, setPendingDeleteBlockVariables] =
+    useState<Set<string>>(() => new Set());
+  const mark = useCallback(
+    (
+      setter: Dispatch<SetStateAction<Set<string>>>,
+      id: string,
+      add: boolean
+    ) => {
+      setter((prev) => {
+        const next = new Set(prev);
+        if (add) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    },
+    []
+  );
+  const removeOptimisticBlock = useCallback(
+    (id: string) => mark(setPendingDeleteBlocks, id, true),
+    [mark]
+  );
+  const removeOptimisticRow = useCallback(
+    (id: string) => mark(setPendingDeleteRows, id, true),
+    [mark]
+  );
+  const removeOptimisticChip = useCallback(
+    (id: string) => mark(setPendingDeleteChips, id, true),
+    [mark]
+  );
+  const removeOptimisticBlockVariable = useCallback(
+    (id: string) => mark(setPendingDeleteBlockVariables, id, true),
+    [mark]
+  );
+  // Active pending-delete views — intersect each Set with the
+  // corresponding base id set so stale entries (ids the server has
+  // already removed via revalidatePath / postgres_changes) silently
+  // disappear from the rendered ghost state. Computed in render via
+  // useMemo rather than mutated in an effect, so there's no
+  // setState-in-effect churn.
+  const baseBlockIds = useMemo(
+    () => new Set(blockState.map((b) => b.id)),
+    [blockState]
+  );
+  const baseRowIds = useMemo(
+    () => new Set(rowState.map((r) => r.id)),
+    [rowState]
+  );
+  const baseChipIds = useMemo(
+    () => new Set(chipState.map((c) => c.id)),
+    [chipState]
+  );
+  const baseBlockVariableIds = useMemo(
+    () => new Set(blockVariableState.map((bv) => bv.id)),
+    [blockVariableState]
+  );
+  const activePendingDeleteBlocks = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteBlocks) if (baseBlockIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteBlocks, baseBlockIds]);
+  const activePendingDeleteRows = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteRows) if (baseRowIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteRows, baseRowIds]);
+  const activePendingDeleteChips = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteChips) if (baseChipIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteChips, baseChipIds]);
+  const activePendingDeleteBlockVariables = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteBlockVariables)
+      if (baseBlockVariableIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteBlockVariables, baseBlockVariableIds]);
+
   const [, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const { toast, toaster } = useToast();
@@ -725,25 +847,69 @@ export function DocumentEditor({
   // Fallback blocks are pinned at the bottom of the document and rendered
   // outside BlockList — filter them out of the byParent map so the
   // recursive list doesn't try to render them as a regular leaf.
+  // Decorate each kind with the __optimistic_delete flag for any id in
+  // the corresponding pending-delete Set. The Set holds the id until
+  // the server action resolves, independent of `useOptimistic`'s
+  // rebase-on-base-change behavior, so realtime DELETE events can't
+  // pop the ghost out from under the user mid-transition.
+  const decoratedBlocks = useMemo(
+    () =>
+      optimisticBlocks.map((b) =>
+        activePendingDeleteBlocks.has(b.id)
+          ? { ...b, __optimistic_delete: true as const }
+          : b
+      ),
+    [optimisticBlocks, activePendingDeleteBlocks]
+  );
+  const decoratedRows = useMemo(
+    () =>
+      optimisticRows.map((r) =>
+        activePendingDeleteRows.has(r.id)
+          ? { ...r, __optimistic_delete: true as const }
+          : r
+      ),
+    [optimisticRows, activePendingDeleteRows]
+  );
+  const decoratedChips = useMemo(
+    () =>
+      optimisticChips.map((c) =>
+        activePendingDeleteChips.has(c.id)
+          ? { ...c, __optimistic_delete: true as const }
+          : c
+      ),
+    [optimisticChips, activePendingDeleteChips]
+  );
+  const decoratedBlockVariables = useMemo(
+    () =>
+      optimisticBlockVariables.map((bv) =>
+        activePendingDeleteBlockVariables.has(bv.id)
+          ? { ...bv, __optimistic_delete: true as const }
+          : bv
+      ),
+    [optimisticBlockVariables, activePendingDeleteBlockVariables]
+  );
   const fallbackBlock = useMemo(
-    () => blockState.find((b) => b.block_type === "fallback") ?? null,
-    [blockState]
+    () => decoratedBlocks.find((b) => b.block_type === "fallback") ?? null,
+    [decoratedBlocks]
   );
   const byParent = useMemo(
     () =>
       buildByParentBlock(
-        blockState.filter((b) => b.block_type !== "fallback")
+        decoratedBlocks.filter((b) => b.block_type !== "fallback")
       ),
-    [blockState]
+    [decoratedBlocks]
   );
   const rowsByConditionBlock = useMemo(
-    () => buildRowsByConditionBlock(rowState),
-    [rowState]
+    () => buildRowsByConditionBlock(decoratedRows),
+    [decoratedRows]
   );
-  const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
+  const chipsByRow = useMemo(
+    () => buildChipsByRow(decoratedChips),
+    [decoratedChips]
+  );
   const declaredByBlock = useMemo(
-    () => buildDeclaredByBlock(blockVariableState),
-    [blockVariableState]
+    () => buildDeclaredByBlock(decoratedBlockVariables),
+    [decoratedBlockVariables]
   );
 
   // Static analysis (Phase 5): shadow + uncovered-assignment detection.
@@ -1324,6 +1490,14 @@ export function DocumentEditor({
                 leaves={leaves}
                 onUpdateBlock={updateBlock}
                 onChangeChip={updateChip}
+                addOptimisticBlock={addOptimisticBlock}
+                addOptimisticRow={addOptimisticRow}
+                addOptimisticChip={addOptimisticChip}
+                addOptimisticBlockVariable={addOptimisticBlockVariable}
+                removeOptimisticBlock={removeOptimisticBlock}
+                removeOptimisticRow={removeOptimisticRow}
+                removeOptimisticChip={removeOptimisticChip}
+                removeOptimisticBlockVariable={removeOptimisticBlockVariable}
               />
               {fallback && fallbackBlock ? (
                 <FallbackBlock
