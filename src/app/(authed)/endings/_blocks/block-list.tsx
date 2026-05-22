@@ -87,6 +87,10 @@ export function BlockList({
   removeOptimisticRow,
   removeOptimisticChip,
   removeOptimisticBlockVariable,
+  clearOptimisticBlockDelete,
+  clearOptimisticRowDelete,
+  clearOptimisticChipDelete,
+  clearOptimisticBlockVariableDelete,
 }: {
   parent: ParentLoc;
   byParent: Map<string, BlockState[]>;
@@ -124,6 +128,13 @@ export function BlockList({
   removeOptimisticRow?: (id: string) => void;
   removeOptimisticChip?: (id: string) => void;
   removeOptimisticBlockVariable?: (id: string) => void;
+  /** Rollback companions — clear the pending-delete flag when the
+   *  server action errors so the row doesn't stay grey/disabled
+   *  forever waiting for a realtime DELETE that will never arrive. */
+  clearOptimisticBlockDelete?: (id: string) => void;
+  clearOptimisticRowDelete?: (id: string) => void;
+  clearOptimisticChipDelete?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const drag = useDrag();
   const collapse = useCollapseCtx();
@@ -250,7 +261,14 @@ export function BlockList({
       removeOptimisticBlock?.(id);
       const fd = new FormData();
       fd.set("id", id);
-      await deleteBlock(fd);
+      try {
+        await deleteBlock(fd);
+      } catch (err) {
+        // Server rejected the delete — roll the ghost back so the block
+        // isn't stuck greyed forever.
+        clearOptimisticBlockDelete?.(id);
+        throw err;
+      }
     });
   }
 
@@ -417,6 +435,11 @@ export function BlockList({
               removeOptimisticRow={removeOptimisticRow}
               removeOptimisticChip={removeOptimisticChip}
               removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+              clearOptimisticRowDelete={clearOptimisticRowDelete}
+              clearOptimisticChipDelete={clearOptimisticChipDelete}
+              clearOptimisticBlockVariableDelete={
+                clearOptimisticBlockVariableDelete
+              }
               renderRowContent={(row) => {
                 const rowChipCount = (chipsByRow.get(row.id) ?? []).length;
                 return (
@@ -446,6 +469,12 @@ export function BlockList({
                     removeOptimisticRow={removeOptimisticRow}
                     removeOptimisticChip={removeOptimisticChip}
                     removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+                    clearOptimisticBlockDelete={clearOptimisticBlockDelete}
+                    clearOptimisticRowDelete={clearOptimisticRowDelete}
+                    clearOptimisticChipDelete={clearOptimisticChipDelete}
+                    clearOptimisticBlockVariableDelete={
+                      clearOptimisticBlockVariableDelete
+                    }
                     disableInsertion={rowChipCount === 0}
                     rowContext
                   />

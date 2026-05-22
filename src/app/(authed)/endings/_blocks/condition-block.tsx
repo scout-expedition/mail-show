@@ -77,6 +77,9 @@ export function ConditionBlock({
   removeOptimisticRow,
   removeOptimisticChip,
   removeOptimisticBlockVariable,
+  clearOptimisticRowDelete,
+  clearOptimisticChipDelete,
+  clearOptimisticBlockVariableDelete,
 }: {
   block: BlockState;
   rows: RowState[];
@@ -107,6 +110,11 @@ export function ConditionBlock({
   removeOptimisticRow?: (id: string) => void;
   removeOptimisticChip?: (id: string) => void;
   removeOptimisticBlockVariable?: (id: string) => void;
+  /** Rollback companions — clear the pending-delete flag when the
+   *  server action errors, so the row isn't stuck greyed forever. */
+  clearOptimisticRowDelete?: (id: string) => void;
+  clearOptimisticChipDelete?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const { peers, setFocus } = usePresenceContext();
   const summaryField = useInstantField<string>({
@@ -317,6 +325,9 @@ export function ConditionBlock({
             addOptimisticChip={addOptimisticChip}
             addOptimisticBlockVariable={addOptimisticBlockVariable}
             removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+            clearOptimisticBlockVariableDelete={
+              clearOptimisticBlockVariableDelete
+            }
           />
         </div>
         <FieldHighlight
@@ -479,7 +490,12 @@ export function ConditionBlock({
                   removeOptimisticChip?.(chipId);
                   const fd = new FormData();
                   fd.set("id", chipId);
-                  await deleteChip(fd);
+                  try {
+                    await deleteChip(fd);
+                  } catch (err) {
+                    clearOptimisticChipDelete?.(chipId);
+                    throw err;
+                  }
                 })
               }
               onChangeChip={onChangeChip}
@@ -488,7 +504,12 @@ export function ConditionBlock({
                   removeOptimisticRow?.(row.id);
                   const fd = new FormData();
                   fd.set("id", row.id);
-                  await deleteRow(fd);
+                  try {
+                    await deleteRow(fd);
+                  } catch (err) {
+                    clearOptimisticRowDelete?.(row.id);
+                    throw err;
+                  }
                 })
               }
               onDuplicateRow={() =>
@@ -960,6 +981,7 @@ function HeaderVariableStrip({
   addOptimisticChip,
   addOptimisticBlockVariable,
   removeOptimisticBlockVariable,
+  clearOptimisticBlockVariableDelete,
 }: {
   blockId: string;
   declaredVariables: BlockVariableState[];
@@ -975,6 +997,7 @@ function HeaderVariableStrip({
   addOptimisticChip?: (ghost: ChipState) => void;
   addOptimisticBlockVariable?: (ghost: BlockVariableState) => void;
   removeOptimisticBlockVariable?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
   // `declaredVariables` already contains the optimistic ghost via the
@@ -1010,7 +1033,12 @@ function HeaderVariableStrip({
                 removeOptimisticBlockVariable?.(dv.id);
                 const fd = new FormData();
                 fd.set("id", dv.id);
-                await removeBlockVariable(fd);
+                try {
+                  await removeBlockVariable(fd);
+                } catch (err) {
+                  clearOptimisticBlockVariableDelete?.(dv.id);
+                  throw err;
+                }
               });
             }}
           />

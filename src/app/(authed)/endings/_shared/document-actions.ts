@@ -222,11 +222,34 @@ export async function patchDocument(
     sanitized.name = finalName;
   }
 
-  const { error } = await supabase
-    .from("ending_documents")
-    .update(sanitized)
-    .eq("id", id);
-  if (error) throw new Error(error.message);
+  // The uniqueDocumentName probe + UPDATE is check-then-write: two
+  // concurrent renames can both pick "Foo 2", and the DB's slug unique
+  // index lets only one through. The loser gets a 23505 — recompute a
+  // fresh free name and try again. Capped at a few retries to avoid
+  // livelock under pathological concurrency.
+  let attempt = 0;
+  for (;;) {
+    const { error } = await supabase
+      .from("ending_documents")
+      .update(sanitized)
+      .eq("id", id);
+    if (!error) break;
+    const code = (error as { code?: string }).code;
+    if (code === "23505" && sanitized.name && attempt < 3 && (kind === "framework" || kind === "smart_variable")) {
+      attempt += 1;
+      const retryName = await uniqueDocumentName(
+        supabase,
+        kind,
+        sanitized.name,
+        id
+      );
+      sanitized.name = retryName;
+      savedName = retryName;
+      collided = true;
+      continue;
+    }
+    throw new Error(error.message);
+  }
 
   // Smart Variables are paired 1:1 with an `ending_variables` row of
   // kind='smart_ref' — that variable row is the public identity used by

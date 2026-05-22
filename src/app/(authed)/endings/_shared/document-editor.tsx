@@ -411,6 +411,27 @@ export function DocumentEditor({
     (id: string) => mark(setPendingDeleteBlockVariables, id, true),
     [mark]
   );
+  // Rollback variants — caller invokes when the server action threw, so
+  // the row doesn't stay grey/disabled forever waiting for a realtime
+  // DELETE that will never arrive. The useMemo intersection already
+  // drops ids the server confirmed gone; this handles the inverse
+  // (server said no, entity is still in base).
+  const clearOptimisticBlockDelete = useCallback(
+    (id: string) => mark(setPendingDeleteBlocks, id, false),
+    [mark]
+  );
+  const clearOptimisticRowDelete = useCallback(
+    (id: string) => mark(setPendingDeleteRows, id, false),
+    [mark]
+  );
+  const clearOptimisticChipDelete = useCallback(
+    (id: string) => mark(setPendingDeleteChips, id, false),
+    [mark]
+  );
+  const clearOptimisticBlockVariableDelete = useCallback(
+    (id: string) => mark(setPendingDeleteBlockVariables, id, false),
+    [mark]
+  );
   // Active pending-delete views — intersect each Set with the
   // corresponding base id set so stale entries (ids the server has
   // already removed via revalidatePath / postgres_changes) silently
@@ -1498,6 +1519,12 @@ export function DocumentEditor({
                 removeOptimisticRow={removeOptimisticRow}
                 removeOptimisticChip={removeOptimisticChip}
                 removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+                clearOptimisticBlockDelete={clearOptimisticBlockDelete}
+                clearOptimisticRowDelete={clearOptimisticRowDelete}
+                clearOptimisticChipDelete={clearOptimisticChipDelete}
+                clearOptimisticBlockVariableDelete={
+                  clearOptimisticBlockVariableDelete
+                }
               />
               {fallback && fallbackBlock ? (
                 <FallbackBlock
