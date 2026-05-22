@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
+import { slugify } from "@/lib/slug";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -12,19 +13,58 @@ function revalidateEndings() {
   revalidatePath("/inspection/letters");
 }
 
-async function uniqueName(
+/**
+ * Slug-aware version that also disambiguates against the cross-table
+ * (variables ↔ folders) namespace so two distinct names that slugify the
+ * same ("Foo!" vs "Foo?") still get bumped to a suffix. Excludes
+ * `excludeVarId` from the variables-table check so a no-op rename
+ * doesn't get bumped to a suffix.
+ */
+async function uniqueVariableName(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
-  table: "ending_variables",
-  base: string
+  base: string,
+  excludeVarId?: string
 ): Promise<string> {
+  const [{ data: vars }, { data: folders }] = await Promise.all([
+    supabase.from("ending_variables").select("id, name").eq("kind", "text"),
+    supabase.from("ending_variable_folders").select("id, name"),
+  ]);
+  const varRows = vars ?? [];
+  const folderRows = folders ?? [];
   let name = base;
   for (let i = 2; ; i++) {
-    const { data } = await supabase
-      .from(table)
-      .select("id")
-      .eq("name", name)
-      .maybeSingle();
-    if (!data) return name;
+    const slug = slugify(name);
+    const conflict =
+      varRows.some((v) => v.id !== excludeVarId && slugify(v.name) === slug) ||
+      folderRows.some((f) => slugify(f.name) === slug);
+    if (!conflict) return name;
+    name = `${base} ${i}`;
+  }
+}
+
+/**
+ * Slug-aware uniqueness for folders. Cross-checks the variables table so
+ * a folder named "Foo" can't shadow a variable also named "Foo".
+ */
+async function uniqueFolderName(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  base: string,
+  excludeFolderId?: string
+): Promise<string> {
+  const [{ data: vars }, { data: folders }] = await Promise.all([
+    supabase.from("ending_variables").select("id, name").eq("kind", "text"),
+    supabase.from("ending_variable_folders").select("id, name"),
+  ]);
+  const varRows = vars ?? [];
+  const folderRows = folders ?? [];
+  let name = base;
+  for (let i = 2; ; i++) {
+    const slug = slugify(name);
+    const conflict =
+      folderRows.some(
+        (f) => f.id !== excludeFolderId && slugify(f.name) === slug
+      ) || varRows.some((v) => slugify(v.name) === slug);
+    if (!conflict) return name;
     name = `${base} ${i}`;
   }
 }
@@ -65,7 +105,7 @@ export async function createEndingVariable(
     .order("sort_order", { ascending: false })
     .limit(1);
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
-  const name = await uniqueName(supabase, "ending_variables", "New variable");
+  const name = await uniqueVariableName(supabase, "New variable");
   const id = input?.id ?? randomUUID();
   const { error } = await supabase.from("ending_variables").insert({
     id,
@@ -76,7 +116,10 @@ export async function createEndingVariable(
     sort_order: nextSort,
     folder_id: input?.folder_id ?? null,
   });
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (error.code === "23505") throw new Error(`A variable named "${name}" already exists.`);
+    throw new Error(error.message);
+  }
   revalidateEndings();
   return { id, name };
 }
@@ -247,21 +290,22 @@ export async function patchEndingVariable(
     color_hex: string | null;
     folder_id: string | null;
   }>
-) {
+): Promise<{ savedName?: string; collided?: boolean }> {
   const supabase = await createSupabaseServerClient();
   const sanitized: typeof patch = { ...patch };
 
+  let collided = false;
+  let savedName: string | undefined;
   if (sanitized.name !== undefined) {
     const trimmed = sanitized.name.trim();
     if (!trimmed) throw new Error("Variable name cannot be empty.");
-    const { data: conflict } = await supabase
-      .from("ending_variables")
-      .select("id")
-      .ilike("name", escapeForLike(trimmed))
-      .neq("id", id)
-      .maybeSingle();
-    if (conflict) throw new Error(`Duplicate variable name: ${trimmed}`);
-    sanitized.name = trimmed;
+    // Auto-disambiguate slug collisions (variables + folders share the
+    // namespace) by appending " 2"/" 3"/… The autosave never silently
+    // reverts — it just lands on the next free slug.
+    const finalName = await uniqueVariableName(supabase, trimmed, id);
+    collided = finalName !== trimmed;
+    savedName = finalName;
+    sanitized.name = finalName;
   }
 
   if (sanitized.color_hex !== undefined && sanitized.color_hex !== null) {
@@ -276,7 +320,11 @@ export async function patchEndingVariable(
     .from("ending_variables")
     .update(sanitized)
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (error.code === "23505") throw new Error(`A variable named "${sanitized.name ?? ""}" already exists.`);
+    throw new Error(error.message);
+  }
+  return { savedName, collided };
 }
 
 /**
@@ -366,14 +414,18 @@ export async function createEndingVariableFolder(
   const { data: existing } = await siblingsQuery;
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
 
+  const folderName = await uniqueFolderName(supabase, "New folder");
   const id = input?.id ?? randomUUID();
   const { error } = await supabase.from("ending_variable_folders").insert({
     id,
-    name: "New folder",
+    name: folderName,
     parent_folder_id: parent,
     sort_order: nextSort,
   });
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (error.code === "23505") throw new Error(`A folder named "${folderName}" already exists.`);
+    throw new Error(error.message);
+  }
   revalidateEndings();
   return { id };
 }
@@ -391,14 +443,21 @@ export async function patchEndingVariableFolder(
     parent_folder_id: string | null;
     sort_order: number;
   }>
-) {
+): Promise<{ savedName?: string; collided?: boolean }> {
   const supabase = await createSupabaseServerClient();
   const sanitized: typeof patch = { ...patch };
 
+  let collided = false;
+  let savedName: string | undefined;
   if (sanitized.name !== undefined) {
     const trimmed = sanitized.name.trim();
     if (!trimmed) throw new Error("Folder name cannot be empty.");
-    sanitized.name = trimmed;
+    // Auto-disambiguate slug collisions (folders + variables share the
+    // namespace) by appending " 2"/" 3"/…
+    const finalName = await uniqueFolderName(supabase, trimmed, id);
+    collided = finalName !== trimmed;
+    savedName = finalName;
+    sanitized.name = finalName;
   }
 
   if (sanitized.parent_folder_id === id) {
@@ -409,7 +468,11 @@ export async function patchEndingVariableFolder(
     .from("ending_variable_folders")
     .update(sanitized)
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    if (error.code === "23505") throw new Error(`A folder named "${sanitized.name ?? ""}" already exists.`);
+    throw new Error(error.message);
+  }
+  return { savedName, collided };
 }
 
 /**

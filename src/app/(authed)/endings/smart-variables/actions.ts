@@ -14,6 +14,7 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { colorIndexFor } from "@/lib/endings/color-palette";
+import { slugify } from "@/lib/slug";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -27,29 +28,36 @@ type Supabase = Awaited<ReturnType<typeof createSupabaseServerClient>>;
 
 async function uniqueSmartVariableName(
   supabase: Supabase,
-  base: string
+  base: string,
+  excludeDocId?: string
 ): Promise<string> {
-  // Smart Variable creation writes to BOTH ending_documents (partial
-  // unique on smart_variable kind) and ending_variables (whole-table
-  // unique on name). Probe both so the chosen name doesn't collide on
-  // either table — including any legacy state where a doc was renamed
-  // without its paired variable name (pre-trigger).
+  // Smart Variable creation writes to BOTH ending_documents (partial slug
+  // unique on smart_variable kind) and ending_variables (slug unique
+  // whole-table). Probe both with slug equality so two distinct names
+  // ("Foo!" / "Foo?") that slugify the same get disambiguated. Excludes
+  // the doc + its paired variable from the check so a no-op rename
+  // doesn't bump itself to a suffix.
   let name = base;
   for (let i = 2; ; i++) {
-    const [{ data: docHit }, { data: varHit }] = await Promise.all([
+    const slug = slugify(name);
+    const [{ data: docs }, { data: vars }] = await Promise.all([
       supabase
         .from("ending_documents")
-        .select("id")
-        .eq("kind", "smart_variable")
-        .eq("name", name)
-        .maybeSingle(),
+        .select("id, name")
+        .eq("kind", "smart_variable"),
       supabase
         .from("ending_variables")
-        .select("id")
-        .eq("name", name)
-        .maybeSingle(),
+        .select("id, name, smart_variable_doc_id"),
     ]);
-    if (!docHit && !varHit) return name;
+    const docConflict = (docs ?? []).some(
+      (d) => d.id !== excludeDocId && slugify(d.name as string) === slug
+    );
+    const varConflict = (vars ?? []).some(
+      (v) =>
+        v.smart_variable_doc_id !== excludeDocId &&
+        slugify(v.name as string) === slug
+    );
+    if (!docConflict && !varConflict) return name;
     name = `${base} ${i}`;
   }
 }
@@ -70,6 +78,7 @@ export async function createSmartVariable(input: {
   documentId: string;
   variableId: string;
   fallbackBlockId: string;
+  name: string;
 }> {
   const supabase = await createSupabaseServerClient();
 
@@ -100,7 +109,12 @@ export async function createSmartVariable(input: {
     name,
     sort_order: nextDocSort,
   });
-  if (docErr) throw new Error(docErr.message);
+  if (docErr) {
+    if (docErr.code === "23505") {
+      throw new Error(`Duplicate Smart Variable name: ${name}`);
+    }
+    throw new Error(docErr.message);
+  }
 
   // 2) Paired variable row.
   const { error: varErr } = await supabase.from("ending_variables").insert({
@@ -116,6 +130,9 @@ export async function createSmartVariable(input: {
   if (varErr) {
     // Best-effort cleanup so the orphan doc doesn't linger.
     await supabase.from("ending_documents").delete().eq("id", documentId);
+    if (varErr.code === "23505") {
+      throw new Error(`Duplicate Smart Variable name: ${name}`);
+    }
     throw new Error(varErr.message);
   }
 
@@ -144,6 +161,7 @@ export async function createSmartVariable(input: {
     documentId,
     variableId,
     fallbackBlockId: fallbackRow.id as string,
+    name,
   };
 }
 
@@ -170,41 +188,21 @@ export async function renameSmartVariable(input: {
     throw new Error("renameSmartVariable: not a Smart Variable.");
   }
 
-  // Uniqueness check across BOTH tables. ending_documents has a partial
-  // unique index on smart_variable kind; ending_variables has a
-  // whole-table unique on name. Either would reject the rename, so probe
-  // both up front to surface a clean error before doing partial writes.
-  const escaped = trimmed.replace(/[\\%_]/g, "\\$&");
-  const [{ data: docConflict }, { data: varConflict }] = await Promise.all([
-    supabase
-      .from("ending_documents")
-      .select("id")
-      .eq("kind", "smart_variable")
-      .ilike("name", escaped)
-      .neq("id", input.documentId)
-      .maybeSingle(),
-    supabase
-      .from("ending_variables")
-      .select("id, smart_variable_doc_id")
-      .ilike("name", escaped)
-      .neq("smart_variable_doc_id", input.documentId)
-      .maybeSingle(),
-  ]);
-  if (docConflict || varConflict) {
-    throw new Error(`Duplicate Smart Variable name: ${trimmed}`);
-  }
+  // Auto-disambiguate slug collisions across both tables (doc + paired
+  // variable) by appending " 2" / " 3" / … matching the create path.
+  const finalName = await uniqueSmartVariableName(
+    supabase,
+    trimmed,
+    input.documentId
+  );
 
   const { error: docErr } = await supabase
     .from("ending_documents")
-    .update({ name: trimmed })
+    .update({ name: finalName })
     .eq("id", input.documentId);
   if (docErr) throw new Error(docErr.message);
-
-  const { error: varErr } = await supabase
-    .from("ending_variables")
-    .update({ name: trimmed })
-    .eq("smart_variable_doc_id", input.documentId);
-  if (varErr) throw new Error(varErr.message);
+  // The DB trigger `trg_sync_smart_variable_name` mirrors the rename
+  // onto the paired ending_variables row automatically — no second write.
 
   revalidateEndings();
 }

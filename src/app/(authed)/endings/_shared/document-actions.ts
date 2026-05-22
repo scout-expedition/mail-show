@@ -30,6 +30,10 @@ import {
   type EndingDocumentKind,
   type EndingLogicKind,
 } from "@/lib/db/enums";
+import { computeDefaultChipFor } from "@/lib/endings/default-chip";
+import { slugify } from "@/lib/slug";
+import type { ChipState, VariableState } from "@/lib/endings/block-state";
+import type { EndingVariableValue } from "@/lib/db/types";
 
 function revalidateEndings() {
   revalidatePath("/endings/variables");
@@ -40,19 +44,63 @@ function revalidateEndings() {
 
 type Supabase = Awaited<ReturnType<typeof createSupabaseServerClient>>;
 
-async function uniqueFrameworkName(
+/**
+ * Find a non-colliding name by appending " 2", " 3", … until the slug
+ * is unique among documents of the given kind. Slug-aware so two names
+ * that look distinct ("Foo!" vs "Foo?") but slugify to the same value
+ * still get disambiguated. Excludes `excludeId` (the row being renamed)
+ * from the check so a no-op rename doesn't get bumped to a suffix.
+ */
+async function uniqueDocumentName(
   supabase: Supabase,
-  base: string
+  kind: "framework" | "smart_variable",
+  base: string,
+  excludeId?: string
 ): Promise<string> {
+  const candidateSlug = (text: string) => slugify(text);
+  // Smart variables write to both `ending_documents` (their kind partial
+  // unique) AND `ending_variables` (the paired smart_ref row, also slug
+  // unique). A rename that only checks `ending_documents` would pass the
+  // app-level disambiguator but then fail at the DB trigger when the
+  // paired variable update hits the variables-table unique index.
+  // Probe `ending_variables` too for smart_variable to surface the
+  // collision (and auto-append a suffix) before either write happens.
+  const docsPromise = supabase
+    .from("ending_documents")
+    .select("id, name")
+    .eq("kind", kind);
+  const varsPromise =
+    kind === "smart_variable"
+      ? supabase
+          .from("ending_variables")
+          .select("id, name, smart_variable_doc_id")
+      : Promise.resolve({ data: [] as Array<{
+          id: string;
+          name: string;
+          smart_variable_doc_id: string | null;
+        }> });
+  const [{ data: docs }, { data: vars }] = await Promise.all([
+    docsPromise,
+    varsPromise,
+  ]);
+  const docRows = docs ?? [];
+  const varRows = vars ?? [];
   let name = base;
   for (let i = 2; ; i++) {
-    const { data } = await supabase
-      .from("ending_documents")
-      .select("id")
-      .eq("kind", "framework")
-      .eq("name", name)
-      .maybeSingle();
-    if (!data) return name;
+    const slug = candidateSlug(name);
+    const docConflict = docRows.some(
+      (row) =>
+        row.id !== excludeId && candidateSlug(row.name as string) === slug
+    );
+    // For smart variables, also reject if the slug matches any
+    // ending_variables row whose paired doc isn't `excludeId` (so the
+    // self-paired row doesn't count as a conflict).
+    const varConflict = varRows.some(
+      (row) =>
+        row.smart_variable_doc_id !== excludeId &&
+        candidateSlug(row.name as string) === slug
+    );
+    if (!docConflict && !varConflict) return name;
     name = `${base} ${i}`;
   }
 }
@@ -76,13 +124,18 @@ export async function createFrameworkDocument(input: {
     .limit(1);
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
   const baseName = input.name?.trim() || "New framework";
-  const name = await uniqueFrameworkName(supabase, baseName);
+  const name = await uniqueDocumentName(supabase, "framework", baseName);
   const { data, error } = await supabase
     .from("ending_documents")
     .insert({ kind: "framework", name, sort_order: nextSort })
     .select("id")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) {
+    if ((error as { code?: string }).code === "23505") {
+      throw new Error(`A framework named '${name}' already exists.`);
+    }
+    throw new Error(error.message);
+  }
   revalidateEndings();
   return { id: data.id as string };
 }
@@ -115,9 +168,13 @@ export async function renameDocument(formData: FormData) {
   if (kind !== "framework") {
     throw new Error("Only framework documents can be renamed.");
   }
+  // Auto-disambiguate slug collisions by appending " 2" / " 3" / …
+  // matching createFrameworkDocument's behaviour. Two distinct names
+  // that slugify the same ("Foo!" / "Foo?") collide too.
+  const finalName = await uniqueDocumentName(supabase, "framework", name, id);
   const { error } = await supabase
     .from("ending_documents")
-    .update({ name })
+    .update({ name: finalName })
     .eq("id", id);
   if (error) throw new Error(error.message);
   revalidateEndings();
@@ -132,13 +189,15 @@ export async function renameDocument(formData: FormData) {
 export async function patchDocument(
   id: string,
   patch: Partial<{ name: string; sort_order: number }>
-): Promise<void> {
+): Promise<{ savedName?: string; collided?: boolean }> {
   const supabase = await createSupabaseServerClient();
   const kind = await getDocumentKind(supabase, id);
   if (!kind) throw new Error(`Unknown document ${id}.`);
 
   const sanitized: typeof patch = { ...patch };
 
+  let collided = false;
+  let savedName: string | undefined;
   if (sanitized.name !== undefined) {
     if (kind !== "framework" && kind !== "smart_variable") {
       throw new Error(
@@ -153,21 +212,14 @@ export async function patchDocument(
           : "Smart Variable name cannot be empty."
       );
     }
-    const { data: conflict } = await supabase
-      .from("ending_documents")
-      .select("id")
-      .eq("kind", kind)
-      .ilike("name", trimmed.replace(/[\\%_]/g, "\\$&"))
-      .neq("id", id)
-      .maybeSingle();
-    if (conflict) {
-      throw new Error(
-        kind === "framework"
-          ? `Duplicate framework name: ${trimmed}`
-          : `Duplicate Smart Variable name: ${trimmed}`
-      );
-    }
-    sanitized.name = trimmed;
+    // Auto-disambiguate slug collisions by appending " 2" / " 3" / …
+    // matching the create path. The DB has a slug-based unique index, so
+    // two visually-distinct names that slugify to the same value collide
+    // too — uniqueDocumentName handles that case.
+    const finalName = await uniqueDocumentName(supabase, kind, trimmed, id);
+    collided = finalName !== trimmed;
+    savedName = finalName;
+    sanitized.name = finalName;
   }
 
   const { error } = await supabase
@@ -178,18 +230,10 @@ export async function patchDocument(
 
   // Smart Variables are paired 1:1 with an `ending_variables` row of
   // kind='smart_ref' — that variable row is the public identity used by
-  // every chip picker across endings + frameworks. Keep the two names in
-  // sync so renaming in the editor immediately propagates to every
-  // surface that reads `ending_variables.name`. A DB trigger also enforces
-  // this invariant, but doing it here too keeps the rejected-name error
-  // surface in app code where the caller can react to it.
-  if (sanitized.name !== undefined && kind === "smart_variable") {
-    const { error: varErr } = await supabase
-      .from("ending_variables")
-      .update({ name: sanitized.name })
-      .eq("smart_variable_doc_id", id);
-    if (varErr) throw new Error(varErr.message);
-  }
+  // every chip picker across endings + frameworks. The DB trigger
+  // `trg_sync_smart_variable_name` mirrors the rename onto the paired
+  // variable row automatically, so no second write is needed here.
+  return { savedName, collided };
 }
 
 /**
@@ -707,20 +751,94 @@ export async function addRow(input: {
     .limit(1)
     .maybeSingle();
   if (firstHeader) {
-    const chipDefaults = await computeDefaultChip(
-      supabase,
-      firstHeader.variable_id as string
-    );
-    if (chipDefaults) {
-      const { error: chipErr } = await supabase
+    const variableId = firstHeader.variable_id as string;
+
+    // Fetch the variable row to build a VariableState
+    const { data: variableRow } = await supabase
+      .from("ending_variables")
+      .select(
+        "id, name, kind, number_ref, aggregate_ref, default_value_id, color_index, folder_id, sort_order"
+      )
+      .eq("id", variableId)
+      .maybeSingle();
+
+    if (variableRow) {
+      // Fetch all values for this variable
+      const { data: valueRows } = await supabase
+        .from("ending_variable_values")
+        .select("id, variable_id, value, sort_order")
+        .eq("variable_id", variableId)
+        .order("sort_order");
+
+      // Fetch chips already on the block (to pick the next-unused value)
+      const { data: existingChipRows } = await supabase
         .from("ending_condition_row_chips")
-        .insert({
-          row_id: data.id as string,
-          variable_id: firstHeader.variable_id as string,
-          ...chipDefaults,
-          sort_order: 0,
-        });
-      if (chipErr) throw new Error(chipErr.message);
+        .select(
+          "id, row_id, variable_id, operator, text_value_id, number_value, aggregate_value, sort_order"
+        )
+        .in(
+          "row_id",
+          (
+            await supabase
+              .from("ending_condition_rows")
+              .select("id")
+              .eq("condition_block_id", input.block_id)
+          ).data?.map((r) => r.id as string) ?? []
+        );
+
+      const variable: VariableState = {
+        id: variableRow.id as string,
+        name: variableRow.name as string,
+        kind: variableRow.kind as VariableState["kind"],
+        number_ref: (variableRow.number_ref as string | null) ?? null,
+        aggregate_ref:
+          (variableRow.aggregate_ref as VariableState["aggregate_ref"]) ?? null,
+        default_value_id:
+          (variableRow.default_value_id as string | null) ?? null,
+        color_index: (variableRow.color_index as number) ?? 0,
+        color_hex: null,
+        folder_id: (variableRow.folder_id as string | null) ?? null,
+        sort_order: (variableRow.sort_order as number) ?? 0,
+      };
+
+      const values: EndingVariableValue[] = (valueRows ?? []).map((v) => ({
+        id: v.id as string,
+        variable_id: v.variable_id as string,
+        value: v.value as string,
+        sort_order: v.sort_order as number,
+      }));
+
+      const usedValuesOnBlock: ChipState[] = (existingChipRows ?? []).map(
+        (c) => ({
+          id: c.id as string,
+          row_id: c.row_id as string,
+          variable_id: c.variable_id as string,
+          operator: c.operator as ChipState["operator"],
+          text_value_id: (c.text_value_id as string | null) ?? null,
+          number_value: (c.number_value as number | null) ?? null,
+          aggregate_value: (c.aggregate_value as string | null) ?? null,
+          sort_order: c.sort_order as number,
+        })
+      );
+
+      const chipDefaults = computeDefaultChipFor({
+        variable,
+        values,
+        smartReturns: undefined,
+        usedValuesOnBlock,
+      });
+
+      if (chipDefaults) {
+        const { error: chipErr } = await supabase
+          .from("ending_condition_row_chips")
+          .insert({
+            row_id: data.id as string,
+            variable_id: variableId,
+            ...chipDefaults,
+            sort_order: 0,
+          });
+        if (chipErr) throw new Error(chipErr.message);
+      }
     }
   }
 
@@ -832,29 +950,74 @@ export async function addBlockVariable(input: {
       .eq("condition_block_id", input.block_id)
       .limit(1);
     if (!existingRows || existingRows.length === 0) {
-      const chipDefaults = await computeDefaultChip(
-        supabase,
-        input.variable_id
-      );
-      if (chipDefaults) {
-        const { data: row, error: rowErr } = await supabase
-          .from("ending_condition_rows")
-          .insert({
-            condition_block_id: input.block_id,
-            sort_order: 0,
-          })
-          .select("id")
-          .single();
-        if (rowErr) throw new Error(rowErr.message);
-        const { error: chipErr } = await supabase
-          .from("ending_condition_row_chips")
-          .insert({
-            row_id: row.id as string,
-            variable_id: input.variable_id,
-            ...chipDefaults,
-            sort_order: 0,
-          });
-        if (chipErr) throw new Error(chipErr.message);
+      // Fetch the variable row to build a VariableState
+      const { data: variableRow } = await supabase
+        .from("ending_variables")
+        .select(
+          "id, name, kind, number_ref, aggregate_ref, default_value_id, color_index, folder_id, sort_order"
+        )
+        .eq("id", input.variable_id)
+        .maybeSingle();
+
+      if (variableRow) {
+        // Fetch all values for this variable
+        const { data: valueRows } = await supabase
+          .from("ending_variable_values")
+          .select("id, variable_id, value, sort_order")
+          .eq("variable_id", input.variable_id)
+          .order("sort_order");
+
+        const variable: VariableState = {
+          id: variableRow.id as string,
+          name: variableRow.name as string,
+          kind: variableRow.kind as VariableState["kind"],
+          number_ref: (variableRow.number_ref as string | null) ?? null,
+          aggregate_ref:
+            (variableRow.aggregate_ref as VariableState["aggregate_ref"]) ??
+            null,
+          default_value_id:
+            (variableRow.default_value_id as string | null) ?? null,
+          color_index: (variableRow.color_index as number) ?? 0,
+          color_hex: null,
+          folder_id: (variableRow.folder_id as string | null) ?? null,
+          sort_order: (variableRow.sort_order as number) ?? 0,
+        };
+
+        const values: EndingVariableValue[] = (valueRows ?? []).map((v) => ({
+          id: v.id as string,
+          variable_id: v.variable_id as string,
+          value: v.value as string,
+          sort_order: v.sort_order as number,
+        }));
+
+        // Zero rows on the block → no existing chips to avoid
+        const chipDefaults = computeDefaultChipFor({
+          variable,
+          values,
+          smartReturns: undefined,
+          usedValuesOnBlock: [],
+        });
+
+        if (chipDefaults) {
+          const { data: row, error: rowErr } = await supabase
+            .from("ending_condition_rows")
+            .insert({
+              condition_block_id: input.block_id,
+              sort_order: 0,
+            })
+            .select("id")
+            .single();
+          if (rowErr) throw new Error(rowErr.message);
+          const { error: chipErr } = await supabase
+            .from("ending_condition_row_chips")
+            .insert({
+              row_id: row.id as string,
+              variable_id: input.variable_id,
+              ...chipDefaults,
+              sort_order: 0,
+            });
+          if (chipErr) throw new Error(chipErr.message);
+        }
       }
     }
   }
@@ -863,93 +1026,9 @@ export async function addBlockVariable(input: {
   return { id: resultId };
 }
 
-/**
- * Compute the default chip values for a freshly-added header variable.
- * Returns null when the variable is text-typed but has no values yet
- * (caller should skip auto-row creation in that case).
- */
-async function computeDefaultChip(
-  supabase: Supabase,
-  variable_id: string
-): Promise<{
-  operator: EndingChipOperator;
-  text_value_id: string | null;
-  number_value: number | null;
-  aggregate_value: string | null;
-} | null> {
-  const { data: variable } = await supabase
-    .from("ending_variables")
-    .select("kind, aggregate_ref, default_value_id")
-    .eq("id", variable_id)
-    .maybeSingle();
-  if (!variable) return null;
-
-  if (variable.kind === "text") {
-    let textValueId = (variable.default_value_id as string | null) ?? null;
-    if (!textValueId) {
-      const { data: firstValue } = await supabase
-        .from("ending_variable_values")
-        .select("id")
-        .eq("variable_id", variable_id)
-        .order("sort_order")
-        .limit(1)
-        .maybeSingle();
-      textValueId = (firstValue?.id as string | undefined) ?? null;
-    }
-    if (!textValueId) return null;
-    return {
-      operator: "=",
-      text_value_id: textValueId,
-      number_value: null,
-      aggregate_value: null,
-    };
-  }
-
-  if (variable.kind === "number_ref") {
-    return {
-      operator: "=",
-      text_value_id: null,
-      number_value: 0,
-      aggregate_value: null,
-    };
-  }
-
-  if (variable.kind === "aggregate_ref") {
-    const aref = variable.aggregate_ref as
-      | "nation_affinity"
-      | "class_affinity"
-      | "nation_tiebreak_set"
-      | null;
-    if (!aref) return null;
-    const operator: EndingChipOperator =
-      aref === "nation_tiebreak_set" ? "set_includes" : "top=";
-    const aggregateValue = AGGREGATE_OPTIONS_BY_REF[aref]?.[0] ?? null;
-    if (!aggregateValue) return null;
-    return {
-      operator,
-      text_value_id: null,
-      number_value: null,
-      aggregate_value: aggregateValue,
-    };
-  }
-
-  if (variable.kind === "smart_ref") {
-    // Smart variables compare against a free-text string stored in
-    // aggregate_value. Seed with an empty string so the chip satisfies
-    // the value-shape CHECK (exactly one slot non-null) on first save
-    // — the user fills it in via the dropdown. Mirrors the client-side
-    // chip-adder behavior in condition-block.tsx so the two paths
-    // don't diverge.
-    return {
-      operator: "=",
-      text_value_id: null,
-      number_value: null,
-      aggregate_value: "",
-    };
-  }
-
-  return null;
-}
+// computeDefaultChip removed — both call sites now use the shared
+// computeDefaultChipFor() from @/lib/endings/default-chip, which
+// applies next-unused-value logic across chips already on the block.
 
 /**
  * Narrow per-field patch for `ending_condition_block_variables`.
