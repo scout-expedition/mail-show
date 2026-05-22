@@ -166,6 +166,7 @@ import {
   Mails,
   Megaphone,
   MoreVertical,
+  Pin,
   Plus,
   Replace,
   Trash2,
@@ -670,20 +671,29 @@ function LettersWorkspaceInner({
   );
 
   /**
-   * Delivery pill for a letter / report row: a signed relative offset from
-   * the group's delivery day (e.g. "+1"), or the absolute day's identifier
-   * when the row carries an absolute delivery override.
+   * Delivery pill for a letter / report row. Two halves separated by a thin
+   * divider:
+   *   • Absolute override → pushpin icon | day identifier
+   *   • Relative offset   → "+N" / "-N"  | computed delivery day identifier
+   *   • Effective day only (no group day to compare against) → solo day pill
    */
   function deliveryBadge(
     overrideId: string | null,
     effectiveId: string | null
   ): ReactNode {
+    const halfCls =
+      "flex items-center justify-center px-1.5 leading-none";
+    const dividerCls = "h-3 w-px bg-border";
     if (overrideId) {
       const d = dayById.get(overrideId);
       return (
-        <Badge variant="muted" className="shrink-0">
-          {d?.identifier ?? "?"}
-        </Badge>
+        <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/40 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className={halfCls}>
+            <Pin size={9} aria-hidden fill="currentColor" />
+          </span>
+          <span className={dividerCls} aria-hidden />
+          <span className={halfCls}>{d?.identifier ?? "?"}</span>
+        </span>
       );
     }
     const groupDay = group?.delivery_day_id
@@ -693,9 +703,13 @@ function LettersWorkspaceInner({
     if (eff && groupDay) {
       const delta = eff.number - groupDay.number;
       return (
-        <Badge variant="muted" className="shrink-0">
-          {delta >= 0 ? `+${delta}` : `${delta}`}
-        </Badge>
+        <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/40 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className={halfCls}>
+            {delta >= 0 ? `+${delta}` : `${delta}`}
+          </span>
+          <span className={dividerCls} aria-hidden />
+          <span className={halfCls}>{eff.identifier}</span>
+        </span>
       );
     }
     if (eff) {
@@ -3238,6 +3252,17 @@ function LettersWorkspaceInner({
                                       : variant
                                   }
                                 />
+                                {/* Collapsed-folder summary mirrors what the
+                                    first piece would show in its own row, so
+                                    a glance at the header tells the user what
+                                    the group is about without expanding. */}
+                                <span className="min-w-0 flex-1 truncate text-xs">
+                                  {firstMember?.summary || (
+                                    <span className="text-muted-foreground italic">
+                                      (no summary)
+                                    </span>
+                                  )}
+                                </span>
                               </button>
                               {listLocked ? (
                                 <div
@@ -3318,6 +3343,51 @@ function LettersWorkspaceInner({
                                           )}
                                         </span>
                                       </button>
+                                      {(() => {
+                                        const stats = letterActionStats.get(
+                                          m.id
+                                        );
+                                        const aC = stats?.a ?? 0;
+                                        const rC = stats?.r ?? 0;
+                                        const nC = stats?.n ?? 0;
+                                        if (aC === 0) {
+                                          return (
+                                            <span
+                                              aria-hidden
+                                              className="ml-auto inline-block w-10 shrink-0"
+                                            />
+                                          );
+                                        }
+                                        return (
+                                          <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                                            <span className="flex items-center gap-0.5">
+                                              <IconBolt
+                                                size={11}
+                                                aria-hidden
+                                              />
+                                              {aC}
+                                            </span>
+                                            {rC > 0 && rC < aC ? (
+                                              <span className="flex items-center gap-0.5">
+                                                <Megaphone
+                                                  size={11}
+                                                  aria-hidden
+                                                />
+                                                {rC}
+                                              </span>
+                                            ) : null}
+                                            {nC > 0 && nC < aC ? (
+                                              <span className="flex items-center gap-0.5">
+                                                <MailCheck
+                                                  size={11}
+                                                  aria-hidden
+                                                />
+                                                {nC}
+                                              </span>
+                                            ) : null}
+                                          </span>
+                                        );
+                                      })()}
                                       {deliveryBadge(
                                         m.delivery_day_override_id,
                                         m.effective_day_id
@@ -3507,38 +3577,50 @@ function LettersWorkspaceInner({
                                 )}
                               </span>
                             </button>
-                            {deliveryBadge(
-                              l.delivery_day_override_id,
-                              l.effective_day_id
-                            )}
+                            {/* Stats come BEFORE the day; an empty placeholder
+                                with the same min-width prevents the day pill
+                                from shifting when a row has no actions. The
+                                report (📢) / next-letter (✉) counts only
+                                render when they're INCOMPLETE — every action
+                                already carrying both is implied by the total. */}
                             {(() => {
                               const stats = letterActionStats.get(l.id);
                               const aC = stats?.a ?? 0;
                               const rC = stats?.r ?? 0;
                               const nC = stats?.n ?? 0;
-                              return aC > 0 || rC > 0 || nC > 0 ? (
-                                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
-                                  {aC > 0 ? (
-                                    <span className="flex items-center gap-0.5">
-                                      <IconBolt size={11} aria-hidden />
-                                      {aC}
-                                    </span>
-                                  ) : null}
-                                  {rC > 0 ? (
+                              if (aC === 0) {
+                                return (
+                                  <span
+                                    aria-hidden
+                                    className="ml-auto inline-block w-10 shrink-0"
+                                  />
+                                );
+                              }
+                              return (
+                                <span className="ml-auto flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                                  <span className="flex items-center gap-0.5">
+                                    <IconBolt size={11} aria-hidden />
+                                    {aC}
+                                  </span>
+                                  {rC > 0 && rC < aC ? (
                                     <span className="flex items-center gap-0.5">
                                       <Megaphone size={11} aria-hidden />
                                       {rC}
                                     </span>
                                   ) : null}
-                                  {nC > 0 ? (
+                                  {nC > 0 && nC < aC ? (
                                     <span className="flex items-center gap-0.5">
                                       <MailCheck size={11} aria-hidden />
                                       {nC}
                                     </span>
                                   ) : null}
                                 </span>
-                              ) : null;
+                              );
                             })()}
+                            {deliveryBadge(
+                              l.delivery_day_override_id,
+                              l.effective_day_id
+                            )}
                             {listLocked ? (
                               <div
                                 onClick={(e) => e.stopPropagation()}

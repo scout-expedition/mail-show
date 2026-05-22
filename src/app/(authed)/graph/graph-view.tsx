@@ -4455,12 +4455,21 @@ export function GraphView({
             select(null);
             return;
           }
-          // A click landing inside a [data-piece-id] descendant of a
-          // pieceGroup node was already handled by that piece's onClick
-          // (which dispatches onSelectMember). Skipping the parent's
-          // onSelect here prevents it from overwriting the per-piece
-          // selection back to the lowest-piece sibling.
+          // pieceGroup clicks routed to a specific piece: the piece pill's
+          // pointerDown handler tags the native event with __pieceClickId,
+          // which the piece pill's onClick (running first in React's bubble
+          // phase) translates into an onSelectMember call. Bail out here
+          // so the group-level onSelect doesn't overwrite the per-piece
+          // selection. Also bail when the click target is inside a
+          // [data-piece-id] descendant — defensive belt for cases where the
+          // pointer-down tag doesn't survive (e.g. drag-to-click sequences).
           if (node.type === "pieceGroup") {
+            const piecedClick = (
+              event.nativeEvent as PointerEvent & {
+                __pieceClickId?: string;
+              }
+            ).__pieceClickId;
+            if (piecedClick) return;
             const target = event.target as HTMLElement | null;
             if (target?.closest("[data-piece-id]")) return;
           }

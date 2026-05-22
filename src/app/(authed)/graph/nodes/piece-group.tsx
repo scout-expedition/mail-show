@@ -143,20 +143,7 @@ function PieceGroupNode({ data }: NodeProps) {
               the full storyline color + the letter's summary so they pop
               against the muted parent and surface the letter's content
               the same way standalone letter nodes do. */}
-          <div
-            className="flex flex-row items-stretch gap-[3px] px-1.5 pb-1.5"
-            onClickCapture={(e) => {
-              // Per-piece click → select that member. Without this the
-              // parent piece-group selection swallows every click.
-              const target = e.target as HTMLElement | null;
-              const memberEl = target?.closest("[data-piece-id]");
-              const memberId = memberEl?.getAttribute("data-piece-id");
-              if (memberId && d.onSelectMember) {
-                e.stopPropagation();
-                d.onSelectMember(memberId);
-              }
-            }}
-          >
+          <div className="flex flex-row items-stretch gap-[3px] px-1.5 pb-1.5">
             {visibleMembers.map((member) => {
               const isSelf = d.selectedPieceId === member.id;
               const peerRings =
@@ -166,10 +153,18 @@ function PieceGroupNode({ data }: NodeProps) {
                   key={member.id}
                   data-piece-id={member.id}
                   className="cursor-pointer"
+                  onPointerDownCapture={(e) => {
+                    // Mark the native event so the parent's onNodeClick (from
+                    // ReactFlow) can detect a piece-targeted click and skip
+                    // its group-level select. ReactFlow fires onNodeClick
+                    // off the click event the same listener sees here, so
+                    // tagging the nativeEvent is reliable across both
+                    // capture/bubble phases and RF's internal delegation.
+                    (e.nativeEvent as PointerEvent & {
+                      __pieceClickId?: string;
+                    }).__pieceClickId = member.id;
+                  }}
                   onClick={(e) => {
-                    // Per-piece select; the parent's onNodeClick checks for
-                    // [data-piece-id] descendants and skips its group-level
-                    // onSelect when one fires here (see graph-view.tsx).
                     e.stopPropagation();
                     d.onSelectMember?.(member.id);
                   }}
