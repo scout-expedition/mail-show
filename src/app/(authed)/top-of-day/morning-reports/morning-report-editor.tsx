@@ -235,10 +235,10 @@ export function MorningReportEditor({
         : undefined;
       const trigger: Trigger = {
         actionId: a.id,
-        actionName: tpl?.name ?? a.name,
-        actionIconType: tpl?.icon_type ?? a.icon_type,
-        actionIconValue: tpl?.icon_value ?? a.icon_value,
-        actionColorHex: tpl?.color_hex ?? a.color_hex ?? "#888888",
+        actionName: tpl?.name ?? "Unset action",
+        actionIconType: tpl?.icon_type ?? null,
+        actionIconValue: tpl?.icon_value ?? null,
+        actionColorHex: tpl?.color_hex ?? "#3f3f46",
         letterContentId: letter.content_id,
         letterStoryline: storylinesById.get(letter.storyline_id),
         letterHref: letter.variant

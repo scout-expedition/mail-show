@@ -13,6 +13,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PHASES, PHASE_LABELS } from "@/lib/db/enums";
 import type {
   ActionRow,
+  ActionTemplate,
   Day,
   InspectionLetterView,
   Playthrough,
@@ -43,6 +44,7 @@ export default async function PlaythroughDetail({
     { data: cData },
     { data: vData },
     { data: sData },
+    { data: tData },
   ] = await Promise.all([
     supabase.from("playthroughs").select("*").eq("id", id).maybeSingle(),
     supabase.from("days").select("*").order("number"),
@@ -59,6 +61,7 @@ export default async function PlaythroughDetail({
       .eq("playthrough_id", id)
       .maybeSingle(),
     supabase.from("storylines").select("*").order("sort_order"),
+    supabase.from("action_templates").select("*"),
   ]);
   if (!pData) notFound();
   const p = pData as Playthrough;
@@ -67,6 +70,8 @@ export default async function PlaythroughDetail({
   const allActions = (aData ?? []) as ActionRow[];
   const choices = (cData ?? []) as PlaythroughActionChoice[];
   const storylines = (sData ?? []) as Storyline[];
+  const templates = (tData ?? []) as ActionTemplate[];
+  const templatesById = new Map(templates.map((t) => [t.id, t]));
   const vars = (vData as PlaythroughVariables | null) ?? null;
   const choiceMap = new Map(choices.map((c) => [c.inspection_letter_id, c.chosen_action_id]));
 
@@ -222,6 +227,11 @@ export default async function PlaythroughDetail({
                     <div className="mt-2 flex flex-wrap gap-2">
                       {letterActions.map((a) => {
                         const isChosen = chosenId === a.id;
+                        const tpl = a.action_template_id
+                          ? templatesById.get(a.action_template_id)
+                          : undefined;
+                        const actionName = tpl?.name ?? "Unset action";
+                        const actionColor = tpl?.color_hex ?? "#3f3f46";
                         return (
                           <form
                             key={a.id}
@@ -250,14 +260,14 @@ export default async function PlaythroughDetail({
                               style={
                                 isChosen
                                   ? {
-                                      background: a.color_hex,
-                                      borderColor: a.color_hex,
+                                      background: actionColor,
+                                      borderColor: actionColor,
                                       color: "#0b0d10",
                                     }
                                   : undefined
                               }
                             >
-                              {a.name}
+                              {actionName}
                             </Button>
                           </form>
                         );

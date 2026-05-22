@@ -13,6 +13,7 @@ import { OverflowMenu } from "@/components/panel";
 import { cn } from "@/lib/utils";
 import type { BlockState, VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableFolder } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import { useDrag, type DragTarget } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
 import { duplicateBlock, patchBlock } from "../_shared/document-actions";
@@ -28,11 +29,13 @@ export function TextBlock({
   onDelete,
   variables,
   folders,
+  nations,
 }: {
   block: BlockState;
   onDelete: () => void;
   variables: VariableState[];
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
 }) {
   const { peers, setFocus } = usePresenceContext();
 
@@ -252,6 +255,7 @@ export function TextBlock({
               onBlur={textField.onBlur}
               variables={variables}
               folders={folders}
+              nations={nations}
               placeholder="Paragraph text…"
             />
           </FieldHighlight>

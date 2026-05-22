@@ -42,7 +42,7 @@ async function siteOrigin(): Promise<string> {
 }
 
 function confirmUrl(origin: string, next: string): string {
-  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+  const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
   return `${origin}/auth/confirm?next=${encodeURIComponent(safeNext)}`;
 }
 
@@ -98,7 +98,7 @@ export async function adminSendMagicLink(formData: FormData) {
   if (!check.ok) throw new Error(check.error);
 
   const origin = await siteOrigin();
-  const emailRedirectTo = confirmUrl(origin, "/dashboard");
+  const emailRedirectTo = confirmUrl(origin, "/");
 
   const supabase = await createSupabaseServerClient();
   const { error } = await supabase.auth.signInWithOtp({

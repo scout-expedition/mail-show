@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { IconType } from "@/lib/db/enums";
 
 function nilStr(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -36,25 +35,23 @@ export async function createInspectionLetter(formData: FormData) {
     .single();
   if (error) throw new Error(error.message);
 
-  // Seed default actions (Deliver + Flag) so the editor isn't empty.
-  await supabase.from("actions").insert([
-    {
-      inspection_letter_id: data!.id,
-      name: "Deliver",
-      icon_type: "lucide" as IconType,
-      icon_value: "Send",
-      color_hex: "#4fb07a",
-      sort_order: 0,
-    },
-    {
-      inspection_letter_id: data!.id,
-      name: "Flag",
-      icon_type: "lucide" as IconType,
-      icon_value: "Flag",
-      color_hex: "#eab308",
-      sort_order: 1,
-    },
-  ]);
+  // Seed default actions ("Deliver" + "Flag") so the editor isn't empty.
+  // Actions reference templates by id now — find the seed templates by name
+  // and skip the insert if they're missing (e.g., fresh DB without seeds).
+  const { data: tpls } = await supabase
+    .from("action_templates")
+    .select("id, name, sort_order")
+    .in("name", ["Deliver", "Flag"]);
+  if (tpls && tpls.length > 0) {
+    const rows = tpls
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map((t, i) => ({
+        inspection_letter_id: data!.id,
+        action_template_id: t.id,
+        sort_order: i,
+      }));
+    await supabase.from("actions").insert(rows);
+  }
 
   revalidatePath(`/inspection/storylines/${storyline_id}/groups/${letter_group_id}`);
 }
@@ -100,16 +97,16 @@ export async function deleteInspectionLetter(formData: FormData) {
 }
 
 // ---------------- Actions ----------------
+// These server actions back the legacy storylines/[id]/groups/[groupId] form
+// page. Display (name/icon/color) is sourced from action_templates now, so
+// they only set FK + impact + report_segment_id fields.
 export async function createAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const inspection_letter_id = String(formData.get("inspection_letter_id") ?? "");
   if (!inspection_letter_id) return;
   const { error } = await supabase.from("actions").insert({
     inspection_letter_id,
-    name: String(formData.get("name") ?? "New action"),
-    icon_type: "lucide" as IconType,
-    icon_value: nilStr(formData.get("icon_value")),
-    color_hex: String(formData.get("color_hex") ?? "#888888"),
+    action_template_id: nilStr(formData.get("action_template_id")),
   });
   if (error) throw new Error(error.message);
   revalidatePath("/inspection/storylines");
@@ -120,10 +117,7 @@ export async function updateAction(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const payload = {
-    name: String(formData.get("name") ?? "").trim(),
-    icon_type: String(formData.get("icon_type") ?? "lucide") as IconType,
-    icon_value: nilStr(formData.get("icon_value")),
-    color_hex: String(formData.get("color_hex") ?? "#888888"),
+    action_template_id: nilStr(formData.get("action_template_id")),
     report_segment_id: nilStr(formData.get("report_segment_id")),
     impact_world_status: Number(formData.get("impact_world_status") ?? 0),
     impact_demerits: Number(formData.get("impact_demerits") ?? 0),

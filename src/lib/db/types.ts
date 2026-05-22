@@ -138,17 +138,19 @@ export interface ActionTemplate {
   icon_value: string | null;
   color_hex: string;
   sort_order: number;
-  paired_template_id: string | null;
+  group_id: string | null;
+}
+
+export interface ActionTemplateGroup {
+  id: string;
+  name: string | null;
+  sort_order: number;
 }
 
 export interface ActionRow {
   id: string;
   inspection_letter_id: string;
   action_template_id: string | null;
-  name: string;
-  icon_type: IconType;
-  icon_value: string | null;
-  color_hex: string;
   report_segment_id: string | null;
   next_letter_id: string | null;
   impact_world_status: number;
@@ -251,12 +253,17 @@ export interface SortingRule {
   letter: string;
   storage_location: string | null;
   summary: string | null;
+  notes: string | null;
+  color_hex: string | null;
   day_implemented_id: string | null;
   day_cancelled_id: string | null;
   destination_slot: number | null;
   /** When true the rule routes to Reporting; mutually exclusive with destination_slot. */
   routes_to_reporting: boolean;
   match_mode: RuleMatchMode;
+  sort_order: number;
+  updated_at: string;
+  updated_by: string | null;
 }
 
 export interface SortingRuleCondition {
@@ -337,6 +344,12 @@ export interface EndingVariableFolder {
    *  on delete. */
   parent_folder_id: string | null;
   sort_order: number;
+  /** Partitions folders into two namespaces:
+   *  - 'variable' is owned by /endings/variables (default for legacy rows).
+   *  - 'smart_variable' is owned by /endings/smart-variables.
+   *  Pages filter server-side; DB triggers reject cross-scope parenting
+   *  and cross-scope variable->folder assignment. */
+  scope: "variable" | "smart_variable";
   created_at: string;
   updated_at: string;
 }
@@ -441,4 +454,10 @@ export interface InspectionActionEndingAssignment {
   /** Nullable since migration 0033: an action can be assigned a variable
    *  without yet picking a value (the value picker stays open in the UI). */
   value_id: string | null;
+}
+
+export interface UserHomeTiles {
+  user_id: string;
+  tile_hrefs: string[];
+  updated_at: string;
 }

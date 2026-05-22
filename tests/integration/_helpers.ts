@@ -73,6 +73,9 @@ export async function cleanupTestData(sb: SupabaseClient): Promise<void> {
   // trip the unique constraint. Sweep the whole test number range so re-runs
   // against the same DB are deterministic.
   await sb.from("days").delete().gte("number", TEST_DAY_NUMBER_MIN);
+  // Action templates + groups aren't reachable via storyline cascade.
+  await sb.from("action_templates").delete().like("name", `${TEST_PREFIX}%`);
+  await sb.from("action_template_groups").delete().like("name", `${TEST_PREFIX}%`);
 }
 
 export interface SeededStoryline {
@@ -289,7 +292,7 @@ export async function addAction(
   sb: SupabaseClient,
   opts: {
     letterId: string;
-    name?: string;
+    actionTemplateId?: string | null;
     impacts?: ImpactPatch;
     reportSegmentId?: string | null;
   }
@@ -298,7 +301,7 @@ export async function addAction(
     .from("actions")
     .insert({
       inspection_letter_id: opts.letterId,
-      name: opts.name ?? "test-action",
+      action_template_id: opts.actionTemplateId ?? null,
       report_segment_id: opts.reportSegmentId ?? null,
       ...(opts.impacts ?? {}),
     })
@@ -536,7 +539,7 @@ export async function addActionTemplate(
     iconType?: string;
     colorHex?: string;
     sortOrder?: number;
-    pairedTemplateId?: string | null;
+    groupId?: string | null;
   } = {}
 ): Promise<string> {
   const { data, error } = await sb
@@ -546,7 +549,7 @@ export async function addActionTemplate(
       icon_type: opts.iconType ?? "lucide",
       color_hex: opts.colorHex ?? "#888888",
       sort_order: opts.sortOrder ?? 9999,
-      paired_template_id: opts.pairedTemplateId ?? null,
+      group_id: opts.groupId ?? null,
     })
     .select("id")
     .single();
@@ -554,9 +557,28 @@ export async function addActionTemplate(
   return data.id as string;
 }
 
-/** Delete every test-marked action_templates row. */
+/** Insert an action template group. Always carries the `__INT_TEST__` name
+ *  marker so cleanup can find it. Pass `name: null` only at your peril. */
+export async function addActionTemplateGroup(
+  sb: SupabaseClient,
+  opts: { name?: string | null; sortOrder?: number } = {}
+): Promise<string> {
+  const { data, error } = await sb
+    .from("action_template_groups")
+    .insert({
+      name: opts.name === undefined ? testName("grp") : opts.name,
+      sort_order: opts.sortOrder ?? 9999,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addActionTemplateGroup: ${error?.message}`);
+  return data.id as string;
+}
+
+/** Delete every test-marked action_templates + action_template_groups row. */
 export async function cleanupActionTemplates(sb: SupabaseClient): Promise<void> {
   await sb.from("action_templates").delete().like("name", `${TEST_PREFIX}%`);
+  await sb.from("action_template_groups").delete().like("name", `${TEST_PREFIX}%`);
 }
 
 /** Insert a `kind='generic'` day_report_blocks row. */

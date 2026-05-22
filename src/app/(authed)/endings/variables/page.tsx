@@ -42,7 +42,11 @@ export default async function EndingVariablesPage() {
   ] = await Promise.all([
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
-    supabase.from("ending_variable_folders").select("*").order("sort_order"),
+    supabase
+      .from("ending_variable_folders")
+      .select("*")
+      .eq("scope", "variable")
+      .order("sort_order"),
     supabase.from("ending_documents").select("*").order("sort_order"),
     supabase.from("ending_blocks").select("id, document_id"),
     supabase.from("ending_condition_rows").select("id, condition_block_id"),

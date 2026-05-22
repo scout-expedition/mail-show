@@ -21,6 +21,7 @@ import {
 } from "react";
 import type { VariableState } from "@/lib/endings/block-state";
 import type { EndingVariableFolder } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import { cn } from "@/lib/utils";
 import { MentionArrowPlugin } from "./mention-arrow-plugin";
 import { MentionPastePlugin } from "./mention-paste-plugin";
@@ -46,6 +47,7 @@ export interface LexicalTextBlockEditorProps {
   onBlur?: () => void;
   variables: VariableState[];
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   placeholder?: string;
   className?: string;
   style?: CSSProperties;
@@ -58,6 +60,7 @@ export function LexicalTextBlockEditor({
   onBlur,
   variables,
   folders,
+  nations,
   placeholder = "Paragraph text…",
   className,
   style,
@@ -154,7 +157,7 @@ export function LexicalTextBlockEditor({
           <ValueSyncPlugin value={value} lastEmittedRef={lastEmittedRef} />
           <MentionArrowPlugin />
           <MentionPastePlugin />
-          <MentionTriggerPlugin variables={variables} folders={folders} />
+          <MentionTriggerPlugin variables={variables} folders={folders} nations={nations} />
         </LexicalComposer>
       </div>
     </MentionVariablesProvider>

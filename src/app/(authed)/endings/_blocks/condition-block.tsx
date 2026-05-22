@@ -25,6 +25,7 @@ import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableFolder, EndingVariableValue } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import {
   addBlockVariable,
   addChip,
@@ -67,6 +68,7 @@ export function ConditionBlock({
   values,
   smartVariableReturns,
   folders,
+  nations,
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
@@ -93,6 +95,7 @@ export function ConditionBlock({
    *  adder so smart_ref chips can pick from a real list. */
   smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
@@ -319,6 +322,7 @@ export function ConditionBlock({
             values={values}
             smartVariableReturns={smartVariableReturns}
             folders={folders}
+            nations={nations}
             confirm={confirm}
             rowCount={rows.length}
             addOptimisticRow={addOptimisticRow}
@@ -975,6 +979,7 @@ function HeaderVariableStrip({
   values,
   smartVariableReturns,
   folders,
+  nations,
   confirm,
   rowCount,
   addOptimisticRow,
@@ -990,6 +995,7 @@ function HeaderVariableStrip({
   values: EndingVariableValue[];
   smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   confirm: ReturnType<typeof useConfirm>["confirm"];
   /** Current row count — used to decide whether to seed a ghost row. */
   rowCount: number;
@@ -1048,6 +1054,7 @@ function HeaderVariableStrip({
         <AddHeaderVariablePicker
           variables={eligible}
           folders={folders}
+          nations={nations}
           disabled={pending}
           alwaysVisible={declaredVariables.length === 0}
           onPick={(variable_id) => {
@@ -1119,12 +1126,14 @@ type PickerMode = "closed" | "picker" | "create";
 function AddHeaderVariablePicker({
   variables,
   folders,
+  nations,
   disabled,
   onPick,
   alwaysVisible,
 }: {
   variables: VariableState[];
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   disabled: boolean;
   onPick: (variable_id: string) => void;
   /** When true, the + button is always visible. Used in the empty
@@ -1146,8 +1155,8 @@ function AddHeaderVariablePicker({
 
   // Build the variable tree (memoized — stable variable objects from props)
   const tree = useMemo(
-    () => buildVariableTree(variables, folders),
-    [variables, folders]
+    () => buildVariableTree(variables, folders, nations),
+    [variables, folders, nations]
   );
 
   const items: PickerItem[] = useMemo(
@@ -1301,6 +1310,7 @@ function AddHeaderVariablePicker({
               activeIndex={activeIndex}
               onChangeActiveIndex={setActiveIndex}
               onCommitItem={commitItem}
+              nations={nations}
               ariaLabel="Variable picker"
               className="border-0 shadow-none rounded-none rounded-b-md"
             />

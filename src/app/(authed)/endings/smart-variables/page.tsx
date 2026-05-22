@@ -66,6 +66,9 @@ export default async function SmartVariablesPage({
       .order("sort_order"),
     supabase.from("ending_variables").select("*").order("sort_order"),
     supabase.from("ending_variable_values").select("*").order("sort_order"),
+    // Both scopes — the rail consumes 'smart_variable' folders, the
+    // DocumentEditor's create-variable-popover consumes 'variable' ones
+    // for inline regular-variable creation inside chips.
     supabase.from("ending_variable_folders").select("*").order("sort_order"),
     supabase
       .from("nations")

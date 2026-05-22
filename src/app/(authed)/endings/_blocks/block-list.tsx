@@ -13,6 +13,7 @@ import type {
 } from "@/lib/endings/block-state";
 import { parentKey } from "@/lib/endings/block-state";
 import type { EndingVariableFolder, EndingVariableValue } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import { addBlock, deleteBlock } from "../_shared/document-actions";
 import { useDrag } from "../_shared/lib/drag";
 import { useCollapseCtx } from "../_shared/lib/total-collapse";
@@ -28,6 +29,8 @@ export type TextBlockComponent = ComponentType<{
   variables: VariableState[];
   /** Folder rows for the variable picker's nested navigation. */
   folders: EndingVariableFolder[];
+  /** Nation icon refs for variable-picker icon rendering. */
+  nations: ReadonlyArray<NationIconRef>;
 }>;
 
 export type ResultBlockComponent = ComponentType<{
@@ -73,6 +76,7 @@ export function BlockList({
   values,
   smartVariableReturns,
   folders,
+  nations,
   document_id,
   leaves,
   onUpdateBlock,
@@ -105,6 +109,7 @@ export function BlockList({
    *  smart_ref chips. Optional — falls back to empty when absent. */
   smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   document_id: string;
   leaves: LeafComponents;
   onUpdateBlock: (id: string, patch: Partial<BlockState>) => void;
@@ -392,6 +397,7 @@ export function BlockList({
                 onDelete={() => handleDeleteBlock(b.id)}
                 variables={variables}
                 folders={folders}
+                nations={nations}
               />
             ) : (
               (() => {
@@ -424,6 +430,7 @@ export function BlockList({
               values={values}
               smartVariableReturns={smartVariableReturns}
               folders={folders}
+              nations={nations}
               onDeleteBlock={() => handleDeleteBlock(b.id)}
               onChangeChip={onChangeChip}
               getRowBlockCount={(rowId) =>
@@ -457,6 +464,7 @@ export function BlockList({
                     values={values}
                     smartVariableReturns={smartVariableReturns}
                     folders={folders}
+                    nations={nations}
                     document_id={document_id}
                     leaves={leaves}
                     onUpdateBlock={onUpdateBlock}

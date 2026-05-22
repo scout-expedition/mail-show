@@ -31,10 +31,18 @@ export function GraphContextMenu({
   anchor,
   items,
   onClose,
+  isSubmenu = false,
 }: {
   anchor: { x: number; y: number } | null;
   items: GraphContextMenuItem[];
   onClose: () => void;
+  /** Internal: when true, this instance is a cascading child of another
+   *  GraphContextMenu. It must NOT register its own document-level
+   *  outside-click / scroll listeners — those would interpret clicks on the
+   *  parent menu (or the root menu's ancestor scroll) as "outside" and tear
+   *  the stack down before the user's click reaches the target button. The
+   *  outermost root menu owns the close lifecycle for the entire stack. */
+  isSubmenu?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -75,6 +83,11 @@ export function GraphContextMenu({
 
   useEffect(() => {
     if (!anchor) return;
+    // Submenus piggyback on the root menu's listeners via the shared
+    // onClose chain. Registering our own here would treat clicks on the
+    // parent menu (where the cascade's anchor button lives) as "outside"
+    // and tear the whole stack down before the click reaches its target.
+    if (isSubmenu) return;
     function onDoc(e: MouseEvent) {
       if (ref.current?.contains(e.target as Node)) return;
       onClose();
@@ -99,7 +112,7 @@ export function GraphContextMenu({
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onClose);
     };
-  }, [anchor, onClose]);
+  }, [anchor, onClose, isSubmenu]);
 
   const handleHover = (i: number, item: GraphContextMenuItem) => {
     setHoveredIdx(i);
@@ -162,10 +175,14 @@ export function GraphContextMenu({
             onMouseEnter={() => handleHover(i, item)}
             onClick={() => {
               if (item.disabled) return;
-              // Items with a submenu are hover-only — a click is a
-              // no-op so the user can mouse into the submenu without
-              // accidentally re-anchoring the menu.
-              if (hasSubmenu) return;
+              // Items with a submenu can ALSO carry their own onClick (the
+              // submenu lets the user pick a specific child; the parent
+              // click is a "do the default" shortcut, e.g. "add every
+              // unused member of this group"). Hover keeps opening the
+              // submenu either way. If a submenu item has no onClick,
+              // clicking it is a no-op so the user can mouse into the
+              // flyout without re-anchoring.
+              if (hasSubmenu && !item.onClick) return;
               item.onClick?.();
               if (!item.trailing) onClose();
             }}
@@ -191,6 +208,7 @@ export function GraphContextMenu({
           anchor={submenuAnchor}
           items={submenuItems}
           onClose={onClose}
+          isSubmenu
         />
       ) : null}
     </div>
