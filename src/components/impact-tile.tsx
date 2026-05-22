@@ -39,7 +39,7 @@ export function CounterInput({
         type="text"
         inputMode="numeric"
         value={value === 0 ? "" : String(value)}
-        placeholder="—"
+        placeholder="0"
         onChange={(e) => {
           const raw = e.target.value.replace(/[^0-9-]/g, "");
           if (raw === "" || raw === "-") {

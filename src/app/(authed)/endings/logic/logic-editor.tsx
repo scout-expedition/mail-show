@@ -162,6 +162,9 @@ export function LogicEditor({
   values,
   smartVariableDocs,
   smartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   folders,
   nations,
   currentUserId,
@@ -178,6 +181,12 @@ export function LogicEditor({
   values: EndingVariableValue[];
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  /** All blocks (including condition blocks) for smart variable docs. */
+  smartVariableAllBlocks: EndingBlock[];
+  /** Condition rows belonging to smart variable docs. */
+  smartVariableRows: EndingConditionRow[];
+  /** Chips belonging to smart variable condition rows. */
+  smartVariableChips: EndingConditionRowChip[];
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   currentUserId?: string;
@@ -213,6 +222,9 @@ export function LogicEditor({
         values={values}
         smartVariableDocs={smartVariableDocs}
         smartVariableBlocks={smartVariableBlocks}
+        smartVariableAllBlocks={smartVariableAllBlocks}
+        smartVariableRows={smartVariableRows}
+        smartVariableChips={smartVariableChips}
         folders={folders}
         nations={nations}
       />
@@ -231,6 +243,9 @@ function LogicEditorInner({
   values,
   smartVariableDocs: initialSmartVariableDocs,
   smartVariableBlocks: initialSmartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   folders,
   nations,
 }: {
@@ -244,6 +259,9 @@ function LogicEditorInner({
   values: EndingVariableValue[];
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  smartVariableAllBlocks: EndingBlock[];
+  smartVariableRows: EndingConditionRow[];
+  smartVariableChips: EndingConditionRowChip[];
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
 }) {
@@ -406,6 +424,64 @@ function LogicEditorInner({
       ),
     [smartVariableDocs, variables, smartVariableBlocks]
   );
+
+  // Maps smart_ref variable id → smart_variable_doc_id. Built from
+  // EndingVariable (which has smart_variable_doc_id) so the preview view
+  // doesn't need to reach into VariableState for that field.
+  const smartVarDocIdByVariableId = useMemo((): Map<string, string> => {
+    const out = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "smart_ref" && v.smart_variable_doc_id) {
+        out.set(v.id, v.smart_variable_doc_id);
+      }
+    }
+    return out;
+  }, [variables]);
+
+  // Per-smart-variable-doc EvalInputs for the preview's "Set inputs" path.
+  // Built from the static server snapshot (rows/chips don't change in real
+  // time on this surface). Keyed by smart_variable_doc_id.
+  const smartVariableEvalInputsByDocId = useMemo((): Map<string, EvalInputs> => {
+    const evalVariables: EvalVariable[] = variables.map((v) => ({
+      id: v.id,
+      name: v.name,
+      kind: v.kind,
+      aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
+    }));
+    const numberRefByName = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        numberRefByName.set(v.number_ref, v.id);
+      }
+    }
+    const out = new Map<string, EvalInputs>();
+    for (const doc of smartVariableDocs) {
+      const docBlocks = smartVariableAllBlocks.filter(
+        (b) => b.document_id === doc.id
+      );
+      const blockIds = new Set(docBlocks.map((b) => b.id));
+      const docRows = smartVariableRows.filter((r) =>
+        blockIds.has(r.condition_block_id)
+      );
+      const rowIds = new Set(docRows.map((r) => r.id));
+      const docChips = smartVariableChips.filter((c) => rowIds.has(c.row_id));
+      out.set(doc.id, {
+        blocks: docBlocks as unknown as EvalBlock[],
+        rows: docRows as unknown as EvalRow[],
+        chips: docChips as unknown as EvalChip[],
+        variables: evalVariables,
+        selections: { ...EMPTY_SELECTIONS, numberRefByName },
+      });
+    }
+    return out;
+  }, [
+    smartVariableDocs,
+    smartVariableAllBlocks,
+    smartVariableRows,
+    smartVariableChips,
+    variables,
+  ]);
+
   const tabParam = searchParams?.get("tab") ?? null;
   const activeTab: LogicTabId = isLogicTabId(tabParam) ? tabParam : DEFAULT_TAB;
 
@@ -648,6 +724,10 @@ function LogicEditorInner({
                   frameworks={frameworkDocs}
                   tiebreakDocs={tiebreakDocs}
                   nations={nations}
+                  smartVariableDocs={smartVariableDocs}
+                  smartVariableReturns={smartVariableReturns}
+                  smartVariableEvalInputsByDocId={smartVariableEvalInputsByDocId}
+                  smartVarDocIdByVariableId={smartVarDocIdByVariableId}
                 />
               )}
             />

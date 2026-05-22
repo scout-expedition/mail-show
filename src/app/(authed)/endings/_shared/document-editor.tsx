@@ -676,6 +676,7 @@ export function DocumentEditor({
           color_index: v.color_index,
           color_hex,
           folder_id: v.folder_id,
+          smart_variable_doc_id: v.smart_variable_doc_id ?? null,
           sort_order: v.sort_order,
         };
       }),

@@ -37,6 +37,16 @@ import type {
   Nation,
 } from "@/lib/db/types";
 import { DocumentEditor } from "../_shared/document-editor";
+import { SmartVariablePreviewView } from "./preview-view";
+import {
+  EMPTY_SELECTIONS,
+  type EvalBlock,
+  type EvalChip,
+  type EvalInputs,
+  type EvalRow,
+  type EvalVariable,
+} from "@/lib/endings/evaluator";
+import type { EndingLogicKind } from "@/lib/db/enums";
 import {
   usePresenceContext,
   WorkspacePresenceProvider,
@@ -75,6 +85,14 @@ export function SmartVariablesEditor(props: {
   values: EndingVariableValue[];
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
+  tiebreakDocsRaw?: Map<
+    EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >;
   selectedDocId: string | null;
   currentUserId?: string;
   currentEmail?: string;
@@ -115,6 +133,7 @@ function SmartVariablesEditorInner({
   values,
   folders: initialFolders,
   nations,
+  tiebreakDocsRaw,
   selectedDocId,
 }: {
   smartDocs: EndingDocument[];
@@ -126,6 +145,14 @@ function SmartVariablesEditorInner({
   values: EndingVariableValue[];
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
+  tiebreakDocsRaw?: Map<
+    EndingLogicKind,
+    {
+      blocks: EndingBlock[];
+      rows: EndingConditionRow[];
+      chips: EndingConditionRowChip[];
+    }
+  >;
   selectedDocId: string | null;
 }) {
   const router = useRouter();
@@ -414,6 +441,33 @@ function SmartVariablesEditorInner({
   // on every render. `makeSmartVariableResultBlock` is parameter-free,
   // so a single instance covers every smart_variable doc.
   const smartResultLeaf = useMemo(() => makeSmartVariableResultBlock(), []);
+
+  const tiebreakInputs = useMemo(() => {
+    if (!tiebreakDocsRaw) return undefined;
+    const evalVariables: EvalVariable[] = variables.map((v) => ({
+      id: v.id,
+      name: v.name,
+      kind: v.kind,
+      aggregate_ref: (v.aggregate_ref ?? null) as EvalVariable["aggregate_ref"],
+    }));
+    const numberRefByName = new Map<string, string>();
+    for (const v of variables) {
+      if (v.kind === "number_ref" && v.number_ref) {
+        numberRefByName.set(v.number_ref, v.id);
+      }
+    }
+    const m = new Map<EndingLogicKind, EvalInputs>();
+    for (const [kind, raw] of tiebreakDocsRaw) {
+      m.set(kind, {
+        blocks: raw.blocks as unknown as EvalBlock[],
+        rows: raw.rows as unknown as EvalRow[],
+        chips: raw.chips as unknown as EvalChip[],
+        variables: evalVariables,
+        selections: { ...EMPTY_SELECTIONS, numberRefByName },
+      });
+    }
+    return m;
+  }, [tiebreakDocsRaw, variables]);
 
   // Partition folders by scope. The rail tree shows 'smart_variable'
   // folders only; the DocumentEditor's create-variable-popover needs
@@ -962,6 +1016,24 @@ function SmartVariablesEditorInner({
               folders={regularFolders}
               nations={nations}
               leaves={{ result: smartResultLeaf }}
+              renderPreview={(args) => (
+                <SmartVariablePreviewView
+                  name={args.name}
+                  blocks={args.blocks}
+                  rows={args.rows}
+                  chips={args.chips}
+                  blockVariables={args.blockVariables}
+                  variables={args.variables}
+                  referencedVariables={args.referencedVariables}
+                  values={args.values}
+                  selections={args.selections}
+                  onChangeText={args.onChangeText}
+                  onChangeNumber={args.onChangeNumber}
+                  flashColors={args.flashColors}
+                  tiebreakInputs={tiebreakInputs}
+                  nations={nations}
+                />
+              )}
               panelTitle={activeDoc.name ?? "(unnamed)"}
               nameLeadingExtras={
                 <SmartVariableColorButton

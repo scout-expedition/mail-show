@@ -88,16 +88,30 @@ export default async function EndingLogicPage() {
     (blockVarData ?? []) as EndingConditionBlockVariable[]
   ).filter((bv) => logicBlockIds.has(bv.condition_block_id));
 
-  // Smart Variables — pass raw docs + result/fallback blocks so the
-  // LogicEditor can mirror them via postgres_changes and re-derive
-  // `smartVariableReturns` live as result_value edits land.
+  // Smart Variables — pass raw docs + all their blocks/rows/chips so the
+  // LogicEditor can mirror them via postgres_changes, re-derive
+  // `smartVariableReturns` live, and drive the "Set inputs" preview mode.
   const smartVariableDocs = allDocs.filter((d) => d.kind === "smart_variable");
   const smartDocIds = new Set(smartVariableDocs.map((d) => d.id));
-  const smartVariableBlocks = ((blockData ?? []) as EndingBlock[]).filter(
+  const allBlocksTyped = (blockData ?? []) as EndingBlock[];
+  const smartVariableBlocks = allBlocksTyped.filter(
     (b) =>
       smartDocIds.has(b.document_id) &&
       (b.block_type === "result" || b.block_type === "fallback")
   );
+  // All blocks (including condition blocks) for smart variable docs —
+  // needed by the preview's "Set inputs" evaluator path.
+  const smartVariableAllBlocks = allBlocksTyped.filter((b) =>
+    smartDocIds.has(b.document_id)
+  );
+  const smartAllBlockIds = new Set(smartVariableAllBlocks.map((b) => b.id));
+  const smartVariableRows = ((rowData ?? []) as EndingConditionRow[]).filter(
+    (r) => smartAllBlockIds.has(r.condition_block_id)
+  );
+  const smartVarRowIds = new Set(smartVariableRows.map((r) => r.id));
+  const smartVariableChips = (
+    (chipData ?? []) as EndingConditionRowChip[]
+  ).filter((c) => smartVarRowIds.has(c.row_id));
 
   return (
     <div>
@@ -116,6 +130,9 @@ export default async function EndingLogicPage() {
       values={(valueData ?? []) as EndingVariableValue[]}
       smartVariableDocs={smartVariableDocs}
       smartVariableBlocks={smartVariableBlocks}
+      smartVariableAllBlocks={smartVariableAllBlocks}
+      smartVariableRows={smartVariableRows}
+      smartVariableChips={smartVariableChips}
       folders={(folderData ?? []) as EndingVariableFolder[]}
       nations={
         (nationData ?? []) as Pick<
