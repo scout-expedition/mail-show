@@ -288,13 +288,31 @@ export function DocumentEditor({
   // the hook still mounts (cheap) but its onCommit is a no-op so an
   // accidental call would never reach the server.
   const { peers, setFocus, onPostgresChanges } = usePresenceContext();
+  // When a rename collides with an existing slug, patchDocument
+  // auto-appends a suffix and returns { collided: true }. We capture
+  // the user's typed name here so the UI can show a "name already
+  // exists" warning under the input until the user types again.
+  const [collidedFrom, setCollidedFrom] = useState<string | null>(null);
+  // Ref-based handle so onCommit can call nameField.set after the
+  // hook returns (otherwise we'd hit the TDZ on the const binding).
+  const nameFieldRef = useRef<{ set: (v: string) => void } | null>(null);
   const nameField = useInstantField<string>({
     value: initial.name,
     onCommit: async (v) => {
       if (!hasName) return;
       const trimmed = v.trim();
       if (!trimmed) return; // server would throw; let the inline ring show the error
-      await patchDocument(document.id, { name: trimmed });
+      const result = await patchDocument(document.id, { name: trimmed });
+      if (result.collided && result.savedName) {
+        setCollidedFrom(trimmed);
+        // Reflect the server-appended suffix in the input immediately,
+        // so the user sees "Foo 2" without waiting for the postgres
+        // echo round-trip. The follow-up commit is idempotent on the
+        // server (slug already unique under the same id).
+        nameFieldRef.current?.set(result.savedName);
+      } else {
+        setCollidedFrom(null);
+      }
     },
     onFocusChange: (focused) => {
       if (!hasName) return;
@@ -304,6 +322,9 @@ export function DocumentEditor({
           : null
       );
     },
+  });
+  useEffect(() => {
+    nameFieldRef.current = nameField;
   });
   const name = nameField.value;
   const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
@@ -1255,7 +1276,10 @@ export function DocumentEditor({
             >
               <Input
                 value={nameField.value}
-                onChange={(e) => nameField.set(e.target.value)}
+                onChange={(e) => {
+                  if (collidedFrom !== null) setCollidedFrom(null);
+                  nameField.set(e.target.value);
+                }}
                 onFocus={nameField.onFocus}
                 onBlur={nameField.onBlur}
                 placeholder={
@@ -1269,6 +1293,16 @@ export function DocumentEditor({
                 )}
               />
             </FieldHighlight>
+            {collidedFrom ? (
+              <span
+                className="mt-1 inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/5 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.025em] text-amber-200"
+                title={`The name “${collidedFrom}” was already in use; a number was appended.`}
+              >
+                {isSmartVariable
+                  ? `Smart Variable with the name “${collidedFrom}” already exists`
+                  : `Framework with the name “${collidedFrom}” already exists`}
+              </span>
+            ) : null}
           </div>
         ) : null}
 
