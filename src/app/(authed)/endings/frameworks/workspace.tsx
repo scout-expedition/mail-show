@@ -38,6 +38,9 @@ export function FrameworksWorkspace({
   selectedFrameworkId,
   smartVariableDocs,
   smartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
   currentUserId,
@@ -61,6 +64,13 @@ export function FrameworksWorkspace({
    *  variable doc. Mirrored locally so result_value edits flow into
    *  chip dropdowns + the chip-adder seed in real time. */
   smartVariableBlocks: EndingBlock[];
+  /** All blocks across every smart_variable doc (all block_types) for
+   *  the preview panel's per-smart-variable evaluator. */
+  smartVariableAllBlocks: EndingBlock[];
+  /** Condition rows belonging to smart variable condition blocks. */
+  smartVariableRows: EndingConditionRow[];
+  /** Chips belonging to smart variable condition rows. */
+  smartVariableChips: EndingConditionRowChip[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -108,6 +118,9 @@ export function FrameworksWorkspace({
         selectedFrameworkId={selectedFrameworkId}
         smartVariableDocs={smartVariableDocs}
         smartVariableBlocks={smartVariableBlocks}
+        smartVariableAllBlocks={smartVariableAllBlocks}
+        smartVariableRows={smartVariableRows}
+        smartVariableChips={smartVariableChips}
         tiebreakDocsSummary={tiebreakDocsSummary}
         tiebreakDocsRaw={tiebreakDocsRaw}
       />
@@ -128,6 +141,9 @@ function FrameworksWorkspaceInner({
   selectedFrameworkId,
   smartVariableDocs: initialSmartVariableDocs,
   smartVariableBlocks: initialSmartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
 }: {
@@ -143,6 +159,9 @@ function FrameworksWorkspaceInner({
   selectedFrameworkId: string | null;
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  smartVariableAllBlocks: EndingBlock[];
+  smartVariableRows: EndingConditionRow[];
+  smartVariableChips: EndingConditionRowChip[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -450,6 +469,10 @@ function FrameworksWorkspaceInner({
           variables={variables}
           values={values}
           smartVariableReturns={smartVariableReturns}
+          smartVariableDocs={smartVariableDocs}
+          smartVariableAllBlocks={smartVariableAllBlocks}
+          smartVariableRows={smartVariableRows}
+          smartVariableChips={smartVariableChips}
           folders={folders}
           nations={nations}
           tiebreakDocsSummary={tiebreakDocsSummary}

@@ -22,6 +22,7 @@ import type {
   Nation,
 } from "@/lib/db/types";
 import { slugify } from "@/lib/slug";
+import { loadEndingPreviewDeps } from "../_shared/preview-deps";
 import { SmartVariablesEditor } from "./smart-variables-editor";
 
 export default async function SmartVariablesPage({
@@ -52,6 +53,7 @@ export default async function SmartVariablesPage({
     { data: valueData },
     { data: folderData },
     { data: nationData },
+    previewDeps,
   ] = await Promise.all([
     supabase.from("ending_documents").select("*").order("sort_order"),
     supabase.from("ending_blocks").select("*").order("sort_order"),
@@ -73,6 +75,7 @@ export default async function SmartVariablesPage({
     supabase
       .from("nations")
       .select("name, color_hex, abbreviation, icon_type, icon_value"),
+    loadEndingPreviewDeps(supabase, { includeTiebreakLogicDocs: true }),
   ]);
 
   const allDocs = (documentData ?? []) as EndingDocument[];
@@ -117,6 +120,7 @@ export default async function SmartVariablesPage({
             "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
           >[]
         }
+        tiebreakDocsRaw={previewDeps.logicDocRawByKind ?? undefined}
         selectedDocId={selectedDocId ?? null}
         currentUserId={currentUserId}
         currentEmail={currentEmail}

@@ -103,6 +103,19 @@ export default async function FrameworksPage({
       smartDocIds.has(b.document_id) &&
       (b.block_type === "result" || b.block_type === "fallback")
   );
+  // Full smart variable block tree (all block types) for the preview
+  // panel's per-smart-variable evaluator.
+  const allSmartVarBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
+    smartDocIds.has(b.document_id)
+  );
+  const allSmartVarBlockIds = new Set(allSmartVarBlocks.map((b) => b.id));
+  const smartVariableRows = ((rowData ?? []) as EndingConditionRow[]).filter(
+    (r) => allSmartVarBlockIds.has(r.condition_block_id)
+  );
+  const smartVarRowIds = new Set(smartVariableRows.map((r) => r.id));
+  const smartVariableChips = (
+    (chipData ?? []) as EndingConditionRowChip[]
+  ).filter((c) => smartVarRowIds.has(c.row_id));
 
   // Per-logic-kind tiebreak summary for static analysis. A doc is
   // "empty" only when both: it has zero condition-block rows AND its
@@ -179,6 +192,9 @@ export default async function FrameworksPage({
       selectedFrameworkId={selectedId ?? null}
       smartVariableDocs={smartVariableDocs}
       smartVariableBlocks={smartVariableBlocks}
+      smartVariableAllBlocks={allSmartVarBlocks}
+      smartVariableRows={smartVariableRows}
+      smartVariableChips={smartVariableChips}
       tiebreakDocsSummary={tiebreakDocsSummary}
       tiebreakDocsRaw={logicDocRawByKind}
       currentUserId={currentUserId}

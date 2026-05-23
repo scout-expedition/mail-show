@@ -118,6 +118,8 @@ export interface VariableState {
    *  folder-aware picker; number_ref / aggregate_ref variables ignore
    *  this since they live under hardcoded category nodes. */
   folder_id: string | null;
+  /** UUID of the smart_variable doc this variable evaluates, when kind === 'smart_ref'. */
+  smart_variable_doc_id?: string | null;
   sort_order: number;
 }
 
