@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
-import { AlertTriangle, Dice5 } from "lucide-react";
+import { AlertTriangle, Blocks, Dice5, SquareStack } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -824,6 +824,9 @@ export function PreviewView({
                     <div className="flex shrink-0 items-center overflow-hidden rounded border border-border">
                       <button
                         type="button"
+                        aria-label="Set inputs"
+                        title="Set inputs"
+                        aria-pressed={mode === "set-inputs"}
                         onClick={() =>
                           setModeByVariableId((prev) => ({
                             ...prev,
@@ -831,17 +834,24 @@ export function PreviewView({
                           }))
                         }
                         className={cn(
-                          "px-2 py-0.5 font-mono text-[10px] transition-colors",
+                          "flex h-6 w-7 items-center justify-center transition-colors",
                           mode === "set-inputs"
                             ? "bg-muted text-foreground"
                             : "text-muted-foreground hover:text-foreground"
                         )}
                       >
-                        Set inputs
+                        <SquareStack size={12} aria-hidden />
                       </button>
                       <button
                         type="button"
                         disabled={noResultBlocks}
+                        aria-label="Set result"
+                        title={
+                          noResultBlocks
+                            ? "Set result (no return values defined yet)"
+                            : "Set result"
+                        }
+                        aria-pressed={mode === "set-result"}
                         onClick={() => {
                           if (noResultBlocks) return;
                           setModeByVariableId((prev) => ({
@@ -850,14 +860,14 @@ export function PreviewView({
                           }));
                         }}
                         className={cn(
-                          "border-l border-border px-2 py-0.5 font-mono text-[10px] transition-colors",
+                          "flex h-6 w-7 items-center justify-center border-l border-border transition-colors",
                           mode === "set-result"
                             ? "bg-muted text-foreground"
                             : "text-muted-foreground hover:text-foreground",
                           noResultBlocks && "cursor-not-allowed opacity-40"
                         )}
                       >
-                        Set result
+                        <Blocks size={12} aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -902,28 +912,40 @@ export function PreviewView({
                       {svBuckets.classImpacts.length > 0 ||
                       svBuckets.nationImpacts.length > 0 ||
                       svBuckets.worldImpacts.length > 0 ? (
-                        <div className="flex flex-wrap items-start gap-1">
-                          {svBuckets.classImpacts.map((v) => (
-                            <VariableInput
-                              key={v.id}
-                              variable={v}
-                              ctx={previewCtx}
-                            />
-                          ))}
-                          {svBuckets.nationImpacts.map((v) => (
-                            <VariableInput
-                              key={v.id}
-                              variable={v}
-                              ctx={previewCtx}
-                            />
-                          ))}
-                          {svBuckets.worldImpacts.map((v) => (
-                            <VariableInput
-                              key={v.id}
-                              variable={v}
-                              ctx={previewCtx}
-                            />
-                          ))}
+                        <div className="flex flex-wrap items-start gap-1.5">
+                          {svBuckets.classImpacts.length > 0 ? (
+                            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                              {svBuckets.classImpacts.map((v) => (
+                                <VariableInput
+                                  key={v.id}
+                                  variable={v}
+                                  ctx={previewCtx}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
+                          {svBuckets.nationImpacts.length > 0 ? (
+                            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                              {svBuckets.nationImpacts.map((v) => (
+                                <VariableInput
+                                  key={v.id}
+                                  variable={v}
+                                  ctx={previewCtx}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
+                          {svBuckets.worldImpacts.length > 0 ? (
+                            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+                              {svBuckets.worldImpacts.map((v) => (
+                                <VariableInput
+                                  key={v.id}
+                                  variable={v}
+                                  ctx={previewCtx}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                       {svBuckets.otherNumbers.length > 0 ? (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Dice5 } from "lucide-react";
+import { Blocks, Dice5, SquareStack } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -46,6 +46,7 @@ import {
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import {
   VariableInput,
+  bucketReferencedVariables,
   withZeroNumberDefaults,
   type PreviewCtx,
 } from "../_preview/variable-input";
@@ -514,30 +515,36 @@ export function LogicPreviewView({
                 <div key={sv.id} className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium">{doc?.name ?? sv.name}</span>
-                    <div className="inline-flex rounded-md border border-border/60 text-[11px]">
+                    <div className="inline-flex overflow-hidden rounded-md border border-border/60">
                       <button
                         type="button"
-                        onClick={() => setSvMode(sv.id, "set_result")}
-                        className={cn(
-                          "px-2 py-0.5 transition-colors",
-                          mode === "set_result"
-                            ? "bg-muted/60 text-foreground"
-                            : "text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        Set result
-                      </button>
-                      <button
-                        type="button"
+                        aria-label="Set inputs"
+                        title="Set inputs"
+                        aria-pressed={mode === "set_inputs"}
                         onClick={() => setSvMode(sv.id, "set_inputs")}
                         className={cn(
-                          "px-2 py-0.5 transition-colors",
+                          "flex h-6 w-7 items-center justify-center transition-colors",
                           mode === "set_inputs"
                             ? "bg-muted/60 text-foreground"
                             : "text-muted-foreground hover:text-foreground"
                         )}
                       >
-                        Set inputs
+                        <SquareStack size={12} aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Set result"
+                        title="Set result"
+                        aria-pressed={mode === "set_result"}
+                        onClick={() => setSvMode(sv.id, "set_result")}
+                        className={cn(
+                          "flex h-6 w-7 items-center justify-center border-l border-border/60 transition-colors",
+                          mode === "set_result"
+                            ? "bg-muted/60 text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <Blocks size={12} aria-hidden />
                       </button>
                     </div>
                   </div>
@@ -564,11 +571,10 @@ export function LogicPreviewView({
                       ) : null}
                     </div>
                   ) : inputVars.length > 0 ? (
-                    <div className="flex flex-col gap-1.5 border-l border-border/40 pl-2">
-                      {inputVars.map((v) => (
-                        <VariableInput key={v.id} variable={v} ctx={previewCtx} />
-                      ))}
-                    </div>
+                    <SmartVarInputsPanel
+                      inputs={inputVars}
+                      ctx={previewCtx}
+                    />
                   ) : (
                     <p className="text-[11px] italic text-muted-foreground">
                       No settable inputs for this smart variable.
@@ -708,6 +714,63 @@ export function LogicPreviewView({
           </p>
         )}
       </article>
+    </div>
+  );
+}
+
+function SmartVarInputsPanel({
+  inputs,
+  ctx,
+}: {
+  inputs: VariableState[];
+  ctx: PreviewCtx;
+}) {
+  const buckets = bucketReferencedVariables(inputs);
+  const hasAnyImpacts =
+    buckets.classImpacts.length > 0 ||
+    buckets.nationImpacts.length > 0 ||
+    buckets.worldImpacts.length > 0;
+  return (
+    <div className="flex flex-col gap-1.5 border-l border-border/40 pl-2">
+      {buckets.text.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {buckets.text.map((v) => (
+            <VariableInput key={v.id} variable={v} ctx={ctx} />
+          ))}
+        </div>
+      ) : null}
+      {hasAnyImpacts ? (
+        <div className="flex flex-wrap items-start gap-1.5">
+          {buckets.classImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.classImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+          {buckets.nationImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.nationImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+          {buckets.worldImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.worldImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {buckets.otherNumbers.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {buckets.otherNumbers.map((v) => (
+            <VariableInput key={v.id} variable={v} ctx={ctx} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
