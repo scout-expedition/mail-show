@@ -95,6 +95,8 @@ import PieceGroupNode, {
   PIECE_PILL_W,
   PIECE_GAP,
   PIECE_ROW_PAD_X,
+  PIECE_OVERFLOW_CHIP_W,
+  MAX_VISIBLE_PIECES,
 } from "./nodes/piece-group";
 import ReportNode from "./nodes/report-node";
 import ReportClusterNode from "./nodes/report-cluster";
@@ -336,14 +338,23 @@ function badgeStackExtentRight(
  * between them. Keeping this in lockstep with `piece-group.tsx` is what
  * stops the next variant in the group from visually colliding with the
  * piece-group's right edge.
+ *
+ * For groups larger than `MAX_VISIBLE_PIECES`, only `MAX_VISIBLE_PIECES
+ * - 1` pills render plus a "+N" overflow chip — reservation matches.
  */
 function variantSlotWidth(pieceMemberCount: number): number {
   if (pieceMemberCount < 2) return CARD_W;
   const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
+  const overflowing = pieceMemberCount > MAX_VISIBLE_PIECES;
+  const visiblePills = overflowing ? MAX_VISIBLE_PIECES - 1 : pieceMemberCount;
+  const overflowChipExtra = overflowing
+    ? PIECE_GAP + PIECE_OVERFLOW_CHIP_W // half-gap on chip's marginLeft, plus the chip itself; the other half-gap is the rightmost visible pill's paddingRight when not last — both pieces are mid-row when overflow exists, so reserve a full gap+chip width
+    : 0;
   return (
     2 * PIECE_ROW_PAD_X +
-    pieceMemberCount * pillOuter +
-    Math.max(0, pieceMemberCount - 1) * PIECE_GAP
+    visiblePills * pillOuter +
+    Math.max(0, visiblePills - 1) * PIECE_GAP +
+    overflowChipExtra
   );
 }
 
@@ -1717,12 +1728,29 @@ export function GraphView({
               //   • PIECE_GAP between adjacent pills
               // So pill i's left = PIECE_ROW_PAD_X + i*(pillOuter + PIECE_GAP),
               // and its center is half a pillOuter further right.
+              //
+              // Members past MAX_VISIBLE_PIECES collapse into a single
+              // "+N" chip — they have no rendered pill of their own. Their
+              // anchors snap to the chip's center so action chips for
+              // overflowed pieces stack on the visible chip instead of
+              // floating off in empty space below an imaginary pill.
               {
                 const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
                 const stride = pillOuter + PIECE_GAP;
+                const N = pieceMembers.length;
+                const overflowing = N > MAX_VISIBLE_PIECES;
+                const visiblePills = overflowing ? MAX_VISIBLE_PIECES - 1 : N;
+                const overflowChipLocalX =
+                  PIECE_ROW_PAD_X +
+                  visiblePills * stride +
+                  PIECE_OVERFLOW_CHIP_W / 2;
                 pieceMembers.forEach((m, i) => {
+                  const isVisible = i < visiblePills;
+                  const localX = isVisible
+                    ? PIECE_ROW_PAD_X + i * stride + pillOuter / 2
+                    : overflowChipLocalX;
                   pieceMemberAnchor.set(m.id, {
-                    x: groupsX + relX + PIECE_ROW_PAD_X + i * stride + pillOuter / 2,
+                    x: groupsX + relX + localX,
                     y: bottomY + relY,
                     h: cardH,
                   });

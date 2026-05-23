@@ -44,8 +44,10 @@ export type PieceGroupData = {
   pieceRingColorsByMember?: Record<string, string[]>;
 };
 
-// Max pieces to show before showing a "+N" overflow chip.
-const MAX_VISIBLE = 4;
+// Max pieces to show before collapsing the rest into a "+N" overflow
+// chip. When a group has MORE than this, only `MAX_VISIBLE - 1` pills
+// render plus the chip — so reserved layout width must match.
+export const MAX_VISIBLE_PIECES = 4;
 // Visible width of each per-piece pill — wider than the natural content
 // width so multi-piece groups read clearly rather than as a tight strip.
 export const PIECE_PILL_W = 86;
@@ -57,6 +59,11 @@ export const PIECE_GAP = 10;
 // so graph-view can derive per-piece anchor X coords that match the
 // actual rendered pill centers (used for action-chip placement).
 export const PIECE_ROW_PAD_X = 6;
+// Approximate rendered width of the "+N" overflow chip (inline-flex with
+// `text-[9px]` + `px-1`). A constant is good enough for layout reservation
+// since the chip is small relative to a full pill — minor under/over-fit
+// of a few px doesn't visibly crowd the next variant.
+export const PIECE_OVERFLOW_CHIP_W = 24;
 
 // Inline-style overrides that strip ReactFlow's default Handle CSS so the
 // Handle becomes a transparent in-flow wrapper that sizes to its child.
@@ -77,13 +84,17 @@ function PieceGroupNode({ data }: NodeProps) {
   const d = data as unknown as PieceGroupData;
   const color = d.storyline.color_hex;
 
-  // Show up to MAX_VISIBLE members; collapse the rest to a "+N" chip.
+  // Show up to MAX_VISIBLE_PIECES members; collapse the rest to a "+N"
+  // chip. Layout reservation in graph-view (`variantSlotWidth`) mirrors
+  // this branching so the reserved column width matches what renders.
   const visibleMembers =
-    d.members.length <= MAX_VISIBLE
+    d.members.length <= MAX_VISIBLE_PIECES
       ? d.members
-      : d.members.slice(0, MAX_VISIBLE - 1);
+      : d.members.slice(0, MAX_VISIBLE_PIECES - 1);
   const overflowCount =
-    d.members.length <= MAX_VISIBLE ? 0 : d.members.length - (MAX_VISIBLE - 1);
+    d.members.length <= MAX_VISIBLE_PIECES
+      ? 0
+      : d.members.length - (MAX_VISIBLE_PIECES - 1);
 
   return (
     <div
