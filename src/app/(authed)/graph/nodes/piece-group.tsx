@@ -149,23 +149,20 @@ function PieceGroupNode({ data }: NodeProps) {
               const peerRings =
                 d.pieceRingColorsByMember?.[member.id] ?? undefined;
               return (
+                // Two paths reach the same destination so the per-piece
+                // select fires no matter which event listener wins the
+                // race with ReactFlow's onNodeClick:
+                //   1) The per-pill onMouseDownCapture fires BEFORE RF's
+                //      click delegation and calls onSelectMember directly.
+                //   2) The parent onNodeClick (in graph-view) reads
+                //      `data-piece-id` from event.target and also routes
+                //      to onSelectMember.
+                // Both call paths are idempotent for the same memberId.
                 <div
                   key={member.id}
                   data-piece-id={member.id}
                   className="cursor-pointer"
-                  onPointerDownCapture={(e) => {
-                    // Mark the native event so the parent's onNodeClick (from
-                    // ReactFlow) can detect a piece-targeted click and skip
-                    // its group-level select. ReactFlow fires onNodeClick
-                    // off the click event the same listener sees here, so
-                    // tagging the nativeEvent is reliable across both
-                    // capture/bubble phases and RF's internal delegation.
-                    (e.nativeEvent as PointerEvent & {
-                      __pieceClickId?: string;
-                    }).__pieceClickId = member.id;
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  onMouseDownCapture={() => {
                     d.onSelectMember?.(member.id);
                   }}
                 >

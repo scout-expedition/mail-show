@@ -4455,23 +4455,24 @@ export function GraphView({
             select(null);
             return;
           }
-          // pieceGroup clicks routed to a specific piece: the piece pill's
-          // pointerDown handler tags the native event with __pieceClickId,
-          // which the piece pill's onClick (running first in React's bubble
-          // phase) translates into an onSelectMember call. Bail out here
-          // so the group-level onSelect doesn't overwrite the per-piece
-          // selection. Also bail when the click target is inside a
-          // [data-piece-id] descendant — defensive belt for cases where the
-          // pointer-down tag doesn't survive (e.g. drag-to-click sequences).
+          // pieceGroup clicks route the click target to the right callback:
+          //   • clicked a [data-piece-id] descendant → onSelectMember(id)
+          //   • clicked anywhere else (backdrop / title / outside pills) →
+          //     onSelect (group-level)
+          // Routing here, not inside the piece pill component, eliminates
+          // the race between an inner onClick and RF's onNodeClick — only
+          // one of the two callbacks fires per click.
           if (node.type === "pieceGroup") {
-            const piecedClick = (
-              event.nativeEvent as PointerEvent & {
-                __pieceClickId?: string;
-              }
-            ).__pieceClickId;
-            if (piecedClick) return;
             const target = event.target as HTMLElement | null;
-            if (target?.closest("[data-piece-id]")) return;
+            const memberEl = target?.closest("[data-piece-id]");
+            const memberId = memberEl?.getAttribute("data-piece-id");
+            if (memberId) {
+              const d = node.data as {
+                onSelectMember?: (id: string) => void;
+              } | undefined;
+              d?.onSelectMember?.(memberId);
+              return;
+            }
           }
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();

@@ -211,6 +211,63 @@ export type ControlledSelection =
     };
 
 /**
+ * Two-half delivery pill — filled (no border), fully rounded capsule.
+ * Left/right sides separated by a thin divider; renders just one half when
+ * the other side is omitted (e.g. an effective-day-only fallback).
+ */
+function DayPill({
+  left,
+  right,
+  className,
+}: {
+  left?: ReactNode;
+  right: ReactNode;
+  className?: string;
+}) {
+  const halfCls = "flex items-center justify-center px-1.5 leading-none";
+  const dividerCls = "h-3 w-px bg-foreground/15";
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full bg-foreground/15 py-0.5 font-mono text-[10px] tabular-nums text-foreground/80",
+        className
+      )}
+    >
+      {left != null ? (
+        <>
+          <span className={halfCls}>{left}</span>
+          <span className={dividerCls} aria-hidden />
+        </>
+      ) : null}
+      <span className={halfCls}>{right}</span>
+    </span>
+  );
+}
+
+/** Returns the number of *slot* entries in a list of letters — piece-group
+ *  siblings collapse into one slot per (group, variant). Standalone letters
+ *  (piece null/0) each count as one slot. */
+function countLetterSlots(
+  letters: Array<{
+    letter_group_id: string;
+    variant: string | null;
+    piece: number | null;
+  }>
+): number {
+  const seen = new Set<string>();
+  let n = 0;
+  for (const l of letters) {
+    if (l.piece != null && l.piece >= 1 && l.variant) {
+      const key = `${l.letter_group_id}:${l.variant}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    n++;
+  }
+  return n;
+}
+
+/**
  * Entry-field look: a darker-than-panel fill that darkens further on
  * hover and shows a visible border on focus. The border stays
  * transparent at rest so the field blends with the panel edges.
@@ -672,7 +729,7 @@ function LettersWorkspaceInner({
 
   /**
    * Delivery pill for a letter / report row. Two halves separated by a thin
-   * divider:
+   * divider, filled (no border), fully-rounded capsule:
    *   • Absolute override → pushpin icon | day identifier
    *   • Relative offset   → "+N" / "-N"  | computed delivery day identifier
    *   • Effective day only (no group day to compare against) → solo day pill
@@ -681,19 +738,13 @@ function LettersWorkspaceInner({
     overrideId: string | null,
     effectiveId: string | null
   ): ReactNode {
-    const halfCls =
-      "flex items-center justify-center px-1.5 leading-none";
-    const dividerCls = "h-3 w-px bg-border";
     if (overrideId) {
       const d = dayById.get(overrideId);
       return (
-        <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/40 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-          <span className={halfCls}>
-            <Pin size={9} aria-hidden fill="currentColor" />
-          </span>
-          <span className={dividerCls} aria-hidden />
-          <span className={halfCls}>{d?.identifier ?? "?"}</span>
-        </span>
+        <DayPill
+          left={<Pin size={9} aria-hidden fill="currentColor" />}
+          right={d?.identifier ?? "?"}
+        />
       );
     }
     const groupDay = group?.delivery_day_id
@@ -703,21 +754,14 @@ function LettersWorkspaceInner({
     if (eff && groupDay) {
       const delta = eff.number - groupDay.number;
       return (
-        <span className="inline-flex shrink-0 items-center rounded border border-border bg-muted/40 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-          <span className={halfCls}>
-            {delta >= 0 ? `+${delta}` : `${delta}`}
-          </span>
-          <span className={dividerCls} aria-hidden />
-          <span className={halfCls}>{eff.identifier}</span>
-        </span>
+        <DayPill
+          left={delta >= 0 ? `+${delta}` : `${delta}`}
+          right={eff.identifier}
+        />
       );
     }
     if (eff) {
-      return (
-        <Badge variant="muted" className="shrink-0">
-          {eff.identifier}
-        </Badge>
-      );
+      return <DayPill right={eff.identifier} />;
     }
     return null;
   }
@@ -8358,9 +8402,26 @@ function StorylineInspector({
   }
 
   const letterCountByGroup = useMemo(() => {
+    // Slot-based: piece-group siblings count once (per (group, variant)),
+    // standalones count individually. Matches what the user sees in the
+    // group panel where pieces collapse under a single header row.
+    const byGroup = new Map<
+      string,
+      Array<{
+        letter_group_id: string;
+        variant: string | null;
+        piece: number | null;
+      }>
+    >();
+    for (const l of allLetters) {
+      const arr = byGroup.get(l.letter_group_id) ?? [];
+      arr.push(l);
+      byGroup.set(l.letter_group_id, arr);
+    }
     const m = new Map<string, number>();
-    for (const l of allLetters)
-      m.set(l.letter_group_id, (m.get(l.letter_group_id) ?? 0) + 1);
+    for (const [gid, list] of byGroup) {
+      m.set(gid, countLetterSlots(list));
+    }
     return m;
   }, [allLetters]);
   const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
@@ -8648,19 +8709,19 @@ function StorylineInspector({
                 ) : null}
                 <LetterGroupPill storyline={storyline} sequence={g.sequence} />
                 <span className="truncate">{g.name}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                  {count} letter{count === 1 ? "" : "s"}
+                <span className="ml-auto flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground">
+                  <MailOpen size={11} aria-hidden />
+                  {count}
                 </span>
                 {day ? (
-                  <Badge
-                    variant="muted"
+                  <DayPill
                     className={cn(
-                      "ml-1 shrink-0",
-                      violates && "bg-destructive/15 text-destructive"
+                      "ml-1",
+                      violates && "!bg-destructive/25 !text-destructive"
                     )}
-                  >
-                    {day.identifier}
-                  </Badge>
+                    left={<Pin size={9} aria-hidden fill="currentColor" />}
+                    right={day.identifier}
+                  />
                 ) : null}
               </>
             );
@@ -8840,8 +8901,23 @@ function StorylinesListPanel({
   }, [groups]);
 
   const letterCountByGroup = useMemo(() => {
+    const byGroup = new Map<
+      string,
+      Array<{
+        letter_group_id: string;
+        variant: string | null;
+        piece: number | null;
+      }>
+    >();
+    for (const l of letters) {
+      const arr = byGroup.get(l.letter_group_id) ?? [];
+      arr.push(l);
+      byGroup.set(l.letter_group_id, arr);
+    }
     const m = new Map<string, number>();
-    for (const l of letters) m.set(l.letter_group_id, (m.get(l.letter_group_id) ?? 0) + 1);
+    for (const [gid, list] of byGroup) {
+      m.set(gid, countLetterSlots(list));
+    }
     return m;
   }, [letters]);
 
@@ -8953,11 +9029,17 @@ function StorylinesListPanel({
               !active && "hover:bg-accent/30"
             )}
           >
-            {opts.showDay && day ? (
-              <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                {day.identifier}
-              </span>
-            ) : null}
+            {/* Day slot: fixed-width so the LetterGroupPill / InspectionLetterPill
+                X position stays consistent across rows whether or not the
+                row carries a day badge. */}
+            <span className="inline-flex w-12 shrink-0 justify-start">
+              {opts.showDay && day ? (
+                <DayPill
+                  left={<Pin size={9} aria-hidden fill="currentColor" />}
+                  right={day.identifier}
+                />
+              ) : null}
+            </span>
             <LetterGroupPill storyline={s} sequence={g.sequence} />
             <span className="min-w-0 flex-1 truncate">
               {opts.showStoryline && s ? (
@@ -9017,11 +9099,26 @@ function StorylinesListPanel({
                       : undefined
                   }
                 >
-                  {overrideDay ? (
-                    <span className="inline-flex shrink-0 items-center rounded-full bg-foreground/25 px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-                      {overrideDay.identifier}
-                    </span>
-                  ) : null}
+                  {/* Same fixed-width day slot as the group row above so the
+                      LetterPill aligns horizontally with the LetterGroupPill
+                      icon column across rows (with the px-6 indent
+                      providing the nesting cue). */}
+                  <span className="inline-flex w-12 shrink-0 justify-start">
+                    {overrideDay ? (
+                      <DayPill
+                        left={
+                          l.delivery_day_override_id ? (
+                            <Pin size={9} aria-hidden fill="currentColor" />
+                          ) : l.delivery_day_offset != null ? (
+                            l.delivery_day_offset >= 0
+                              ? `+${l.delivery_day_offset}`
+                              : `${l.delivery_day_offset}`
+                          ) : undefined
+                        }
+                        right={overrideDay.identifier}
+                      />
+                    ) : null}
+                  </span>
                   <InspectionLetterPill
                     storyline={s}
                     contentId={l.content_id}
