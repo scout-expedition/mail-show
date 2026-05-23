@@ -284,6 +284,8 @@ export interface Playthrough {
   current_day_id: string | null;
   current_phase: Phase;
   is_active: boolean;
+  phase_started_at: string | null;
+  phase_paused_at: string | null;
 }
 
 export interface PlaythroughActionChoice {
@@ -291,6 +293,24 @@ export interface PlaythroughActionChoice {
   playthrough_id: string;
   inspection_letter_id: string;
   chosen_action_id: string;
+}
+
+export interface Slot {
+  slot_id: number;
+  role: "report" | "sorting";
+  notes: string | null;
+}
+
+export interface PlaythroughSlotState {
+  id: string;
+  playthrough_id: string;
+  slot_id: number;
+  physical_letter_id: string | null;
+  sorting_rule_id: string | null;
+  passed: boolean | null;
+  error_code: string | null;
+  evaluated_at: string | null;
+  observed_at: string;
 }
 
 export interface PlaythroughVariables {

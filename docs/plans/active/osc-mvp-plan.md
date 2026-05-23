@@ -14,15 +14,19 @@ Two hard constraints shape the design:
 1. **Vercel is serverless.** It cannot bind a UDP port, so OSC cannot live inside the deployed Next.js process. The integration must run as a **separate process**.
 2. **Content authoring stays in Supabase for now**, but the show will eventually run fully locally. Anything we build needs to port cleanly into the Phase 4 desktop wrapper.
 
-The natural fit is a **local Node sidecar** that connects to Supabase Realtime the same way the browser does, translates Postgres changes to OSC, and POSTs inbound OSC back through a thin Next API route that reuses existing Server Actions. When Phase 4 lands, the sidecar becomes a module of the Mac/Electron app — only the launcher changes.
+The natural fit is a **local Node sidecar** that connects to Supabase Realtime the same way the browser does, translates Postgres changes to OSC, and POSTs inbound OSC back through a thin Next API route that delegates to **domain helpers** (not Server Actions directly — Server Actions depend on cookie auth via `createSupabaseServerClient()` in `src/lib/supabase/server.ts`, which the route doesn't have). The route uses `createSupabaseServiceClient()` for the prototype, gated by a header secret. When Phase 4 lands, the sidecar becomes a module of the Mac/Electron app and the same domain helpers run in-process; the OSC adapter layer (`src/lib/osc/*`) is the stable boundary.
+
+**Topology for the prototype:** sidecar runs on the show machine and POSTs to `http://localhost:3000/api/osc` (local `pnpm dev` / Electron-hosted Next). The Vercel deployment is for content authoring only — `OSC_API_BASE_URL` env var picks the target so the same sidecar can hit a tunneled Vercel URL during remote rehearsals without a code change.
 
 ## What needs to exist in the schema first
 
 A few of the outbound/inbound triggers reference state that isn't in the DB yet. Treat these as **prerequisite migrations** before the bridge is useful:
 
-- **Phase timer.** Add columns to `playthroughs` (or a `playthrough_phase_runs` table) for `phase_started_at`, `phase_paused_at`, `phase_duration_seconds`. Used by `phase start` / `phase pause` / `phase timer end` cues.
-- **Letter status surface.** During inspection, RFID drops translate to either `flagged` (report slot) or `delivered` (any other slot) on a per-letter basis. The existing `playthrough_action_choices` table only knows the chosen action id — extend it (or add a sibling table) so an inbound RFID drop can record `flagged` without picking a specific action, and so `chooseAction()` can still take the slot-id-derived action otherwise. Decide between (a) adding the well-known "deliver" / "flag" actions as canonical rows the bridge resolves to, or (b) adding a `status` column. Option (a) keeps action-based variable tallying intact and is preferred.
-- **Slot → letter mapping during sorting.** A short-lived `playthrough_slot_state` table keyed on (playthrough_id, slot_id) holding the current `physical_letter_id`. The bridge writes to it; the sorting view reads from it to run `evaluateRule()` from `src/lib/rules/evaluate.ts` against the slot's sorting rule.
+- **Phase timer.** Add `phase_started_at`, `phase_paused_at` to `playthroughs` for run-time state. Do **not** add `phase_duration_seconds` — `days` already has `sort_phase_length_seconds` and `inspection_phase_length_seconds` (`src/lib/db/types.ts:68-70`); the sidecar reads the configured duration from the current day row. Used by `phase start` / `phase pause` / `phase timer end` cues.
+- **Letter status surface.** Approach (a) — **canonical "Deliver" and "Flag" action templates**, with a `flagLetter()` helper that finds (or lazily inserts) the per-letter action row pointing at the right template and records it via the same path as `chooseAction()`. Actions are per-letter rows pointing to templates (`supabase/migrations/0001_init.sql:369-377`, `0002_action_templates.sql:25-33`), so the helper must handle "the action row for this `inspection_letter_id` + Deliver/Flag template doesn't exist yet" by inserting it on first use. Preferred over a `status` column because it keeps the 9-variable impact tally intact for free.
+- **Slot → letter mapping during sorting.** A `playthrough_slot_state` table keyed on (playthrough_id, slot_id) holding `physical_letter_id`, `sorting_rule_id`, `passed`, `evaluated_at`, `error_code`, `observed_at`. The route writes to it; the sorting view reads from it to render the accuracy grid. Including the eval result avoids a second round-trip for the UI.
+- **Slot-role lookup.** Sorting rules already use numeric `destination_slot` 1-8 (`0001_init.sql:323-330`) with `routes_to_reporting` as a separate boolean destination (`0042_sorting_rules_revamp.sql:56-63`). Add a small `slots` reference table mapping `slot_id` → `role` (`report` | `sorting`) so the inspection-phase branch isn't relying on magic numbers, and so verification doesn't ship hardcoded slot `0`.
+- **Realtime publication.** Add `playthroughs`, `playthrough_action_choices`, and `playthrough_slot_state` to the realtime publication with `REPLICA IDENTITY FULL`, mirroring the pattern in `supabase/migrations/0031_realtime_publication.sql`. Without this, the sidecar's `postgres_changes` subscription is silent.
 
 These are scoped tightly to make OSC possible; full design lives outside this plan.
 
@@ -36,13 +40,14 @@ Add `osc` (the `colinbdclark/osc.js` package) as a dependency. UDP/TCP/WebSocket
 
 Long-running Node process launched via `pnpm osc:bridge`. Responsibilities:
 
-- Binds UDP on `OSC_LISTEN_PORT` (default `57121`); sends to `OSC_SEND_HOST:OSC_SEND_PORT` (default `127.0.0.1:53000` — QLab).
+- Binds UDP on `OSC_LISTEN_PORT` (default `57121`); sends to `OSC_SEND_HOST:OSC_SEND_PORT` (default `127.0.0.1:53000` — QLab). For QLab status replies it can either use the configured send target or "reply to UDP sender" — pick one and document. Recommend a separate `OSC_QLAB_REPLY_HOST/PORT` so query/reply routing stays explicit.
 - Optionally binds a **second listen port** for the RFID bridge if its hardware vendor pins a specific port (`OSC_RFID_LISTEN_PORT`). One process can serve multiple sockets; address-prefix routing keeps them straight.
-- Creates a Supabase client with `SUPABASE_SERVICE_ROLE_KEY` from `.env.local` (RLS-free for prototype; harden later with a bridge user).
+- Creates a Supabase client with `SUPABASE_SERVICE_ROLE_KEY` from `.env.local` (RLS-free for prototype; harden later with a bridge user). **Read-only role:** the sidecar only reads via Realtime and never mutates the DB directly — all writes go through `/api/osc` so eval logic, RLS-equivalent checks, and `revalidatePath()` stay in one place.
 - Subscribes to Postgres changes on `playthroughs` (current_day_id, current_phase, phase_started_at, phase_paused_at), `playthrough_action_choices`, the new `playthrough_slot_state`, and whichever table drives report-segment selection for a morning report.
-- Translates each change into the OSC paths in the address map; resolves IDs to the same display IDs the UI uses (`inspection_letters_view.content_id`, `report_segments_view.report_id`, sorting `S2-09`, physical `SL######`).
-- Reads inbound OSC, validates against the address map, and POSTs to `/api/osc` over localhost.
-- Runs a small **timer loop** (e.g. `setInterval` 250 ms) that compares `phase_started_at + phase_duration_seconds` to wall clock and fires `/show/phase/timer/end` exactly once when crossed. Keeps QLab from having to do clock math.
+- Translates each change into the OSC paths in the address map; resolves IDs to the same display IDs the UI uses (`inspection_letters_view.content_id` → `L-W2/b3`, `report_segments_view.report_id` → `R-W2/ii`, sorting `S2-09`, physical `SL######`).
+- Reads inbound OSC, validates against the address map, and POSTs to `${OSC_API_BASE_URL}/api/osc` (defaults to `http://localhost:3000`).
+- Defaults the "current show" to the row with `playthroughs.is_active = true` (`src/lib/db/types.ts:280-287`); `OSC_BRIDGE_PLAYTHROUGH_ID` is an override for rehearsal/test only.
+- Runs a small **timer loop** (e.g. `setInterval` 250 ms) that compares `phase_started_at + day.[sort|inspection]_phase_length_seconds` to wall clock and fires `/show/phase/timer/end` exactly once when crossed. Keeps QLab from having to do clock math.
 
 ### 3. Address map: `src/lib/osc/address-map.ts`
 
@@ -60,30 +65,37 @@ Pure module — paths + (de)serializers + escape rules. Imported by sidecar, API
 - `/show/status/day <int>`, `/show/status/phase <string>`, `/show/status/timer <remainingMs:int> <runningBool>` — sent both proactively on change **and** as replies to inbound status queries (see below).
 
 **Inbound from QLab (queries):**
-- `/show/status/day/get`, `/show/status/phase/get`, `/show/status/timer/get`, `/show/status/letter/get <"IL-W2/b3">` — sidecar replies on the `/show/status/*` paths above. QLab can route replies as it likes via its own listening port.
+- `/show/status/day/get`, `/show/status/phase/get`, `/show/status/timer/get`, `/show/status/letter/get <"L-W2/b3">` — sidecar replies on the `/show/status/*` paths above. QLab can route replies as it likes via its own listening port.
 
 **Inbound from RFID readers (sorting phase):**
-- `/rfid/slot <slotId:int> <payload:"SL######">` — sidecar resolves `payload` → `physical_letters.id`, upserts `playthrough_slot_state` (playthrough_id, slot_id, physical_letter_id, observed_at), and triggers a re-evaluation of the slot's sorting rule via `evaluateRule()` (`src/lib/rules/evaluate.ts`). The browser, subscribed via Supabase Realtime, sees the slot state change and re-renders the sorting accuracy grid.
-- `/rfid/slot/clear <slotId:int>` — slot emptied; sidecar deletes the row.
+- `/rfid/slot <slotId:int> <payload:"SL######">` — sidecar forwards verbatim to `/api/osc`. The **route** resolves `payload` → `physical_letters.id`, looks up the active day's sorting rule for `slotId`, runs `evaluateRule()` (`src/lib/rules/evaluate.ts`), and upserts `playthrough_slot_state`. The browser, subscribed via Supabase Realtime, sees the row change and re-renders the sorting accuracy grid.
+- `/rfid/slot/clear <slotId:int>` — slot emptied; route deletes the row.
 
 **Inbound from RFID readers (inspection phase):**
-- `/rfid/slot <slotId:int> <payload:"SL######">` — the same address. The bridge looks at `playthroughs.current_phase`:
-  - `inspection` + slot is the well-known "report" slot → resolve the `physical_letter` to the inspection letter it points at and invoke a new server action `flagLetter(letterId)`.
-  - `inspection` + any other slot → resolve to inspection letter and invoke `chooseAction(letterId, "deliver")`.
+- `/rfid/slot <slotId:int> <payload:"SL######">` — the same address. The **route** looks at `playthroughs.current_phase` and the `slots.role` lookup:
+  - `inspection` + `slots.role = 'report'` → resolve the `physical_letter` to the inspection letter it points at and invoke `flagLetter(letterId)`.
+  - `inspection` + `slots.role = 'sorting'` → resolve to inspection letter and invoke `chooseAction(letterId, "deliver")`.
   - `sorting` → the sorting branch above; no action choice fires.
 
-Settle escape rules for slashes in content IDs (`IL-W2/b3` collides with the OSC path separator). Recommended: keep them as **arguments**, not path segments — emit `/show/status/letter "IL-W2/b3" "delivered"` rather than embedding the ID in the path. This also makes the address map small and easy to grep.
+**Sidecar ownership:** sidecar is UDP I/O + Realtime → OSC translation only. **All DB mutations and rule evaluation happen in `/api/osc`** so RLS-equivalent checks, zod validation, and `revalidatePath()` stay in one place. The route returns the eval outcome (pass/fail, error_code) and the sidecar mirrors it back over OSC as `/show/status/slot <slotId> <"pass"|"fail">` if desired.
+
+**Rule evaluator lookup chain** (route side): RFID payload → `physical_letters` row → `content_ref_type/content_ref_id` (`0001_init.sql:306-312`, no FK) → if payload doesn't match a content row for the current phase (e.g. an inspection letter scanned during sorting), record `error_code = 'wrong_phase'` on `playthrough_slot_state` and skip evaluation. Otherwise resolve the active day's sorting rule for `slotId`, build a full `RuleContext` (`src/lib/rules/evaluate.ts:190-194`) from the sorting letter view + day rules/conditions, and persist the result.
+
+Settle escape rules for slashes in content IDs (`L-W2/b3` collides with the OSC path separator). Recommended: keep them as **arguments**, not path segments — emit `/show/status/letter "L-W2/b3" "delivered"` rather than embedding the ID in the path. This also makes the address map small and easy to grep.
 
 ### 4. Inbound API route: `src/app/api/osc/route.ts`
 
-POST endpoint gated by `OSC_BRIDGE_SECRET` header. Validates a typed payload and dispatches to existing Server Actions — the bridge stays a dumb transport:
+POST endpoint gated by `OSC_BRIDGE_SECRET` header (constant-time compare). It **cannot call existing Server Actions directly** — those depend on cookie auth via `createSupabaseServerClient()` (`src/lib/supabase/server.ts:5-14`), and the request has no session. Instead:
 
-- `chooseAction()` in `src/app/(authed)/playthroughs/actions.ts` for `deliver`.
-- `flagLetter()` — **new** thin action in the same file, wraps the choose path but resolves to the canonical "flag" action row.
-- Phase/day mutations in `src/app/(authed)/days/actions.ts` (existing).
-- `applySlotObservation(playthroughId, slotId, payload)` — **new** in `src/app/(authed)/sorting/rules/actions.ts`. Looks up physical letter, upserts `playthrough_slot_state`, runs `evaluateRule()` against the slot's rule, persists the pass/fail result. Returns the eval outcome so the bridge can mirror it back over OSC if desired.
+- **Refactor:** extract the bodies of `chooseAction()` (`src/app/(authed)/playthroughs/actions.ts`) and the phase/day mutations (`src/app/(authed)/days/actions.ts`) into **client-agnostic domain helpers** under `src/lib/playthroughs/*` and `src/lib/days/*` that accept a `SupabaseClient` argument. The existing Server Actions become thin wrappers that pass the cookie-aware client; the route passes a service-role client from `createSupabaseServiceClient()` (`src/lib/supabase/server.ts:34-46`).
+- **New domain helpers** the route calls:
+  - `chooseAction(client, { playthroughId, letterId, templateName: "deliver" })`
+  - `flagLetter(client, { playthroughId, letterId })` — finds (or lazily inserts) the per-letter action row pointing at the canonical "Flag" template, then records the choice via the same `chooseAction` path.
+  - `applySlotObservation(client, { playthroughId, slotId, payload })` — implements the lookup chain above and upserts `playthrough_slot_state`.
+  - `startPhase(client, ...)`, `pausePhase(...)`, `resumePhase(...)`, `setCurrentDay(...)` — phase-timer mutations.
+- **Server-action wrappers stay** in their current files and continue to call `revalidatePath()`; the route additionally calls `revalidatePath('/playthroughs', 'layout')` after a successful mutation so UI surfaces re-fetch.
 
-Going through Server Actions keeps RLS, zod validation, and `revalidatePath()` consistent with the UI path.
+Routing through one place keeps zod validation, error codes, and revalidation consistent across UI and OSC paths. The service-role bypass is acceptable for prototype (show-floor LAN); upgrade path is documented below.
 
 ### 5. Realtime subscription pattern
 
@@ -95,18 +107,27 @@ Don't rewrite the plumbing in `src/lib/realtime/channel.ts` — that's a React h
 - `"osc:bridge": "tsx --env-file=.env.local scripts/osc-bridge.ts"` (mirrors `db:migrate`).
 
 `.env.local` keys (document in README, not committed):
-- `OSC_LISTEN_PORT`, `OSC_SEND_HOST`, `OSC_SEND_PORT`, `OSC_RFID_LISTEN_PORT`, `OSC_BRIDGE_SECRET`, `OSC_BRIDGE_PLAYTHROUGH_ID` (which playthrough the bridge is "the show right now" — keeps the prototype simple; later replace with `is_active`).
+- `OSC_LISTEN_PORT`, `OSC_SEND_HOST`, `OSC_SEND_PORT`, `OSC_QLAB_REPLY_HOST`, `OSC_QLAB_REPLY_PORT`, `OSC_RFID_LISTEN_PORT`, `OSC_API_BASE_URL` (default `http://localhost:3000`), `OSC_BRIDGE_SECRET`, `OSC_BRIDGE_PLAYTHROUGH_ID` (override — defaults to `playthroughs.is_active = true`).
+
+### 7. Security upgrade path
+
+Prototype security model: header secret + service-role client + localhost transport. Adequate for a show-floor LAN where the sidecar and Next process run on the same machine. **Do not expose `/api/osc` over public internet in this form.** When the show eventually runs remote rehearsals via a tunneled Vercel URL, upgrade `/api/osc` to HMAC-over-body with a timestamp window (reject stale or replayed requests) before flipping `OSC_API_BASE_URL` to the public host. Phase 4 sidesteps the question entirely — Electron calls the domain helpers in-process.
 
 ## Critical files
 
-- **New:** `scripts/osc-bridge.ts` — sidecar entrypoint.
-- **New:** `src/lib/osc/address-map.ts` — paths, serializers, validators; pure, vitest-friendly.
-- **New:** `src/app/api/osc/route.ts` — inbound POST, secret-gated, delegates to Server Actions.
-- **New migrations:** phase-timer columns on `playthroughs`; `playthrough_slot_state` table; canonical "flag" action row (or `flagLetter` action wrapper); seed/lookup for slot ids → role (report slot vs others) in the inspection phase.
-- **Touch:** `src/app/(authed)/playthroughs/actions.ts` — add `flagLetter`, phase start/pause/resume helpers.
-- **Touch:** `src/app/(authed)/sorting/rules/actions.ts` — add `applySlotObservation`.
+- **New:** `scripts/osc-bridge.ts` — sidecar entrypoint (UDP I/O + Realtime → OSC translation; no DB writes).
+- **New:** `src/lib/osc/address-map.ts` — paths, serializers, validators; pure, vitest-friendly. **The stable Phase 4 boundary.**
+- **New:** `src/app/api/osc/route.ts` — inbound POST, secret-gated, calls domain helpers with a service-role client.
+- **New:** `src/lib/playthroughs/mutations.ts` and `src/lib/days/mutations.ts` — client-agnostic domain helpers (`chooseAction`, `flagLetter`, `startPhase`, `pausePhase`, `resumePhase`, `setCurrentDay`, `applySlotObservation`).
+- **New migrations:**
+  - `phase_started_at`, `phase_paused_at` on `playthroughs` (do NOT add `phase_duration_seconds` — reuse `days.[sort|inspection]_phase_length_seconds`).
+  - `playthrough_slot_state(playthrough_id, slot_id, physical_letter_id, sorting_rule_id, passed, evaluated_at, error_code, observed_at)`.
+  - Canonical "Deliver" and "Flag" rows in `action_templates`.
+  - `slots(slot_id, role)` reference table — replaces the magic "slot 0 = report" assumption.
+  - Add `playthroughs`, `playthrough_action_choices`, `playthrough_slot_state` to the realtime publication with `REPLICA IDENTITY FULL` (pattern: `supabase/migrations/0031_realtime_publication.sql`).
+- **Refactor (thin wrapper pattern):** `src/app/(authed)/playthroughs/actions.ts` and `src/app/(authed)/days/actions.ts` — existing Server Actions become wrappers that pass the cookie client to the new domain helpers.
 - **Touch:** `package.json` — `osc` dep + `osc:bridge` script.
-- **Reuse:** `src/lib/ids.ts`, `src/lib/rules/evaluate.ts`, `src/lib/playthrough/variables.ts`, `inspection_letters_view`, `report_segments_view`, `physical_letters` table, the existing `chooseAction()` server action.
+- **Reuse:** `src/lib/ids.ts`, `src/lib/rules/evaluate.ts`, `src/lib/playthrough/variables.ts`, `src/lib/supabase/server.ts` (both client factories), `inspection_letters_view`, `report_segments_view`, `physical_letters` table.
 
 ## Verification
 
@@ -114,17 +135,20 @@ Against a local Supabase stack (`supabase start`) with a seeded playthrough:
 
 1. **Loopback outbound.** `pnpm osc:bridge` with `OSC_SEND_PORT=9000`. In a second terminal, watch with `oscdump 9000` (or Protokol). Change the day / advance the phase / pick an action / select a report segment in the UI; confirm each fires the right address with the expected args. Pause the phase; confirm `/show/phase/pause` then `/show/phase/timer/end` arrives when the timer expires.
 2. **QLab cue smoke test.** Point the bridge at a QLab workspace listening on `53000`. Wire Network Cues triggered by `/show/phase/set sorting` and `/show/phase/timer/end`. Advance phase; cues fire. Add a Network Cue that sends `/show/status/day/get` back; confirm the bridge replies with `/show/status/day <n>`.
-3. **RFID sorting flow.** With `sendosc` simulating the reader, fire `/rfid/slot 3 SL000042` while the playthrough is in the `sorting` phase. Verify `playthrough_slot_state` has a row, the sorting UI updates over Realtime, and `evaluateRule()` returns the expected pass/fail.
-4. **RFID inspection flow.** Advance to `inspection`. Fire `/rfid/slot 0 SL000042` (report slot id) — confirm the letter is flagged. Fire `/rfid/slot 1 SL000042` (any other slot) — confirm the deliver action is recorded in `playthrough_action_choices` and the variable HUD tallies update.
-5. **Address-map unit tests.** Vitest covering: each outbound path serializes correctly; each inbound path validates and rejects malformed args; content-ID arguments survive round-trip (`IL-W2/b3`, `SL000042`, `R-W2/ii`).
-6. **`pnpm typecheck` + `pnpm lint` + `pnpm test`** clean.
+3. **RFID sorting flow.** With `sendosc` simulating the reader, fire `/rfid/slot 3 SL000042` while the playthrough is in the `sorting` phase. Verify the route resolved the payload, `playthrough_slot_state` has a row with `passed` populated, the sorting UI updates over Realtime, and `evaluateRule()` returned the expected pass/fail. Then fire a payload that doesn't match the current phase and confirm `error_code = 'wrong_phase'` is recorded without crashing.
+4. **RFID inspection flow.** Advance to `inspection`. Fire `/rfid/slot <slot with role='report'> SL000042` — confirm the letter is flagged. Fire `/rfid/slot <slot with role='sorting'> SL000042` — confirm the deliver action is recorded in `playthrough_action_choices` and the variable HUD tallies update. (Slot ids resolved from the `slots` reference table — no hardcoded numbers.)
+5. **Realtime publication.** After running the prerequisite migrations, confirm via `select * from pg_publication_tables where pubname = 'supabase_realtime'` that `playthroughs`, `playthrough_action_choices`, and `playthrough_slot_state` are in the publication. Without this, the sidecar's subscription is silently empty.
+6. **Address-map unit tests.** Vitest covering: each outbound path serializes correctly; each inbound path validates and rejects malformed args; content-ID arguments survive round-trip (`L-W2/b3`, `SL000042`, `R-W2/ii`).
+7. **Route auth tests.** Vitest/integration covering: missing/wrong `OSC_BRIDGE_SECRET` returns 401; malformed body returns 400 with zod error; valid body invokes the right helper.
+8. **`pnpm typecheck` + `pnpm lint` + `pnpm test`** clean.
 
 ## Migration to Phase 4 (forward-looking)
 
 When the Mac/Electron wrapper ships:
 
 - `scripts/osc-bridge.ts` becomes a module imported by the desktop app's main process.
-- The address map and API route stay as-is; the API route runs against a local Next instance or is swapped for direct in-process calls.
+- `src/lib/osc/address-map.ts` and the domain helpers under `src/lib/playthroughs/*` / `src/lib/days/*` stay as-is — they're the stable boundary. The API route is dropped in favor of direct in-process calls to the same helpers.
 - Supabase Realtime can be replaced with local SQLite/Postgres subscriptions without touching the address map.
+- Security model (`OSC_BRIDGE_SECRET` / service-role client) is no longer relevant — Electron is the trust boundary.
 
 Nothing in this prototype paints us into a corner.
