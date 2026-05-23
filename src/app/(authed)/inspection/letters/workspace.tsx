@@ -304,6 +304,7 @@ type LetterState = {
   sender_citizen_id: string | null;
   receiver_citizen_id: string | null;
   notes: string | null;
+  fallback_mirror_action_id: string | null;
   actions: ActionState[];
 };
 
@@ -322,6 +323,7 @@ function toLetterState(
     sender_citizen_id: l.sender_citizen_id,
     receiver_citizen_id: l.receiver_citizen_id,
     notes: l.notes,
+    fallback_mirror_action_id: l.fallback_mirror_action_id,
     actions: actions
       .filter((a) => a.inspection_letter_id === l.id)
       .map((a) => ({
@@ -1717,6 +1719,29 @@ function LettersWorkspaceInner({
     setLetterState((s) => (s ? { ...s, ...patch } : s));
   }
 
+  async function handleSetFallbackMirror(mirrorActionId: string | null) {
+    const letterId = letterState?.id;
+    if (!letterId) return;
+    if (mirrorActionId) {
+      const target = letterState?.actions.find((a) => a.id === mirrorActionId);
+      // Reject ghost / unknown ids — a ghost-action-<uuid> string would be
+      // rejected by Postgres as a non-uuid, and a stale id from a deleted
+      // sibling would fail the cross-letter trigger. Either way, no write.
+      if (!target || target.id.startsWith("ghost-action-")) return;
+    }
+    const previous = letterState?.fallback_mirror_action_id ?? null;
+    updateLetter({ fallback_mirror_action_id: mirrorActionId });
+    try {
+      await patchInspectionLetter(letterId, {
+        fallback_mirror_action_id: mirrorActionId,
+      });
+    } catch (e) {
+      console.error("patchInspectionLetter (fallback_mirror_action_id) failed:", e);
+      // Revert local state so the picker doesn't show a phantom selection.
+      updateLetter({ fallback_mirror_action_id: previous });
+    }
+  }
+
   // Per-action debounced patcher. Action fields (next_letter, segment, the
   // 9 impacts) auto-save via the narrow patchAction. ending_assignments
   // stay on the coarse saveLetterActionsOnly path because they're multi-row.
@@ -1819,6 +1844,7 @@ function LettersWorkspaceInner({
           sender_citizen_id: null,
           receiver_citizen_id: null,
           notes: null,
+          fallback_mirror_action_id: null,
           updated_at: new Date().toISOString(),
           updated_by: null,
           effective_day_id: group.delivery_day_id,
@@ -3508,6 +3534,9 @@ function LettersWorkspaceInner({
                   ? controlledSelection.actionId ?? null
                   : null
               }
+              letterId={letterState.id}
+              fallbackMirrorActionId={letterState.fallback_mirror_action_id}
+              onChangeFallback={handleSetFallbackMirror}
               onBack={closeActionsPanel}
             />
           ) : null}
@@ -3956,6 +3985,9 @@ function LetterActionsCard({
   onOpenLetter,
   openLetterId,
   highlightedActionId,
+  letterId,
+  fallbackMirrorActionId,
+  onChangeFallback,
   onBack,
 }: {
   actions: ActionState[];
@@ -3988,6 +4020,13 @@ function LetterActionsCard({
   openLetterId: string | null;
   /** Action selected in the graph (chip/connector click) — outlined here. */
   highlightedActionId: string | null;
+  /** Current letter's id — needed for presence focus on the fallback
+   *  field. Empty string is harmless (no letter selected). */
+  letterId: string;
+  /** Action this letter falls back to when the player makes no choice.
+   *  null = no fallback. */
+  fallbackMirrorActionId: string | null;
+  onChangeFallback: (mirrorActionId: string | null) => void;
   onBack: () => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -4097,6 +4136,17 @@ function LetterActionsCard({
         {actions.length === 0 ? (
           <p className="text-sm text-muted-foreground">No actions yet.</p>
         ) : null}
+        <FallbackActionRow
+          letterId={letterId}
+          actions={actions}
+          fallbackMirrorActionId={fallbackMirrorActionId}
+          onChange={onChangeFallback}
+          templates={templates}
+          nations={nations}
+          segments={segments}
+          allLetters={allLetters}
+          storyline={storyline}
+        />
         <div className="flex justify-center pt-1">
           <AddActionMenu
             templates={templates}
@@ -4111,6 +4161,200 @@ function LetterActionsCard({
         </div>
       </div>
       </div>
+    </div>
+  );
+}
+
+/** Row that sits beneath the letter's option-action rows, letting the
+ *  author declare what happens if the player makes no choice.
+ *
+ *  V1 supports two states:
+ *    - None  → fallback_mirror_action_id is null.
+ *    - Mirror → points at one of the letter's existing actions; the
+ *      fallback behaves identically to that action. If the mirrored
+ *      action is deleted, the FK `on delete set null` clears this
+ *      pointer automatically.
+ *
+ *  Read-only preview of the mirrored action (impacts + report + next-
+ *  letter pills) renders below the dropdown so authors can see the
+ *  current fallback at a glance without clicking through. */
+function FallbackActionRow({
+  letterId,
+  actions,
+  fallbackMirrorActionId,
+  onChange,
+  templates,
+  nations,
+  segments,
+  allLetters,
+  storyline,
+}: {
+  letterId: string;
+  actions: ActionState[];
+  fallbackMirrorActionId: string | null;
+  onChange: (mirrorActionId: string | null) => void;
+  templates: ActionTemplate[];
+  nations: Nation[];
+  segments: ReportSegmentView[];
+  allLetters: InspectionLetterView[];
+  storyline: Storyline | undefined;
+}) {
+  const { peers } = usePresenceContext();
+  // Ghost actions (in-flight optimistic adds) carry non-uuid ids and would
+  // be rejected by the patch — exclude them from the picker entirely so
+  // authors can only mirror persisted rows.
+  const pickableActions = actions.filter(
+    (a) => !a.id.startsWith("ghost-action-")
+  );
+  const mirrored = fallbackMirrorActionId
+    ? pickableActions.find((a) => a.id === fallbackMirrorActionId) ?? null
+    : null;
+  const mirroredTpl = mirrored?.action_template_id
+    ? templates.find((t) => t.id === mirrored.action_template_id) ?? null
+    : null;
+
+  const items: PillSelectItem[] = [
+    {
+      key: "__none",
+      active: fallbackMirrorActionId === null,
+      label: (
+        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+          None
+        </span>
+      ),
+      onPick: () => onChange(null),
+    },
+    ...pickableActions.map<PillSelectItem>((a) => {
+      const tpl = a.action_template_id
+        ? templates.find((t) => t.id === a.action_template_id) ?? null
+        : null;
+      return {
+        key: a.id,
+        active: fallbackMirrorActionId === a.id,
+        label: (
+          <span className="inline-flex items-center gap-1.5">
+            {tpl ? (
+              <CompositeActionChip members={[tpl]} size={14} />
+            ) : null}
+            <span className={tpl ? undefined : "text-muted-foreground"}>
+              {tpl?.name ?? "Unset action"}
+            </span>
+          </span>
+        ),
+        onPick: () => onChange(a.id),
+      };
+    }),
+  ];
+
+  const pill = mirrored ? (
+    <span className="inline-flex items-center gap-1.5">
+      {mirroredTpl ? (
+        <CompositeActionChip members={[mirroredTpl]} size={14} />
+      ) : null}
+      <span className={mirroredTpl ? undefined : "text-muted-foreground"}>
+        {mirroredTpl?.name ?? "Unset action"}
+      </span>
+    </span>
+  ) : null;
+
+  return (
+    <div className="rounded-md border border-dashed border-border/60 bg-black/15 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
+          Fallback
+        </span>
+        <span className="text-[10px] text-muted-foreground/50">
+          (when player makes no choice)
+        </span>
+      </div>
+      <LinkField
+        label="Mirror action"
+        pill={pill}
+        pillNavigates={false}
+        navAriaLabel="Fallback action"
+        onPillClick={() => {}}
+        pillActive={false}
+        items={items}
+        chevronAriaLabel="Pick fallback action"
+        summary={mirrored ? "Mirrors this action when no choice is made." : ""}
+        focusKey={{
+          table: "inspection_letters",
+          recordId: letterId,
+          field: "fallback_mirror_action_id",
+        }}
+        peers={peers}
+        creating={false}
+      />
+      {mirrored ? (
+        <FallbackPreview
+          action={mirrored}
+          nations={nations}
+          segments={segments}
+          allLetters={allLetters}
+          storyline={storyline}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** Dimmed, non-interactive preview of the action the fallback mirrors —
+ *  shows its impacts, report segment pill, and next-letter pill so the
+ *  author can see at a glance what the fallback will do. */
+function FallbackPreview({
+  action,
+  nations,
+  segments,
+  allLetters,
+  storyline,
+}: {
+  action: ActionState;
+  nations: Nation[];
+  segments: ReportSegmentView[];
+  allLetters: InspectionLetterView[];
+  storyline: Storyline | undefined;
+}) {
+  const orderedNations = nations
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .filter((n) => NATION_IMPACT_KEYS[n.name.toLowerCase()]);
+  const reportSegment = action.report_segment_id
+    ? segments.find((s) => s.id === action.report_segment_id) ?? null
+    : null;
+  const nextLetter = action.next_letter_id
+    ? allLetters.find((l) => l.id === action.next_letter_id) ?? null
+    : null;
+  return (
+    <div className="pointer-events-none mt-3 flex flex-col gap-2 opacity-70">
+      {reportSegment ? (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="uppercase tracking-wide text-muted-foreground/60">
+            Report
+          </span>
+          <ReportSegmentPill
+            storyline={storyline}
+            reportId={reportSegment.report_id}
+          />
+        </div>
+      ) : null}
+      {nextLetter ? (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="uppercase tracking-wide text-muted-foreground/60">
+            Next letter
+          </span>
+          <InspectionLetterPill
+            storyline={storyline}
+            contentId={nextLetter.content_id}
+          />
+        </div>
+      ) : null}
+      <ImpactBlock
+        action={action}
+        actionId={action.id}
+        orderedNations={orderedNations}
+        onChange={() => {}}
+        peers={[]}
+      />
     </div>
   );
 }

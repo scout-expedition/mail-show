@@ -16,6 +16,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Atom, Plus } from "lucide-react";
+import { slugify } from "@/lib/slug";
 import { paletteColor } from "@/lib/endings/color-palette";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
@@ -332,7 +333,7 @@ function SmartVariablesEditorInner({
   const [pending, runTransition] = useTransition();
 
   // Resolve which smart variable is active. Default to the first when
-  // the URL doesn't carry a `?doc=`, but fall back to null when the
+  // the URL doesn't carry a `?name=`, but fall back to null when the
   // list is empty (we show the empty state).
   const activeDoc = useMemo(() => {
     if (selectedDocId) {
@@ -365,6 +366,25 @@ function SmartVariablesEditorInner({
       payload: { smartDocId: activeDoc.id },
     });
   }, [activeDoc, setSelection]);
+
+  // Keep ?name= in sync when the active doc is renamed. We compare the
+  // current URL param to the slug of the active doc's name; if they
+  // differ we push the corrected URL. Guard: skip when no doc is active
+  // (nothing to sync) and skip when no ?name= is currently set (the
+  // default-first-doc case shouldn't add a param until the user clicks).
+  const activeDocName = activeDoc?.name ?? null;
+  useEffect(() => {
+    if (!activeDocName) return;
+    const currentSlug = searchParams?.get("name");
+    if (!currentSlug) return; // no param — nothing to keep in sync
+    const expectedSlug = slugify(activeDocName);
+    if (currentSlug === expectedSlug) return;
+    const qs = new URLSearchParams(searchParams?.toString() ?? "");
+    qs.set("name", expectedSlug);
+    router.replace(
+      `/endings/smart-variables?${qs.toString()}`,
+    );
+  }, [activeDocName, searchParams, router]);
 
   // Pre-slice the per-doc block/row/chip/header arrays so the
   // DocumentEditor only sees its own document's data — same pattern as
@@ -504,36 +524,45 @@ function SmartVariablesEditorInner({
     });
   }
 
-  // Selection: ?doc=<id> (smart variable) | ?folder=<id> (folder).
-  // Tree multi-select via shift+click extends `selectedIds`; URL only
-  // syncs single-selection.
+  // Selection: ?name=<slug> resolves against smart variables first,
+  // then smart-variable-scope folders. Tree multi-select via shift+click
+  // extends `selectedIds`; URL only syncs single-selection.
   const initialSelectedIds = useMemo(() => {
-    const f = searchParams.get("folder");
-    if (f) return new Set([f]);
     if (selectedDocId) {
       const variable = smartVariables.find(
         (v) => v.smart_variable_doc_id === selectedDocId
       );
       if (variable) return new Set([variable.id]);
     }
+    const slug = searchParams.get("name");
+    if (slug) {
+      const folder = smartFolders.find(
+        (f) => slugify(f.name ?? "") === slug
+      );
+      if (folder) return new Set([folder.id]);
+    }
     return new Set<string>();
-  }, [searchParams, selectedDocId, smartVariables]);
+  }, [searchParams, selectedDocId, smartVariables, smartFolders]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(initialSelectedIds);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
 
   const syncUrl = useCallback(
     (ids: Set<string>) => {
       const params = new URLSearchParams(searchParams.toString());
+      // ?folder= and ?doc= are legacy from before the ?name=<slug>
+      // contract; clear them so the URL ends up canonical.
       params.delete("folder");
+      params.delete("doc");
+      params.delete("name");
       if (ids.size === 1) {
         const [only] = Array.from(ids);
-        if (smartFolders.some((f) => f.id === only)) {
-          params.set("folder", only);
-          params.delete("doc");
+        const folder = smartFolders.find((f) => f.id === only);
+        if (folder) {
+          params.set("name", slugify(folder.name));
         } else {
           const docId = docByVariableId.get(only);
-          if (docId) params.set("doc", docId);
-          else params.delete("doc");
+          const doc = docId ? smartDocs.find((d) => d.id === docId) : undefined;
+          if (doc?.name) params.set("name", slugify(doc.name));
         }
       }
       const qs = params.toString();
@@ -541,7 +570,7 @@ function SmartVariablesEditorInner({
         scroll: false,
       });
     },
-    [searchParams, router, smartFolders, docByVariableId]
+    [searchParams, router, smartFolders, smartDocs, docByVariableId]
   );
 
   const handleSelect = useCallback(
@@ -575,13 +604,22 @@ function SmartVariablesEditorInner({
     syncUrl(selectedIds);
   }, [selectedIds, syncUrl]);
 
+  // Navigate to a smart variable doc by id (used by the tree
+  // onSelect + the editor's post-delete handler). Writes ?name=<slug>
+  // off the doc's current name; null clears the param.
   function navigateToDoc(docId: string | null) {
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
-    if (docId) qs.set("doc", docId);
-    else qs.delete("doc");
+    qs.delete("doc");
+    qs.delete("folder");
+    qs.delete("name");
+    if (docId) {
+      const doc = smartDocs.find((d) => d.id === docId);
+      if (doc?.name) qs.set("name", slugify(doc.name));
+    }
     const search = qs.toString();
     router.push(`/endings/smart-variables${search ? `?${search}` : ""}`);
   }
+
 
   // ── Create / rename / delete ─────────────────────────────────────────
   function handleCreateSmartVariable() {
@@ -597,16 +635,21 @@ function SmartVariablesEditorInner({
     }
     runTransition(async () => {
       try {
-        const { documentId, variableId } = await createSmartVariable({
-          folderId,
-        });
-        // Mark the new variable as the single selection AND navigate.
+        const { documentId, variableId, name: createdName } =
+          await createSmartVariable({ folderId });
+        // Mark the new variable as the single selection AND navigate
+        // to the slug, not the doc id — `?name=<slug>` is the public
+        // URL contract now.
         const next = new Set([variableId]);
         setSelectedIds(next);
         const params = new URLSearchParams(searchParams.toString());
         params.delete("folder");
-        params.set("doc", documentId);
+        params.delete("doc");
+        params.set("name", slugify(createdName));
         router.push(`/endings/smart-variables?${params.toString()}`);
+        // Suppress unused-warning on documentId — kept in destructure
+        // for symmetry with the action return shape.
+        void documentId;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Create failed.";
         toast({ message: msg, intent: "destructive" });
