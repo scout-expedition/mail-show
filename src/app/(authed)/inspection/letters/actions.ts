@@ -1471,6 +1471,7 @@ type InspectionLetterPatchFields = {
   sender_citizen_id: string | null;
   receiver_citizen_id: string | null;
   notes: string | null;
+  fallback_mirror_action_id: string | null;
 };
 
 export async function patchInspectionLetter(
