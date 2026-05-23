@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { DayOfWeek, Phase } from "@/lib/db/enums";
+import * as mutations from "@/lib/playthroughs/mutations";
 
 function nilNum(v: FormDataEntryValue | null): number | null {
   const s = String(v ?? "").trim();
@@ -77,10 +78,10 @@ export async function advanceActivePlaythrough(formData: FormData) {
   const current_day_id = String(formData.get("current_day_id") ?? "") || null;
   const current_phase = String(formData.get("current_phase") ?? "") as Phase;
   if (!playthrough_id) return;
-  const { error } = await supabase
-    .from("playthroughs")
-    .update({ current_day_id, current_phase })
-    .eq("id", playthrough_id);
-  if (error) throw new Error(error.message);
+  await mutations.setCurrentDay(supabase, {
+    playthroughId: playthrough_id,
+    currentDayId: current_day_id,
+    currentPhase: current_phase,
+  });
   revalidatePath("/days");
 }
