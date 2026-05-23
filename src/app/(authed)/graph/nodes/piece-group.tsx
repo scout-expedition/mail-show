@@ -46,6 +46,17 @@ export type PieceGroupData = {
 
 // Max pieces to show before showing a "+N" overflow chip.
 const MAX_VISIBLE = 4;
+// Visible width of each per-piece pill — wider than the natural content
+// width so multi-piece groups read clearly rather than as a tight strip.
+export const PIECE_PILL_W = 86;
+// Visible gap between adjacent piece pills. Note: this gap is split as
+// half-gap padding on each piece's [data-piece-id] wrapper (see below),
+// so the wrapper hit-areas tile with no dead zone in between.
+export const PIECE_GAP = 10;
+// Horizontal padding inside the muted backdrop (`px-1.5` = 6px). Exported
+// so graph-view can derive per-piece anchor X coords that match the
+// actual rendered pill centers (used for action-chip placement).
+export const PIECE_ROW_PAD_X = 6;
 
 // Inline-style overrides that strip ReactFlow's default Handle CSS so the
 // Handle becomes a transparent in-flow wrapper that sizes to its child.
@@ -142,27 +153,56 @@ function PieceGroupNode({ data }: NodeProps) {
           {/* Individual piece cards in a horizontal row. Each card uses
               the full storyline color + the letter's summary so they pop
               against the muted parent and surface the letter's content
-              the same way standalone letter nodes do. */}
-          <div className="flex flex-row items-stretch gap-[3px] px-1.5 pb-1.5">
-            {visibleMembers.map((member) => {
+              the same way standalone letter nodes do.
+
+              No flex `gap` here on purpose — the gap is implemented as
+              half-gap horizontal padding on each [data-piece-id] wrapper
+              so adjacent wrapper hit-areas TILE with no dead zone. With
+              a flex gap, the empty space between pieces hits the muted
+              backdrop (pointer-events:none from the parent Handle), the
+              click bubbles to the outer node wrapper, and graph-view's
+              onNodeClick can't resolve a `[data-piece-id]` ancestor —
+              so it falls through to the group-level select, which
+              always hydrates to the lowest-piece sibling. That's the
+              "second click needed to select piece b2" bug. */}
+          <div className="flex flex-row items-stretch px-1.5 pb-1.5">
+            {visibleMembers.map((member, idx) => {
               const isSelf = d.selectedPieceId === member.id;
               const peerRings =
                 d.pieceRingColorsByMember?.[member.id] ?? undefined;
+              const isFirst = idx === 0;
+              const isLast = idx === visibleMembers.length - 1;
               return (
-                // Two paths reach the same destination so the per-piece
-                // select fires no matter which event listener wins the
-                // race with ReactFlow's onNodeClick:
-                //   1) The per-pill onMouseDownCapture fires BEFORE RF's
-                //      click delegation and calls onSelectMember directly.
-                //   2) The parent onNodeClick (in graph-view) reads
-                //      `data-piece-id` from event.target and also routes
-                //      to onSelectMember.
-                // Both call paths are idempotent for the same memberId.
+                // `pointer-events-auto` is load-bearing: this wrapper is
+                // nested inside ReactFlow's "full" <Handle>, which sets
+                // pointer-events:none on its entire subtree so handles
+                // only catch events during connection drags. Without an
+                // explicit auto here, clicks on a piece pill never hit
+                // the wrapper at all.
+                //
+                // `nodrag` is also load-bearing: ReactFlow watches every
+                // pointerdown inside a node and starts a drag gesture on
+                // even a few pixels of movement before mouseup. Without
+                // it, a click with the tiniest hand-shake gets reinterpreted
+                // as a drag-start and the click event never fires — so
+                // the per-piece select silently misses and the user has
+                // to click again. With `nodrag`, RF skips drag detection
+                // on the piece pills (you can still drag the group from
+                // its muted backdrop), so onClick always fires.
+                //
+                // onClick → stopPropagation prevents RF's onNodeClick
+                // (which routes group-level) from firing on the same
+                // gesture.
                 <div
                   key={member.id}
                   data-piece-id={member.id}
-                  className="cursor-pointer"
-                  onMouseDownCapture={() => {
+                  className="nodrag pointer-events-auto cursor-pointer"
+                  style={{
+                    paddingLeft: isFirst ? 0 : PIECE_GAP / 2,
+                    paddingRight: isLast ? 0 : PIECE_GAP / 2,
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
                     d.onSelectMember?.(member.id);
                   }}
                 >
@@ -170,6 +210,7 @@ function PieceGroupNode({ data }: NodeProps) {
                     storyline={{ color_hex: color }}
                     contentId={member.content_id}
                     summary={member.summary}
+                    widthPx={PIECE_PILL_W}
                     selected={isSelf}
                     selfRingColor={isSelf ? d.pieceSelfRingColor : undefined}
                     peerRingColors={peerRings}
@@ -178,7 +219,10 @@ function PieceGroupNode({ data }: NodeProps) {
               );
             })}
             {overflowCount > 0 ? (
-              <span className="inline-flex h-5 items-center rounded px-1 font-mono text-[9px] text-white/60">
+              <span
+                className="inline-flex h-5 items-center rounded px-1 font-mono text-[9px] text-white/60"
+                style={{ marginLeft: PIECE_GAP / 2 }}
+              >
                 +{overflowCount}
               </span>
             ) : null}

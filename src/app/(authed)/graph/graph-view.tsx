@@ -26,7 +26,7 @@ import {
   IconZoomScan,
 } from "@tabler/icons-react";
 import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Pin, PinOff, Replace, Trash2 } from "lucide-react";
-import { readableOnHex, StorylinePill } from "@/components/pills";
+import { PILL_CARD_EXTRA, readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { CompositeActionChip } from "@/components/composite-action-chip";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -90,7 +90,12 @@ import {
 } from "./graph-context-menu";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
-import PieceGroupNode, { type PieceGroupData } from "./nodes/piece-group";
+import PieceGroupNode, {
+  type PieceGroupData,
+  PIECE_PILL_W,
+  PIECE_GAP,
+  PIECE_ROW_PAD_X,
+} from "./nodes/piece-group";
 import ReportNode from "./nodes/report-node";
 import ReportClusterNode from "./nodes/report-cluster";
 import StubTargetNode from "./nodes/stub-target";
@@ -324,11 +329,33 @@ function badgeStackExtentRight(
   return rowW > 0 ? CHIP_TO_BADGES_GAP + rowW : 0;
 }
 
-function groupWidth(variantCount: number): number {
+/**
+ * Width of a single variant slot. Standalone letter variants take CARD_W;
+ * piece groups (≥2 pieces sharing a variant key) take more because each
+ * piece pill is rendered explicitly at `PIECE_PILL_W` with `PIECE_GAP`
+ * between them. Keeping this in lockstep with `piece-group.tsx` is what
+ * stops the next variant in the group from visually colliding with the
+ * piece-group's right edge.
+ */
+function variantSlotWidth(pieceMemberCount: number): number {
+  if (pieceMemberCount < 2) return CARD_W;
+  const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
+  return (
+    2 * PIECE_ROW_PAD_X +
+    pieceMemberCount * pillOuter +
+    Math.max(0, pieceMemberCount - 1) * PIECE_GAP
+  );
+}
+
+function groupWidth(variantSlotWidths: number[]): number {
+  const n = Math.max(1, variantSlotWidths.length);
+  const slotsW = variantSlotWidths.length === 0
+    ? CARD_W
+    : variantSlotWidths.reduce((a, b) => a + b, 0);
   return (
     GROUP_PAD_LEADING +
-    variantCount * CARD_W +
-    Math.max(0, variantCount - 1) * VARIANT_GAP +
+    slotsW +
+    Math.max(0, n - 1) * VARIANT_GAP +
     GROUP_PAD_TRAILING
   );
 }
@@ -1139,6 +1166,12 @@ export function GraphView({
       dayKey: string | null; // null = primary
       variants: string[]; // variant keys this instance contains
       variantHeights: number[];
+      /**
+       * Per-variant slot width. Piece-group variants are wider than
+       * CARD_W; the rendering loop uses these widths to advance relX so
+       * the next variant doesn't visually overlap a wide piece group.
+       */
+      variantSlotWidths: number[];
       width: number;
       height: number;
     };
@@ -1226,7 +1259,17 @@ export function GraphView({
                 return cardHeight(primary?.summary);
               });
         const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
-        const width = groupWidth(Math.max(1, vs.length));
+        // Per-variant slot widths: piece-group variants are wider than
+        // CARD_W. Without this, the parent letter-group's outline and
+        // the next-variant offset (relX += stride) both assume CARD_W
+        // per variant, which makes the wider piece group bleed into
+        // the variant gap and crowd the next variant.
+        const variantSlotWidths = vs.map((vk) =>
+          variantSlotWidth(
+            pieceGroupMembersMap.get(`${g.id}:${vk}`)?.length ?? 0
+          )
+        );
+        const width = groupWidth(variantSlotWidths);
         const height = groupHeight(maxCardH);
         const nodeId = makeGroupNodeId(g.id, instanceDayKey);
         const inst: GroupInstance = {
@@ -1239,6 +1282,7 @@ export function GraphView({
           dayKey: instanceDayKey,
           variants: vs,
           variantHeights,
+          variantSlotWidths,
           width,
           height,
         };
@@ -1665,16 +1709,20 @@ export function GraphView({
                 h: cardH,
               });
               // Per-piece anchors: chips on actions sourced from a specific
-              // piece member need to sit under that pill, not centered under
-              // the whole group. Approximation: split the group's allocated
-              // CARD_W width evenly across members; piece i's center sits at
-              // pgX + (i + 0.5) * (CARD_W / N).
+              // piece member sit under that pill's actual rendered center,
+              // not a virtual slot center. Layout inside the muted backdrop:
+              //   • container has PIECE_ROW_PAD_X horizontal padding
+              //   • each pill outer width = PIECE_PILL_W + PILL_CARD_EXTRA
+              //     (PILL_CARD_EXTRA = pill border on both sides)
+              //   • PIECE_GAP between adjacent pills
+              // So pill i's left = PIECE_ROW_PAD_X + i*(pillOuter + PIECE_GAP),
+              // and its center is half a pillOuter further right.
               {
-                const N = pieceMembers.length;
-                const slotW = CARD_W / Math.max(1, N);
+                const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
+                const stride = pillOuter + PIECE_GAP;
                 pieceMembers.forEach((m, i) => {
                   pieceMemberAnchor.set(m.id, {
-                    x: groupsX + relX + slotW * (i + 0.5),
+                    x: groupsX + relX + PIECE_ROW_PAD_X + i * stride + pillOuter / 2,
                     y: bottomY + relY,
                     h: cardH,
                   });
@@ -1817,7 +1865,10 @@ export function GraphView({
                 focusable: false,
               });
             }
-            relX += CARD_W + VARIANT_GAP;
+            // Advance by this variant's actual slot width (piece groups
+            // are wider than CARD_W) so the next variant lands clear of
+            // the rendered piece-group block.
+            relX += (gi.variantSlotWidths[i] ?? CARD_W) + VARIANT_GAP;
           });
 
           groupsX += gi.width + CELL_GAP;
