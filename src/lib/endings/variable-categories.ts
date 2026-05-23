@@ -2,11 +2,11 @@
 // frameworks/logic editor surfaces (condition-block "add variable"
 // button and the @-mention autocomplete in text blocks).
 //
-// Top-level navigation is a fixed list of five buckets — Ending
-// Variables, Impact, Class Affinity, Nation Affinity, Aggregates — that
+// Top-level navigation is a fixed list of five buckets — Variables,
+// Smart Variables, Impact, Class Affinity, Nation Affinity — that
 // shape number_ref / aggregate_ref variables into a stable ordering the
-// authors recognize. Text variables live under Ending Variables and
-// nest into whatever folder tree the user maintains on /endings/variables.
+// authors recognize. Text variables live under Variables and nest into
+// whatever folder tree the user maintains on /endings/variables.
 //
 // `buildVariableTree` is pure: it derives a `PickerNode[]` from the
 // current `VariableState` list + `EndingVariableFolder` rows. The DB
@@ -14,58 +14,41 @@
 
 import type { EndingVariableFolder } from "@/lib/db/types";
 import type { VariableState } from "./block-state";
+import type { NationIconRef } from "./variable-kind-icon";
 
 export type PickerNode =
   | { type: "category"; id: string; label: string; children: PickerNode[] }
   | { type: "folder"; id: string; label: string; children: PickerNode[] }
   | { type: "variable"; id: string; variable: VariableState };
 
-// Hardcoded order for number_ref categories. Each entry maps the
-// human-readable category label to the `number_ref` columns that
-// belong inside it, in the order they should be rendered.
-const NUMBER_REF_CATEGORIES: ReadonlyArray<{
-  id: string;
-  label: string;
-  columns: ReadonlyArray<string>;
-}> = [
-  { id: "cat:impact", label: "Impact", columns: ["world_status", "demerits"] },
-  {
-    id: "cat:class_affinity",
-    label: "Class Affinity",
-    columns: ["proletariat", "gentry"],
-  },
-  {
-    id: "cat:nation_affinity",
-    label: "Nation Affinity",
-    columns: ["epicenter", "folos", "emberlyn", "spokgrad", "pelico"],
-  },
-];
-
-const AGGREGATE_CATEGORY: ReadonlyArray<{ ref: string; label: string }> = [
-  { ref: "class_affinity", label: "Class Affinity" },
-  { ref: "nation_affinity", label: "Nation Affinity" },
-  { ref: "nation_tiebreak_set", label: "Tiebreak Set" },
-];
-
-const ENDING_VARIABLES_ID = "cat:ending_variables";
-const AGGREGATES_ID = "cat:aggregates";
+const VARIABLES_ID = "cat:variables";
 const SMART_VARIABLES_ID = "cat:smart_variables";
 
 /**
  * Shape a flat list of variables + folders into the picker's top-level
  * navigation. The result is meant to be rendered directly: top-level
- * categories first, then the user's folder tree (under Ending
- * Variables), then loose text variables at root.
+ * categories first, then the user's folder tree (under Variables),
+ * then loose text variables at root.
  *
  * Variables that don't fit any known number_ref / aggregate_ref column
  * are silently dropped from the category buckets. Folder cycles are
  * tolerated: each folder is visited at most once, and orphans (whose
  * parent is missing) are surfaced at root rather than dropped.
+ *
+ * `nations` is NOT consumed here — callers should pass the same array
+ * straight to `<VariablePickerPanel nations={…} />`, which uses it for
+ * per-nation icon resolution. Threaded through this signature so the
+ * call-sites have a single source of truth and can't accidentally
+ * default to `[]` (which would make every nation row fall back to a
+ * generic globe icon).
  */
 export function buildVariableTree(
   variables: ReadonlyArray<VariableState>,
-  folders: ReadonlyArray<EndingVariableFolder>
+  folders: ReadonlyArray<EndingVariableFolder>,
+  nations: ReadonlyArray<NationIconRef> = []
 ): PickerNode[] {
+  void nations; // consumed by variable-picker-panel, not here
+
   const textVariables = variables.filter((v) => v.kind === "text");
   const numberByRef = new Map<string, VariableState>();
   for (const v of variables) {
@@ -82,63 +65,118 @@ export function buildVariableTree(
 
   const out: PickerNode[] = [];
 
+  // 1. Variables (text variables in folder tree)
   out.push({
     type: "category",
-    id: ENDING_VARIABLES_ID,
-    label: "Ending Variables",
+    id: VARIABLES_ID,
+    label: "Variables",
     children: buildEndingVariablesChildren(textVariables, folders),
   });
 
-  for (const cat of NUMBER_REF_CATEGORIES) {
-    const children = cat.columns
-      .map((col) => numberByRef.get(col))
-      .filter((v): v is VariableState => Boolean(v))
-      .map<PickerNode>((v) => ({ type: "variable", id: v.id, variable: v }));
-    if (children.length === 0) continue;
-    out.push({
-      type: "category",
-      id: cat.id,
-      label: cat.label,
-      children,
-    });
-  }
-
-  const smartVariables = variables
-    .filter((v) => v.kind === "smart_ref")
-    .slice()
-    .sort(
-      (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
-    );
-  if (smartVariables.length > 0) {
+  // 2. Smart Variables (only if any)
+  const smartVariableChildren = buildSmartVariablesChildren(variables);
+  if (smartVariableChildren.length > 0) {
     out.push({
       type: "category",
       id: SMART_VARIABLES_ID,
       label: "Smart Variables",
-      children: smartVariables.map<PickerNode>((v) => ({
-        type: "variable",
-        id: v.id,
-        variable: v,
-      })),
+      children: smartVariableChildren,
     });
   }
 
-  const aggregateChildren = AGGREGATE_CATEGORY.map(({ ref, label }) => {
-    const v = aggregateByRef.get(ref);
-    if (!v) return null;
-    // Override the row label so authors see "Class Affinity" instead of
-    // the raw variable name. Variable identity stays on `v` for commit.
-    return { type: "variable" as const, id: v.id, variable: { ...v, name: label } };
-  }).filter((x): x is { type: "variable"; id: string; variable: VariableState } => x !== null);
-  if (aggregateChildren.length > 0) {
+  // 3. Impact — world_status, demerits (no aggregates)
+  const impactChildren = (["world_status", "demerits"] as const)
+    .map((col) => numberByRef.get(col))
+    .filter((v): v is VariableState => Boolean(v))
+    .map<PickerNode>((v) => ({ type: "variable", id: v.id, variable: v }));
+  if (impactChildren.length > 0) {
     out.push({
       type: "category",
-      id: AGGREGATES_ID,
-      label: "Aggregates",
-      children: aggregateChildren,
+      id: "cat:impact",
+      label: "Impact",
+      children: impactChildren,
+    });
+  }
+
+  // 4. Class Affinity — proletariat, gentry, then class_affinity aggregate last
+  const classAggregateVar = aggregateByRef.get("class_affinity");
+  const classAggregateNode: PickerNode[] = classAggregateVar
+    ? [
+        {
+          type: "variable",
+          id: classAggregateVar.id,
+          // Override label so authors see "Class Affinity" (not raw variable name).
+          // Variable identity stays on `classAggregateVar` for commit.
+          variable: { ...classAggregateVar, name: "Class Affinity" },
+        },
+      ]
+    : [];
+  const classChildren: PickerNode[] = [
+    ...(["proletariat", "gentry"] as const)
+      .map((col) => numberByRef.get(col))
+      .filter((v): v is VariableState => Boolean(v))
+      .map<PickerNode>((v) => ({ type: "variable", id: v.id, variable: v })),
+    ...classAggregateNode,
+  ];
+  if (classChildren.length > 0) {
+    out.push({
+      type: "category",
+      id: "cat:class_affinity",
+      label: "Class Affinity",
+      children: classChildren,
+    });
+  }
+
+  // 5. Nation Affinity — five nation columns, then nation_affinity aggregate, then nation_tiebreak_set
+  const nationAggregateVar = aggregateByRef.get("nation_affinity");
+  const tiebreakVar = aggregateByRef.get("nation_tiebreak_set");
+  const nationAggregateNodes: PickerNode[] = [
+    ...(nationAggregateVar
+      ? [
+          {
+            type: "variable" as const,
+            id: nationAggregateVar.id,
+            variable: { ...nationAggregateVar, name: "Nation Affinity" },
+          },
+        ]
+      : []),
+    ...(tiebreakVar
+      ? [
+          {
+            type: "variable" as const,
+            id: tiebreakVar.id,
+            variable: { ...tiebreakVar, name: "Tiebreak Set" },
+          },
+        ]
+      : []),
+  ];
+  const nationChildren: PickerNode[] = [
+    ...(["epicenter", "folos", "emberlyn", "spokgrad", "pelico"] as const)
+      .map((col) => numberByRef.get(col))
+      .filter((v): v is VariableState => Boolean(v))
+      .map<PickerNode>((v) => ({ type: "variable", id: v.id, variable: v })),
+    ...nationAggregateNodes,
+  ];
+  if (nationChildren.length > 0) {
+    out.push({
+      type: "category",
+      id: "cat:nation_affinity",
+      label: "Nation Affinity",
+      children: nationChildren,
     });
   }
 
   return out;
+}
+
+function buildSmartVariablesChildren(
+  variables: ReadonlyArray<VariableState>
+): PickerNode[] {
+  return variables
+    .filter((v) => v.kind === "smart_ref")
+    .slice()
+    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+    .map<PickerNode>((v) => ({ type: "variable", id: v.id, variable: v }));
 }
 
 function buildEndingVariablesChildren(
@@ -243,11 +281,12 @@ export function nodesAtPath(
 /**
  * Filter the entire tree (across all levels) by a query string,
  * returning a flat list of nodes whose label or variable name matches.
- * Folder and category nodes match by their label so authors can type a
- * folder name to drill in directly. Variables match by name. Match
- * order: prefix matches first, then substring matches, alphabetical
- * within each group. Empty query returns null (caller should use
- * `nodesAtPath` instead).
+ * Category nodes are excluded from search results — they are navigation
+ * landmarks only, not insertable references. Folder nodes match by
+ * their label so authors can type a folder name to drill in directly.
+ * Variables match by name. Match order: prefix matches first, then
+ * substring matches, alphabetical within each group. Empty query
+ * returns null (caller should use `nodesAtPath` instead).
  */
 export function filterPickerTree(
   tree: ReadonlyArray<PickerNode>,
@@ -265,9 +304,12 @@ export function filterPickerTree(
   }
   walk(tree);
 
+  // Exclude top-level category nodes from search results.
+  const searchable = flat.filter((n) => n.type !== "category");
+
   const prefix: PickerNode[] = [];
   const substring: PickerNode[] = [];
-  for (const node of flat) {
+  for (const node of searchable) {
     const label =
       node.type === "variable" ? node.variable.name : node.label;
     const lower = label.toLowerCase();

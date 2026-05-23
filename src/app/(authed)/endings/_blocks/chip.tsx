@@ -203,6 +203,18 @@ export function ChipPill({
     ringColor = peer?.profile?.avatarColorHex ?? peer?.color;
   }
 
+  // Ghost optimistic chip — render a minimal placeholder pill.
+  if (chip.__optimistic) {
+    return (
+      <span className="opacity-60 italic pointer-events-none inline-flex h-5 items-center rounded-md border border-[var(--block-border)] px-2 text-[10px] text-muted-foreground">
+        …
+      </span>
+    );
+  }
+  // Pending delete — wrap the real chip in a greyed-out shell so the
+  // user sees their click landed before revalidatePath drops the row.
+  const deleteGhost = chip.__optimistic_delete === true;
+
   if (!variable) {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-destructive/40 bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive">
@@ -281,7 +293,12 @@ export function ChipPill({
   // stays legible against any saturation level the variable picks.
 
   return (
-    <span className="group/chip flex h-5 items-stretch">
+    <span
+      className={cn(
+        "group/chip flex h-5 items-stretch",
+        deleteGhost && "opacity-60 italic pointer-events-none"
+      )}
+    >
       {/* X — outside the pill, on the left, only visible on hover.
           Positioned with mr-1 so the pill border still hugs the row
           edge cleanly when X is hidden. */}
@@ -546,17 +563,22 @@ export function VariableChip({
   variable,
   onRemove,
   disabled,
+  className,
 }: {
   variable: VariableState;
   onRemove?: () => void;
   disabled?: boolean;
+  className?: string;
 }) {
   const color =
     variable.color_hex ?? paletteColor(variable.color_index);
   const KindIcon = VARIABLE_KIND_ICON[variable.kind];
   return (
     <span
-      className="inline-flex h-5 items-center gap-1 rounded-md pl-1.5 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]"
+      className={cn(
+        "inline-flex h-5 items-center gap-1 rounded-md pl-1.5 pr-1 text-[10px] font-mono font-semibold uppercase leading-[16px] tracking-[0.025em]",
+        className
+      )}
       style={{ backgroundColor: color, color: "var(--block-card)" }}
     >
       <KindIcon size={10} aria-hidden className="shrink-0 opacity-80" />

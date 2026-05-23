@@ -33,12 +33,24 @@ export interface BlockState {
    *  the evaluator. */
   summary: string;
   sort_order: number;
+  /** Present and true on optimistic ghost records — discarded once the
+   *  server revalidate replaces them with real rows. */
+  __optimistic?: true;
+  /** Present and true while a delete is pending — render greyed and
+   *  ignore interactions until revalidatePath drops the entry. */
+  __optimistic_delete?: true;
 }
 
 export interface RowState {
   id: string;
   condition_block_id: string;
   sort_order: number;
+  /** Present and true on optimistic ghost records. */
+  __optimistic?: true;
+  /** Present and true while a delete is pending — render greyed and
+   *  ignore interactions; the row disappears when revalidatePath
+   *  brings back state without it. */
+  __optimistic_delete?: true;
 }
 
 export interface BlockVariableState {
@@ -46,6 +58,12 @@ export interface BlockVariableState {
   condition_block_id: string;
   variable_id: string;
   sort_order: number;
+  /** Present and true on optimistic ghost records. */
+  __optimistic?: true;
+  /** Present and true while a delete is pending — render greyed and
+   *  ignore interactions; the row disappears when revalidatePath
+   *  brings back state without it. */
+  __optimistic_delete?: true;
 }
 
 /**
@@ -77,6 +95,12 @@ export interface ChipState {
   number_value: number | null;
   aggregate_value: string | null;
   sort_order: number;
+  /** Present and true on optimistic ghost records. */
+  __optimistic?: true;
+  /** Present and true while a delete is pending — render greyed and
+   *  ignore interactions; the row disappears when revalidatePath
+   *  brings back state without it. */
+  __optimistic_delete?: true;
 }
 
 export interface VariableState {

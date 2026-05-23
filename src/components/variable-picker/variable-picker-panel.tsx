@@ -20,7 +20,17 @@
 // and hovers up to the caller.
 
 import { Fragment, useEffect, useRef, type CSSProperties } from "react";
-import { ChevronLeft, Folder, FolderTree, Plus } from "lucide-react";
+import {
+  Atom,
+  ChevronLeft,
+  Diamond,
+  Flag,
+  Folder,
+  Hash,
+  Plus,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { paletteColor } from "@/lib/endings/color-palette";
 import {
@@ -29,14 +39,41 @@ import {
   type PickerNode,
 } from "@/lib/endings/variable-categories";
 import type { VariableState } from "@/lib/endings/block-state";
-import type { EndingVariableKind } from "@/lib/db/enums";
+import {
+  CLASS_NUMBER_REFS,
+  NATION_NUMBER_REFS,
+} from "@/lib/endings/impact-colors";
+import {
+  ResolvedVariableIconView,
+  resolveVariableIcon,
+  type NationIconRef,
+} from "@/lib/endings/variable-kind-icon";
 
-const KIND_LABEL: Record<EndingVariableKind, string> = {
-  text: "text",
-  number_ref: "number",
-  aggregate_ref: "aggregate",
-  smart_ref: "smart",
+const CATEGORY_ICON: Record<string, LucideIcon> = {
+  "cat:variables": Hash,
+  "cat:smart_variables": Atom,
+  "cat:impact": Zap,
+  "cat:class_affinity": Diamond,
+  "cat:nation_affinity": Flag,
 };
+
+function kindLabel(v: VariableState): string {
+  switch (v.kind) {
+    case "text":
+      return "Var";
+    case "smart_ref":
+      return "Smart";
+    case "aggregate_ref":
+      return "Aggregate";
+    case "number_ref": {
+      const ref = v.number_ref ?? "";
+      if (CLASS_NUMBER_REFS.has(ref) || NATION_NUMBER_REFS.has(ref)) {
+        return "Affinity";
+      }
+      return "Impact";
+    }
+  }
+}
 
 /** One row in the rendered list. */
 export type PickerItem =
@@ -93,6 +130,11 @@ export interface VariablePickerPanelProps {
   /** Optional header label (e.g. the current folder/category name when
    *  drilled in). */
   headerLabel?: string | null;
+  /** Nations list used by `resolveVariableIcon` for nation-affinity
+   *  rows. Pass the same list the page already loads for the impact
+   *  overlay — only `name`, `color_hex`, `icon_type`, `icon_value` are
+   *  read. */
+  nations: ReadonlyArray<NationIconRef>;
   ariaLabel?: string;
   className?: string;
   style?: CSSProperties;
@@ -104,6 +146,7 @@ export function VariablePickerPanel({
   onChangeActiveIndex,
   onCommitItem,
   headerLabel,
+  nations,
   ariaLabel,
   className,
   style,
@@ -119,7 +162,7 @@ export function VariablePickerPanel({
       <div
         style={style}
         className={cn(
-          "rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-lg",
+          "rounded-md border border-border bg-popover px-3 py-2 text-xs uppercase text-muted-foreground shadow-lg",
           className
         )}
       >
@@ -132,7 +175,7 @@ export function VariablePickerPanel({
     <div
       style={style}
       className={cn(
-        "flex flex-col rounded-md border border-border bg-popover text-xs shadow-lg",
+        "flex flex-col rounded-md border border-border bg-popover text-xs uppercase shadow-lg",
         className
       )}
     >
@@ -196,7 +239,7 @@ export function VariablePickerPanel({
                   isActive && "bg-accent/60"
                 )}
               >
-                <ItemContent item={item} />
+                <ItemContent item={item} nations={nations} />
               </li>
             </Fragment>
           );
@@ -206,7 +249,13 @@ export function VariablePickerPanel({
   );
 }
 
-function ItemContent({ item }: { item: PickerItem }) {
+function ItemContent({
+  item,
+  nations,
+}: {
+  item: PickerItem;
+  nations: ReadonlyArray<NationIconRef>;
+}) {
   if (item.kind === "back") {
     return (
       <>
@@ -228,7 +277,10 @@ function ItemContent({ item }: { item: PickerItem }) {
     );
   }
   if (item.kind === "category" || item.kind === "folder") {
-    const Icon = item.kind === "folder" ? Folder : FolderTree;
+    const Icon =
+      item.kind === "category"
+        ? CATEGORY_ICON[item.id] ?? Hash
+        : Folder;
     return (
       <>
         <Icon
@@ -247,14 +299,15 @@ function ItemContent({ item }: { item: PickerItem }) {
   const color = v.color_hex ?? paletteColor(v.color_index);
   return (
     <>
-      <span
-        aria-hidden
-        className="h-2 w-2 shrink-0 rounded-sm"
-        style={{ backgroundColor: color }}
+      <ResolvedVariableIconView
+        icon={resolveVariableIcon(v, nations)}
+        size={12}
+        color={color}
+        className="shrink-0"
       />
       <span className="flex-1 truncate text-foreground">{v.name}</span>
       <span className="text-[10px] uppercase tracking-widest text-muted-foreground/70">
-        {KIND_LABEL[v.kind]}
+        {kindLabel(v)}
       </span>
     </>
   );

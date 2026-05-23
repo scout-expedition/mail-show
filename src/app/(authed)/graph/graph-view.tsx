@@ -4637,6 +4637,7 @@ export function GraphView({
                     sender_citizen_id: null,
                     receiver_citizen_id: null,
                     notes: null,
+                    fallback_mirror_action_id: null,
                     updated_at: new Date(0).toISOString(),
                     updated_by: null,
                     effective_day_id: group?.delivery_day_id ?? null,

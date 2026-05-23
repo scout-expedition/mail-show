@@ -102,13 +102,19 @@ button {
   color: var(--muted-foreground);
 }
 
-/* Endings condition rows: the row kebab uses `group-hover/row` to
-   reveal on row hover, but `:hover` cascades up — so hovering a nested
-   row also marks every ancestor row as hovered, revealing every
-   ancestor row's kebab too. Suppress the outer kebabs when a deeper
-   row is currently hovered, so only the deepest hovered row shows
-   its menu. Hooked via the `[data-row-kebab]` attribute on the row's
-   kebab wrapper. */
+/* Endings condition rows: reveal a row's kebab only when the row itself
+   is hovered, not when a descendant nested row is. Tailwind's
+   `group-hover/row:` compiles to a descendant selector, which leaks the
+   parent's hover state into nested kebabs. Two rules together pin this
+   down:
+     1. direct-parent `>` so a kebab only shows when its OWN row is :hover
+     2. `:has()` override so when a row contains a hovered nested row,
+        the outer kebab is suppressed — preserves "only the deepest
+        hovered row shows kebab" while `:hover` cascades up the tree.
+   Hooked via the `[data-row-kebab]` attribute on the row's kebab. */
+.group\/row:hover > [data-row-kebab] {
+  opacity: 1;
+}
 .group\/row:has(.group\/row:hover) > [data-row-kebab] {
   opacity: 0 !important;
 }

@@ -70,12 +70,19 @@ describe("buildVariableTree", () => {
     );
     const labels = tree.map((n) => (n.type !== "variable" ? n.label : "?"));
     expect(labels).toEqual([
-      "Ending Variables",
+      "Variables",
       "Impact",
       "Class Affinity",
       "Nation Affinity",
-      "Aggregates",
     ]);
+  });
+
+  it("uses id cat:variables for the top-level Variables category", () => {
+    const tree = buildVariableTree([], []);
+    expect(tree[0].type).toBe("category");
+    if (tree[0].type !== "category") throw new Error();
+    expect(tree[0].id).toBe("cat:variables");
+    expect(tree[0].label).toBe("Variables");
   });
 
   it("omits number_ref categories with no matching variables", () => {
@@ -88,6 +95,72 @@ describe("buildVariableTree", () => {
     ).toBeUndefined();
     expect(
       tree.find((n) => n.type === "category" && n.label === "Class Affinity")
+    ).toBeUndefined();
+  });
+
+  it("inlines class_affinity aggregate into Class Affinity bucket, last", () => {
+    const tree = buildVariableTree(
+      [
+        mkVar({ id: "p", name: "Proletariat", kind: "number_ref", number_ref: "proletariat" }),
+        mkVar({ id: "g", name: "Gentry", kind: "number_ref", number_ref: "gentry" }),
+        mkVar({ id: "ca", name: "CA Agg", kind: "aggregate_ref", aggregate_ref: "class_affinity" }),
+      ],
+      []
+    );
+    const classCat = tree.find((n) => n.type === "category" && n.id === "cat:class_affinity");
+    if (!classCat || classCat.type !== "category") throw new Error("Class Affinity category missing");
+    const childNames = classCat.children.map((n) =>
+      n.type === "variable" ? n.variable.name : "?"
+    );
+    // aggregate appended last with overridden label
+    expect(childNames).toEqual(["Proletariat", "Gentry", "Class Affinity"]);
+  });
+
+  it("inlines nation_affinity aggregate and tiebreak into Nation Affinity bucket, in order", () => {
+    const tree = buildVariableTree(
+      [
+        mkVar({ id: "ep", name: "Epicenter", kind: "number_ref", number_ref: "epicenter" }),
+        mkVar({ id: "na", name: "NA Agg", kind: "aggregate_ref", aggregate_ref: "nation_affinity" }),
+        mkVar({ id: "tb", name: "TB", kind: "aggregate_ref", aggregate_ref: "nation_tiebreak_set" }),
+      ],
+      []
+    );
+    const nationCat = tree.find((n) => n.type === "category" && n.id === "cat:nation_affinity");
+    if (!nationCat || nationCat.type !== "category") throw new Error("Nation Affinity category missing");
+    const childNames = nationCat.children.map((n) =>
+      n.type === "variable" ? n.variable.name : "?"
+    );
+    expect(childNames).toEqual(["Epicenter", "Nation Affinity", "Tiebreak Set"]);
+  });
+
+  it("shows Class Affinity bucket when only the aggregate exists (no proletariat/gentry)", () => {
+    const tree = buildVariableTree(
+      [
+        mkVar({ id: "ca", name: "CA Agg", kind: "aggregate_ref", aggregate_ref: "class_affinity" }),
+      ],
+      []
+    );
+    const classCat = tree.find((n) => n.type === "category" && n.id === "cat:class_affinity");
+    expect(classCat).toBeDefined();
+    if (!classCat || classCat.type !== "category") throw new Error();
+    expect(classCat.children).toHaveLength(1);
+    expect(classCat.children[0].type).toBe("variable");
+    if (classCat.children[0].type === "variable") {
+      expect(classCat.children[0].variable.name).toBe("Class Affinity");
+    }
+  });
+
+  it("does not produce a standalone Aggregates category", () => {
+    const tree = buildVariableTree(
+      [
+        mkVar({ id: "ca", name: "CA", kind: "aggregate_ref", aggregate_ref: "class_affinity" }),
+        mkVar({ id: "na", name: "NA", kind: "aggregate_ref", aggregate_ref: "nation_affinity" }),
+        mkVar({ id: "tb", name: "TB", kind: "aggregate_ref", aggregate_ref: "nation_tiebreak_set" }),
+      ],
+      []
+    );
+    expect(
+      tree.find((n) => n.type === "category" && n.label === "Aggregates")
     ).toBeUndefined();
   });
 
@@ -176,8 +249,8 @@ describe("nodesAtPath", () => {
   const tree: PickerNode[] = [
     {
       type: "category",
-      id: "cat:ending_variables",
-      label: "Ending Variables",
+      id: "cat:variables",
+      label: "Variables",
       children: [
         {
           type: "folder",
@@ -200,19 +273,19 @@ describe("nodesAtPath", () => {
   });
 
   it("drills into a category", () => {
-    const level = nodesAtPath(tree, ["cat:ending_variables"]);
+    const level = nodesAtPath(tree, ["cat:variables"]);
     expect(level?.length).toBe(1);
     expect(level?.[0].type).toBe("folder");
   });
 
   it("drills into a folder", () => {
-    const level = nodesAtPath(tree, ["cat:ending_variables", "f1"]);
+    const level = nodesAtPath(tree, ["cat:variables", "f1"]);
     expect(level?.length).toBe(1);
     expect(level?.[0].type).toBe("variable");
   });
 
   it("returns null for a variable leaf", () => {
-    expect(nodesAtPath(tree, ["cat:ending_variables", "f1", "v1"])).toBeNull();
+    expect(nodesAtPath(tree, ["cat:variables", "f1", "v1"])).toBeNull();
   });
 });
 
@@ -240,9 +313,13 @@ describe("filterPickerTree", () => {
     expect(out?.some((n) => n.type === "folder" && n.label === "Characters")).toBe(true);
   });
 
-  it("matches category labels", () => {
+  it("does not include category nodes in search results", () => {
+    // "impa" would match "Impact" (a category label), but categories are excluded
     const out = filterPickerTree(tree, "impa");
-    expect(out?.some((n) => n.type === "category" && n.label === "Impact")).toBe(true);
+    expect(out?.some((n) => n.type === "category")).toBe(false);
+    // "var" matches "Variables" category label — also excluded
+    const out2 = filterPickerTree(tree, "var");
+    expect(out2?.some((n) => n.type === "category")).toBe(false);
   });
 
   it("matches variable names and ranks prefix above substring", () => {
