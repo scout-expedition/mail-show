@@ -340,6 +340,7 @@ function GraphSurfaceInner({
   const peerRings = useMemo<PeerRingMap>(() => {
     const groups = new Map<string, string[]>();
     const lettersMap = new Map<string, string[]>();
+    const pieceLettersMap = new Map<string, string[]>();
     const segmentsMap = new Map<string, string[]>();
     const actionsMap = new Map<string, string[]>();
     for (const peer of peers) {
@@ -356,10 +357,20 @@ function GraphSurfaceInner({
         list.push(peerColor);
         actionsMap.set(sel.actionId, list);
       } else if (sel.kind === "letter" || sel.kind === "actions") {
+        // Variant-level bucket — used by standalone letter nodes and as a
+        // fallback for piece groups when no specific pieceId is broadcast.
         const key = `${sel.groupId}:${sel.variantKey}`;
         const list = lettersMap.get(key) ?? [];
         list.push(peerColor);
         lettersMap.set(key, list);
+        // Per-piece bucket — populated only when the peer is focused on a
+        // specific piece member. Lets the PieceGroupNode ring the right pill.
+        if (sel.kind === "letter" && sel.pieceId) {
+          const pkey = sel.pieceId;
+          const plist = pieceLettersMap.get(pkey) ?? [];
+          plist.push(peerColor);
+          pieceLettersMap.set(pkey, plist);
+        }
       } else if (sel.kind === "group") {
         const list = groups.get(sel.groupId) ?? [];
         list.push(peerColor);
@@ -369,6 +380,7 @@ function GraphSurfaceInner({
     return {
       groups,
       letters: lettersMap,
+      pieceLetters: pieceLettersMap,
       segments: segmentsMap,
       actions: actionsMap,
     };
@@ -758,12 +770,19 @@ function graphSelectionToPresence(
     };
   }
   // letter | actions — resolve the variant to a letter id so visibleRecordId
-  // matches by letterId across both surfaces.
-  const letter = letters.find(
-    (l) =>
-      l.letter_group_id === sel.groupId &&
-      (l.variant ?? "") === sel.variantKey
-  );
+  // matches by letterId across both surfaces. For piece groups we honor
+  // sel.pieceId so peers see the exact piece the user is focused on, not
+  // just the lowest-piece sibling.
+  const preferredId = sel.kind === "letter" ? sel.pieceId : undefined;
+  const letter =
+    (preferredId
+      ? letters.find((l) => l.id === preferredId)
+      : null) ??
+    letters.find(
+      (l) =>
+        l.letter_group_id === sel.groupId &&
+        (l.variant ?? "") === sel.variantKey
+    );
   return {
     storylineId: null,
     groupId: sel.groupId,
@@ -788,6 +807,7 @@ function presenceSelectionToGraph(
   if (sel.letterId && sel.groupId) {
     const letter = letters.find((l) => l.id === sel.letterId);
     const variantKey = letter?.variant ?? "";
+    const pieceId = letter && (letter.piece ?? 0) >= 1 ? letter.id : undefined;
     return sel.view === "actions"
       ? {
           kind: "actions",
@@ -795,7 +815,7 @@ function presenceSelectionToGraph(
           variantKey,
           actionId: sel.actionId ?? undefined,
         }
-      : { kind: "letter", groupId: sel.groupId, variantKey };
+      : { kind: "letter", groupId: sel.groupId, variantKey, pieceId };
   }
   if (sel.groupId) {
     return { kind: "group", groupId: sel.groupId };

@@ -8,6 +8,7 @@ import {
   MailOpen,
   Mails,
   Megaphone,
+  SplitSquareVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -26,7 +27,8 @@ export type RenumberKind =
   | "letterGroup"
   | "inspectionLetter"
   | "reportSegment"
-  | "sortingRule";
+  | "sortingRule"
+  | "piece";
 
 export type RenumberItem = {
   /** Opaque unique key (groupId / segmentId / variant-string). */
@@ -78,6 +80,13 @@ const CODECS: Record<RenumberKind, Codec> = {
     // Rule IDs display as uppercase letters (A, B, …).
     format: (n) => intToLetter(n).toUpperCase(),
   },
+  piece: {
+    parse(token) {
+      const n = Number(token);
+      return Number.isInteger(n) && n >= 1 ? n : null;
+    },
+    format: (n) => String(n),
+  },
 };
 
 const KIND_ICON: Record<
@@ -88,6 +97,7 @@ const KIND_ICON: Record<
   inspectionLetter: MailOpen,
   reportSegment: Megaphone,
   sortingRule: Diamond,
+  piece: SplitSquareVertical,
 };
 
 /** Letter-kinded ranges cap at 26 (A–Z); numeric kinds are unbounded. */
@@ -96,6 +106,7 @@ const MAX_OPTION: Record<RenumberKind, number> = {
   reportSegment: Number.POSITIVE_INFINITY,
   inspectionLetter: 26,
   sortingRule: 26,
+  piece: Number.POSITIVE_INFINITY,
 };
 
 // ---------------------------------------------------------------------------
