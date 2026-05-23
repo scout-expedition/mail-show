@@ -62,12 +62,11 @@ import {
   AGGREGATE_CHIP_COLORS,
   IMPACT_CHIP_COLORS,
 } from "@/lib/endings/impact-colors";
-import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
+import { referencedVariableIdsForDoc } from "@/lib/endings/smart-variable-deps";
 import {
   EMPTY_SELECTIONS,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
-import { extractVariableTagNames } from "@/lib/endings/text-substitution";
 import {
   numericRowOverlaps,
   staticShadowedRows,
@@ -832,36 +831,11 @@ export function DocumentEditor({
   // tags toward the input set so authors can dial in values for
   // variables that aren't otherwise on a chip.
   const referencedVariables = useMemo(() => {
-    const ids = new Set<string>();
-    for (const c of chipState) ids.add(c.variable_id);
-    const variableByName = new Map<string, VariableState>();
-    for (const v of variableState) variableByName.set(v.name, v);
-    for (const b of blockState) {
-      if (b.block_type !== "text" || !b.text) continue;
-      for (const name of extractVariableTagNames(b.text)) {
-        const v = variableByName.get(name);
-        if (v) ids.add(v.id);
-      }
-    }
-    const numberRefByName = new Map<string, VariableState>();
-    for (const v of variableState) {
-      if (v.kind === "number_ref" && v.number_ref) {
-        numberRefByName.set(v.number_ref, v);
-      }
-    }
-    for (const v of variableState) {
-      if (!ids.has(v.id)) continue;
-      if (v.kind !== "aggregate_ref" || !v.aggregate_ref) continue;
-      // nation_tiebreak_set chips check set-membership against the working
-      // tiebreak set, not the underlying nation impact-column scores —
-      // pulling those columns into the preview would show inputs that
-      // have no effect on the result.
-      if (v.aggregate_ref === "nation_tiebreak_set") continue;
-      for (const col of AGGREGATE_OPTIONS_BY_REF[v.aggregate_ref]) {
-        const underlying = numberRefByName.get(col);
-        if (underlying) ids.add(underlying.id);
-      }
-    }
+    const ids = referencedVariableIdsForDoc({
+      blocks: blockState,
+      chips: chipState,
+      variables: variableState,
+    });
     return variableState.filter((v) => ids.has(v.id));
   }, [chipState, variableState, blockState]);
 

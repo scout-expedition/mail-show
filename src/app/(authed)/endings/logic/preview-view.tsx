@@ -228,17 +228,59 @@ export function LogicPreviewView({
     for (const v of evalVariables) m.set(v.id, v);
     return m;
   }, [evalVariables]);
+  // Variables fed into zero-default seeding: parent referencedVariables
+  // PLUS variables referenced by smart vars' own trees (so a number_ref
+  // used only inside a smart var's sub-tree still defaults to 0 in both
+  // the input control and the evaluator). Independent of mode so flipping
+  // back to set-inputs preserves the same 0 defaults.
+  const seedReferencedVariables = useMemo<VariableState[]>(() => {
+    const seen = new Set<string>();
+    const out: VariableState[] = [];
+    for (const v of referencedVariables) {
+      if (!seen.has(v.id)) {
+        seen.add(v.id);
+        out.push(v);
+      }
+    }
+    if (referencedSmartVars.length === 0) return out;
+    const varsById = new Map(variables.map((v) => [v.id, v]));
+    for (const sv of referencedSmartVars) {
+      const docId = smartVarDocIdByVariableId?.get(sv.id);
+      if (!docId) continue;
+      const baseInputs = smartVariableEvalInputsByDocId?.get(docId);
+      if (!baseInputs) continue;
+      const ids = referencedVariableIdsForDoc({
+        blocks: baseInputs.blocks as BlockState[],
+        chips: baseInputs.chips as ChipState[],
+        variables: baseInputs.variables as unknown as VariableState[],
+      });
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        const v = varsById.get(id);
+        if (!v) continue;
+        seen.add(id);
+        out.push(v);
+      }
+    }
+    return out;
+  }, [
+    referencedVariables,
+    referencedSmartVars,
+    smartVarDocIdByVariableId,
+    smartVariableEvalInputsByDocId,
+    variables,
+  ]);
   const baseSelections = useMemo<PreviewSelections>(
     () => ({
       ...(selections ?? EMPTY_SELECTIONS),
       numbers: withZeroNumberDefaults(
         selections?.numbers ?? {},
-        referencedVariables
+        seedReferencedVariables
       ),
       numberRefByName,
       tiebreak_docs: tiebreakDocs,
     }),
-    [selections, numberRefByName, tiebreakDocs, referencedVariables]
+    [selections, numberRefByName, tiebreakDocs, seedReferencedVariables]
   );
   const resolvedAggregates = useMemo(() => {
     const detailed = resolveAggregatesDetailed(
