@@ -1724,8 +1724,12 @@ function LettersWorkspaceInner({
     if (!letterId) return;
     if (mirrorActionId) {
       const target = letterState?.actions.find((a) => a.id === mirrorActionId);
-      if (!target) return;
+      // Reject ghost / unknown ids — a ghost-action-<uuid> string would be
+      // rejected by Postgres as a non-uuid, and a stale id from a deleted
+      // sibling would fail the cross-letter trigger. Either way, no write.
+      if (!target || target.id.startsWith("ghost-action-")) return;
     }
+    const previous = letterState?.fallback_mirror_action_id ?? null;
     updateLetter({ fallback_mirror_action_id: mirrorActionId });
     try {
       await patchInspectionLetter(letterId, {
@@ -1733,6 +1737,8 @@ function LettersWorkspaceInner({
       });
     } catch (e) {
       console.error("patchInspectionLetter (fallback_mirror_action_id) failed:", e);
+      // Revert local state so the picker doesn't show a phantom selection.
+      updateLetter({ fallback_mirror_action_id: previous });
     }
   }
 
@@ -3528,6 +3534,7 @@ function LettersWorkspaceInner({
                   ? controlledSelection.actionId ?? null
                   : null
               }
+              letterId={letterState.id}
               fallbackMirrorActionId={letterState.fallback_mirror_action_id}
               onChangeFallback={handleSetFallbackMirror}
               onBack={closeActionsPanel}
@@ -3978,6 +3985,7 @@ function LetterActionsCard({
   onOpenLetter,
   openLetterId,
   highlightedActionId,
+  letterId,
   fallbackMirrorActionId,
   onChangeFallback,
   onBack,
@@ -4012,6 +4020,9 @@ function LetterActionsCard({
   openLetterId: string | null;
   /** Action selected in the graph (chip/connector click) — outlined here. */
   highlightedActionId: string | null;
+  /** Current letter's id — needed for presence focus on the fallback
+   *  field. Empty string is harmless (no letter selected). */
+  letterId: string;
   /** Action this letter falls back to when the player makes no choice.
    *  null = no fallback. */
   fallbackMirrorActionId: string | null;
@@ -4126,6 +4137,7 @@ function LetterActionsCard({
           <p className="text-sm text-muted-foreground">No actions yet.</p>
         ) : null}
         <FallbackActionRow
+          letterId={letterId}
           actions={actions}
           fallbackMirrorActionId={fallbackMirrorActionId}
           onChange={onChangeFallback}
@@ -4167,6 +4179,7 @@ function LetterActionsCard({
  *  letter pills) renders below the dropdown so authors can see the
  *  current fallback at a glance without clicking through. */
 function FallbackActionRow({
+  letterId,
   actions,
   fallbackMirrorActionId,
   onChange,
@@ -4176,6 +4189,7 @@ function FallbackActionRow({
   allLetters,
   storyline,
 }: {
+  letterId: string;
   actions: ActionState[];
   fallbackMirrorActionId: string | null;
   onChange: (mirrorActionId: string | null) => void;
@@ -4186,8 +4200,14 @@ function FallbackActionRow({
   storyline: Storyline | undefined;
 }) {
   const { peers } = usePresenceContext();
+  // Ghost actions (in-flight optimistic adds) carry non-uuid ids and would
+  // be rejected by the patch — exclude them from the picker entirely so
+  // authors can only mirror persisted rows.
+  const pickableActions = actions.filter(
+    (a) => !a.id.startsWith("ghost-action-")
+  );
   const mirrored = fallbackMirrorActionId
-    ? actions.find((a) => a.id === fallbackMirrorActionId) ?? null
+    ? pickableActions.find((a) => a.id === fallbackMirrorActionId) ?? null
     : null;
   const mirroredTpl = mirrored?.action_template_id
     ? templates.find((t) => t.id === mirrored.action_template_id) ?? null
@@ -4204,7 +4224,7 @@ function FallbackActionRow({
       ),
       onPick: () => onChange(null),
     },
-    ...actions.map<PillSelectItem>((a) => {
+    ...pickableActions.map<PillSelectItem>((a) => {
       const tpl = a.action_template_id
         ? templates.find((t) => t.id === a.action_template_id) ?? null
         : null;
@@ -4259,7 +4279,7 @@ function FallbackActionRow({
         summary={mirrored ? "Mirrors this action when no choice is made." : ""}
         focusKey={{
           table: "inspection_letters",
-          recordId: mirrored?.id ?? "",
+          recordId: letterId,
           field: "fallback_mirror_action_id",
         }}
         peers={peers}
