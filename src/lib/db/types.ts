@@ -119,6 +119,7 @@ export interface InspectionLetter {
   sender_citizen_id: string | null;
   receiver_citizen_id: string | null;
   notes: string | null;
+  fallback_mirror_action_id: string | null;
   updated_at: string;
   updated_by: string | null;
 }
