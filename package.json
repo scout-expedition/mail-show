@@ -13,7 +13,8 @@
     "test:int": "bash scripts/test-int.sh",
     "test:e2e": "bash scripts/test-e2e.sh",
     "test:all": "pnpm test && pnpm test:int && pnpm test:e2e",
-    "db:migrate": "tsx --env-file=.env.local scripts/apply-migration.ts"
+    "db:migrate": "tsx --env-file=.env.local scripts/apply-migration.ts",
+    "osc:bridge": "tsx --env-file=.env.local scripts/osc-bridge.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -33,6 +34,7 @@
     "lexical": "^0.44.0",
     "lucide-react": "^1.8.0",
     "next": "16.2.3",
+    "osc": "^2.4.5",
     "postgres": "^3.4.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",

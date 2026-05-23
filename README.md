@@ -112,6 +112,43 @@ After `pnpm db:migrate` + `pnpm dev` and signing in:
 10. **Graph** — `/graph` shows the letter groups laid out by storyline ×
     sequence, with action-colored edges between consecutive groups.
 
+## OSC bridge (prototype)
+
+Bidirectional OSC sidecar for QLab cues + RFID-driven sorting/inspection.
+Runs as a separate Node process so it can bind UDP (Vercel can't).
+Plan: `docs/plans/active/osc-mvp-plan.md`.
+
+Run:
+
+```bash
+pnpm osc:bridge
+```
+
+Required env (`.env.local`):
+
+```
+NEXT_PUBLIC_SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+OSC_BRIDGE_SECRET=<long random string, also set in the Next env>
+```
+
+Optional env:
+
+```
+OSC_LISTEN_PORT=57121              # accepts QLab queries + inbound
+OSC_SEND_HOST=127.0.0.1            # QLab host
+OSC_SEND_PORT=53000                # QLab's listening port
+OSC_QLAB_REPLY_HOST=               # defaults to OSC_SEND_HOST
+OSC_QLAB_REPLY_PORT=               # defaults to OSC_SEND_PORT
+OSC_RFID_LISTEN_PORT=              # only bound if set
+OSC_API_BASE_URL=http://localhost:3000
+OSC_BRIDGE_PLAYTHROUGH_ID=         # override; default is playthroughs.is_active=true
+```
+
+The sidecar only does UDP I/O + Realtime → OSC translation. Every DB write
+goes through `POST /api/osc` (secret-gated). See the plan for the security
+upgrade path before exposing the route over the public internet.
+
 ## Phases 2-4 (out of scope here)
 
 - Phase 2: realtime presence + collaborative editing (Supabase Realtime).
