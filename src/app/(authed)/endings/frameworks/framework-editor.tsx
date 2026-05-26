@@ -38,6 +38,10 @@ export function FrameworkEditor({
   variables,
   values,
   smartVariableReturns,
+  smartVariableDocs,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   folders,
   nations,
   tiebreakDocsSummary,
@@ -52,6 +56,10 @@ export function FrameworkEditor({
   variables: EndingVariable[];
   values: EndingVariableValue[];
   smartVariableReturns?: Map<string, string[]>;
+  smartVariableDocs?: EndingDocument[];
+  smartVariableAllBlocks?: EndingBlock[];
+  smartVariableRows?: EndingConditionRow[];
+  smartVariableChips?: EndingConditionRowChip[];
   folders: EndingVariableFolder[];
   nations: Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">[];
   tiebreakDocsSummary?: Map<EndingLogicKind, { isEmpty: boolean }>;
@@ -127,6 +135,10 @@ export function FrameworkEditor({
           flashColors={args.flashColors}
           tiebreakInputs={tiebreakInputs}
           nations={nations}
+          smartVariableDocs={smartVariableDocs ?? []}
+          smartVariableAllBlocks={smartVariableAllBlocks ?? []}
+          smartVariableRows={smartVariableRows ?? []}
+          smartVariableChips={smartVariableChips ?? []}
         />
       )}
       onDeleted={onDeleted}

@@ -301,24 +301,25 @@ export function chipMatchesOutcome(
 
 /** Does the row match the given variable→outcome assignment?
  *
- *  When `ignoreNumeric` is true, chips on number_ref variables are
- *  treated as wildcards (always-match). The uncovered analysis uses
- *  this so a block with a mix of numeric + finite chips still produces
- *  a useful lower-bound uncovered list. Shadow analysis keeps the
- *  default (false) because wildcarding numeric chips would over-report
- *  shadowing across rows whose numeric constraints don't overlap. */
+ *  Chips on variables in `wildcardVarIds` are treated as always-match
+ *  — used by the uncovered analysis to wildcard number_ref chips (no
+ *  finite domain) and aggregate refs we deliberately don't enumerate
+ *  (e.g. nation_affinity, ~31 combinations). Shadow analysis passes
+ *  an empty set so it stays strict: wildcarding numeric chips would
+ *  over-report shadowing across rows with non-overlapping numeric
+ *  constraints. */
 function rowMatchesAssignment(
   rowChips: EvalChip[],
   variableIndex: Map<string, EvalVariable>,
   assignment: Map<string, string>,
-  ignoreNumeric = false,
+  wildcardVarIds: ReadonlySet<string>,
   tiebreakDocs?: TiebreakDocsMap
 ): boolean {
   if (rowChips.length === 0) return false; // matches Phase 1 evaluator
   for (const chip of rowChips) {
     const variable = variableIndex.get(chip.variable_id);
     if (!variable) return false;
-    if (ignoreNumeric && variable.kind === "number_ref") continue;
+    if (wildcardVarIds.has(chip.variable_id)) continue;
     const outcome = assignment.get(chip.variable_id);
     if (outcome == null) return false;
     if (!chipMatchesOutcome(chip, variable, outcome, tiebreakDocs)) return false;
@@ -481,12 +482,13 @@ function rowCovers(
   }
   const assignments = enumerateAssignments(dims, MAX_ENUMERATION);
   if (assignments == null) return false; // too big to decide
+  const noWildcards: ReadonlySet<string> = new Set();
   for (const a of assignments) {
     const r2Match = rowMatchesAssignment(
       r2Chips,
       variableIndex,
       a,
-      false,
+      noWildcards,
       tiebreakDocs
     );
     if (!r2Match) continue;
@@ -494,7 +496,7 @@ function rowCovers(
       r1Chips,
       variableIndex,
       a,
-      false,
+      noWildcards,
       tiebreakDocs
     );
     if (!r1Match) return false; // r2 matches here but r1 doesn't → not shadowed
@@ -549,13 +551,33 @@ export function uncoveredAssignmentsByBlock(
       const v = variableIndex.get(id);
       return v?.kind === "number_ref";
     });
+    // Aggregate refs we deliberately don't enumerate over (currently
+    // just nation_affinity — its ~31 top/bottom combinations produce
+    // too noisy an uncovered list). Treat their chips as wildcards,
+    // mirroring how number_ref chips behave. Shadow detection still
+    // enumerates these via variableDomain — this opt-out is scoped to
+    // uncovered-assignment surfacing only.
+    const unenumerableAggregateIds = finiteVarIds.filter((id) => {
+      const v = variableIndex.get(id);
+      if (!v || v.kind !== "aggregate_ref") return false;
+      return v.aggregate_ref === "nation_affinity";
+    });
+    const enumerableFiniteVarIds = finiteVarIds.filter(
+      (id) => !unenumerableAggregateIds.includes(id)
+    );
+    const wildcardVarIds: ReadonlySet<string> = new Set([
+      ...numericVarIds,
+      ...unenumerableAggregateIds,
+    ]);
     const partial =
       numericVarIds.length > 1 ||
-      (numericVarIds.length === 1 && finiteVarIds.length > 0);
+      (numericVarIds.length === 1 && enumerableFiniteVarIds.length > 0) ||
+      unenumerableAggregateIds.length > 0;
 
     // Pure single-numeric-variable case → exact interval analysis.
     if (
-      finiteVarIds.length === 0 &&
+      enumerableFiniteVarIds.length === 0 &&
+      unenumerableAggregateIds.length === 0 &&
       numericVarIds.length === 1
     ) {
       const numericVarId = numericVarIds[0];
@@ -570,9 +592,10 @@ export function uncoveredAssignmentsByBlock(
       continue;
     }
 
-    if (finiteVarIds.length === 0) {
-      // No finite-domain chips and not single-numeric (either zero
-      // numeric or multiple numerics). Nothing enumerable here.
+    if (enumerableFiniteVarIds.length === 0) {
+      // No enumerable finite-domain chips. Either: no finite chips at
+      // all, multiple numerics, or only unenumerable aggregates
+      // (e.g. nation_affinity) in scope — nothing to enumerate over.
       out.set(blockId, {
         block_id: blockId,
         status: "no_finite_vars",
@@ -583,7 +606,7 @@ export function uncoveredAssignmentsByBlock(
       continue;
     }
     const dims: { id: string; outcomes: string[] }[] = [];
-    for (const id of finiteVarIds) {
+    for (const id of enumerableFiniteVarIds) {
       const v = variableIndex.get(id);
       if (!v) continue;
       const dom = variableDomain(v, input.values);
@@ -611,7 +634,7 @@ export function uncoveredAssignmentsByBlock(
             chips,
             variableIndex,
             a,
-            true,
+            wildcardVarIds,
             input.tiebreakDocs
           )
         ) {

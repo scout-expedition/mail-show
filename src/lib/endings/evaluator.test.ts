@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateKey,
   EMPTY_SELECTIONS,
   evaluateDocument,
   evaluateDocumentDetailed,
@@ -8,6 +9,7 @@ import {
   evaluateRow,
   matchingRowsByBlock,
   resolveAggregatesDetailed,
+  resolveSmartVariables,
   shadowedRowIds,
   type EvalBlock,
   type EvalChip,
@@ -2310,5 +2312,244 @@ describe("text substitution: @[Name]", () => {
       // values intentionally omitted
     });
     expect(out).toEqual(["Hi @[Name]."]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for resolveSmartVariables tests
+// ---------------------------------------------------------------------------
+
+const smartVar = (id: string, name = id): EvalVariable => ({
+  id,
+  name,
+  kind: "smart_ref",
+  aggregate_ref: null,
+});
+
+/** Build a chip whose comparand is aggregate_value (reuses the free-text column). */
+const smartChip = (
+  id: string,
+  rowId: string,
+  variableId: string,
+  comparand: string,
+  operator: "=" | "≠" = "="
+): EvalChip => ({
+  id,
+  row_id: rowId,
+  variable_id: variableId,
+  operator,
+  text_value_id: null,
+  number_value: null,
+  aggregate_value: comparand,
+  sort_order: 0,
+});
+
+// ---------------------------------------------------------------------------
+// resolveSmartVariables
+// ---------------------------------------------------------------------------
+
+describe("resolveSmartVariables", () => {
+  describe("when a single smart var has exactly one matching condition row", () => {
+    it("should return the matched result string for that variable", () => {
+      const performer = textVar("VAR_PERF");
+      const cb = condBlock("cb");
+      const r1 = row("r1", cb.id);
+      const leaf = resultBlock("res", "winterrose", cb.id, r1.id);
+      const inputs: EvalInputs = {
+        blocks: [cb, leaf],
+        rows: [r1],
+        chips: [textChip("c1", r1.id, performer.id, "WINTER")],
+        variables: [performer],
+        selections: textSelections({ [performer.id]: "WINTER" }),
+      };
+      const result = resolveSmartVariables([
+        { variable_id: "sv-1", inputs },
+      ]);
+      expect(result.get("sv-1")).toBe("winterrose");
+    });
+  });
+
+  describe("when no row matches but a fallback block is set", () => {
+    it("should return the fallback value", () => {
+      const performer = textVar("VAR_PERF");
+      const cb = condBlock("cb");
+      const r1 = row("r1", cb.id);
+      const leaf = resultBlock("res", "gentry", cb.id, r1.id);
+      const fallback: EvalBlock = {
+        id: "fb",
+        parent_block_id: null,
+        parent_row_id: null,
+        block_type: "fallback",
+        text: "",
+        result_value: "proletariat",
+        sort_order: 999999,
+      };
+      const inputs: EvalInputs = {
+        blocks: [cb, leaf, fallback],
+        rows: [r1],
+        chips: [textChip("c1", r1.id, performer.id, "SUMMER")],
+        variables: [performer],
+        // WINTER ≠ SUMMER → no match → fallback fires
+        selections: textSelections({ [performer.id]: "WINTER" }),
+      };
+      const result = resolveSmartVariables([{ variable_id: "sv-fb", inputs }]);
+      expect(result.get("sv-fb")).toBe("proletariat");
+    });
+  });
+
+  describe("when no row matches and there is no fallback", () => {
+    it("should return null for that variable", () => {
+      const performer = textVar("VAR_PERF");
+      const cb = condBlock("cb");
+      const r1 = row("r1", cb.id);
+      const inputs: EvalInputs = {
+        blocks: [cb, resultBlock("res", "gentry", cb.id, r1.id)],
+        rows: [r1],
+        chips: [textChip("c1", r1.id, performer.id, "SUMMER")],
+        variables: [performer],
+        selections: textSelections({ [performer.id]: "WINTER" }),
+      };
+      const result = resolveSmartVariables([{ variable_id: "sv-null", inputs }]);
+      expect(result.get("sv-null")).toBeNull();
+    });
+  });
+
+  describe("when multiple smart vars are resolved in one call", () => {
+    it("should resolve each variable independently from its own tree", () => {
+      const perfA = textVar("VAR_A");
+      const perfB = textVar("VAR_B");
+
+      const cbA = condBlock("cbA");
+      const rA = row("rA", cbA.id);
+      const inputsA: EvalInputs = {
+        blocks: [cbA, resultBlock("resA", "alpha", cbA.id, rA.id)],
+        rows: [rA],
+        chips: [textChip("cA", rA.id, perfA.id, "MATCH")],
+        variables: [perfA],
+        selections: textSelections({ [perfA.id]: "MATCH" }),
+      };
+
+      const cbB = condBlock("cbB");
+      const rB = row("rB", cbB.id);
+      const inputsB: EvalInputs = {
+        blocks: [cbB, resultBlock("resB", "beta", cbB.id, rB.id)],
+        rows: [rB],
+        chips: [textChip("cB", rB.id, perfB.id, "NO_MATCH")],
+        variables: [perfB],
+        // perfB is set to a different value — row won't match
+        selections: textSelections({ [perfB.id]: "WRONG" }),
+      };
+
+      const result = resolveSmartVariables([
+        { variable_id: "sv-A", inputs: inputsA },
+        { variable_id: "sv-B", inputs: inputsB },
+      ]);
+
+      expect(result.get("sv-A")).toBe("alpha");
+      expect(result.get("sv-B")).toBeNull();
+    });
+  });
+
+  describe("aggregate-determinism: pre-resolved aggregates keep every chip on the same (ref, side) pair seeing the same winner", () => {
+    it("should apply the same pre-resolved winner to both chips on class_affinity|top without re-rolling", () => {
+      // Two aggregate chips on the same tied (class_affinity, top) pair.
+      // The caller pre-resolves the winner in resolved_aggregates before the
+      // framework runs, so chip A and chip B both see "proletariat" — no
+      // random divergence. This validates evaluator.ts:298-304.
+      const klass = aggVar("VAR_CLASS", "class_affinity");
+      const PROLETARIAT = "var-proletariat";
+      const GENTRY = "var-gentry";
+      const key = aggregateKey("class_affinity", "top");
+
+      const sel: PreviewSelections = {
+        textValueIds: {},
+        numbers: { [PROLETARIAT]: 5, [GENTRY]: 5 },
+        numberRefByName: new Map([
+          ["proletariat", PROLETARIAT],
+          ["gentry", GENTRY],
+        ]),
+        // Pre-resolved winner — caller chose proletariat.
+        resolved_aggregates: new Map([[key, "proletariat"]]),
+      };
+
+      const chipA = aggChip("cA", "r", klass.id, "proletariat", "top=");
+      const chipB = aggChip("cB", "r", klass.id, "gentry", "top=");
+
+      // Both chips must agree: proletariat is the winner.
+      expect(evaluateChip(chipA, klass, sel)).toBe(true);
+      expect(evaluateChip(chipB, klass, sel)).toBe(false);
+    });
+
+    it("should return false for both chips when the pre-resolved winner is null (tie unresolvable)", () => {
+      const klass = aggVar("VAR_CLASS", "class_affinity");
+      const PROLETARIAT = "var-proletariat";
+      const GENTRY = "var-gentry";
+      const key = aggregateKey("class_affinity", "top");
+
+      const sel: PreviewSelections = {
+        textValueIds: {},
+        numbers: { [PROLETARIAT]: 5, [GENTRY]: 5 },
+        numberRefByName: new Map([
+          ["proletariat", PROLETARIAT],
+          ["gentry", GENTRY],
+        ]),
+        resolved_aggregates: new Map([[key, null]]),
+      };
+
+      const chipA = aggChip("cA", "r", klass.id, "proletariat", "top=");
+      const chipB = aggChip("cB", "r", klass.id, "gentry", "top=");
+
+      expect(evaluateChip(chipA, klass, sel)).toBe(false);
+      expect(evaluateChip(chipB, klass, sel)).toBe(false);
+    });
+  });
+
+  describe("end-to-end: smart_ref chip inside a framework reads the pre-seeded smartVariableResults", () => {
+    it("should fire a condition row whose chip matches the resolved smart variable value", () => {
+      // The framework has a condition block gated on smart variable sv-1.
+      // The caller pre-resolves sv-1 = "gentry" into smartVariableResults.
+      // A chip with aggregate_value="gentry" and operator "=" must match.
+      const svVar = smartVar("sv-var-1", "Outcome");
+      const cb = condBlock("fw-cb");
+      const r1 = row("fw-r1", cb.id);
+      const child = textBlock("fw-leaf", "The gentry path fired", cb.id, r1.id);
+
+      const frameworkInputs: EvalInputs = {
+        blocks: [cb, child],
+        rows: [r1],
+        chips: [smartChip("ch1", r1.id, svVar.id, "gentry")],
+        variables: [svVar],
+        selections: {
+          textValueIds: {},
+          numbers: {},
+          smartVariableResults: { [svVar.id]: "gentry" },
+        },
+      };
+
+      const out = evaluateDocument(frameworkInputs);
+      expect(out).toEqual(["The gentry path fired"]);
+    });
+
+    it("should not fire the row when smartVariableResults is absent (unresolved smart var)", () => {
+      const svVar = smartVar("sv-var-2", "Outcome");
+      const cb = condBlock("fw-cb2");
+      const r1 = row("fw-r1b", cb.id);
+      const child = textBlock("fw-leaf2", "Should not appear", cb.id, r1.id);
+
+      const frameworkInputs: EvalInputs = {
+        blocks: [cb, child],
+        rows: [r1],
+        chips: [smartChip("ch2", r1.id, svVar.id, "gentry")],
+        variables: [svVar],
+        selections: {
+          textValueIds: {},
+          numbers: {},
+          // smartVariableResults intentionally omitted → chip evaluates to false
+        },
+      };
+
+      const out = evaluateDocument(frameworkInputs);
+      expect(out).toEqual([]);
+    });
   });
 });

@@ -26,7 +26,7 @@ import {
   IconZoomScan,
 } from "@tabler/icons-react";
 import { CalendarPlus, ChevronRight, Copy, MailOpen, Mails, Megaphone, Pin, PinOff, Replace, Trash2 } from "lucide-react";
-import { readableOnHex, StorylinePill } from "@/components/pills";
+import { PILL_CARD_EXTRA, readableOnHex, StorylinePill } from "@/components/pills";
 import { IconDisplay } from "@/components/icon-display";
 import { CompositeActionChip } from "@/components/composite-action-chip";
 import { useConfirm } from "@/components/confirm-dialog";
@@ -68,6 +68,8 @@ import {
   deleteReportSegment,
   duplicateInspectionLetter,
   duplicateReportSegment,
+  extractLetterFromPieceGroup,
+  mergeLetters,
   moveInspectionLetterToDay,
   moveLetterGroupToDay,
   moveLetterToGroup,
@@ -76,6 +78,7 @@ import {
   pinReportSegmentToDay,
   setActionNextLetterByLetterId,
   setActionReportSegment,
+  setPieceGroupDelivery,
 } from "../inspection/letters/actions";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { ActionIconEdge, type ActionIconEdgeData } from "./edges/action-icon-edge";
@@ -87,6 +90,14 @@ import {
 } from "./graph-context-menu";
 import LetterGroupNode from "./nodes/letter-group";
 import LetterNode from "./nodes/letter-node";
+import PieceGroupNode, {
+  type PieceGroupData,
+  PIECE_PILL_W,
+  PIECE_GAP,
+  PIECE_ROW_PAD_X,
+  PIECE_OVERFLOW_CHIP_W,
+  MAX_VISIBLE_PIECES,
+} from "./nodes/piece-group";
 import ReportNode from "./nodes/report-node";
 import ReportClusterNode from "./nodes/report-cluster";
 import StubTargetNode from "./nodes/stub-target";
@@ -103,7 +114,17 @@ import EndpointTargetNode from "./nodes/endpoint-target";
  */
 export type GraphSelection =
   | { kind: "group"; groupId: string }
-  | { kind: "letter"; groupId: string; variantKey: string }
+  | {
+      kind: "letter";
+      groupId: string;
+      variantKey: string;
+      /**
+       * Optional specific letter id within the variant. Provided when the
+       * variant is a piece group and the user clicked a specific piece pill
+       * — the workspace hydrates to this id rather than the first sibling.
+       */
+      pieceId?: string;
+    }
   | { kind: "segment"; segmentId: string }
   | {
       kind: "actions";
@@ -195,6 +216,10 @@ type Props = {
 export type PeerRingMap = {
   groups: Map<string, string[]>;
   letters: Map<string, string[]>;
+  /** Per-piece rings keyed by the specific letter id (only populated when a
+   *  peer has selected a piece that belongs to a piece group). Lets the
+   *  PieceGroupNode tint just the matching pill instead of the whole group. */
+  pieceLetters: Map<string, string[]>;
   segments: Map<string, string[]>;
   actions: Map<string, string[]>;
 };
@@ -306,11 +331,42 @@ function badgeStackExtentRight(
   return rowW > 0 ? CHIP_TO_BADGES_GAP + rowW : 0;
 }
 
-function groupWidth(variantCount: number): number {
+/**
+ * Width of a single variant slot. Standalone letter variants take CARD_W;
+ * piece groups (≥2 pieces sharing a variant key) take more because each
+ * piece pill is rendered explicitly at `PIECE_PILL_W` with `PIECE_GAP`
+ * between them. Keeping this in lockstep with `piece-group.tsx` is what
+ * stops the next variant in the group from visually colliding with the
+ * piece-group's right edge.
+ *
+ * For groups larger than `MAX_VISIBLE_PIECES`, only `MAX_VISIBLE_PIECES
+ * - 1` pills render plus a "+N" overflow chip — reservation matches.
+ */
+function variantSlotWidth(pieceMemberCount: number): number {
+  if (pieceMemberCount < 2) return CARD_W;
+  const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
+  const overflowing = pieceMemberCount > MAX_VISIBLE_PIECES;
+  const visiblePills = overflowing ? MAX_VISIBLE_PIECES - 1 : pieceMemberCount;
+  const overflowChipExtra = overflowing
+    ? PIECE_GAP + PIECE_OVERFLOW_CHIP_W // half-gap on chip's marginLeft, plus the chip itself; the other half-gap is the rightmost visible pill's paddingRight when not last — both pieces are mid-row when overflow exists, so reserve a full gap+chip width
+    : 0;
+  return (
+    2 * PIECE_ROW_PAD_X +
+    visiblePills * pillOuter +
+    Math.max(0, visiblePills - 1) * PIECE_GAP +
+    overflowChipExtra
+  );
+}
+
+function groupWidth(variantSlotWidths: number[]): number {
+  const n = Math.max(1, variantSlotWidths.length);
+  const slotsW = variantSlotWidths.length === 0
+    ? CARD_W
+    : variantSlotWidths.reduce((a, b) => a + b, 0);
   return (
     GROUP_PAD_LEADING +
-    variantCount * CARD_W +
-    Math.max(0, variantCount - 1) * VARIANT_GAP +
+    slotsW +
+    Math.max(0, n - 1) * VARIANT_GAP +
     GROUP_PAD_TRAILING
   );
 }
@@ -323,6 +379,7 @@ const nodeTypes = {
   columnBand: ColumnBandNode,
   letterGroup: LetterGroupNode,
   letter: LetterNode,
+  pieceGroup: PieceGroupNode,
   report: ReportNode,
   reportCluster: ReportClusterNode,
   stubTarget: StubTargetNode,
@@ -472,6 +529,37 @@ function parseLetterNodeId(
   };
 }
 
+// Piece-group node IDs encode (letterGroupId, variant) so the drag
+// handler can resolve the cluster without a full letter search.
+//   pieceGroup:GID:VARIANT        (primary — on the group's home day)
+//   pieceGroup:GID:VARIANT@DAY    (secondary — letter override day)
+function makePieceGroupNodeId(
+  groupId: string,
+  variant: string,
+  dayKey: string | null
+): string {
+  return dayKey
+    ? `pieceGroup:${groupId}:${variant}@${dayKey}`
+    : `pieceGroup:${groupId}:${variant}`;
+}
+function parsePieceGroupNodeId(
+  id: string
+): { groupId: string; variant: string; dayKey: string | null } | null {
+  if (!id.startsWith("pieceGroup:")) return null;
+  const rest = id.slice("pieceGroup:".length);
+  const colon = rest.indexOf(":");
+  if (colon === -1) return null;
+  const groupId = rest.slice(0, colon);
+  const tail = rest.slice(colon + 1);
+  const at = tail.indexOf("@");
+  if (at === -1) return { groupId, variant: tail, dayKey: null };
+  return {
+    groupId,
+    variant: tail.slice(0, at),
+    dayKey: tail.slice(at + 1),
+  };
+}
+
 export function GraphView({
   storylines,
   letterGroups,
@@ -498,6 +586,7 @@ export function GraphView({
   // disabled or when no peers are co-selecting any nodes.
   const peerGroups = peerRings?.groups;
   const peerLetters = peerRings?.letters;
+  const peerPieceLetters = peerRings?.pieceLetters;
   const peerSegments = peerRings?.segments;
   const peerActions = peerRings?.actions;
   const select = useCallback(
@@ -1088,6 +1177,12 @@ export function GraphView({
       dayKey: string | null; // null = primary
       variants: string[]; // variant keys this instance contains
       variantHeights: number[];
+      /**
+       * Per-variant slot width. Piece-group variants are wider than
+       * CARD_W; the rendering loop uses these widths to advance relX so
+       * the next variant doesn't visually overlap a wide piece group.
+       */
+      variantSlotWidths: number[];
       width: number;
       height: number;
     };
@@ -1101,6 +1196,26 @@ export function GraphView({
       if (!existing || (l.piece ?? 0) < (existing.piece ?? 0)) {
         primaryLetterByGroupVariant.set(key, l);
       }
+    }
+
+    // For each (group, variant) that is a piece group (piece >= 1, ≥2 members),
+    // record the full sorted member list. This drives the pieceGroup node type
+    // in the layout below: variants with ≥2 piece members render as a muted
+    // parent block containing the individual piece pills.
+    const pieceGroupMembersMap = new Map<string, InspectionLetterView[]>();
+    for (const l of augmentedLetters) {
+      if ((l.piece ?? 0) < 1) continue; // standalone — not a piece
+      const key = `${l.letter_group_id}:${variantKey(l.variant)}`;
+      const bucket = pieceGroupMembersMap.get(key) ?? [];
+      bucket.push(l);
+      pieceGroupMembersMap.set(key, bucket);
+    }
+    // Sort each bucket by sort_order ascending (display order).
+    for (const [key, members] of pieceGroupMembersMap) {
+      pieceGroupMembersMap.set(
+        key,
+        members.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      );
     }
 
     // groupInstancesById indexed by instance node id ("group:GID" or
@@ -1155,7 +1270,17 @@ export function GraphView({
                 return cardHeight(primary?.summary);
               });
         const maxCardH = variantHeights.reduce((a, b) => Math.max(a, b), 0);
-        const width = groupWidth(Math.max(1, vs.length));
+        // Per-variant slot widths: piece-group variants are wider than
+        // CARD_W. Without this, the parent letter-group's outline and
+        // the next-variant offset (relX += stride) both assume CARD_W
+        // per variant, which makes the wider piece group bleed into
+        // the variant gap and crowd the next variant.
+        const variantSlotWidths = vs.map((vk) =>
+          variantSlotWidth(
+            pieceGroupMembersMap.get(`${g.id}:${vk}`)?.length ?? 0
+          )
+        );
+        const width = groupWidth(variantSlotWidths);
         const height = groupHeight(maxCardH);
         const nodeId = makeGroupNodeId(g.id, instanceDayKey);
         const inst: GroupInstance = {
@@ -1168,6 +1293,7 @@ export function GraphView({
           dayKey: instanceDayKey,
           variants: vs,
           variantHeights,
+          variantSlotWidths,
           width,
           height,
         };
@@ -1391,6 +1517,12 @@ export function GraphView({
     // corner; h is the card's height so consumers can compute the bottom
     // edge for source-target midpoint chip placement.
     const letterAbsPos = new Map<string, { x: number; y: number; h: number }>();
+    // Per-piece anchors keyed by letter id: lets chip placement land on the
+    // specific piece pill rather than the parent piece-group container.
+    const pieceMemberAnchor = new Map<
+      string,
+      { x: number; y: number; h: number }
+    >();
     const segmentAbsPos = new Map<string, { x: number; y: number; h: number }>();
 
     // Groups + letters + segments per cell. Reports center horizontally in
@@ -1558,70 +1690,213 @@ export function GraphView({
           const onlyVariant = gi.variants.length === 1;
           let relX = GROUP_PAD_LEADING;
           gi.variants.forEach((vk, i) => {
-            const letterNodeId = makeLetterNodeId(gid, vk, gi.dayKey);
-            const contentId = letterDisplayId(
-              abbr,
-              gi.group.sequence,
-              vk || null,
-              onlyVariant
-            );
             const cardH = gi.variantHeights[i];
             // Align variant cards by their TOP edge inside the group so
             // rows of variants read consistently even when summary lengths
             // produce different card heights.
             const relY = GROUP_PAD_TOP;
             const primary = primaryLetterByGroupVariant.get(`${gid}:${vk}`);
-            const summary = primary?.summary ?? null;
-            letterAbsPos.set(letterNodeId, {
-              x: groupsX + relX,
-              y: bottomY + relY,
-              h: cardH,
-            });
-            const letterSelected =
-              selection?.kind === "letter" &&
-              selection.groupId === gid &&
-              selection.variantKey === vk;
-            n.push({
-              id: letterNodeId,
-              type: "letter",
-              parentId: groupNodeId,
-              // extent stays unconstrained so the letter can be dragged out
-              // of its group and dropped onto a different one.
-              position: { x: relX, y: relY },
-              data: {
-                contentId,
-                storyline: gi.storyline,
-                summary,
-                widthPx: PILL_W,
-                selected: letterSelected,
-                selfRingColor: letterSelected
-                  ? selfRingColor ?? undefined
-                  : undefined,
-                peerRingColors: peerLetters?.get(`${gid}:${vk}`),
-                pendingDelete: (() => {
-                  // A letter's primary instance is also marked pending
-                  // when its parent group is being deleted (server
-                  // cascades). Cover both so the whole group reads as
-                  // greyed out during the delete.
-                  const lid = primaryLetterByGroupVariant.get(`${gid}:${vk}`)
-                    ?.id;
-                  if (lid && pendingDeletes.letters[lid] === true) return true;
-                  return pendingDeletes.groups[gid] === true;
-                })(),
-                pendingAdd: !!primary && ghostLetterIdSet.has(primary.id),
-                pinned: primary?.delivery_day_override_id != null,
-                offsetText:
-                  primary?.delivery_day_offset != null
-                    ? formatDeliveryOffset(primary.delivery_day_offset)
-                    : null,
+
+            // Piece group: a variant with ≥2 members that all carry piece >= 1.
+            // These render as a muted parent block (pieceGroup node type) rather
+            // than the standard letter card.
+            const pieceMembers = pieceGroupMembersMap.get(`${gid}:${vk}`);
+            const isPieceGroup = pieceMembers && pieceMembers.length >= 2;
+
+            if (isPieceGroup && primary?.variant) {
+              const pgNodeId = makePieceGroupNodeId(gid, primary.variant, gi.dayKey);
+              const contentId = letterDisplayId(
+                abbr,
+                gi.group.sequence,
+                vk || null,
+                onlyVariant
+              );
+              // Strip trailing piece digit from the content_id to get the
+              // variant-only label (e.g. "L-W1/a1" → "L-W1/a").
+              const variantOnlyId = contentId.replace(/\d+$/, "");
+              letterAbsPos.set(pgNodeId, {
+                x: groupsX + relX,
+                y: bottomY + relY,
+                h: cardH,
+              });
+              // Per-piece anchors: chips on actions sourced from a specific
+              // piece member sit under that pill's actual rendered center,
+              // not a virtual slot center. Layout inside the muted backdrop:
+              //   • container has PIECE_ROW_PAD_X horizontal padding
+              //   • each pill outer width = PIECE_PILL_W + PILL_CARD_EXTRA
+              //     (PILL_CARD_EXTRA = pill border on both sides)
+              //   • PIECE_GAP between adjacent pills
+              // So pill i's left = PIECE_ROW_PAD_X + i*(pillOuter + PIECE_GAP),
+              // and its center is half a pillOuter further right.
+              //
+              // Members past MAX_VISIBLE_PIECES collapse into a single
+              // "+N" chip — they have no rendered pill of their own. Their
+              // anchors snap to the chip's center so action chips for
+              // overflowed pieces stack on the visible chip instead of
+              // floating off in empty space below an imaginary pill.
+              {
+                const pillOuter = PIECE_PILL_W + PILL_CARD_EXTRA;
+                const stride = pillOuter + PIECE_GAP;
+                const N = pieceMembers.length;
+                const overflowing = N > MAX_VISIBLE_PIECES;
+                const visiblePills = overflowing ? MAX_VISIBLE_PIECES - 1 : N;
+                const overflowChipLocalX =
+                  PIECE_ROW_PAD_X +
+                  visiblePills * stride +
+                  PIECE_OVERFLOW_CHIP_W / 2;
+                pieceMembers.forEach((m, i) => {
+                  const isVisible = i < visiblePills;
+                  const localX = isVisible
+                    ? PIECE_ROW_PAD_X + i * stride + pillOuter / 2
+                    : overflowChipLocalX;
+                  pieceMemberAnchor.set(m.id, {
+                    x: groupsX + relX + localX,
+                    y: bottomY + relY,
+                    h: cardH,
+                  });
+                });
+              }
+              const pendingDeleteFlag = (() => {
+                if (pendingDeletes.groups[gid] === true) return true;
+                return pieceMembers.some(
+                  (m) => pendingDeletes.letters[m.id] === true
+                );
+              })();
+              const pendingAddFlag = pieceMembers.some((m) =>
+                ghostLetterIdSet.has(m.id)
+              );
+              // Canonical delivery state: use the primary (lowest-piece) member.
+              const pinned = primary.delivery_day_override_id != null;
+              const offsetText =
+                primary.delivery_day_offset != null
+                  ? formatDeliveryOffset(primary.delivery_day_offset)
+                  : null;
+              const pgVariantKey = primary.variant ?? "";
+              const pgSelected =
+                selection?.kind === "letter" &&
+                selection.groupId === gid &&
+                selection.variantKey === pgVariantKey;
+              // selectedPieceId: when the local user has clicked a specific
+              // piece pill the inspector tracks that letter id; the ring is
+              // applied to ONLY that pill, not the whole group container.
+              const selectedPieceId =
+                pgSelected && selection?.kind === "letter"
+                  ? selection.pieceId ?? null
+                  : null;
+              const pieceRingColorsByMember: Record<string, string[]> = {};
+              if (peerPieceLetters) {
+                for (const m of pieceMembers) {
+                  const ring = peerPieceLetters.get(m.id);
+                  if (ring && ring.length > 0) {
+                    pieceRingColorsByMember[m.id] = ring;
+                  }
+                }
+              }
+              const pgData: PieceGroupData = {
+                letterGroupId: gid,
+                variant: primary.variant,
+                members: pieceMembers,
+                storyline: { color_hex: gi.storyline.color_hex, id: gi.storyline.id },
+                contentId: variantOnlyId,
+                pendingDelete: pendingDeleteFlag,
+                pendingAdd: pendingAddFlag,
+                pinned,
+                offsetText,
+                selectedPieceId: selectedPieceId ?? undefined,
+                pieceSelfRingColor:
+                  pgSelected && selectedPieceId
+                    ? selfRingColor ?? undefined
+                    : undefined,
+                pieceRingColorsByMember,
                 onSelect: () =>
-                  select({ kind: "letter", groupId: gid, variantKey: vk }),
-              },
-              draggable: editingEnabled,
-              selectable: false,
-              focusable: false,
-            });
-            relX += CARD_W + VARIANT_GAP;
+                  select({
+                    kind: "letter",
+                    groupId: gid,
+                    variantKey: pgVariantKey,
+                  }),
+                onSelectMember: (memberId: string) =>
+                  select({
+                    kind: "letter",
+                    groupId: gid,
+                    variantKey: pgVariantKey,
+                    pieceId: memberId,
+                  }),
+              };
+              n.push({
+                id: pgNodeId,
+                type: "pieceGroup",
+                parentId: groupNodeId,
+                position: { x: relX, y: relY },
+                data: pgData as unknown as Record<string, unknown>,
+                draggable: editingEnabled,
+                selectable: false,
+                focusable: false,
+              });
+            } else {
+              // Standard standalone letter (or a single-member "group" before
+              // a second piece is added — render as a plain letter card).
+              const letterNodeId = makeLetterNodeId(gid, vk, gi.dayKey);
+              const contentId = letterDisplayId(
+                abbr,
+                gi.group.sequence,
+                vk || null,
+                onlyVariant
+              );
+              const summary = primary?.summary ?? null;
+              letterAbsPos.set(letterNodeId, {
+                x: groupsX + relX,
+                y: bottomY + relY,
+                h: cardH,
+              });
+              const letterSelected =
+                selection?.kind === "letter" &&
+                selection.groupId === gid &&
+                selection.variantKey === vk;
+              n.push({
+                id: letterNodeId,
+                type: "letter",
+                parentId: groupNodeId,
+                // extent stays unconstrained so the letter can be dragged out
+                // of its group and dropped onto a different one.
+                position: { x: relX, y: relY },
+                data: {
+                  contentId,
+                  storyline: gi.storyline,
+                  summary,
+                  widthPx: PILL_W,
+                  selected: letterSelected,
+                  selfRingColor: letterSelected
+                    ? selfRingColor ?? undefined
+                    : undefined,
+                  peerRingColors: peerLetters?.get(`${gid}:${vk}`),
+                  pendingDelete: (() => {
+                    // A letter's primary instance is also marked pending
+                    // when its parent group is being deleted (server
+                    // cascades). Cover both so the whole group reads as
+                    // greyed out during the delete.
+                    const lid = primaryLetterByGroupVariant.get(`${gid}:${vk}`)
+                      ?.id;
+                    if (lid && pendingDeletes.letters[lid] === true) return true;
+                    return pendingDeletes.groups[gid] === true;
+                  })(),
+                  pendingAdd: !!primary && ghostLetterIdSet.has(primary.id),
+                  pinned: primary?.delivery_day_override_id != null,
+                  offsetText:
+                    primary?.delivery_day_offset != null
+                      ? formatDeliveryOffset(primary.delivery_day_offset)
+                      : null,
+                  onSelect: () =>
+                    select({ kind: "letter", groupId: gid, variantKey: vk }),
+                },
+                draggable: editingEnabled,
+                selectable: false,
+                focusable: false,
+              });
+            }
+            // Advance by this variant's actual slot width (piece groups
+            // are wider than CARD_W) so the next variant lands clear of
+            // the rendered piece-group block.
+            relX += (gi.variantSlotWidths[i] ?? CARD_W) + VARIANT_GAP;
           });
 
           groupsX += gi.width + CELL_GAP;
@@ -1719,7 +1994,14 @@ export function GraphView({
     for (const a of augmentedActions) {
       const src = letterIndex.get(a.inspection_letter_id);
       if (!src) continue;
-      const sourceId = makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
+      // If this letter belongs to a piece group (≥2 piece members), the
+      // canvas node is a pieceGroup node, not a letter node. Use the
+      // appropriate node ID so edge anchors resolve to the right position.
+      const isPieceGroupMember =
+        (pieceGroupMembersMap.get(`${src.groupId}:${src.variantKey}`)?.length ?? 0) >= 2;
+      const sourceId = isPieceGroupMember
+        ? makePieceGroupNodeId(src.groupId, src.variantKey, src.dayKey)
+        : makeLetterNodeId(src.groupId, src.variantKey, src.dayKey);
 
       // Optimistic overrides win over server state during in-flight
       // reconnects so the edge follows the drop without round-tripping.
@@ -1746,11 +2028,11 @@ export function GraphView({
       if (effectiveNextLetterId) {
         const tgt = letterIndex.get(effectiveNextLetterId);
         if (tgt) {
-          nextLetterId = makeLetterNodeId(
-            tgt.groupId,
-            tgt.variantKey,
-            tgt.dayKey
-          );
+          const tgtIsPieceGroup =
+            (pieceGroupMembersMap.get(`${tgt.groupId}:${tgt.variantKey}`)?.length ?? 0) >= 2;
+          nextLetterId = tgtIsPieceGroup
+            ? makePieceGroupNodeId(tgt.groupId, tgt.variantKey, tgt.dayKey)
+            : makeLetterNodeId(tgt.groupId, tgt.variantKey, tgt.dayKey);
         }
       }
 
@@ -1853,6 +2135,14 @@ export function GraphView({
         );
         return inst?.rowId ?? null;
       }
+      const parsedPg = parsePieceGroupNodeId(nodeId);
+      if (parsedPg) {
+        if (parsedPg.dayKey) return parsedPg.dayKey;
+        const inst = groupInstancesById.get(
+          makeGroupNodeId(parsedPg.groupId, null)
+        );
+        return inst?.rowId ?? null;
+      }
       if (nodeId.startsWith("report:")) {
         const segId = nodeId.slice("report:".length);
         return segmentById.get(segId)?.effective_day_id ?? "unscheduled";
@@ -1861,9 +2151,11 @@ export function GraphView({
     }
     // Anchor chips / edge endpoints to the horizontal center of the card's
     // top-edge handle (target enters from top, source exits from bottom; both
-    // are pinned at left: 50% of the card width by xyflow defaults).
+    // are pinned at left: 50% of the card width by xyflow defaults). Piece-
+    // group nodes use the same letterAbsPos map and the same CARD_W width as
+    // letter cards, so the same math applies.
     function nodeCenterX(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.x + CARD_W / 2 : null;
       }
@@ -1874,7 +2166,7 @@ export function GraphView({
       return null;
     }
     function nodeBottomY(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.y + p.h : null;
       }
@@ -1885,7 +2177,7 @@ export function GraphView({
       return null;
     }
     function nodeTopY(nodeId: string): number | null {
-      if (nodeId.startsWith("letter:")) {
+      if (nodeId.startsWith("letter:") || nodeId.startsWith("pieceGroup:")) {
         const p = letterAbsPos.get(nodeId);
         return p ? p.y : null;
       }
@@ -1912,17 +2204,44 @@ export function GraphView({
     };
     const placements: ChipPlacement[] = [];
 
-    const candidatesBySource = new Map<string, Candidate[]>();
+    // Group candidates by chip anchor. For letter / report sources that's
+    // the source node id. For piece-group sources we split further by the
+    // action's specific letter id so each piece pill anchors its own chips
+    // rather than all members' chips piling up at the group's center.
+    type AnchorBucket = {
+      sourceId: string;
+      pieceMemberId: string | null;
+      list: Candidate[];
+    };
+    const candidatesByAnchor = new Map<string, AnchorBucket>();
     for (const c of candidates) {
-      const list = candidatesBySource.get(c.source) ?? [];
-      list.push(c);
-      candidatesBySource.set(c.source, list);
+      let key = c.source;
+      let pieceMemberId: string | null = null;
+      if (c.source.startsWith("pieceGroup:")) {
+        pieceMemberId = c.action.inspection_letter_id;
+        key = `${c.source}#piece:${pieceMemberId}`;
+      }
+      const bucket = candidatesByAnchor.get(key) ?? {
+        sourceId: c.source,
+        pieceMemberId,
+        list: [],
+      };
+      bucket.list.push(c);
+      candidatesByAnchor.set(key, bucket);
     }
 
-    for (const [sourceId, list] of candidatesBySource) {
-      const isLetterSource = sourceId.startsWith("letter:");
-      const srcBottomY = nodeBottomY(sourceId);
-      const srcCenterX = nodeCenterX(sourceId);
+    for (const { sourceId, pieceMemberId, list } of candidatesByAnchor.values()) {
+      const isLetterSource =
+        sourceId.startsWith("letter:") || sourceId.startsWith("pieceGroup:");
+      let srcBottomY = nodeBottomY(sourceId);
+      let srcCenterX = nodeCenterX(sourceId);
+      if (pieceMemberId) {
+        const anchor = pieceMemberAnchor.get(pieceMemberId);
+        if (anchor) {
+          srcCenterX = anchor.x;
+          srcBottomY = anchor.y + anchor.h;
+        }
+      }
       if (srcBottomY == null || srcCenterX == null) continue;
 
       // All chips for letter sources in the same day row share a single Y
@@ -2089,29 +2408,30 @@ export function GraphView({
       }
     }
 
-    // For every letter with multiple outgoing edges (one per action that
-    // starts there), spread the source X to match each action's chip X.
-    // Without this, both lines emerge from the letter's bottom-center
-    // and diverge into a "V" — the user wants each line to drop
-    // straight from under its chip.
-    const letterSourceBySource = new Map<string, ChipPlacement[]>();
-    for (const p of placements) {
-      if (!p.candidate.source.startsWith("letter:")) continue;
-      const list = letterSourceBySource.get(p.candidate.source) ?? [];
-      list.push(p);
-      letterSourceBySource.set(p.candidate.source, list);
-    }
+    // Source-X spread: each outgoing bezier should exit directly under its
+    // chip rather than from the source node's bottom-center. Without this,
+    // a letter with two outgoing edges sends both lines from its center,
+    // diverging into a "V"; piece-group sources are even worse — every
+    // member's lines collapse to the group's center.
+    //
+    // The bezier source position in the edge component is
+    //   `props.fromX + sourceXOffset`
+    // and `props.fromX` is the *source RF node's* bottom-center. So the
+    // offset is `desired chip X − source node center X`. For piece-group
+    // sources the source node is the pieceGroup container; we want each
+    // line to exit at the specific piece pill, so the offset is
+    // `piece.anchor.x − pieceGroup.center.x` (constant per piece) plus
+    // any per-chip nudge when a single piece has multiple actions.
     const sourceXOffsetByEdgeId = new Map<string, number>();
-    for (const [sourceId, list] of letterSourceBySource) {
-      if (list.length < 2) continue;
-      const letterPos = letterAbsPos.get(sourceId);
-      if (!letterPos) continue;
-      const letterCenterX = letterPos.x + CARD_W / 2;
-      for (const p of list) {
-        // Source offset = chip X relative to the letter's center, so
-        // the bezier exits the letter directly under the chip.
-        sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - letterCenterX);
+    for (const p of placements) {
+      const src = p.candidate.source;
+      if (!src.startsWith("letter:") && !src.startsWith("pieceGroup:")) {
+        continue;
       }
+      const nodePos = letterAbsPos.get(src);
+      if (!nodePos) continue;
+      const nodeCenter = nodePos.x + CARD_W / 2;
+      sourceXOffsetByEdgeId.set(p.candidate.id, p.chipX - nodeCenter);
     }
 
     // Mirror the arrowhead spread on the EXIT side: for every report
@@ -2185,7 +2505,11 @@ export function GraphView({
     if (editingEnabled) {
       const CONNECT_BELOW_GAP = 14; // chip half-height (10) + gap below
       for (const p of placements) {
-        if (!p.candidate.source.startsWith("letter:")) continue;
+        if (
+          !p.candidate.source.startsWith("letter:") &&
+          !p.candidate.source.startsWith("pieceGroup:")
+        )
+          continue;
         const a = p.candidate.action;
         const resolved = resolveAction(a);
         // Use the optimistic-overlaid values so connector positioning
@@ -3744,12 +4068,13 @@ export function GraphView({
     const src = conn.source;
     const tgt = conn.target;
     if (!src || !tgt) return false;
+    const tgtIsLetterLike =
+      tgt.startsWith("letter:") || tgt.startsWith("pieceGroup:");
     if (src.startsWith("connect:")) {
       const m = src.match(/^connect:[^:]+:(report|next|any)$/);
       if (m?.[1] === "report") return tgt.startsWith("report:");
-      if (m?.[1] === "next") return tgt.startsWith("letter:");
-      if (m?.[1] === "any")
-        return tgt.startsWith("letter:") || tgt.startsWith("report:");
+      if (m?.[1] === "next") return tgtIsLetterLike;
+      if (m?.[1] === "any") return tgtIsLetterLike || tgt.startsWith("report:");
       return false;
     }
     // Edge reconnects:
@@ -3760,9 +4085,9 @@ export function GraphView({
     //     onReconnect (which no-ops it) instead of being treated as a
     //     drop-on-empty-space and clearing the link.
     if (src.startsWith("letter:")) {
-      return tgt.startsWith("letter:") || tgt.startsWith("report:");
+      return tgtIsLetterLike || tgt.startsWith("report:");
     }
-    return tgt.startsWith("letter:") || tgt.startsWith("report:");
+    return tgtIsLetterLike || tgt.startsWith("report:");
   }, []);
 
   // New connection (from a connect-source handle): create a brand-new
@@ -3798,16 +4123,34 @@ export function GraphView({
         return;
       }
       // kind === "next"
-      if (!tgt.startsWith("letter:")) return;
-      const tm = parseLetterNodeId(tgt);
-      if (!tm) return;
-      const targetGid = tm.groupId;
-      const targetVariantKey = tm.variantKey;
-      const tgtLetter = letters.find(
+      let targetGid: string;
+      let targetVariantKey: string;
+      if (tgt.startsWith("pieceGroup:")) {
+        const pgm = parsePieceGroupNodeId(tgt);
+        if (!pgm) return;
+        targetGid = pgm.groupId;
+        targetVariantKey = pgm.variant;
+      } else if (tgt.startsWith("letter:")) {
+        const tm = parseLetterNodeId(tgt);
+        if (!tm) return;
+        targetGid = tm.groupId;
+        targetVariantKey = tm.variantKey;
+      } else {
+        return;
+      }
+      // Resolve the canonical target letter: for piece groups, the lowest-
+      // piece sibling — the server's setActionNextLetterByLetterId will also
+      // rewrite to canonical, but landing on it here keeps the optimistic
+      // edge pointing at the same row that ends up persisted.
+      const groupMembers = letters.filter(
         (l) =>
           l.letter_group_id === targetGid &&
           (l.variant ?? "") === targetVariantKey
       );
+      const tgtLetter =
+        groupMembers
+          .slice()
+          .sort((a, b) => (a.piece ?? 0) - (b.piece ?? 0))[0] ?? null;
       if (!tgtLetter) return;
       // Same client-side guard as onReconnect so we paint an optimistic
       // edge only for links the server will accept: same storyline +
@@ -4183,13 +4526,32 @@ export function GraphView({
         zoomOnScroll
         zoomActivationKeyCode="Meta"
         panOnDrag={true}
-        onNodeClick={(_, node) => {
+        onNodeClick={(event, node) => {
           // Column bands cover the canvas and are purely visual day-row
           // separators — a click on one reads as a click on blank
           // background, so it deselects.
           if (node.type === "columnBand") {
             select(null);
             return;
+          }
+          // pieceGroup clicks route the click target to the right callback:
+          //   • clicked a [data-piece-id] descendant → onSelectMember(id)
+          //   • clicked anywhere else (backdrop / title / outside pills) →
+          //     onSelect (group-level)
+          // Routing here, not inside the piece pill component, eliminates
+          // the race between an inner onClick and RF's onNodeClick — only
+          // one of the two callbacks fires per click.
+          if (node.type === "pieceGroup") {
+            const target = event.target as HTMLElement | null;
+            const memberEl = target?.closest("[data-piece-id]");
+            const memberId = memberEl?.getAttribute("data-piece-id");
+            if (memberId) {
+              const d = node.data as {
+                onSelectMember?: (id: string) => void;
+              } | undefined;
+              d?.onSelectMember?.(memberId);
+              return;
+            }
           }
           const d = node.data as { onSelect?: () => void } | undefined;
           d?.onSelect?.();
@@ -4637,6 +4999,7 @@ export function GraphView({
                     sender_citizen_id: null,
                     receiver_citizen_id: null,
                     notes: null,
+                    fallback_mirror_action_id: null,
                     updated_at: new Date(0).toISOString(),
                     updated_by: null,
                     effective_day_id: group?.delivery_day_id ?? null,

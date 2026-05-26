@@ -23,6 +23,7 @@ import {
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import type { PostgresChange } from "@/lib/realtime/channel";
 import { buildSmartReturnsByVariable } from "@/lib/endings/smart-variable-returns";
+import { slugify } from "@/lib/slug";
 
 export function FrameworksWorkspace({
   frameworks,
@@ -37,6 +38,9 @@ export function FrameworksWorkspace({
   selectedFrameworkId,
   smartVariableDocs,
   smartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
   currentUserId,
@@ -60,6 +64,13 @@ export function FrameworksWorkspace({
    *  variable doc. Mirrored locally so result_value edits flow into
    *  chip dropdowns + the chip-adder seed in real time. */
   smartVariableBlocks: EndingBlock[];
+  /** All blocks across every smart_variable doc (all block_types) for
+   *  the preview panel's per-smart-variable evaluator. */
+  smartVariableAllBlocks: EndingBlock[];
+  /** Condition rows belonging to smart variable condition blocks. */
+  smartVariableRows: EndingConditionRow[];
+  /** Chips belonging to smart variable condition rows. */
+  smartVariableChips: EndingConditionRowChip[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -107,6 +118,9 @@ export function FrameworksWorkspace({
         selectedFrameworkId={selectedFrameworkId}
         smartVariableDocs={smartVariableDocs}
         smartVariableBlocks={smartVariableBlocks}
+        smartVariableAllBlocks={smartVariableAllBlocks}
+        smartVariableRows={smartVariableRows}
+        smartVariableChips={smartVariableChips}
         tiebreakDocsSummary={tiebreakDocsSummary}
         tiebreakDocsRaw={tiebreakDocsRaw}
       />
@@ -127,6 +141,9 @@ function FrameworksWorkspaceInner({
   selectedFrameworkId,
   smartVariableDocs: initialSmartVariableDocs,
   smartVariableBlocks: initialSmartVariableBlocks,
+  smartVariableAllBlocks,
+  smartVariableRows,
+  smartVariableChips,
   tiebreakDocsSummary,
   tiebreakDocsRaw,
 }: {
@@ -142,6 +159,9 @@ function FrameworksWorkspaceInner({
   selectedFrameworkId: string | null;
   smartVariableDocs: EndingDocument[];
   smartVariableBlocks: EndingBlock[];
+  smartVariableAllBlocks: EndingBlock[];
+  smartVariableRows: EndingConditionRow[];
+  smartVariableChips: EndingConditionRowChip[];
   tiebreakDocsSummary: Map<
     import("@/lib/db/enums").EndingLogicKind,
     { isEmpty: boolean }
@@ -404,11 +424,31 @@ function FrameworksWorkspaceInner({
     // window may swallow a quick tab switch right after a keystroke; the
     // saving-gate followup will await idle before navigating.
     const qs = new URLSearchParams(searchParams?.toString() ?? "");
-    if (frameworkId) qs.set("framework", frameworkId);
-    else qs.delete("framework");
+    if (frameworkId) {
+      const fw = frameworks.find((f) => f.id === frameworkId);
+      const slug = fw ? slugify(fw.name ?? "") : "";
+      if (slug) qs.set("name", slug);
+      else qs.delete("name");
+    } else {
+      qs.delete("name");
+    }
     const suffix = qs.toString();
     router.push(`/endings/frameworks${suffix ? `?${suffix}` : ""}`);
   }
+
+  // When the selected framework is renamed, sync the URL slug so
+  // ?name= stays consistent with the current name. Guard against the
+  // no-change case to avoid render loops.
+  useEffect(() => {
+    if (!selected) return;
+    const newSlug = slugify(selected.name ?? "");
+    if (!newSlug) return;
+    const currentSlug = searchParams?.get("name") ?? "";
+    if (currentSlug === newSlug) return;
+    const qs = new URLSearchParams(searchParams?.toString() ?? "");
+    qs.set("name", newSlug);
+    router.replace(`/endings/frameworks?${qs.toString()}`);
+  }, [selected?.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="grid gap-3 md:grid-cols-[240px_1fr]">
@@ -429,6 +469,10 @@ function FrameworksWorkspaceInner({
           variables={variables}
           values={values}
           smartVariableReturns={smartVariableReturns}
+          smartVariableDocs={smartVariableDocs}
+          smartVariableAllBlocks={smartVariableAllBlocks}
+          smartVariableRows={smartVariableRows}
+          smartVariableChips={smartVariableChips}
           folders={folders}
           nations={nations}
           tiebreakDocsSummary={tiebreakDocsSummary}

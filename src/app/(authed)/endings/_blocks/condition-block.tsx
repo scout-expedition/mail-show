@@ -21,13 +21,11 @@ import type {
   RowState,
   VariableState,
 } from "@/lib/endings/block-state";
-import {
-  AGGREGATE_OPTIONS_BY_REF,
-  type EndingChipOperator,
-} from "@/lib/db/enums";
+import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
 import { TIE_OUTCOME, UNSET_TEXT_OUTCOME } from "@/lib/endings/static-analysis";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
 import type { EndingVariableFolder, EndingVariableValue } from "@/lib/db/types";
+import type { NationIconRef } from "@/lib/endings/variable-kind-icon";
 import {
   addBlockVariable,
   addChip,
@@ -39,6 +37,7 @@ import {
   patchBlock,
   removeBlockVariable,
 } from "../_shared/document-actions";
+import { computeDefaultChipFor } from "@/lib/endings/default-chip";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { FieldHighlight } from "@/lib/realtime/field-highlight";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
@@ -69,10 +68,20 @@ export function ConditionBlock({
   values,
   smartVariableReturns,
   folders,
+  nations,
   onDeleteBlock,
   onChangeChip,
   renderRowContent,
   getRowBlockCount,
+  addOptimisticRow,
+  addOptimisticChip,
+  addOptimisticBlockVariable,
+  removeOptimisticRow,
+  removeOptimisticChip,
+  removeOptimisticBlockVariable,
+  clearOptimisticRowDelete,
+  clearOptimisticChipDelete,
+  clearOptimisticBlockVariableDelete,
 }: {
   block: BlockState;
   rows: RowState[];
@@ -86,6 +95,7 @@ export function ConditionBlock({
    *  adder so smart_ref chips can pick from a real list. */
   smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   onDeleteBlock: () => void;
   onChangeChip: (chipId: string, patch: Partial<ChipState>) => void;
   /** Render the recursive child-block list for a given row. */
@@ -94,6 +104,20 @@ export function ConditionBlock({
    *  off the row's chip pills with a right border when the row has
    *  no child blocks. */
   getRowBlockCount?: (rowId: string) => number;
+  /** Optimistic adders passed down from DocumentEditor. */
+  addOptimisticRow?: (ghost: RowState) => void;
+  addOptimisticChip?: (ghost: ChipState) => void;
+  addOptimisticBlockVariable?: (ghost: BlockVariableState) => void;
+  /** Optimistic removers — mark a record with __optimistic_delete so
+   *  the render path greys it while the delete server action runs. */
+  removeOptimisticRow?: (id: string) => void;
+  removeOptimisticChip?: (id: string) => void;
+  removeOptimisticBlockVariable?: (id: string) => void;
+  /** Rollback companions — clear the pending-delete flag when the
+   *  server action errors, so the row isn't stuck greyed forever. */
+  clearOptimisticRowDelete?: (id: string) => void;
+  clearOptimisticChipDelete?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const { peers, setFocus } = usePresenceContext();
   const summaryField = useInstantField<string>({
@@ -150,6 +174,50 @@ export function ConditionBlock({
 
   function handleAddRow() {
     startTransition(async () => {
+      if (addOptimisticRow) {
+        const maxRowOrder = rows.reduce((m, r) => Math.max(m, r.sort_order), -1);
+        const ghostRowId = `tmp-${crypto.randomUUID()}`;
+        addOptimisticRow({
+          id: ghostRowId,
+          condition_block_id: block.id,
+          sort_order: maxRowOrder + 1,
+          __optimistic: true,
+        });
+        // If the block has at least one declared variable, also seed an
+        // optimistic chip so the ghost row looks meaningful.
+        if (addOptimisticChip && declaredVariables.length > 0) {
+          const firstDeclared = declaredVariables[0];
+          const variable = variableIndex.get(firstDeclared.variable_id);
+          if (variable) {
+            // Collect all existing chips on this block for smart defaults.
+            const allBlockChips: ChipState[] = [];
+            for (const r of rows) {
+              for (const c of (chipsByRow.get(r.id) ?? [])) {
+                allBlockChips.push(c);
+              }
+            }
+            const defaults = computeDefaultChipFor({
+              variable,
+              values,
+              smartReturns: smartVariableReturns?.get(variable.id),
+              usedValuesOnBlock: allBlockChips,
+            });
+            if (defaults) {
+              addOptimisticChip({
+                id: `tmp-${crypto.randomUUID()}`,
+                row_id: ghostRowId,
+                variable_id: variable.id,
+                operator: defaults.operator,
+                text_value_id: defaults.text_value_id,
+                number_value: defaults.number_value,
+                aggregate_value: defaults.aggregate_value,
+                sort_order: 0,
+                __optimistic: true,
+              });
+            }
+          }
+        }
+      }
       await addRow({ block_id: block.id });
     });
   }
@@ -159,6 +227,17 @@ export function ConditionBlock({
     recordId: block.id,
     field: "drag",
   } as const;
+
+  // Flat list of chips across every row on this block — RowChipAdder
+  // uses it to pick the next-unused value when seeding a new chip's
+  // default, so the same value isn't re-defaulted twice on the block.
+  const blockChips: ChipState[] = useMemo(() => {
+    const out: ChipState[] = [];
+    for (const r of rows) {
+      for (const c of (chipsByRow.get(r.id) ?? [])) out.push(c);
+    }
+    return out;
+  }, [rows, chipsByRow]);
 
   return (
     <div ref={ref} className="relative">
@@ -240,8 +319,19 @@ export function ConditionBlock({
             declaredVariables={declaredVariables}
             variableIndex={variableIndex}
             variables={variables}
+            values={values}
+            smartVariableReturns={smartVariableReturns}
             folders={folders}
+            nations={nations}
             confirm={confirm}
+            rowCount={rows.length}
+            addOptimisticRow={addOptimisticRow}
+            addOptimisticChip={addOptimisticChip}
+            addOptimisticBlockVariable={addOptimisticBlockVariable}
+            removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+            clearOptimisticBlockVariableDelete={
+              clearOptimisticBlockVariableDelete
+            }
           />
         </div>
         <FieldHighlight
@@ -328,13 +418,41 @@ export function ConditionBlock({
         )}
       >
         {rows.map((row) => {
+          // Ghost optimistic row — render a minimal placeholder.
+          if (row.__optimistic) {
+            const ghostChips = chipsByRow.get(row.id) ?? [];
+            return (
+              <div
+                key={row.id}
+                className="opacity-60 italic pointer-events-none grid grid-cols-[minmax(120px,160px)_1fr_auto] items-stretch gap-x-0"
+              >
+                <div className="mt-1 flex flex-col gap-2 pb-2">
+                  {ghostChips.map((chip) => (
+                    <span
+                      key={chip.id}
+                      className="inline-flex h-5 items-center rounded-md border border-[var(--block-border)] px-2 text-[10px] text-muted-foreground"
+                    >
+                      …
+                    </span>
+                  ))}
+                  {ghostChips.length === 0 ? (
+                    <span className="inline-flex h-5 items-center self-start rounded-md border border-dashed border-[var(--block-border)] px-2 text-[10px] uppercase tracking-[0.025em] text-muted-foreground/70">
+                      adding row…
+                    </span>
+                  ) : null}
+                </div>
+                <div />
+                <div />
+              </div>
+            );
+          }
           const chips = chipsByRow.get(row.id) ?? [];
           const coveredById = analysis.shadowByRowId.get(row.id) ?? null;
           const coveredByOrdinal = coveredById
             ? analysis.rowSortOrder.get(coveredById) ?? null
             : null;
           const overlap = analysis.overlapByRowId.get(row.id) ?? null;
-          return (
+          const conditionRow = (
             <ConditionRow
               key={row.id}
               chips={chips}
@@ -348,6 +466,19 @@ export function ConditionBlock({
               rowSortOrder={analysis.rowSortOrder}
               onAddChip={(input) =>
                 startTransition(async () => {
+                  if (addOptimisticChip) {
+                    addOptimisticChip({
+                      id: `tmp-${crypto.randomUUID()}`,
+                      row_id: row.id,
+                      variable_id: input.variable_id,
+                      operator: input.operator,
+                      text_value_id: input.text_value_id,
+                      number_value: input.number_value,
+                      aggregate_value: input.aggregate_value,
+                      sort_order: (chipsByRow.get(row.id) ?? []).length,
+                      __optimistic: true,
+                    });
+                  }
                   await addChip({
                     row_id: row.id,
                     variable_id: input.variable_id,
@@ -360,17 +491,29 @@ export function ConditionBlock({
               }
               onRemoveChip={(chipId) =>
                 startTransition(async () => {
+                  removeOptimisticChip?.(chipId);
                   const fd = new FormData();
                   fd.set("id", chipId);
-                  await deleteChip(fd);
+                  try {
+                    await deleteChip(fd);
+                  } catch (err) {
+                    clearOptimisticChipDelete?.(chipId);
+                    throw err;
+                  }
                 })
               }
               onChangeChip={onChangeChip}
               onRemoveRow={() =>
                 startTransition(async () => {
+                  removeOptimisticRow?.(row.id);
                   const fd = new FormData();
                   fd.set("id", row.id);
-                  await deleteRow(fd);
+                  try {
+                    await deleteRow(fd);
+                  } catch (err) {
+                    clearOptimisticRowDelete?.(row.id);
+                    throw err;
+                  }
                 })
               }
               onDuplicateRow={() =>
@@ -380,10 +523,22 @@ export function ConditionBlock({
               }
               closeChips={(getRowBlockCount?.(row.id) ?? 1) === 0}
               compact={groupsCompact}
+              usedValuesOnBlock={blockChips}
             >
               {renderRowContent(row)}
             </ConditionRow>
           );
+          if (row.__optimistic_delete) {
+            return (
+              <div
+                key={row.id}
+                className="opacity-60 italic pointer-events-none"
+              >
+                {conditionRow}
+              </div>
+            );
+          }
+          return conditionRow;
         })}
         {declaredVariables.length > 0 && !groupsCompact ? (
           <div className="grid grid-cols-[minmax(120px,160px)_1fr_auto] gap-x-0 !pt-0">
@@ -429,6 +584,7 @@ function ConditionRow({
   onDuplicateRow,
   closeChips,
   compact,
+  usedValuesOnBlock,
   children,
 }: {
   chips: ChipState[];
@@ -448,6 +604,9 @@ function ConditionRow({
   closeChips?: boolean;
   /** Groups-mode compact view — hides the in-row chip adder. */
   compact?: boolean;
+  /** Flat list of every chip on the block — fed to RowChipAdder so its
+   *  default-chip picker can choose the next-unused value. */
+  usedValuesOnBlock?: ChipState[];
   children: React.ReactNode;
 }) {
   const { confirm: confirmRow, dialog: rowDialog } = useConfirm();
@@ -487,6 +646,14 @@ function ConditionRow({
         </span>
       ) : null}
       <div className="group/chips mt-1 flex flex-col gap-2 pb-2">
+        {declaredVariables.length === 0 && chips.length === 0 ? (
+          <span
+            className="inline-flex h-5 items-center self-start rounded-md border border-dashed border-[var(--block-border)] px-2 text-[10px] uppercase tracking-[0.025em] text-muted-foreground/70"
+            title="This row has no condition pills. Add a variable to the block header to populate."
+          >
+            no variable
+          </span>
+        ) : null}
         {declaredVariables.length === 0 ? null : (
           declaredVariables.flatMap((dv) => {
             const variable = variableIndex.get(dv.variable_id);
@@ -526,6 +693,7 @@ function ConditionRow({
             variableIndex={variableIndex}
             values={values}
             smartVariableReturns={smartVariableReturns}
+            usedValuesOnBlock={usedValuesOnBlock}
             onAdd={onAddChip}
             alwaysVisible={chips.length === 0}
           />
@@ -541,7 +709,7 @@ function ConditionRow({
       <div className="flex flex-col gap-1 [&>*]:flex-1 [&>*]:min-h-0">{children}</div>
       <div
         data-row-kebab
-        className="ml-0.5 self-center opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100"
+        className="ml-0.5 mt-1 self-start opacity-0 transition-opacity focus-within:opacity-100"
       >
         <OverflowMenu
           items={[
@@ -694,6 +862,7 @@ function RowChipAdder({
   variableIndex,
   values,
   smartVariableReturns,
+  usedValuesOnBlock,
   onAdd,
   alwaysVisible,
 }: {
@@ -701,6 +870,7 @@ function RowChipAdder({
   variableIndex: Map<string, VariableState>;
   values: EndingVariableValue[];
   smartVariableReturns?: Map<string, string[]>;
+  usedValuesOnBlock?: ChipState[];
   onAdd: (input: AddChipInput) => void;
   /** When true, the + button is always visible (no hover required).
    *  Used when the row has zero chips so the affordance is obvious. */
@@ -711,53 +881,25 @@ function RowChipAdder({
     .filter((v): v is VariableState => Boolean(v));
   if (declaredVarStates.length === 0) return null;
 
-  // Add a chip directly — no intermediate fill form. Operator picks
-  // the kind/aref-appropriate default; values seed from the variable's
-  // default (or first available) so the server's value-shape CHECK
-  // passes on first save.
+  // Add a chip directly — delegate to computeDefaultChipFor so the
+  // optimistic seeding and server behavior agree on the defaults.
   function addDefault(variable: VariableState) {
-    const operator: EndingChipOperator =
-      variable.kind === "aggregate_ref"
-        ? variable.aggregate_ref === "nation_tiebreak_set"
-          ? "set_includes"
-          : "top="
-        : "=";
-    let aggregateValue =
-      variable.kind === "aggregate_ref" && variable.aggregate_ref
-        ? AGGREGATE_OPTIONS_BY_REF[variable.aggregate_ref]?.[0] ?? null
-        : null;
-    let textValueId: string | null = null;
-    if (variable.kind === "text") {
-      const fallback =
-        variable.default_value_id ??
-        values.find((v) => v.variable_id === variable.id)?.id ??
-        null;
-      if (!fallback) {
-        // No values on this variable yet — bail out gracefully. The
-        // user needs to create a value via the variables page (or via
-        // "+ New value…" once a chip exists) first.
-        return;
-      }
-      textValueId = fallback;
-    }
-    if (variable.kind === "smart_ref") {
-      // Smart variables compare against a free-text string stored in
-      // `aggregate_value`. Seed from the doc's unique result strings
-      // when available so the chip's value picker has a pre-selected
-      // option. When the smart variable has no results defined yet,
-      // seed with an empty string — the DB CHECK requires exactly one
-      // value slot non-null, so "" satisfies the shape constraint and
-      // the user gets a visible empty chip they can fill in later
-      // (rather than the silent no-op the old code produced).
-      const returns = smartVariableReturns?.get(variable.id) ?? [];
-      aggregateValue = returns[0] ?? "";
+    const defaults = computeDefaultChipFor({
+      variable,
+      values,
+      smartReturns: smartVariableReturns?.get(variable.id),
+      usedValuesOnBlock: usedValuesOnBlock ?? [],
+    });
+    if (!defaults) {
+      // No values on this variable yet — bail out gracefully.
+      return;
     }
     onAdd({
       variable_id: variable.id,
-      operator,
-      text_value_id: textValueId,
-      number_value: variable.kind === "number_ref" ? 0 : null,
-      aggregate_value: aggregateValue,
+      operator: defaults.operator,
+      text_value_id: defaults.text_value_id,
+      number_value: defaults.number_value,
+      aggregate_value: defaults.aggregate_value,
     });
   }
 
@@ -834,95 +976,143 @@ function HeaderVariableStrip({
   declaredVariables,
   variableIndex,
   variables,
+  values,
+  smartVariableReturns,
   folders,
+  nations,
   confirm,
+  rowCount,
+  addOptimisticRow,
+  addOptimisticChip,
+  addOptimisticBlockVariable,
+  removeOptimisticBlockVariable,
+  clearOptimisticBlockVariableDelete,
 }: {
   blockId: string;
   declaredVariables: BlockVariableState[];
   variableIndex: Map<string, VariableState>;
   variables: VariableState[];
+  values: EndingVariableValue[];
+  smartVariableReturns?: Map<string, string[]>;
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   confirm: ReturnType<typeof useConfirm>["confirm"];
+  /** Current row count — used to decide whether to seed a ghost row. */
+  rowCount: number;
+  addOptimisticRow?: (ghost: RowState) => void;
+  addOptimisticChip?: (ghost: ChipState) => void;
+  addOptimisticBlockVariable?: (ghost: BlockVariableState) => void;
+  removeOptimisticBlockVariable?: (id: string) => void;
+  clearOptimisticBlockVariableDelete?: (id: string) => void;
 }) {
   const [pending, startTransition] = useTransition();
-  // Optimistic shadow of just-added variables — keeps the chip on screen
-  // while the addBlockVariable server action runs and revalidatePath
-  // ripples back. Pruned automatically once the prop's
-  // declaredVariables catches up.
-  const [optimisticVarIds, setOptimisticVarIds] = useState<string[]>([]);
+  // `declaredVariables` already contains the optimistic ghost via the
+  // elevated `addOptimisticBlockVariable` reducer in DocumentEditor — no
+  // local optimistic state needed.
   const declaredIds = new Set(declaredVariables.map((d) => d.variable_id));
-  useEffect(() => {
-     
-    setOptimisticVarIds((prev) =>
-      prev.filter((id) => !declaredIds.has(id))
-    );
-    // declaredIds is derived from declaredVariables on every render; depend
-    // on declaredVariables (stable identity from the parent reducer)
-    // rather than recomputing the Set in the dep list.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [declaredVariables]);
-  const eligible = variables.filter(
-    (v) => !declaredIds.has(v.id) && !optimisticVarIds.includes(v.id)
-  );
+  const eligible = variables.filter((v) => !declaredIds.has(v.id));
 
   return (
     <span className="ml-1 inline-flex flex-wrap items-center gap-2">
       {declaredVariables.map((dv) => {
         const v = variableIndex.get(dv.variable_id);
         if (!v) return null;
+        const isDeleting = dv.__optimistic_delete === true;
         return (
           <VariableChip
             key={dv.id}
             variable={v}
-            disabled={pending}
+            disabled={pending || isDeleting}
+            className={isDeleting ? "opacity-60 italic pointer-events-none" : undefined}
             onRemove={async () => {
+              const isLast = declaredVariables.length === 1;
               const ok = await confirm({
                 title: `Remove ${v.name} from this condition block?`,
-                message:
-                  "This also removes every chip on the block's rows that referenced this variable.",
+                message: isLast
+                  ? "This removes every chip on the block's rows. The rows remain — they'll have no condition pills until you add a variable back."
+                  : "This also removes every chip on the block's rows that referenced this variable.",
                 confirmLabel: "Remove",
                 intent: "destructive",
               });
               if (!ok) return;
               startTransition(async () => {
+                removeOptimisticBlockVariable?.(dv.id);
                 const fd = new FormData();
                 fd.set("id", dv.id);
-                await removeBlockVariable(fd);
+                try {
+                  await removeBlockVariable(fd);
+                } catch (err) {
+                  clearOptimisticBlockVariableDelete?.(dv.id);
+                  throw err;
+                }
               });
             }}
           />
         );
       })}
-      {optimisticVarIds.map((vid) => {
-        const v = variableIndex.get(vid);
-        if (!v) return null;
-        return <VariableChip key={`optimistic-${vid}`} variable={v} disabled />;
-      })}
       {eligible.length > 0 ? (
         <AddHeaderVariablePicker
           variables={eligible}
           folders={folders}
+          nations={nations}
           disabled={pending}
-          alwaysVisible={
-            declaredVariables.length === 0 && optimisticVarIds.length === 0
-          }
+          alwaysVisible={declaredVariables.length === 0}
           onPick={(variable_id) => {
-            setOptimisticVarIds((prev) =>
-              prev.includes(variable_id) ? prev : [...prev, variable_id]
-            );
             startTransition(async () => {
-              try {
-                await addBlockVariable({
-                  block_id: blockId,
+              // Elevated optimistic block-variable ghost.
+              if (addOptimisticBlockVariable) {
+                addOptimisticBlockVariable({
+                  id: `tmp-${crypto.randomUUID()}`,
+                  condition_block_id: blockId,
                   variable_id,
+                  sort_order: declaredVariables.length,
+                  __optimistic: true,
                 });
-              } catch (err) {
-                // Roll back the optimistic chip if the server rejected it.
-                setOptimisticVarIds((prev) =>
-                  prev.filter((id) => id !== variable_id)
-                );
-                throw err;
               }
+              // When the block has no rows yet, seed an optimistic row + chip
+              // to mirror the server-side auto-seed in addBlockVariable.
+              if (rowCount === 0 && addOptimisticRow && addOptimisticChip) {
+                const variable = variableIndex.get(variable_id);
+                if (variable) {
+                  const ghostRowId = `tmp-${crypto.randomUUID()}`;
+                  addOptimisticRow({
+                    id: ghostRowId,
+                    condition_block_id: blockId,
+                    sort_order: 0,
+                    __optimistic: true,
+                  });
+                  // Collect all chips currently on the block (none, since
+                  // rowCount === 0, but follow the same pattern).
+                  const defaults = computeDefaultChipFor({
+                    variable,
+                    values,
+                    smartReturns: smartVariableReturns?.get(variable.id),
+                    usedValuesOnBlock: [],
+                  });
+                  if (defaults) {
+                    addOptimisticChip({
+                      id: `tmp-${crypto.randomUUID()}`,
+                      row_id: ghostRowId,
+                      variable_id,
+                      operator: defaults.operator,
+                      text_value_id: defaults.text_value_id,
+                      number_value: defaults.number_value,
+                      aggregate_value: defaults.aggregate_value,
+                      sort_order: 0,
+                      __optimistic: true,
+                    });
+                  }
+                }
+              }
+              // useOptimistic automatically discards the ghost when the
+              // transition settles (success or error) — no manual rollback
+              // needed. On success, revalidatePath brings the real entry
+              // back into `declaredVariables`; on error, the optimistic
+              // overlay drops and the row reverts to the server's view.
+              await addBlockVariable({
+                block_id: blockId,
+                variable_id,
+              });
             });
           }}
         />
@@ -936,12 +1126,14 @@ type PickerMode = "closed" | "picker" | "create";
 function AddHeaderVariablePicker({
   variables,
   folders,
+  nations,
   disabled,
   onPick,
   alwaysVisible,
 }: {
   variables: VariableState[];
   folders: EndingVariableFolder[];
+  nations: ReadonlyArray<NationIconRef>;
   disabled: boolean;
   onPick: (variable_id: string) => void;
   /** When true, the + button is always visible. Used in the empty
@@ -963,8 +1155,8 @@ function AddHeaderVariablePicker({
 
   // Build the variable tree (memoized — stable variable objects from props)
   const tree = useMemo(
-    () => buildVariableTree(variables, folders),
-    [variables, folders]
+    () => buildVariableTree(variables, folders, nations),
+    [variables, folders, nations]
   );
 
   const items: PickerItem[] = useMemo(
@@ -1118,6 +1310,7 @@ function AddHeaderVariablePicker({
               activeIndex={activeIndex}
               onChangeActiveIndex={setActiveIndex}
               onCommitItem={commitItem}
+              nations={nations}
               ariaLabel="Variable picker"
               className="border-0 shadow-none rounded-none rounded-b-md"
             />

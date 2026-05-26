@@ -1,6 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { Folder, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -61,21 +61,37 @@ export function FolderInspector({
     }
   }
 
+  const [collidedFrom, setCollidedFrom] = useState<string | null>(null);
+  const nameFieldRef = useRef<{ set: (v: string) => void } | null>(null);
   const nameField = useInstantField({
     value: folder.name,
-    onCommit: (v) =>
-      commit(() => patchEndingVariableFolder(folder.id, { name: v })),
+    onCommit: async (v) => {
+      const trimmed = v.trim();
+      const result = await commit(() =>
+        patchEndingVariableFolder(folder.id, { name: v })
+      );
+      if (result?.collided && result.savedName) {
+        setCollidedFrom(trimmed);
+        nameFieldRef.current?.set(result.savedName);
+      } else {
+        setCollidedFrom(null);
+      }
+    },
     onFocusChange: (focused) =>
       setFocus(focused ? focusKey("name") : null),
     onActivity,
   });
+  useEffect(() => {
+    nameFieldRef.current = nameField;
+  });
 
   const parentField = useInstantField<string | null>({
     value: folder.parent_folder_id,
-    onCommit: (v) =>
-      commit(() =>
+    onCommit: async (v) => {
+      await commit(() =>
         patchEndingVariableFolder(folder.id, { parent_folder_id: v })
-      ),
+      );
+    },
     onFocusChange: (focused) =>
       setFocus(focused ? focusKey("parent_folder_id") : null),
     onActivity,
@@ -134,21 +150,34 @@ export function FolderInspector({
       <div className="space-y-4 p-4">
         <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
           <Label className="!text-xs">Name</Label>
-          <FieldHighlight peers={peers} focusKey={focusKey("name")}>
-            <Input
-              value={nameField.value}
-              onChange={(e) => nameField.set(e.target.value)}
-              onFocus={nameField.onFocus}
-              onBlur={nameField.onBlur}
-              placeholder="Folder name"
-              className={cn(
-                "h-8 min-w-0 font-medium",
-                GHOST_FIELD,
-                !nameField.value.trim() && "ring-2 ring-destructive",
-                nameField.status === "error" && "ring-2 ring-destructive"
-              )}
-            />
-          </FieldHighlight>
+          <div className="flex flex-col gap-1">
+            <FieldHighlight peers={peers} focusKey={focusKey("name")}>
+              <Input
+                value={nameField.value}
+                onChange={(e) => {
+                  if (collidedFrom !== null) setCollidedFrom(null);
+                  nameField.set(e.target.value);
+                }}
+                onFocus={nameField.onFocus}
+                onBlur={nameField.onBlur}
+                placeholder="Folder name"
+                className={cn(
+                  "h-8 min-w-0 font-medium",
+                  GHOST_FIELD,
+                  !nameField.value.trim() && "ring-2 ring-destructive",
+                  nameField.status === "error" && "ring-2 ring-destructive"
+                )}
+              />
+            </FieldHighlight>
+            {collidedFrom ? (
+              <span
+                className="inline-flex items-center self-start rounded-md border border-amber-500/40 bg-amber-500/5 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.025em] text-amber-200"
+                title={`The name “${collidedFrom}” was already in use; a number was appended.`}
+              >
+                Folder with the name “{collidedFrom}” already exists
+              </span>
+            ) : null}
+          </div>
 
           <Label className="!text-xs">Parent</Label>
           <FieldHighlight

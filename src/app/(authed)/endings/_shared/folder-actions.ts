@@ -14,11 +14,54 @@
 
 import { randomUUID } from "node:crypto";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { slugify } from "@/lib/slug";
 
 export type FolderScope = "variable" | "smart_variable";
 export type FolderVariableKind = "text" | "smart_ref";
 
 type Supabase = Awaited<ReturnType<typeof createSupabaseServerClient>>;
+
+/**
+ * Find a non-colliding folder name within the given scope by appending
+ * " 2" / " 3" / … until the slug is unique. Slug-aware so two visually
+ * distinct names ("Foo!" / "Foo?") that slugify the same get bumped
+ * too. Also cross-checks the variables of the corresponding kind
+ * (text for `variable` scope, smart_ref for `smart_variable` scope) so
+ * the shared `?name=<slug>` URL space stays unambiguous. Excludes
+ * `excludeFolderId` (the row being renamed) so a no-op rename doesn't
+ * get bumped.
+ */
+async function uniqueScopedFolderName(
+  supabase: Supabase,
+  scope: FolderScope,
+  base: string,
+  excludeFolderId?: string
+): Promise<string> {
+  const variableKind: FolderVariableKind =
+    scope === "smart_variable" ? "smart_ref" : "text";
+  const [{ data: folders }, { data: vars }] = await Promise.all([
+    supabase
+      .from("ending_variable_folders")
+      .select("id, name")
+      .eq("scope", scope),
+    supabase
+      .from("ending_variables")
+      .select("id, name")
+      .eq("kind", variableKind),
+  ]);
+  const folderRows = folders ?? [];
+  const varRows = vars ?? [];
+  let name = base;
+  for (let i = 2; ; i++) {
+    const slug = slugify(name);
+    const conflict =
+      folderRows.some(
+        (f) => f.id !== excludeFolderId && slugify(f.name as string) === slug
+      ) || varRows.some((v) => slugify(v.name as string) === slug);
+    if (!conflict) return name;
+    name = `${base} ${i}`;
+  }
+}
 
 /** Insert a new folder at the bottom of its sibling group (scope-aware). */
 export async function createScopedFolder(input: {
@@ -45,9 +88,18 @@ export async function createScopedFolder(input: {
   const nextSort = (existing?.[0]?.sort_order ?? 0) + 1;
 
   const id = input.id ?? randomUUID();
+  // Auto-disambiguate via slugify so two distinct names that slugify
+  // the same collide too. Also cross-checks the variables namespace
+  // (text for variable scope, smart_ref for smart_variable scope) so
+  // ?name=<slug> resolves unambiguously per page.
+  const folderName = await uniqueScopedFolderName(
+    supabase,
+    input.scope,
+    input.name?.trim() || "New folder"
+  );
   const { error } = await supabase.from("ending_variable_folders").insert({
     id,
-    name: input.name?.trim() || "New folder",
+    name: folderName,
     parent_folder_id: parent,
     sort_order: nextSort,
     scope: input.scope,
@@ -67,14 +119,26 @@ export async function patchScopedFolder(input: {
     parent_folder_id: string | null;
     sort_order: number;
   }>;
-}): Promise<void> {
+}): Promise<{ savedName?: string; collided?: boolean }> {
   const supabase = await createSupabaseServerClient();
   const sanitized: typeof input.patch = { ...input.patch };
 
+  let collided = false;
+  let savedName: string | undefined;
   if (sanitized.name !== undefined) {
     const trimmed = sanitized.name.trim();
     if (!trimmed) throw new Error("Folder name cannot be empty.");
-    sanitized.name = trimmed;
+    // Auto-disambiguate slug collisions (folders + variables share the
+    // ?name=<slug> namespace per scope) by appending " 2" / " 3" / …
+    const finalName = await uniqueScopedFolderName(
+      supabase,
+      input.scope,
+      trimmed,
+      input.id
+    );
+    collided = finalName !== trimmed;
+    savedName = finalName;
+    sanitized.name = finalName;
   }
   if (sanitized.parent_folder_id === input.id) {
     throw new Error("A folder cannot be its own parent.");
@@ -97,6 +161,7 @@ export async function patchScopedFolder(input: {
       `patchScopedFolder: no ${input.scope}-scope folder with id ${input.id}.`
     );
   }
+  return { savedName, collided };
 }
 
 /** Move a variable into `folder_id` at the position before `before_id`

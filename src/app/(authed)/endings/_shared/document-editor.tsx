@@ -18,10 +18,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useOptimistic,
   useRef,
   useState,
   useTransition,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import {
   ChevronsDownUp,
@@ -62,12 +65,11 @@ import {
   AGGREGATE_CHIP_COLORS,
   IMPACT_CHIP_COLORS,
 } from "@/lib/endings/impact-colors";
-import { AGGREGATE_OPTIONS_BY_REF } from "@/lib/db/enums";
+import { referencedVariableIdsForDoc } from "@/lib/endings/smart-variable-deps";
 import {
   EMPTY_SELECTIONS,
   type PreviewSelections,
 } from "@/lib/endings/evaluator";
-import { extractVariableTagNames } from "@/lib/endings/text-substitution";
 import {
   numericRowOverlaps,
   staticShadowedRows,
@@ -294,13 +296,31 @@ export function DocumentEditor({
   // the hook still mounts (cheap) but its onCommit is a no-op so an
   // accidental call would never reach the server.
   const { peers, setFocus, onPostgresChanges } = usePresenceContext();
+  // When a rename collides with an existing slug, patchDocument
+  // auto-appends a suffix and returns { collided: true }. We capture
+  // the user's typed name here so the UI can show a "name already
+  // exists" warning under the input until the user types again.
+  const [collidedFrom, setCollidedFrom] = useState<string | null>(null);
+  // Ref-based handle so onCommit can call nameField.set after the
+  // hook returns (otherwise we'd hit the TDZ on the const binding).
+  const nameFieldRef = useRef<{ set: (v: string) => void } | null>(null);
   const nameField = useInstantField<string>({
     value: initial.name,
     onCommit: async (v) => {
       if (!hasName) return;
       const trimmed = v.trim();
       if (!trimmed) return; // server would throw; let the inline ring show the error
-      await patchDocument(document.id, { name: trimmed });
+      const result = await patchDocument(document.id, { name: trimmed });
+      if (result.collided && result.savedName) {
+        setCollidedFrom(trimmed);
+        // Reflect the server-appended suffix in the input immediately,
+        // so the user sees "Foo 2" without waiting for the postgres
+        // echo round-trip. The follow-up commit is idempotent on the
+        // server (slug already unique under the same id).
+        nameFieldRef.current?.set(result.savedName);
+      } else {
+        setCollidedFrom(null);
+      }
     },
     onFocusChange: (focused) => {
       if (!hasName) return;
@@ -311,6 +331,9 @@ export function DocumentEditor({
       );
     },
   });
+  useEffect(() => {
+    nameFieldRef.current = nameField;
+  });
   const name = nameField.value;
   const [blockState, setBlockState] = useState<BlockState[]>(initial.blocks);
   const [rowState, setRowState] = useState<RowState[]>(initial.rows);
@@ -318,6 +341,146 @@ export function DocumentEditor({
   const [blockVariableState, setBlockVariableState] = useState<
     BlockVariableState[]
   >(initial.blockVariables);
+
+  // Optimistic ADD overlay — ghosts append to the base array while a
+  // server action is in-flight. React 19 discards them once the
+  // surrounding transition settles and revalidatePath brings back the
+  // real server state.
+  const [optimisticBlocks, addOptimisticBlock] = useOptimistic(
+    blockState,
+    (state: BlockState[], ghost: BlockState) => [...state, ghost]
+  );
+  const [optimisticRows, addOptimisticRow] = useOptimistic(
+    rowState,
+    (state: RowState[], ghost: RowState) => [...state, ghost]
+  );
+  const [optimisticChips, addOptimisticChip] = useOptimistic(
+    chipState,
+    (state: ChipState[], ghost: ChipState) => [...state, ghost]
+  );
+  const [optimisticBlockVariables, addOptimisticBlockVariable] = useOptimistic(
+    blockVariableState,
+    (state: BlockVariableState[], ghost: BlockVariableState) => [
+      ...state,
+      ghost,
+    ]
+  );
+
+  // Optimistic DELETE overlay — held in plain useState<Set<string>> so
+  // it survives independently of `useOptimistic`'s rebase semantics. We
+  // can't use the same reducer pattern for delete because postgres_changes
+  // can wipe the underlying entity from base state mid-transition, which
+  // would erase the `__optimistic_delete` flag and pop the ghost out
+  // instantly. The Set holds the id until the local server-action
+  // promise resolves; render path checks the Set + marks the entity
+  // with __optimistic_delete on the fly.
+  const [pendingDeleteBlocks, setPendingDeleteBlocks] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteRows, setPendingDeleteRows] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteChips, setPendingDeleteChips] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [pendingDeleteBlockVariables, setPendingDeleteBlockVariables] =
+    useState<Set<string>>(() => new Set());
+  const mark = useCallback(
+    (
+      setter: Dispatch<SetStateAction<Set<string>>>,
+      id: string,
+      add: boolean
+    ) => {
+      setter((prev) => {
+        const next = new Set(prev);
+        if (add) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    },
+    []
+  );
+  const removeOptimisticBlock = useCallback(
+    (id: string) => mark(setPendingDeleteBlocks, id, true),
+    [mark]
+  );
+  const removeOptimisticRow = useCallback(
+    (id: string) => mark(setPendingDeleteRows, id, true),
+    [mark]
+  );
+  const removeOptimisticChip = useCallback(
+    (id: string) => mark(setPendingDeleteChips, id, true),
+    [mark]
+  );
+  const removeOptimisticBlockVariable = useCallback(
+    (id: string) => mark(setPendingDeleteBlockVariables, id, true),
+    [mark]
+  );
+  // Rollback variants — caller invokes when the server action threw, so
+  // the row doesn't stay grey/disabled forever waiting for a realtime
+  // DELETE that will never arrive. The useMemo intersection already
+  // drops ids the server confirmed gone; this handles the inverse
+  // (server said no, entity is still in base).
+  const clearOptimisticBlockDelete = useCallback(
+    (id: string) => mark(setPendingDeleteBlocks, id, false),
+    [mark]
+  );
+  const clearOptimisticRowDelete = useCallback(
+    (id: string) => mark(setPendingDeleteRows, id, false),
+    [mark]
+  );
+  const clearOptimisticChipDelete = useCallback(
+    (id: string) => mark(setPendingDeleteChips, id, false),
+    [mark]
+  );
+  const clearOptimisticBlockVariableDelete = useCallback(
+    (id: string) => mark(setPendingDeleteBlockVariables, id, false),
+    [mark]
+  );
+  // Active pending-delete views — intersect each Set with the
+  // corresponding base id set so stale entries (ids the server has
+  // already removed via revalidatePath / postgres_changes) silently
+  // disappear from the rendered ghost state. Computed in render via
+  // useMemo rather than mutated in an effect, so there's no
+  // setState-in-effect churn.
+  const baseBlockIds = useMemo(
+    () => new Set(blockState.map((b) => b.id)),
+    [blockState]
+  );
+  const baseRowIds = useMemo(
+    () => new Set(rowState.map((r) => r.id)),
+    [rowState]
+  );
+  const baseChipIds = useMemo(
+    () => new Set(chipState.map((c) => c.id)),
+    [chipState]
+  );
+  const baseBlockVariableIds = useMemo(
+    () => new Set(blockVariableState.map((bv) => bv.id)),
+    [blockVariableState]
+  );
+  const activePendingDeleteBlocks = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteBlocks) if (baseBlockIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteBlocks, baseBlockIds]);
+  const activePendingDeleteRows = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteRows) if (baseRowIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteRows, baseRowIds]);
+  const activePendingDeleteChips = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteChips) if (baseChipIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteChips, baseChipIds]);
+  const activePendingDeleteBlockVariables = useMemo(() => {
+    const out = new Set<string>();
+    for (const id of pendingDeleteBlockVariables)
+      if (baseBlockVariableIds.has(id)) out.add(id);
+    return out;
+  }, [pendingDeleteBlockVariables, baseBlockVariableIds]);
+
   const [, startDeleteTransition] = useTransition();
   const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
   const { toast, toaster } = useToast();
@@ -676,6 +839,7 @@ export function DocumentEditor({
           color_index: v.color_index,
           color_hex,
           folder_id: v.folder_id,
+          smart_variable_doc_id: v.smart_variable_doc_id ?? null,
           sort_order: v.sort_order,
         };
       }),
@@ -710,25 +874,69 @@ export function DocumentEditor({
   // Fallback blocks are pinned at the bottom of the document and rendered
   // outside BlockList — filter them out of the byParent map so the
   // recursive list doesn't try to render them as a regular leaf.
+  // Decorate each kind with the __optimistic_delete flag for any id in
+  // the corresponding pending-delete Set. The Set holds the id until
+  // the server action resolves, independent of `useOptimistic`'s
+  // rebase-on-base-change behavior, so realtime DELETE events can't
+  // pop the ghost out from under the user mid-transition.
+  const decoratedBlocks = useMemo(
+    () =>
+      optimisticBlocks.map((b) =>
+        activePendingDeleteBlocks.has(b.id)
+          ? { ...b, __optimistic_delete: true as const }
+          : b
+      ),
+    [optimisticBlocks, activePendingDeleteBlocks]
+  );
+  const decoratedRows = useMemo(
+    () =>
+      optimisticRows.map((r) =>
+        activePendingDeleteRows.has(r.id)
+          ? { ...r, __optimistic_delete: true as const }
+          : r
+      ),
+    [optimisticRows, activePendingDeleteRows]
+  );
+  const decoratedChips = useMemo(
+    () =>
+      optimisticChips.map((c) =>
+        activePendingDeleteChips.has(c.id)
+          ? { ...c, __optimistic_delete: true as const }
+          : c
+      ),
+    [optimisticChips, activePendingDeleteChips]
+  );
+  const decoratedBlockVariables = useMemo(
+    () =>
+      optimisticBlockVariables.map((bv) =>
+        activePendingDeleteBlockVariables.has(bv.id)
+          ? { ...bv, __optimistic_delete: true as const }
+          : bv
+      ),
+    [optimisticBlockVariables, activePendingDeleteBlockVariables]
+  );
   const fallbackBlock = useMemo(
-    () => blockState.find((b) => b.block_type === "fallback") ?? null,
-    [blockState]
+    () => decoratedBlocks.find((b) => b.block_type === "fallback") ?? null,
+    [decoratedBlocks]
   );
   const byParent = useMemo(
     () =>
       buildByParentBlock(
-        blockState.filter((b) => b.block_type !== "fallback")
+        decoratedBlocks.filter((b) => b.block_type !== "fallback")
       ),
-    [blockState]
+    [decoratedBlocks]
   );
   const rowsByConditionBlock = useMemo(
-    () => buildRowsByConditionBlock(rowState),
-    [rowState]
+    () => buildRowsByConditionBlock(decoratedRows),
+    [decoratedRows]
   );
-  const chipsByRow = useMemo(() => buildChipsByRow(chipState), [chipState]);
+  const chipsByRow = useMemo(
+    () => buildChipsByRow(decoratedChips),
+    [decoratedChips]
+  );
   const declaredByBlock = useMemo(
-    () => buildDeclaredByBlock(blockVariableState),
-    [blockVariableState]
+    () => buildDeclaredByBlock(decoratedBlockVariables),
+    [decoratedBlockVariables]
   );
 
   // Static analysis (Phase 5): shadow + uncovered-assignment detection.
@@ -831,36 +1039,11 @@ export function DocumentEditor({
   // tags toward the input set so authors can dial in values for
   // variables that aren't otherwise on a chip.
   const referencedVariables = useMemo(() => {
-    const ids = new Set<string>();
-    for (const c of chipState) ids.add(c.variable_id);
-    const variableByName = new Map<string, VariableState>();
-    for (const v of variableState) variableByName.set(v.name, v);
-    for (const b of blockState) {
-      if (b.block_type !== "text" || !b.text) continue;
-      for (const name of extractVariableTagNames(b.text)) {
-        const v = variableByName.get(name);
-        if (v) ids.add(v.id);
-      }
-    }
-    const numberRefByName = new Map<string, VariableState>();
-    for (const v of variableState) {
-      if (v.kind === "number_ref" && v.number_ref) {
-        numberRefByName.set(v.number_ref, v);
-      }
-    }
-    for (const v of variableState) {
-      if (!ids.has(v.id)) continue;
-      if (v.kind !== "aggregate_ref" || !v.aggregate_ref) continue;
-      // nation_tiebreak_set chips check set-membership against the working
-      // tiebreak set, not the underlying nation impact-column scores —
-      // pulling those columns into the preview would show inputs that
-      // have no effect on the result.
-      if (v.aggregate_ref === "nation_tiebreak_set") continue;
-      for (const col of AGGREGATE_OPTIONS_BY_REF[v.aggregate_ref]) {
-        const underlying = numberRefByName.get(col);
-        if (underlying) ids.add(underlying.id);
-      }
-    }
+    const ids = referencedVariableIdsForDoc({
+      blocks: blockState,
+      chips: chipState,
+      variables: variableState,
+    });
     return variableState.filter((v) => ids.has(v.id));
   }, [chipState, variableState, blockState]);
 
@@ -1268,7 +1451,10 @@ export function DocumentEditor({
               >
                 <Input
                   value={nameField.value}
-                  onChange={(e) => nameField.set(e.target.value)}
+                  onChange={(e) => {
+                    if (collidedFrom !== null) setCollidedFrom(null);
+                    nameField.set(e.target.value);
+                  }}
                   onFocus={nameField.onFocus}
                   onBlur={nameField.onBlur}
                   placeholder={
@@ -1283,6 +1469,16 @@ export function DocumentEditor({
                 />
               </FieldHighlight>
             </div>
+            {collidedFrom ? (
+              <span
+                className="mt-1 inline-flex items-center rounded-md border border-amber-500/40 bg-amber-500/5 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.025em] text-amber-200"
+                title={`The name “${collidedFrom}” was already in use; a number was appended.`}
+              >
+                {isSmartVariable
+                  ? `Smart Variable with the name “${collidedFrom}” already exists`
+                  : `Framework with the name “${collidedFrom}” already exists`}
+              </span>
+            ) : null}
           </div>
         ) : null}
 
@@ -1300,10 +1496,25 @@ export function DocumentEditor({
                 values={values}
                 smartVariableReturns={smartVariableReturns}
                 folders={folders}
+                nations={nations}
                 document_id={document.id}
                 leaves={leaves}
                 onUpdateBlock={updateBlock}
                 onChangeChip={updateChip}
+                addOptimisticBlock={addOptimisticBlock}
+                addOptimisticRow={addOptimisticRow}
+                addOptimisticChip={addOptimisticChip}
+                addOptimisticBlockVariable={addOptimisticBlockVariable}
+                removeOptimisticBlock={removeOptimisticBlock}
+                removeOptimisticRow={removeOptimisticRow}
+                removeOptimisticChip={removeOptimisticChip}
+                removeOptimisticBlockVariable={removeOptimisticBlockVariable}
+                clearOptimisticBlockDelete={clearOptimisticBlockDelete}
+                clearOptimisticRowDelete={clearOptimisticRowDelete}
+                clearOptimisticChipDelete={clearOptimisticChipDelete}
+                clearOptimisticBlockVariableDelete={
+                  clearOptimisticBlockVariableDelete
+                }
               />
               {fallback && fallbackBlock ? (
                 <FallbackBlock

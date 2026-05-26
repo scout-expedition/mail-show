@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Dice5 } from "lucide-react";
+import { Blocks, Dice5, SquareStack } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -12,6 +12,8 @@ import { FlashRing } from "@/lib/realtime/flash-ring";
 import {
   EMPTY_SELECTIONS,
   evaluateDocumentDetailed,
+  resolveAggregatesDetailed,
+  resolveSmartVariables,
   type EvalBlock,
   type EvalChip,
   type EvalRow,
@@ -42,6 +44,13 @@ import {
   type EndingLogicKind,
 } from "@/lib/db/enums";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
+import {
+  VariableInput,
+  bucketReferencedVariables,
+  withZeroNumberDefaults,
+  type PreviewCtx,
+} from "../_preview/variable-input";
+import { referencedVariableIdsForDoc } from "@/lib/endings/smart-variable-deps";
 
 /**
  * Build the pool of options a random sentinel rolls over for a given
@@ -136,6 +145,10 @@ export function LogicPreviewView({
   frameworks,
   tiebreakDocs,
   nations,
+  smartVariableDocs,
+  smartVariableReturns,
+  smartVariableEvalInputsByDocId,
+  smartVarDocIdByVariableId,
 }: {
   docKind: EndingLogicKind;
   blocks: BlockState[];
@@ -155,6 +168,12 @@ export function LogicPreviewView({
     Nation,
     "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
   >[];
+  smartVariableDocs?: EndingDocument[];
+  smartVariableReturns?: Map<string, string[]>;
+  /** EvalInputs for each smart_variable doc, keyed by doc id. */
+  smartVariableEvalInputsByDocId?: Map<string, EvalInputs>;
+  /** Maps smart_ref variable id → smart_variable_doc_id. */
+  smartVarDocIdByVariableId?: Map<string, string>;
 }) {
   const numberRefByName = useMemo(() => {
     const m = new Map<string, string>();
@@ -163,6 +182,214 @@ export function LogicPreviewView({
     }
     return m;
   }, [variables]);
+
+  // Smart Variables referenced by chips on this logic doc.
+  const referencedSmartVars = useMemo(
+    () =>
+      referencedVariables.filter(
+        (v) =>
+          v.kind === "smart_ref" &&
+          smartVarDocIdByVariableId?.has(v.id) === true
+      ),
+    [referencedVariables, smartVarDocIdByVariableId]
+  );
+
+  // Per-smart-var toggle: "set_result" | "set_inputs". Default: "set_inputs".
+  const [svModes, setSvModes] = useState<Record<string, "set_result" | "set_inputs">>({});
+  function svMode(variableId: string): "set_result" | "set_inputs" {
+    return svModes[variableId] ?? "set_inputs";
+  }
+  function setSvMode(variableId: string, mode: "set_result" | "set_inputs") {
+    setSvModes((prev) => ({ ...prev, [variableId]: mode }));
+  }
+
+  // Direct-result picks keyed by variableId → value string.
+  const [svDirectResults, setSvDirectResults] = useState<Record<string, string>>({});
+  function setSvDirectResult(variableId: string, value: string) {
+    setSvDirectResults((prev) => ({ ...prev, [variableId]: value }));
+  }
+
+  // Build the resolved aggregates once from the parent doc's chips so
+  // smart-var "set_inputs" evaluations share the same aggregate resolution.
+  const evalVariables = useMemo(
+    () =>
+      variables.map(
+        (v): EvalVariable => ({
+          id: v.id,
+          name: v.name,
+          kind: v.kind,
+          aggregate_ref: v.aggregate_ref,
+        })
+      ),
+    [variables]
+  );
+  const variableIndex = useMemo(() => {
+    const m = new Map<string, EvalVariable>();
+    for (const v of evalVariables) m.set(v.id, v);
+    return m;
+  }, [evalVariables]);
+  // Variables fed into zero-default seeding: parent referencedVariables
+  // PLUS variables referenced by smart vars' own trees (so a number_ref
+  // used only inside a smart var's sub-tree still defaults to 0 in both
+  // the input control and the evaluator). Independent of mode so flipping
+  // back to set-inputs preserves the same 0 defaults.
+  const seedReferencedVariables = useMemo<VariableState[]>(() => {
+    const seen = new Set<string>();
+    const out: VariableState[] = [];
+    for (const v of referencedVariables) {
+      if (!seen.has(v.id)) {
+        seen.add(v.id);
+        out.push(v);
+      }
+    }
+    if (referencedSmartVars.length === 0) return out;
+    const varsById = new Map(variables.map((v) => [v.id, v]));
+    for (const sv of referencedSmartVars) {
+      const docId = smartVarDocIdByVariableId?.get(sv.id);
+      if (!docId) continue;
+      const baseInputs = smartVariableEvalInputsByDocId?.get(docId);
+      if (!baseInputs) continue;
+      const ids = referencedVariableIdsForDoc({
+        blocks: baseInputs.blocks as BlockState[],
+        chips: baseInputs.chips as ChipState[],
+        variables: baseInputs.variables as unknown as VariableState[],
+      });
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        const v = varsById.get(id);
+        if (!v) continue;
+        seen.add(id);
+        out.push(v);
+      }
+    }
+    return out;
+  }, [
+    referencedVariables,
+    referencedSmartVars,
+    smartVarDocIdByVariableId,
+    smartVariableEvalInputsByDocId,
+    variables,
+  ]);
+  const baseSelections = useMemo<PreviewSelections>(
+    () => ({
+      ...(selections ?? EMPTY_SELECTIONS),
+      numbers: withZeroNumberDefaults(
+        selections?.numbers ?? {},
+        seedReferencedVariables
+      ),
+      numberRefByName,
+      tiebreak_docs: tiebreakDocs,
+    }),
+    [selections, numberRefByName, tiebreakDocs, seedReferencedVariables]
+  );
+  const resolvedAggregates = useMemo(() => {
+    const detailed = resolveAggregatesDetailed(
+      chips as EvalChip[],
+      variableIndex,
+      baseSelections
+    );
+    const m = new Map<string, string | null>();
+    for (const [k, v] of detailed) m.set(k, v.value);
+    return m;
+  }, [chips, variableIndex, baseSelections]);
+
+  // For each "set_inputs" smart var: build its EvalInputs, run the evaluator,
+  // and collect into smartVariableResults. "set_result" vars use the direct
+  // pick instead.
+  const smartVariableResults = useMemo((): Record<string, string | null> => {
+    const out: Record<string, string | null> = {};
+    const setInputsBatch: Array<{ variable_id: string; inputs: EvalInputs }> = [];
+    for (const sv of referencedSmartVars) {
+      const mode = svModes[sv.id] ?? "set_inputs";
+      if (mode === "set_result") {
+        const picked = svDirectResults[sv.id] ?? null;
+        out[sv.id] = picked !== "" ? picked : null;
+      } else {
+        const docId = smartVarDocIdByVariableId?.get(sv.id);
+        if (!docId) { out[sv.id] = null; continue; }
+        const baseInputs = smartVariableEvalInputsByDocId?.get(docId);
+        if (!baseInputs) {
+          out[sv.id] = null;
+          continue;
+        }
+        setInputsBatch.push({
+          variable_id: sv.id,
+          inputs: {
+            ...baseInputs,
+            selections: {
+              ...baseInputs.selections,
+              ...baseSelections,
+              resolved_aggregates: resolvedAggregates,
+            },
+          },
+        });
+      }
+    }
+    const resolved = resolveSmartVariables(setInputsBatch);
+    for (const [vid, val] of resolved) {
+      out[vid] = val;
+    }
+    return out;
+  }, [
+    referencedSmartVars,
+    svModes,
+    svDirectResults,
+    smartVarDocIdByVariableId,
+    smartVariableEvalInputsByDocId,
+    baseSelections,
+    resolvedAggregates,
+  ]);
+
+  // Variables available for "set_inputs" per smart var (keyed by variable id).
+  const svInputVarsByVariableId = useMemo(() => {
+    const m = new Map<string, VariableState[]>();
+    for (const sv of referencedSmartVars) {
+      const docId = smartVarDocIdByVariableId?.get(sv.id);
+      if (!docId) { m.set(sv.id, []); continue; }
+      const baseInputs = smartVariableEvalInputsByDocId?.get(docId);
+      if (!baseInputs) { m.set(sv.id, []); continue; }
+      const ids = referencedVariableIdsForDoc({
+        blocks: baseInputs.blocks as BlockState[],
+        chips: baseInputs.chips as ChipState[],
+        variables: baseInputs.variables as unknown as VariableState[],
+      });
+      const eligible = variables.filter(
+        (v) => ids.has(v.id) && v.kind !== "aggregate_ref" && v.kind !== "smart_ref"
+      );
+      m.set(sv.id, eligible);
+    }
+    return m;
+  }, [referencedSmartVars, smartVarDocIdByVariableId, smartVariableEvalInputsByDocId, variables]);
+
+  const nationByName = useMemo(() => {
+    const m = new Map<
+      string,
+      Pick<Nation, "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value">
+    >();
+    for (const n of nations) m.set(n.name.toLowerCase(), n);
+    return m;
+  }, [nations]);
+
+  // PreviewCtx for VariableInput — shares the same onChangeText/onChangeNumber
+  // as the parent panel so smart-var inputs bind to the same selections slots.
+  const variableById = useMemo(() => {
+    const m = new Map<string, VariableState>();
+    for (const v of variables) m.set(v.id, v);
+    return m;
+  }, [variables]);
+  const previewCtx = useMemo<PreviewCtx>(
+    () => ({
+      variableById,
+      declaredByBlock: new Map(),
+      values,
+      selections: selections ?? EMPTY_SELECTIONS,
+      nationByName,
+      flashColors,
+      onChangeText,
+      onChangeNumber,
+    }),
+    [variableById, values, selections, nationByName, flashColors, onChangeText, onChangeNumber]
+  );
 
   // Hypothetical tied set on nation_affinity_* tabs. Drives both the
   // set-narrowing evaluator and the pool for terminal random sentinels.
@@ -182,21 +409,14 @@ export function LogicPreviewView({
       blocks: blocks as EvalBlock[],
       rows: rows as EvalRow[],
       chips: chips as EvalChip[],
-      variables: variables.map(
-        (v): EvalVariable => ({
-          id: v.id,
-          name: v.name,
-          kind: v.kind,
-          aggregate_ref: v.aggregate_ref,
-        })
-      ),
+      variables: evalVariables,
       selections: {
-        ...(selections ?? EMPTY_SELECTIONS),
-        numberRefByName,
-        tiebreak_docs: tiebreakDocs,
+        ...baseSelections,
+        resolved_aggregates: resolvedAggregates,
+        smartVariableResults,
       },
     }),
-    [blocks, rows, chips, variables, selections, numberRefByName, tiebreakDocs]
+    [blocks, rows, chips, evalVariables, baseSelections, resolvedAggregates, smartVariableResults]
   );
 
   const result = useMemo(() => {
@@ -239,7 +459,7 @@ export function LogicPreviewView({
   const [rollNonce, setRollNonce] = useState(0);
   const rolled = useMemo(() => {
     if (!rollPool || rollPool.length === 0) return null;
-     
+
     return rollPool[Math.floor(Math.random() * rollPool.length)];
     // poolSnapshot stands in for the pool's identity so rolls survive
     // unrelated re-renders; rollNonce is the manual reroll trigger.
@@ -256,14 +476,16 @@ export function LogicPreviewView({
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {referencedVariables.length > 0 ? (
+      {referencedVariables.some(
+        (v) => v.kind !== "aggregate_ref" && v.kind !== "smart_ref"
+      ) ? (
         <div className="rounded-md border border-border bg-muted/10 p-3">
           <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
             Set variable values
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {referencedVariables
-              .filter((v) => v.kind !== "aggregate_ref")
+              .filter((v) => v.kind !== "aggregate_ref" && v.kind !== "smart_ref")
               .map((v) => (
                 <div
                   key={v.id}
@@ -311,6 +533,97 @@ export function LogicPreviewView({
                   </FlashRing>
                 </div>
               ))}
+          </div>
+        </div>
+      ) : null}
+
+      {referencedSmartVars.length > 0 ? (
+        <div className="rounded-md border border-border bg-muted/10 p-3">
+          <div className="mb-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Smart Variables
+          </div>
+          <div className="flex flex-col gap-3">
+            {referencedSmartVars.map((sv) => {
+              const docId = smartVarDocIdByVariableId?.get(sv.id);
+              const doc = docId
+                ? smartVariableDocs?.find((d) => d.id === docId)
+                : undefined;
+              const mode = svMode(sv.id);
+              const resultOptions = smartVariableReturns?.get(sv.id) ?? [];
+              const hasResults = resultOptions.length > 0;
+              const inputVars = svInputVarsByVariableId.get(sv.id) ?? [];
+              return (
+                <div key={sv.id} className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium">{doc?.name ?? sv.name}</span>
+                    <div className="inline-flex overflow-hidden rounded-md border border-border/60">
+                      <button
+                        type="button"
+                        aria-label="Set inputs"
+                        title="Set inputs"
+                        aria-pressed={mode === "set_inputs"}
+                        onClick={() => setSvMode(sv.id, "set_inputs")}
+                        className={cn(
+                          "flex h-6 w-7 items-center justify-center transition-colors",
+                          mode === "set_inputs"
+                            ? "bg-muted/60 text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <SquareStack size={12} aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Set result"
+                        title="Set result"
+                        aria-pressed={mode === "set_result"}
+                        onClick={() => setSvMode(sv.id, "set_result")}
+                        className={cn(
+                          "flex h-6 w-7 items-center justify-center border-l border-border/60 transition-colors",
+                          mode === "set_result"
+                            ? "bg-muted/60 text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        <Blocks size={12} aria-hidden />
+                      </button>
+                    </div>
+                  </div>
+                  {mode === "set_result" ? (
+                    <div>
+                      <Select
+                        aria-label={`${sv.name} result`}
+                        value={svDirectResults[sv.id] ?? ""}
+                        onChange={(e) => setSvDirectResult(sv.id, e.target.value)}
+                        disabled={!hasResults}
+                        className={cn("h-8 w-full", GHOST_FIELD)}
+                      >
+                        <option value="">—</option>
+                        {resultOptions.map((val) => (
+                          <option key={val} value={val}>
+                            {val}
+                          </option>
+                        ))}
+                      </Select>
+                      {!hasResults ? (
+                        <p className="mt-1 text-[11px] italic text-muted-foreground">
+                          No result blocks defined on this smart variable.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : inputVars.length > 0 ? (
+                    <SmartVarInputsPanel
+                      inputs={inputVars}
+                      ctx={previewCtx}
+                    />
+                  ) : (
+                    <p className="text-[11px] italic text-muted-foreground">
+                      No settable inputs for this smart variable.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -442,6 +755,63 @@ export function LogicPreviewView({
           </p>
         )}
       </article>
+    </div>
+  );
+}
+
+function SmartVarInputsPanel({
+  inputs,
+  ctx,
+}: {
+  inputs: VariableState[];
+  ctx: PreviewCtx;
+}) {
+  const buckets = bucketReferencedVariables(inputs);
+  const hasAnyImpacts =
+    buckets.classImpacts.length > 0 ||
+    buckets.nationImpacts.length > 0 ||
+    buckets.worldImpacts.length > 0;
+  return (
+    <div className="flex flex-col gap-1.5 border-l border-border/40 pl-2">
+      {buckets.text.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {buckets.text.map((v) => (
+            <VariableInput key={v.id} variable={v} ctx={ctx} />
+          ))}
+        </div>
+      ) : null}
+      {hasAnyImpacts ? (
+        <div className="flex flex-wrap items-start gap-1.5">
+          {buckets.classImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.classImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+          {buckets.nationImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.nationImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+          {buckets.worldImpacts.length > 0 ? (
+            <div className="flex items-start gap-0.5 rounded-md bg-black/20 px-1.5 py-1">
+              {buckets.worldImpacts.map((v) => (
+                <VariableInput key={v.id} variable={v} ctx={ctx} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {buckets.otherNumbers.length > 0 ? (
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {buckets.otherNumbers.map((v) => (
+            <VariableInput key={v.id} variable={v} ctx={ctx} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

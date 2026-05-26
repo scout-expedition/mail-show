@@ -54,6 +54,7 @@ import {
   patchEndingVariable,
   patchEndingVariableFolder,
 } from "./actions";
+import { slugify } from "@/lib/slug";
 import {
   VariableInspector,
   type FolderTreeOption,
@@ -249,15 +250,22 @@ function VariablesEditorInner({
     });
   }
 
-  // URL deep-link: ?variable=<id> / ?folder=<id> hydrate selection. Only
-  // synced back to the URL when exactly one item is selected.
+  // URL deep-link: ?name=<slug> hydrates selection. Variables are checked
+  // first; if no match, folders are checked. Only synced back to the URL
+  // when exactly one item is selected.
   const initialSelectedIds = useMemo(() => {
-    const v = searchParams.get("variable");
-    if (v) return new Set([v]);
-    const f = searchParams.get("folder");
-    if (f) return new Set([f]);
+    const slug = searchParams.get("name");
+    if (!slug) return new Set<string>();
+    const matchedVar = initialVariables.find(
+      (v) => v.kind === "text" && slugify(v.name) === slug
+    );
+    if (matchedVar) return new Set([matchedVar.id]);
+    const matchedFolder = initialFolders.find(
+      (f) => slugify(f.name) === slug
+    );
+    if (matchedFolder) return new Set([matchedFolder.id]);
     return new Set<string>();
-  }, [searchParams]);
+  }, [searchParams, initialVariables, initialFolders]);
   const [selectedIds, setSelectedIds] =
     useState<Set<string>>(initialSelectedIds);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
@@ -265,12 +273,16 @@ function VariablesEditorInner({
   const syncUrl = useCallback(
     (ids: Set<string>) => {
       const params = new URLSearchParams(searchParams.toString());
-      params.delete("variable");
-      params.delete("folder");
+      params.delete("name");
       if (ids.size === 1) {
         const [only] = Array.from(ids);
-        if (variables.some((v) => v.id === only)) params.set("variable", only);
-        else if (folders.some((f) => f.id === only)) params.set("folder", only);
+        const matchedVar = variables.find((v) => v.id === only);
+        if (matchedVar) {
+          params.set("name", slugify(matchedVar.name));
+        } else {
+          const matchedFolder = folders.find((f) => f.id === only);
+          if (matchedFolder) params.set("name", slugify(matchedFolder.name));
+        }
       }
       const qs = params.toString();
       router.replace(qs ? `?${qs}` : "?", { scroll: false });
@@ -553,6 +565,24 @@ function VariablesEditorInner({
     singleId !== null
       ? folders.find((f) => f.id === singleId) ?? null
       : null;
+
+  // Rename → URL sync: when the single-selected item is renamed, update the
+  // URL slug so a reload resolves to the same item under its new name.
+  // Guard with searchParams.get('name') !== newSlug to avoid URL-update loops.
+  useEffect(() => {
+    if (!isSingle || singleId === null) return;
+    const selectedItem = selectedVariable ?? selectedFolder;
+    if (!selectedItem) return;
+    const newSlug = slugify(selectedItem.name);
+    if (searchParams.get("name") !== newSlug) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("name", newSlug);
+      const qs = params.toString();
+      router.replace(qs ? `?${qs}` : "?", { scroll: false });
+    }
+  // Only re-run when the selected item's name changes, not on every searchParams update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVariable?.name, selectedFolder?.name]);
 
   // Drop a single-selection id that vanished from the data. Render-time
   // setState (vs. useEffect) so the new react-hooks/set-state-in-effect

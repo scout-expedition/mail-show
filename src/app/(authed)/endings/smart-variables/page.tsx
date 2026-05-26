@@ -21,14 +21,16 @@ import type {
   EndingVariableValue,
   Nation,
 } from "@/lib/db/types";
+import { slugify } from "@/lib/slug";
+import { loadEndingPreviewDeps } from "../_shared/preview-deps";
 import { SmartVariablesEditor } from "./smart-variables-editor";
 
 export default async function SmartVariablesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ doc?: string }>;
+  searchParams: Promise<{ name?: string }>;
 }) {
-  const { doc: selectedDocId } = await searchParams;
+  const { name: slug } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
@@ -51,6 +53,7 @@ export default async function SmartVariablesPage({
     { data: valueData },
     { data: folderData },
     { data: nationData },
+    previewDeps,
   ] = await Promise.all([
     supabase.from("ending_documents").select("*").order("sort_order"),
     supabase.from("ending_blocks").select("*").order("sort_order"),
@@ -72,10 +75,14 @@ export default async function SmartVariablesPage({
     supabase
       .from("nations")
       .select("name, color_hex, abbreviation, icon_type, icon_value"),
+    loadEndingPreviewDeps(supabase, { includeTiebreakLogicDocs: true }),
   ]);
 
   const allDocs = (documentData ?? []) as EndingDocument[];
   const smartDocs = allDocs.filter((d) => d.kind === "smart_variable");
+  const selectedDocId = slug
+    ? (smartDocs.find((d) => slugify(d.name ?? "") === slug)?.id ?? null)
+    : null;
   const smartDocIds = new Set(smartDocs.map((d) => d.id));
   const smartBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
     smartDocIds.has(b.document_id)
@@ -113,6 +120,7 @@ export default async function SmartVariablesPage({
             "name" | "color_hex" | "abbreviation" | "icon_type" | "icon_value"
           >[]
         }
+        tiebreakDocsRaw={previewDeps.logicDocRawByKind ?? undefined}
         selectedDocId={selectedDocId ?? null}
         currentUserId={currentUserId}
         currentEmail={currentEmail}

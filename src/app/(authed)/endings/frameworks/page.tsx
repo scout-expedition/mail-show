@@ -14,13 +14,14 @@ import type {
 } from "@/lib/db/types";
 import { FrameworksWorkspace } from "./workspace";
 import type { EndingLogicKind } from "@/lib/db/enums";
+import { slugify } from "@/lib/slug";
 
 export default async function FrameworksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ framework?: string }>;
+  searchParams: Promise<{ name?: string }>;
 }) {
-  const { framework: selectedId } = await searchParams;
+  const { name: slug } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const { data: meData } = await supabase.auth.getUser();
   const currentUserId = meData.user?.id;
@@ -72,6 +73,14 @@ export default async function FrameworksPage({
   // docs — saves a JOIN at the cost of a tiny client-side filter.
   const allDocs = (allDocData ?? []) as EndingDocument[];
   const frameworkDocs = allDocs.filter((d) => d.kind === "framework");
+
+  // Resolve ?name=<slug> → selectedId. Fall back to first by sort_order
+  // when the slug matches nothing (stale link, renamed framework, etc.).
+  const selectedId = slug
+    ? (frameworkDocs.find((f) => slugify(f.name ?? "") === slug)?.id ??
+        frameworkDocs[0]?.id ??
+        null)
+    : null;
   const frameworkIds = new Set(frameworkDocs.map((d) => d.id));
   const frameworkBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
     frameworkIds.has(b.document_id)
@@ -94,6 +103,19 @@ export default async function FrameworksPage({
       smartDocIds.has(b.document_id) &&
       (b.block_type === "result" || b.block_type === "fallback")
   );
+  // Full smart variable block tree (all block types) for the preview
+  // panel's per-smart-variable evaluator.
+  const allSmartVarBlocks = ((blockData ?? []) as EndingBlock[]).filter((b) =>
+    smartDocIds.has(b.document_id)
+  );
+  const allSmartVarBlockIds = new Set(allSmartVarBlocks.map((b) => b.id));
+  const smartVariableRows = ((rowData ?? []) as EndingConditionRow[]).filter(
+    (r) => allSmartVarBlockIds.has(r.condition_block_id)
+  );
+  const smartVarRowIds = new Set(smartVariableRows.map((r) => r.id));
+  const smartVariableChips = (
+    (chipData ?? []) as EndingConditionRowChip[]
+  ).filter((c) => smartVarRowIds.has(c.row_id));
 
   // Per-logic-kind tiebreak summary for static analysis. A doc is
   // "empty" only when both: it has zero condition-block rows AND its
@@ -170,6 +192,9 @@ export default async function FrameworksPage({
       selectedFrameworkId={selectedId ?? null}
       smartVariableDocs={smartVariableDocs}
       smartVariableBlocks={smartVariableBlocks}
+      smartVariableAllBlocks={allSmartVarBlocks}
+      smartVariableRows={smartVariableRows}
+      smartVariableChips={smartVariableChips}
       tiebreakDocsSummary={tiebreakDocsSummary}
       tiebreakDocsRaw={logicDocRawByKind}
       currentUserId={currentUserId}
