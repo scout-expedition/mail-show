@@ -285,6 +285,23 @@ export interface Playthrough {
   current_day_id: string | null;
   current_phase: Phase;
   is_active: boolean;
+  /** Server-time-authoritative game clock (set on startPlaythrough). */
+  started_at: string | null;
+  paused_at: string | null;
+  total_paused_ms: number;
+  /** Server-time-authoritative phase clock; reset on every advancePhase. */
+  phase_started_at: string | null;
+  phase_paused_at: string | null;
+  phase_total_paused_ms: number;
+  /** Per-playthrough override of the day's sort/inspect length (current phase only). */
+  phase_allotted_override_ms: number | null;
+  /** Drives forward-button visibility — set when the player advances past it. */
+  furthest_day_id: string | null;
+  furthest_phase: Phase | null;
+  started: boolean;
+  ended: boolean;
+  /** Resolved framework row at game end. Must satisfy kind='framework' (trigger-enforced). */
+  ending_document_id: string | null;
 }
 
 export interface PlaythroughActionChoice {
@@ -292,6 +309,66 @@ export interface PlaythroughActionChoice {
   playthrough_id: string;
   inspection_letter_id: string;
   chosen_action_id: string;
+  /** Set true by the advance-phase RPC when a NULL choice was filled in
+   *  from the letter's `fallback_mirror_action_id`. */
+  applied_via_fallback: boolean;
+}
+
+export interface PlaythroughPhaseLog {
+  id: string;
+  playthrough_id: string;
+  day_id: string;
+  phase: Phase;
+  entered_at: string;
+  exited_at: string | null;
+  elapsed_ms: number | null;
+  allotted_ms: number | null;
+  overtime_ms: number | null;
+  superseded_at: string | null;
+  version: number;
+}
+
+export interface PlaythroughPhaseTimerAdjustment {
+  id: string;
+  playthrough_id: string;
+  day_id: string;
+  phase: Phase;
+  delta_ms: number;
+  applied_at: string;
+  applied_by: string | null;
+}
+
+export interface PlaythroughActionChoiceHistory {
+  id: string;
+  playthrough_id: string;
+  inspection_letter_id: string;
+  chosen_action_id: string | null;
+  set_at: string;
+  unset_at: string;
+  set_by: string | null;
+  was_fallback: boolean;
+}
+
+export interface PlaythroughReportSegmentFired {
+  id: string;
+  playthrough_id: string;
+  day_id: string;
+  report_segment_id: string;
+  fired_at: string;
+}
+
+export interface PlaythroughReferenceSettings {
+  id: string;
+  map_image_url: string | null;
+  updated_at: string;
+}
+
+/** Per-playthrough view of letters delivered on the current day —
+ *  scheduled (effective_day_id matches) plus branches walked from
+ *  prior-day chosen actions' `next_letter_id`. Queries always filter
+ *  `where playthrough_id = $1`. */
+export interface PlaythroughDeliveredLetter extends InspectionLetterView {
+  playthrough_id: string;
 }
 
 export interface PlaythroughVariables {
