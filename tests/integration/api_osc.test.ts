@@ -22,7 +22,6 @@ import {
 } from "vitest";
 
 import {
-  addDay,
   addLetters,
   addPhysicalLetter,
   addPlaythrough,
@@ -103,7 +102,7 @@ beforeEach(async () => {
     .eq("id", playthroughId);
 
   // Sorting letter + matching rule (slot 3, "all" match, name equals "Alice").
-  sortingLetterId = await addSortingLetter(sb, { dayId, sortId: 9000 });
+  sortingLetterId = await addSortingLetter(sb, { dayId, sortId: 42 });
   await sb
     .from("sorting_letters")
     .update({ sender_name: "Alice" })
