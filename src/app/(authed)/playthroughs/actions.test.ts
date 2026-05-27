@@ -27,14 +27,13 @@ vi.mock("@/lib/supabase/server", async () => {
 
 // Imports of the action MUST come after the mocks above.
 import {
-  chooseAction,
   clearActivePlaythrough,
-  clearChoice,
   createPlaythrough,
   deletePlaythrough,
   setActivePlaythrough,
   updatePlaythrough,
 } from "./actions";
+import { chooseAction, clearChoice } from "./[id]/_actions/play-actions";
 
 const sb = makeTestClient();
 
@@ -254,10 +253,9 @@ describe("chooseAction", () => {
       inspection_letter_id: letterId,
       chosen_action_id: actionId,
     });
-    expect(revalidatePath).toHaveBeenCalledWith(
-      `/playthroughs/${playthroughId}`
-    );
     expect(revalidatePath).toHaveBeenCalledWith("/");
+    expect(revalidatePath).toHaveBeenCalledWith("/playthroughs");
+    expect(revalidatePath).toHaveBeenCalledWith("/playthroughs/[id]", "page");
   });
 
   it("should upsert on (playthrough_id, inspection_letter_id) — switching the chosen action in place", async () => {
@@ -331,9 +329,9 @@ describe("clearChoice", () => {
       .eq("inspection_letter_id", letterId)
       .maybeSingle();
     expect(data).toBeNull();
-    expect(revalidatePath).toHaveBeenCalledWith(
-      `/playthroughs/${playthroughId}`
-    );
+    expect(revalidatePath).toHaveBeenCalledWith("/");
+    expect(revalidatePath).toHaveBeenCalledWith("/playthroughs");
+    expect(revalidatePath).toHaveBeenCalledWith("/playthroughs/[id]", "page");
   });
 
   it("should leave unrelated choices for the same playthrough intact", async () => {

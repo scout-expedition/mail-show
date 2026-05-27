@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { isHideChromePath } from "@/components/nav";
 import { cn } from "@/lib/utils";
 
 const FORCE_NARROW_PREFIXES = ["/graph"] as const;
@@ -27,6 +28,7 @@ export function NavSpacer() {
     ? INLINE_MENU_PREFIXES.some((p) => pathname.startsWith(p))
     : false;
   if (inlineMenu) return null;
+  if (isHideChromePath(pathname)) return null;
   return (
     <div
       aria-hidden

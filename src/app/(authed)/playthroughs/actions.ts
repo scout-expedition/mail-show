@@ -74,34 +74,3 @@ export async function deletePlaythrough(formData: FormData) {
   redirect("/playthroughs");
 }
 
-export async function chooseAction(formData: FormData) {
-  const supabase = await createSupabaseServerClient();
-  const playthrough_id = String(formData.get("playthrough_id") ?? "");
-  const inspection_letter_id = String(formData.get("inspection_letter_id") ?? "");
-  const chosen_action_id = String(formData.get("chosen_action_id") ?? "");
-  if (!playthrough_id || !inspection_letter_id || !chosen_action_id) return;
-  const { error } = await supabase.from("playthrough_action_choices").upsert(
-    {
-      playthrough_id,
-      inspection_letter_id,
-      chosen_action_id,
-    },
-    { onConflict: "playthrough_id,inspection_letter_id" }
-  );
-  if (error) throw new Error(error.message);
-  revalidatePath(`/playthroughs/${playthrough_id}`);
-  revalidatePath("/");
-}
-
-export async function clearChoice(formData: FormData) {
-  const supabase = await createSupabaseServerClient();
-  const playthrough_id = String(formData.get("playthrough_id") ?? "");
-  const inspection_letter_id = String(formData.get("inspection_letter_id") ?? "");
-  const { error } = await supabase
-    .from("playthrough_action_choices")
-    .delete()
-    .eq("playthrough_id", playthrough_id)
-    .eq("inspection_letter_id", inspection_letter_id);
-  if (error) throw new Error(error.message);
-  revalidatePath(`/playthroughs/${playthrough_id}`);
-}

@@ -23,6 +23,15 @@ const FORCE_NARROW_PREFIXES = ["/graph"] as const;
  */
 const INLINE_MENU_PREFIXES = ["/graph"] as const;
 
+/**
+ * Routes that take over the full viewport with their own chrome and want
+ * the AppShell's left nav (and floating menu button) suppressed entirely.
+ * Play-through detail pages render `<PlayNavbar>` and don't want to share
+ * pixels with the planner's nav. Keep in sync with `isHideChromePath` in
+ * `src/components/nav-spacer.tsx` and `app-shell-hud.tsx`.
+ */
+const HIDE_CHROME_PATTERNS = [/^\/playthroughs\/[^/]+(\/|$)/] as const;
+
 function isForceNarrowPath(pathname: string | null | undefined): boolean {
   if (!pathname) return false;
   return FORCE_NARROW_PREFIXES.some((p) => pathname.startsWith(p));
@@ -30,6 +39,10 @@ function isForceNarrowPath(pathname: string | null | undefined): boolean {
 function isInlineMenuPath(pathname: string | null | undefined): boolean {
   if (!pathname) return false;
   return INLINE_MENU_PREFIXES.some((p) => pathname.startsWith(p));
+}
+export function isHideChromePath(pathname: string | null | undefined): boolean {
+  if (!pathname) return false;
+  return HIDE_CHROME_PATTERNS.some((p) => p.test(pathname));
 }
 
 /**
@@ -60,6 +73,7 @@ export function Nav() {
   const pathname = usePathname();
   const forceNarrow = isForceNarrowPath(pathname);
   const inlineMenu = isInlineMenuPath(pathname);
+  const hideChrome = isHideChromePath(pathname);
   const { open, setOpen } = useNavState();
 
   // Close the drawer whenever navigation finishes so a clicked link
@@ -67,6 +81,8 @@ export function Nav() {
   useEffect(() => {
     setOpen(false);
   }, [pathname, setOpen]);
+
+  if (hideChrome) return null;
 
   return (
     <>

@@ -1,3 +1,5 @@
+import { AppShellHud } from "@/components/app-shell-hud";
+import { AppShellMain } from "@/components/app-shell-main";
 import { Nav } from "@/components/nav";
 import { NavSpacer } from "@/components/nav-spacer";
 import { NavStateProvider } from "@/components/nav-context";
@@ -5,10 +7,8 @@ import {
   PresenceUserProvider,
   type PresenceUser,
 } from "@/components/presence-user-context";
-import { VariableHud } from "@/components/variable-hud";
 import { profileFromMetadata } from "@/lib/auth/profile";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { PHASE_LABELS } from "@/lib/db/enums";
 import type { Day, Playthrough, PlaythroughVariables } from "@/lib/db/types";
 
 /** Top-level app chrome: left nav + sticky top bar with playthrough HUD.
@@ -86,32 +86,12 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               except on routes that force the nav into hamburger mode at
               every viewport (e.g. `/graph`). */}
           <NavSpacer />
-          {activePlaythrough ? (
-            <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-5 backdrop-blur">
-              <div className="flex items-center gap-3 text-sm">
-                {currentDay ? (
-                  <>
-                    <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs">
-                      {currentDay.identifier}
-                    </span>
-                    <span className="text-muted-foreground">
-                      {PHASE_LABELS[activePlaythrough.current_phase]}
-                    </span>
-                  </>
-                ) : null}
-              </div>
-              <VariableHud
-                vars={vars}
-                playthroughName={activePlaythrough.name}
-              />
-            </header>
-          ) : null}
-          <main
-            className="flex-1 overflow-y-auto px-8 py-6"
-            style={{ scrollbarGutter: "stable" }}
-          >
-            {children}
-          </main>
+          <AppShellHud
+            activePlaythrough={activePlaythrough}
+            currentDay={currentDay}
+            vars={vars}
+          />
+          <AppShellMain>{children}</AppShellMain>
         </div>
         <Nav />
       </div>
