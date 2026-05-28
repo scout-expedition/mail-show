@@ -8,6 +8,7 @@ import { profileFromMetadata } from "@/lib/auth/profile";
 import { AccountSection } from "./account-section";
 import { ChangePasswordSection } from "./change-password-section";
 import { UsersSection, type UserRow } from "./users-section";
+import { PlaythroughReferenceSection } from "./playthrough-reference-section";
 
 export default async function SettingsPage() {
   const supabase = await createSupabaseServerClient();
@@ -34,6 +35,12 @@ export default async function SettingsPage() {
   } catch (e) {
     usersError = e instanceof Error ? e.message : "Failed to load users";
   }
+
+  const { data: referenceSettings } = await supabase
+    .from("playthrough_reference_settings")
+    .select("map_image_url")
+    .limit(1)
+    .maybeSingle();
 
   return (
     <div>
@@ -64,7 +71,7 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="mb-4">
         <CardHeader>
           <CardTitle>Users</CardTitle>
           <CardDescription>
@@ -80,6 +87,21 @@ export default async function SettingsPage() {
           ) : (
             <UsersSection users={users} currentUserId={currentUserId} />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Playthrough reference</CardTitle>
+          <CardDescription>
+            Upload a map image shown in the reference panel during play-through
+            sessions. The image is publicly readable.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PlaythroughReferenceSection
+            currentUrl={referenceSettings?.map_image_url ?? null}
+          />
         </CardContent>
       </Card>
     </div>
