@@ -8,6 +8,7 @@ import { AvatarStack } from "@/lib/realtime/avatar-stack";
 import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { PHASE_LABELS } from "@/lib/db/enums";
 import type { Day, Playthrough, PlaythroughVariables } from "@/lib/db/types";
+import { GameTimer } from "./game-timer";
 import { PlayMenu } from "./play-menu";
 
 /** Top bar that replaces the planner's left nav inside play mode. Hosts
@@ -55,7 +56,7 @@ export function PlayNavbar({
           {PHASE_LABELS[playthrough.current_phase]}
         </span>
       </div>
-      {/* Track A: <GameTimer playthrough={playthrough} /> lands here. */}
+      <GameTimer playthrough={playthrough} />
       <div className="ml-auto flex items-center gap-3">
         <VariableHud
           vars={hudVars}

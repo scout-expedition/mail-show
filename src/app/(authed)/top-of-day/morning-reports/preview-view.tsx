@@ -22,6 +22,7 @@ import type {
   InspectionLetterView,
 } from "@/lib/db/types";
 import type { MiddleItem } from "./_lib/middle-item";
+import { selectFiredReportSegments } from "@/lib/playthrough/select-fired-segments";
 
 export function PreviewView({
   day,
@@ -135,14 +136,10 @@ export function PreviewView({
     onSelectionChange({ selectedAction: { [groupId]: next } });
   }
 
-  const firedSegmentIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const actionId of Object.values(selectedAction)) {
-      const act = actions.find((a) => a.id === actionId);
-      if (act?.report_segment_id) set.add(act.report_segment_id);
-    }
-    return set;
-  }, [selectedAction, actions]);
+  const firedSegmentIds = useMemo(
+    () => selectFiredReportSegments(actions, selectedAction),
+    [selectedAction, actions]
+  );
 
   function resolveAction(a: ActionRow) {
     const tpl = a.action_template_id

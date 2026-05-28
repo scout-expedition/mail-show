@@ -225,3 +225,36 @@ export async function restartPhaseTimer(
   if (error) throw new Error(error.message);
   revalidatePlayState();
 }
+
+// ---------------------------------------------------------------------------
+// Track C5 — Phase advancement
+// ---------------------------------------------------------------------------
+
+/**
+ * Advance the playthrough to the next phase. `expectedPhase` is an
+ * idempotency token: if another tab already advanced past this phase the
+ * RPC no-ops and this action returns without revalidating.
+ *
+ * The atomic SQL function (`advance_phase`) handles the phase-log
+ * close/open, fallback auto-apply when exiting inspection, and
+ * report-segments recording when entering top-of-day. See
+ * `supabase/migrations/20260527185748_advance_phase_rpc.sql`.
+ */
+export async function advancePhase(
+  id: string,
+  expectedPhase: Phase
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+  const { data, error } = await supabase.rpc("advance_phase", {
+    p_id: id,
+    expected_phase: expectedPhase,
+  });
+  if (error) throw new Error(error.message);
+  // RPC returns false on idempotency mismatch (stale tab) — skip the
+  // revalidate so we don't bust caches for a no-op.
+  if (data === false) return;
+  revalidatePlayState();
+  // Phase transitions across TOD cross the days/[identifier]/top-of-day
+  // route boundary; bust that too so the editor reflects the new state.
+  revalidatePath("/days/[identifier]/top-of-day", "page");
+}
