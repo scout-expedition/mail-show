@@ -8,11 +8,13 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
  *  Track C adds `advancePhase` / `goToPhase` / `endPlaythrough`. */
 
 /** Revalidate every page that surfaces playthrough state. Called by any
- *  mutation that changes choices or (later) current_day/current_phase. */
-function revalidatePlayState(id: string) {
+ *  mutation that changes choices or (later) current_day/current_phase.
+ *  Uses the bracketed pattern (`/playthroughs/[id]`, page-mode) so Next
+ *  matches every dynamic instance — broader than the resolved-URL form. */
+function revalidatePlayState() {
   revalidatePath("/");
   revalidatePath("/playthroughs");
-  revalidatePath(`/playthroughs/${id}`, "page");
+  revalidatePath("/playthroughs/[id]", "page");
 }
 
 export async function chooseAction(formData: FormData) {
@@ -31,7 +33,7 @@ export async function chooseAction(formData: FormData) {
     { onConflict: "playthrough_id,inspection_letter_id" }
   );
   if (error) throw new Error(error.message);
-  revalidatePlayState(playthrough_id);
+  revalidatePlayState();
 }
 
 export async function clearChoice(formData: FormData) {
@@ -45,5 +47,5 @@ export async function clearChoice(formData: FormData) {
     .eq("playthrough_id", playthrough_id)
     .eq("inspection_letter_id", inspection_letter_id);
   if (error) throw new Error(error.message);
-  revalidatePlayState(playthrough_id);
+  revalidatePlayState();
 }

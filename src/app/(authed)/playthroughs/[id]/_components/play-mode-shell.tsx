@@ -2,6 +2,7 @@
 
 import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
+import { usePlaythroughSync } from "@/lib/playthrough/use-playthrough-sync";
 import type {
   Day,
   Playthrough,
@@ -41,20 +42,43 @@ export function PlayModeShell({
         "playthrough_report_segments_fired",
       ]}
     >
-      <div className="flex h-full min-h-0 flex-1 flex-col">
-        <PlayNavbar
-          playthrough={playthrough}
-          currentDay={currentDay}
-          vars={vars}
-        />
-        <main className="flex-1 overflow-y-auto px-8 py-6">
-          {/* Phase content renders here in Track C. */}
-          <div className="rounded-md border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">
-            Phase content lands in Track C — sorting, inspection, and end-of-day
-            renderers. Foundation slice (1B) only wires the shell.
-          </div>
-        </main>
-      </div>
+      <PlayModeBody
+        playthrough={playthrough}
+        currentDay={currentDay}
+        vars={vars}
+      />
     </WorkspacePresenceProvider>
+  );
+}
+
+/** Lives INSIDE the WorkspacePresenceProvider so it can register the
+ *  postgres_changes subscription. Re-runs the route's server component on
+ *  every (debounced) relevant write, which propagates updated playthrough /
+ *  choices / phase log / delivered-letters into the rendered shell. */
+function PlayModeBody({
+  playthrough,
+  currentDay,
+  vars,
+}: {
+  playthrough: Playthrough;
+  currentDay: Day | null;
+  vars: PlaythroughVariables | null;
+}) {
+  usePlaythroughSync(playthrough.id);
+  return (
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <PlayNavbar
+        playthrough={playthrough}
+        currentDay={currentDay}
+        vars={vars}
+      />
+      <main className="flex-1 overflow-y-auto px-8 py-6">
+        {/* Phase content renders here in Track C. */}
+        <div className="rounded-md border border-dashed border-border px-6 py-12 text-center text-sm text-muted-foreground">
+          Phase content lands in Track C — sorting, inspection, and end-of-day
+          renderers. Foundation slice (1B) only wires the shell.
+        </div>
+      </main>
+    </div>
   );
 }

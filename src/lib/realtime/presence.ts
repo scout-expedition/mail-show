@@ -148,6 +148,11 @@ export type UsePresenceOptions = {
   broadcastEvents?: string[];
   onPostgres?: (change: PostgresChange) => void;
   onBroadcast?: (event: string, payload: unknown) => void;
+  /** Fires for every peer the channel removes (including the local user on
+   *  unmount). The peer is reconstructed from the last identity/focus/
+   *  selection seen before the leave; `lastActiveAt` is the bucketed value
+   *  at the moment of departure. */
+  onPresenceLeave?: (peer: PresencePeer) => void;
 };
 
 const PALETTE = [
@@ -258,8 +263,15 @@ export function usePresence(opts: UsePresenceOptions): {
    *  while status is dirty. No-op until the channel is subscribed. */
   pingActivity: () => void;
 } {
-  const { name, self, postgres, broadcastEvents, onPostgres, onBroadcast } =
-    opts;
+  const {
+    name,
+    self,
+    postgres,
+    broadcastEvents,
+    onPostgres,
+    onBroadcast,
+    onPresenceLeave,
+  } = opts;
   const [identities, setIdentities] = useState<Record<string, PresenceIdentity>>(
     {}
   );
@@ -297,6 +309,18 @@ export function usePresence(opts: UsePresenceOptions): {
   useLayoutEffect(() => {
     onBroadcastRef.current = onBroadcast;
   }, [onBroadcast]);
+  const onPresenceLeaveRef = useRef(onPresenceLeave);
+  useLayoutEffect(() => {
+    onPresenceLeaveRef.current = onPresenceLeave;
+  }, [onPresenceLeave]);
+  // Snapshot the latest peer-state maps so the leave handler (which runs
+  // outside the render cycle) can reconstruct a `PresencePeer` for the
+  // leaving user. useLayoutEffect updates synchronously before any
+  // realtime callback fires for the same render.
+  const identitiesRef = useRef<Record<string, PresenceIdentity>>({});
+  const focusMapRef = useRef<Record<string, PresenceFocus | null>>({});
+  const selectionMapRef = useRef<Record<string, PresenceSelection | null>>({});
+  const lastActiveAtMapRef = useRef<Record<string, number>>({});
 
   // Bump a peer's lastActiveAt to the current 5-second bucket. Bucketing
   // bounds state churn during sustained-typing (1Hz heartbeats collapse to
@@ -350,6 +374,28 @@ export function usePresence(opts: UsePresenceOptions): {
         return;
       }
       onBroadcastRef.current?.(event, payload);
+    },
+    onPresenceLeave: (raw) => {
+      // Fire one callback per leaving peer, skipping the local user.
+      for (const entry of raw.leftPresences as RawPresenceEntry[]) {
+        const userId = entry?.userId;
+        if (!userId || userId === selfUserIdRef.current) continue;
+        const identity = identitiesRef.current[userId];
+        const email = identity?.email ?? entry.email;
+        if (!email) continue;
+        const profile = identity?.profile ?? entry.profile ?? null;
+        const peer: PresencePeer = {
+          userId,
+          email,
+          profile,
+          color: colorFromUserId(userId),
+          focus: focusMapRef.current[userId] ?? null,
+          selection: selectionMapRef.current[userId] ?? null,
+          lastActiveAt:
+            lastActiveAtMapRef.current[userId] ?? activityBucket(),
+        };
+        onPresenceLeaveRef.current?.(peer);
+      }
     },
     onPresenceSync: () => {
       const ch = channelRef.current;
@@ -427,6 +473,21 @@ export function usePresence(opts: UsePresenceOptions): {
       channelRef.current = null;
     };
   }, [channel]);
+
+  // Mirror peer-state into refs so the leave callback (which fires outside
+  // React's render cycle) can read the latest snapshot synchronously.
+  useLayoutEffect(() => {
+    identitiesRef.current = identities;
+  }, [identities]);
+  useLayoutEffect(() => {
+    focusMapRef.current = focusMap;
+  }, [focusMap]);
+  useLayoutEffect(() => {
+    selectionMapRef.current = selectionMap;
+  }, [selectionMap]);
+  useLayoutEffect(() => {
+    lastActiveAtMapRef.current = lastActiveAtMap;
+  }, [lastActiveAtMap]);
 
   // Track stable identity once per subscribe — userId/email/profile don't
   // change mid-session at the data-flow level. Gated on SUBSCRIBED:

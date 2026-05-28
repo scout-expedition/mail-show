@@ -18,6 +18,16 @@ export type PostgresSubscription = {
   filter?: string;
 };
 
+/** Raw presence "leave" payload from Supabase's realtime client.
+ *  `leftPresences` carries the entries removed in this event; `key` is the
+ *  presence key (typically the user id). Fires BEFORE the next `sync`, so
+ *  consumers can still see the leaving peer's state in `presenceState()`. */
+export type PresenceLeavePayload = {
+  key: string;
+  currentPresences: Record<string, unknown>[];
+  leftPresences: Record<string, unknown>[];
+};
+
 export type RealtimeChannelOptions = {
   /** Stable channel name. One per top-level surface, e.g. "letters-workspace". */
   name: string;
@@ -30,6 +40,11 @@ export type RealtimeChannelOptions = {
   onPostgres?: (change: PostgresChange) => void;
   onBroadcast?: (event: string, payload: unknown) => void;
   onPresenceSync?: () => void;
+  /** Fires when a peer (including the local user, e.g. on tab close) leaves
+   *  the channel. The post-sync membership won't reflect the leave yet, so
+   *  consumers needing "I am the last remaining peer" should compare the
+   *  current peers array length against the leaving peer. */
+  onPresenceLeave?: (payload: PresenceLeavePayload) => void;
 };
 
 /**
@@ -54,6 +69,7 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
   const onPostgresRef = useLatest(opts.onPostgres);
   const onBroadcastRef = useLatest(opts.onBroadcast);
   const onPresenceSyncRef = useLatest(opts.onPresenceSync);
+  const onPresenceLeaveRef = useLatest(opts.onPresenceLeave);
 
   const [channel, setChannel] = useState<RealtimeChannel | null>(null);
   const [subscribed, setSubscribed] = useState(false);
@@ -108,6 +124,9 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
       ch.on("presence", { event: "sync" }, () => {
         onPresenceSyncRef.current?.();
       });
+      ch.on("presence", { event: "leave" }, (raw) => {
+        onPresenceLeaveRef.current?.(raw as PresenceLeavePayload);
+      });
     }
 
     // Channel handle exposed to consumers — the effect IS the external-system subscription this hook is built around.
@@ -152,7 +171,7 @@ export function useRealtimeChannel(opts: RealtimeChannelOptions): {
       setChannel(null);
     };
   // Refs from useLatest are stable across renders; including them is a no-op but satisfies exhaustive-deps.
-  }, [name, presenceKey, postgresKey, broadcastKey, onBroadcastRef, onPostgresRef, onPresenceSyncRef]);
+  }, [name, presenceKey, postgresKey, broadcastKey, onBroadcastRef, onPostgresRef, onPresenceSyncRef, onPresenceLeaveRef]);
 
   return { channel, subscribed };
 }

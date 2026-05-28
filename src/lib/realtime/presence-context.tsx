@@ -21,9 +21,13 @@ import {
 
 type PostgresHandler = (change: PostgresChange) => void;
 type BroadcastHandler = (payload: unknown) => void;
+type PresenceLeaveHandler = (peer: PresencePeer) => void;
 
-/** Custom broadcast events all presence providers subscribe to. */
-const CUSTOM_BROADCAST_EVENTS = ["row-deleting"];
+/** Custom broadcast events all presence providers subscribe to.
+ *  Each channel has its own `name`, so events never leak across surfaces
+ *  — additions here only affect consumers that opt into them via
+ *  `subscribeBroadcast` / `sendBroadcast`. */
+const CUSTOM_BROADCAST_EVENTS = ["row-deleting", "next-phase-intent"];
 
 type PresenceContextValue = {
   /** The local user's currently-focused field, or null. */
@@ -72,6 +76,13 @@ type PresenceContextValue = {
    * unregister fn. No-op (never fires) when presence is inactive.
    */
   subscribeBroadcast: (event: string, handler: BroadcastHandler) => () => void;
+  /**
+   * Register a handler that fires once per peer leaving the channel (e.g.
+   * tab close, navigation away). The local user's own departure is not
+   * surfaced. Returns an unregister fn. No-op (never fires) when presence
+   * is inactive.
+   */
+  onPresenceLeave: (handler: PresenceLeaveHandler) => () => void;
 };
 
 const PresenceContext = createContext<PresenceContextValue>({
@@ -86,6 +97,7 @@ const PresenceContext = createContext<PresenceContextValue>({
   onPostgresChanges: () => () => {},
   sendBroadcast: () => {},
   subscribeBroadcast: () => () => {},
+  onPresenceLeave: () => () => {},
 });
 
 /** Read the current presence + focus context. Safe to call without a Provider —
@@ -188,6 +200,24 @@ function ActivePresenceProvider({
     broadcastHandlersRef.current.get(event)?.forEach((h) => h(payload));
   }, []);
 
+  // Presence-leave handler registry — ref-based so registering/unregistering
+  // doesn't churn the channel. Order matches insertion.
+  const leaveHandlersRef = useRef<Set<PresenceLeaveHandler>>(new Set());
+  const onPresenceLeaveRegister = useCallback(
+    (handler: PresenceLeaveHandler) => {
+      leaveHandlersRef.current.add(handler);
+      return () => {
+        leaveHandlersRef.current.delete(handler);
+      };
+    },
+    []
+  );
+  const dispatchPresenceLeave = useCallback((peer: PresencePeer) => {
+    for (const handler of leaveHandlersRef.current) {
+      handler(peer);
+    }
+  }, []);
+
   // Stable identity for the postgres subscription array — `useRealtimeChannel`
   // re-subscribes when the serialized shape changes, so we memo by table list.
   const tablesKey = (postgresTables ?? []).join(",");
@@ -211,6 +241,7 @@ function ActivePresenceProvider({
     onPostgres,
     broadcastEvents: CUSTOM_BROADCAST_EVENTS,
     onBroadcast,
+    onPresenceLeave: dispatchPresenceLeave,
   });
 
   const sendBroadcast = useCallback(
@@ -256,6 +287,7 @@ function ActivePresenceProvider({
       onPostgresChanges,
       sendBroadcast,
       subscribeBroadcast,
+      onPresenceLeave: onPresenceLeaveRegister,
     }),
     [
       focus,
@@ -267,6 +299,7 @@ function ActivePresenceProvider({
       onPostgresChanges,
       sendBroadcast,
       subscribeBroadcast,
+      onPresenceLeaveRegister,
     ]
   );
 
@@ -287,6 +320,7 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
   const pingActivity = useCallback(() => {}, []);
   const sendBroadcast = useCallback(() => {}, []);
   const subscribeBroadcast = useCallback(() => () => {}, []);
+  const onPresenceLeave = useCallback(() => () => {}, []);
   const value = useMemo<PresenceContextValue>(
     () => ({
       focus,
@@ -300,8 +334,9 @@ function InactivePresenceProvider({ children }: { children: ReactNode }) {
       onPostgresChanges,
       sendBroadcast,
       subscribeBroadcast,
+      onPresenceLeave,
     }),
-    [focus, selection, pingActivity, onPostgresChanges, sendBroadcast, subscribeBroadcast]
+    [focus, selection, pingActivity, onPostgresChanges, sendBroadcast, subscribeBroadcast, onPresenceLeave]
   );
   return (
     <PresenceContext.Provider value={value}>
