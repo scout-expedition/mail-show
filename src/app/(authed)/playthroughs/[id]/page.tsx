@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { profileFromMetadata } from "@/lib/auth/profile";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { evaluatePlaythroughEnding } from "@/lib/playthrough/ending-inputs";
 import type {
   ActionRow,
   ActionTemplate,
@@ -10,6 +11,7 @@ import type {
   PlaythroughDeliveredLetter,
   PlaythroughPhaseLog,
   PlaythroughVariables,
+  ReportSegmentView,
   SortingRule,
   SortingRuleCondition,
   Storyline,
@@ -144,6 +146,60 @@ export default async function PlaythroughDetail({
   const user = me.user;
   const profile = user ? profileFromMetadata(user.user_metadata) : null;
 
+  // --- Ending data: evaluated server-side when the playthrough has ended ---
+  let endingData: {
+    frameworkName: string | null;
+    paragraphs: string[];
+    choices: PlaythroughActionChoice[];
+    actions: ActionRow[];
+    templates: ActionTemplate[];
+    firedSegments: { report_segment_id: string; day_id: string; summary: string | null; report_id: string | null }[];
+  } | null = null;
+
+  if (playthrough.ended) {
+    const endingResult = vars
+      ? await evaluatePlaythroughEnding(supabase, vars)
+      : { frameworkDocId: null, frameworkName: null, paragraphs: [] };
+
+    // Load fired segments joined with report_segments_view for summary + report_id.
+    const { data: firedRaw } = await supabase
+      .from("playthrough_report_segments_fired")
+      .select("report_segment_id, day_id")
+      .eq("playthrough_id", id);
+
+    const firedSegmentIds = (firedRaw ?? []).map((f) => f.report_segment_id as string);
+    const { data: segViews } =
+      firedSegmentIds.length > 0
+        ? await supabase
+            .from("report_segments_view")
+            .select("id, summary, report_id")
+            .in("id", firedSegmentIds)
+        : { data: [] };
+
+    const segViewById = new Map(
+      (segViews ?? []).map((s) => [s.id as string, s as ReportSegmentView])
+    );
+
+    const firedSegments = (firedRaw ?? []).map((f) => {
+      const sv = segViewById.get(f.report_segment_id as string);
+      return {
+        report_segment_id: f.report_segment_id as string,
+        day_id: f.day_id as string,
+        summary: (sv?.summary as string | null) ?? null,
+        report_id: (sv?.report_id as string | null) ?? null,
+      };
+    });
+
+    endingData = {
+      frameworkName: endingResult.frameworkName,
+      paragraphs: endingResult.paragraphs,
+      choices,
+      actions: allActions,
+      templates,
+      firedSegments,
+    };
+  }
+
   return (
     <PlayModeShell
       playthrough={playthrough}
@@ -160,6 +216,7 @@ export default async function PlaythroughDetail({
         storylines,
         chosenActionByLetter,
       }}
+      endingData={endingData}
       currentUserId={user?.id}
       currentEmail={user?.email ?? undefined}
       currentProfile={

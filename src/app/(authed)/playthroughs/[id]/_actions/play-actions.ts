@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { PHASES, type Phase } from "@/lib/db/enums";
+import type { PlaythroughVariables } from "@/lib/db/types";
+import { evaluatePlaythroughEnding } from "@/lib/playthrough/ending-inputs";
 
 /** Play-mode server actions. Hosts the per-letter action picker for now;
  *  Track A adds the timer ops (`startPlaythrough`, `pauseGame`, …) and
@@ -385,4 +387,74 @@ export async function advancePhase(
   // Phase transitions across TOD cross the days/[identifier]/top-of-day
   // route boundary; bust that too so the editor reflects the new state.
   revalidatePath("/days/[identifier]/top-of-day", "page");
+}
+
+// ---------------------------------------------------------------------------
+// Track E — End playthrough + ending evaluation
+// ---------------------------------------------------------------------------
+
+/**
+ * End the playthrough: freezes the game timer, evaluates the ending
+ * framework selection against the current variable tally, and stores the
+ * resolved `ending_document_id`. Closes the final open phase-log row.
+ *
+ * Idempotent — no-ops if already ended.
+ */
+export async function endPlaythrough(id: string): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+
+  // Load playthrough + variables.
+  const [{ data: pData }, { data: varsData }] = await Promise.all([
+    supabase.from("playthroughs").select("*").eq("id", id).single(),
+    supabase
+      .from("playthrough_variables")
+      .select("*")
+      .eq("playthrough_id", id)
+      .maybeSingle(),
+  ]);
+
+  if (!pData || pData.ended) return;
+
+  // Pause the game clock if not already paused.
+  await supabase.rpc("pause_playthrough", { p_id: id });
+
+  // Close the final open phase-log row.
+  const phaseElapsed =
+    pData.phase_started_at != null
+      ? Math.max(
+          0,
+          Date.now() - new Date(pData.phase_started_at).getTime() - pData.phase_total_paused_ms
+        )
+      : 0;
+
+  await supabase
+    .from("playthrough_phase_log")
+    .update({
+      exited_at: new Date().toISOString(),
+      elapsed_ms: phaseElapsed,
+    })
+    .eq("playthrough_id", id)
+    .is("superseded_at", null)
+    .is("exited_at", null);
+
+  // Evaluate the ending.
+  const vars = varsData as PlaythroughVariables | null;
+  let endingDocId: string | null = null;
+
+  if (vars) {
+    const result = await evaluatePlaythroughEnding(supabase, vars);
+    endingDocId = result.frameworkDocId;
+  }
+
+  // Mark ended.
+  const { error } = await supabase
+    .from("playthroughs")
+    .update({
+      ended: true,
+      ending_document_id: endingDocId,
+    })
+    .eq("id", id);
+
+  if (error) throw new Error(error.message);
+  revalidatePlayState();
 }

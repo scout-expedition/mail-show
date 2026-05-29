@@ -9,10 +9,10 @@
 // advancePhase RPC once it lands.
 
 import { useTransition } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Flag } from "lucide-react";
 import type { Day, PlaythroughVariables } from "@/lib/db/types";
 import { VARIABLE_LABELS } from "@/lib/playthrough/variables";
-import { advancePhase } from "../_actions/play-actions";
+import { advancePhase, endPlaythrough } from "../_actions/play-actions";
 
 // ── Phase wrapper ─────────────────────────────────────────────────────────────
 
@@ -27,17 +27,25 @@ export function PhaseEndOfDay({
   day,
   vars,
   hideAdvance = false,
+  isFinalDay = false,
 }: {
   playthroughId: string;
   day: Day;
   vars: PlaythroughVariables | null;
   hideAdvance?: boolean;
+  isFinalDay?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
 
   function handleNext() {
     startTransition(async () => {
       await advancePhase(playthroughId, "end_of_day");
+    });
+  }
+
+  function handleEnd() {
+    startTransition(async () => {
+      await endPlaythrough(playthroughId);
     });
   }
 
@@ -123,24 +131,42 @@ export function PhaseEndOfDay({
         </p>
       )}
 
-      {/* Next button (hidden when viewing a past phase via back-nav) */}
+      {/* Next / End button (hidden when viewing a past phase via back-nav) */}
       {!hideAdvance ? (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={handleNext}
-            disabled={isPending}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow transition-colors hover:bg-primary/90 disabled:opacity-50"
-          >
-            {isPending ? (
-              "Advancing…"
-            ) : (
-              <>
-                Next day
-                <ArrowRight size={16} aria-hidden />
-              </>
-            )}
-          </button>
+        <div className="flex justify-end gap-2">
+          {isFinalDay ? (
+            <button
+              type="button"
+              onClick={handleEnd}
+              disabled={isPending}
+              className="inline-flex items-center gap-2 rounded-md bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground shadow transition-colors hover:bg-destructive/90 disabled:opacity-50"
+            >
+              {isPending ? (
+                "Ending…"
+              ) : (
+                <>
+                  End playthrough
+                  <Flag size={16} aria-hidden />
+                </>
+              )}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleNext}
+              disabled={isPending}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow transition-colors hover:bg-primary/90 disabled:opacity-50"
+            >
+              {isPending ? (
+                "Advancing…"
+              ) : (
+                <>
+                  Next day
+                  <ArrowRight size={16} aria-hidden />
+                </>
+              )}
+            </button>
+          )}
         </div>
       ) : null}
     </div>

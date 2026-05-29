@@ -12,6 +12,7 @@ import type {
   ActionTemplate,
   Day,
   Playthrough,
+  PlaythroughActionChoice,
   PlaythroughPhaseLog,
   PlaythroughVariables,
   SortingRule,
@@ -19,13 +20,15 @@ import type {
   Storyline,
 } from "@/lib/db/types";
 import { advancePhase, goToPhase, startPlaythrough } from "../_actions/play-actions";
-import { PlayNavbar } from "./play-navbar";
+import { FinalLog } from "./final-log";
 import { PhaseEndOfDay } from "./phase-end-of-day";
+import { PhaseEnding } from "./phase-ending";
 import { PhaseInspection, type DeliveredLetterWithFallback } from "./phase-inspection";
 import { PhaseNav } from "./phase-nav";
 import { PhaseSorting } from "./phase-sorting";
 import { PhaseTimer } from "./phase-timer";
 import { PhaseTopOfDay } from "./phase-top-of-day";
+import { PlayNavbar } from "./play-navbar";
 import { ReferencePanel } from "./reference-panel";
 
 type SortingPhaseData = {
@@ -41,6 +44,15 @@ type InspectionPhaseData = {
   chosenActionByLetter: Record<string, string>;
 };
 
+type EndingData = {
+  frameworkName: string | null;
+  paragraphs: string[];
+  choices: PlaythroughActionChoice[];
+  actions: ActionRow[];
+  templates: ActionTemplate[];
+  firedSegments: { report_segment_id: string; day_id: string; summary: string | null; report_id: string | null }[];
+};
+
 /** Top-level client wrapper for the play-mode surface. Opens the per-
  *  playthrough realtime channel (`playthrough:<id>`) so the navbar's
  *  AvatarStack + Track A timers sync across tabs. */
@@ -53,6 +65,7 @@ export function PlayModeShell({
   phaseLogs,
   sortingPhaseData,
   inspectionPhaseData,
+  endingData,
   currentUserId,
   currentEmail,
   currentProfile,
@@ -65,6 +78,7 @@ export function PlayModeShell({
   phaseLogs: PlaythroughPhaseLog[];
   sortingPhaseData: SortingPhaseData;
   inspectionPhaseData: InspectionPhaseData;
+  endingData: EndingData | null;
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -92,6 +106,7 @@ export function PlayModeShell({
         phaseLogs={phaseLogs}
         sortingPhaseData={sortingPhaseData}
         inspectionPhaseData={inspectionPhaseData}
+        endingData={endingData}
       />
     </WorkspacePresenceProvider>
   );
@@ -128,6 +143,7 @@ function PlayModeBody({
   phaseLogs,
   sortingPhaseData,
   inspectionPhaseData,
+  endingData,
 }: {
   playthrough: Playthrough;
   currentDay: Day | null;
@@ -137,6 +153,7 @@ function PlayModeBody({
   phaseLogs: PlaythroughPhaseLog[];
   sortingPhaseData: SortingPhaseData;
   inspectionPhaseData: InspectionPhaseData;
+  endingData: EndingData | null;
 }) {
   usePlaythroughSync(playthrough.id);
 
@@ -223,16 +240,37 @@ function PlayModeBody({
         }
       />
       <main className="flex-1 overflow-y-auto px-8 py-6">
-        <PhaseContent
-          playthrough={playthrough}
-          currentDay={currentDay}
-          vars={vars}
-          days={days}
-          phaseLogs={phaseLogs}
-          atPastPhase={atPastPhase}
-          sortingPhaseData={sortingPhaseData}
-          inspectionPhaseData={inspectionPhaseData}
-        />
+        {playthrough.ended && endingData ? (
+          <div className="flex flex-col gap-10">
+            <PhaseEnding
+              frameworkName={endingData.frameworkName}
+              paragraphs={endingData.paragraphs}
+              vars={vars}
+            />
+            <FinalLog
+              playthrough={playthrough}
+              days={days}
+              phaseLogs={phaseLogs}
+              vars={vars}
+              choices={endingData.choices}
+              actions={endingData.actions}
+              templates={endingData.templates}
+              firedSegments={endingData.firedSegments}
+              frameworkName={endingData.frameworkName}
+            />
+          </div>
+        ) : (
+          <PhaseContent
+            playthrough={playthrough}
+            currentDay={currentDay}
+            vars={vars}
+            days={days}
+            phaseLogs={phaseLogs}
+            atPastPhase={atPastPhase}
+            sortingPhaseData={sortingPhaseData}
+            inspectionPhaseData={inspectionPhaseData}
+          />
+        )}
       </main>
       <ReferencePanel mapImageUrl={mapImageUrl} />
     </div>
@@ -334,15 +372,18 @@ function PhaseContent({
           ) : null}
         </div>
       );
-    case "end_of_day":
+    case "end_of_day": {
+      const maxDayNum = Math.max(...days.map((d) => d.number));
       return (
         <PhaseEndOfDay
           playthroughId={playthrough.id}
           day={currentDay}
           vars={vars}
           hideAdvance={atPastPhase}
+          isFinalDay={currentDay.number === maxDayNum}
         />
       );
+    }
   }
 }
 
