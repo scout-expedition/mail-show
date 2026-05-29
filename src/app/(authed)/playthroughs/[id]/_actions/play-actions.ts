@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import type { Phase } from "@/lib/db/enums";
+import { PHASES, type Phase } from "@/lib/db/enums";
 
 /** Play-mode server actions. Hosts the per-letter action picker for now;
  *  Track A adds the timer ops (`startPlaythrough`, `pauseGame`, …) and
@@ -18,12 +18,68 @@ function revalidatePlayState() {
   revalidatePath("/playthroughs/[id]", "page");
 }
 
+/**
+ * Check if the playthrough cursor is strictly before its furthest point.
+ * Returns the old chosen action ID for the given letter (if any) when at
+ * a past phase, or null otherwise.
+ */
+async function loadPastPhaseContext(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  playthroughId: string,
+  inspectionLetterId: string
+): Promise<{ atPast: boolean; oldActionId: string | null }> {
+  const { data: p } = await supabase
+    .from("playthroughs")
+    .select(
+      "current_day_id, current_phase, furthest_day_id, furthest_phase"
+    )
+    .eq("id", playthroughId)
+    .single();
+  if (!p || !p.furthest_day_id || !p.furthest_phase) {
+    return { atPast: false, oldActionId: null };
+  }
+
+  // Resolve day numbers for comparison.
+  const dayIds = [p.current_day_id, p.furthest_day_id].filter(Boolean) as string[];
+  const { data: dayRows } = await supabase
+    .from("days")
+    .select("id, number")
+    .in("id", dayIds);
+  const numById = new Map((dayRows ?? []).map((d) => [d.id as string, d.number as number]));
+  const curNum = numById.get(p.current_day_id ?? "") ?? 0;
+  const furNum = numById.get(p.furthest_day_id) ?? 0;
+
+  const atPast =
+    curNum < furNum ||
+    (curNum === furNum &&
+      PHASES.indexOf(p.current_phase) < PHASES.indexOf(p.furthest_phase));
+
+  if (!atPast) return { atPast: false, oldActionId: null };
+
+  const { data: oldChoice } = await supabase
+    .from("playthrough_action_choices")
+    .select("chosen_action_id")
+    .eq("playthrough_id", playthroughId)
+    .eq("inspection_letter_id", inspectionLetterId)
+    .maybeSingle();
+
+  return { atPast: true, oldActionId: oldChoice?.chosen_action_id ?? null };
+}
+
 export async function chooseAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
   const playthrough_id = String(formData.get("playthrough_id") ?? "");
   const inspection_letter_id = String(formData.get("inspection_letter_id") ?? "");
   const chosen_action_id = String(formData.get("chosen_action_id") ?? "");
   if (!playthrough_id || !inspection_letter_id || !chosen_action_id) return;
+
+  // Check if we're at a past phase (back-nav) so we can cascade.
+  const { atPast, oldActionId } = await loadPastPhaseContext(
+    supabase,
+    playthrough_id,
+    inspection_letter_id
+  );
+
   const { error } = await supabase.from("playthrough_action_choices").upsert(
     {
       playthrough_id,
@@ -34,6 +90,20 @@ export async function chooseAction(formData: FormData) {
     { onConflict: "playthrough_id,inspection_letter_id" }
   );
   if (error) throw new Error(error.message);
+
+  // Cascade: clear downstream choices + supersede forward logs.
+  if (atPast && oldActionId) {
+    const { error: cascadeError } = await supabase.rpc(
+      "cascade_action_change",
+      {
+        p_id: playthrough_id,
+        changed_letter_id: inspection_letter_id,
+        old_action_id: oldActionId,
+      }
+    );
+    if (cascadeError) throw new Error(cascadeError.message);
+  }
+
   revalidatePlayState();
 }
 
@@ -42,12 +112,35 @@ export async function clearChoice(formData: FormData) {
   const playthrough_id = String(formData.get("playthrough_id") ?? "");
   const inspection_letter_id = String(formData.get("inspection_letter_id") ?? "");
   if (!playthrough_id || !inspection_letter_id) return;
+
+  // Check if we're at a past phase so we can cascade from the action
+  // being removed.
+  const { atPast, oldActionId } = await loadPastPhaseContext(
+    supabase,
+    playthrough_id,
+    inspection_letter_id
+  );
+
   const { error } = await supabase
     .from("playthrough_action_choices")
     .delete()
     .eq("playthrough_id", playthrough_id)
     .eq("inspection_letter_id", inspection_letter_id);
   if (error) throw new Error(error.message);
+
+  // Cascade: clear downstream choices + supersede forward logs.
+  if (atPast && oldActionId) {
+    const { error: cascadeError } = await supabase.rpc(
+      "cascade_action_change",
+      {
+        p_id: playthrough_id,
+        changed_letter_id: inspection_letter_id,
+        old_action_id: oldActionId,
+      }
+    );
+    if (cascadeError) throw new Error(cascadeError.message);
+  }
+
   revalidatePlayState();
 }
 
