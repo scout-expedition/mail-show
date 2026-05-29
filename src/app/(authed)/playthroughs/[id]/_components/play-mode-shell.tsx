@@ -1,24 +1,28 @@
 "use client";
 
-import { useTransition } from "react";
+import { useEffect, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowRight } from "lucide-react";
 import { WorkspacePresenceProvider } from "@/lib/realtime/presence-context";
 import type { PresenceProfile } from "@/lib/realtime/presence";
 import { usePlaythroughSync } from "@/lib/playthrough/use-playthrough-sync";
+import { PHASES, type Phase } from "@/lib/db/enums";
 import type {
   ActionRow,
   ActionTemplate,
   Day,
   Playthrough,
+  PlaythroughPhaseLog,
   PlaythroughVariables,
   SortingRule,
   SortingRuleCondition,
   Storyline,
 } from "@/lib/db/types";
-import { advancePhase, startPlaythrough } from "../_actions/play-actions";
+import { advancePhase, goToPhase, startPlaythrough } from "../_actions/play-actions";
 import { PlayNavbar } from "./play-navbar";
 import { PhaseEndOfDay } from "./phase-end-of-day";
 import { PhaseInspection, type DeliveredLetterWithFallback } from "./phase-inspection";
+import { PhaseNav } from "./phase-nav";
 import { PhaseSorting } from "./phase-sorting";
 import { PhaseTimer } from "./phase-timer";
 import { PhaseTopOfDay } from "./phase-top-of-day";
@@ -45,6 +49,8 @@ export function PlayModeShell({
   currentDay,
   vars,
   mapImageUrl,
+  days,
+  phaseLogs,
   sortingPhaseData,
   inspectionPhaseData,
   currentUserId,
@@ -55,6 +61,8 @@ export function PlayModeShell({
   currentDay: Day | null;
   vars: PlaythroughVariables | null;
   mapImageUrl: string | null;
+  days: Day[];
+  phaseLogs: PlaythroughPhaseLog[];
   sortingPhaseData: SortingPhaseData;
   inspectionPhaseData: InspectionPhaseData;
   currentUserId?: string;
@@ -80,11 +88,31 @@ export function PlayModeShell({
         currentDay={currentDay}
         vars={vars}
         mapImageUrl={mapImageUrl}
+        days={days}
+        phaseLogs={phaseLogs}
         sortingPhaseData={sortingPhaseData}
         inspectionPhaseData={inspectionPhaseData}
       />
     </WorkspacePresenceProvider>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for furthest comparison
+// ---------------------------------------------------------------------------
+
+function isBeforeFurthest(
+  currentDayNumber: number,
+  currentPhase: Phase,
+  furthestDayNumber: number | null,
+  furthestPhase: Phase | null
+): boolean {
+  if (furthestDayNumber == null || !furthestPhase) return false;
+  if (currentDayNumber < furthestDayNumber) return true;
+  if (currentDayNumber === furthestDayNumber) {
+    return PHASES.indexOf(currentPhase) < PHASES.indexOf(furthestPhase);
+  }
+  return false;
 }
 
 /** Lives INSIDE the WorkspacePresenceProvider so it can register the
@@ -96,6 +124,8 @@ function PlayModeBody({
   currentDay,
   vars,
   mapImageUrl,
+  days,
+  phaseLogs,
   sortingPhaseData,
   inspectionPhaseData,
 }: {
@@ -103,10 +133,77 @@ function PlayModeBody({
   currentDay: Day | null;
   vars: PlaythroughVariables | null;
   mapImageUrl: string | null;
+  days: Day[];
+  phaseLogs: PlaythroughPhaseLog[];
   sortingPhaseData: SortingPhaseData;
   inspectionPhaseData: InspectionPhaseData;
 }) {
   usePlaythroughSync(playthrough.id);
+
+  // --- URL state: sync ?day=<number>&phase=<phase> with playthrough cursor ---
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // On mount: if URL params disagree with the playthrough cursor and the
+  // target is reachable (at or before furthest), jump to it once.
+  useEffect(() => {
+    const dayParam = searchParams.get("day");
+    const phaseParam = searchParams.get("phase") as Phase | null;
+    if (!dayParam || !phaseParam) return;
+    const targetDayNum = parseInt(dayParam, 10);
+    if (isNaN(targetDayNum)) return;
+    const targetDay = days.find((d) => d.number === targetDayNum);
+    if (!targetDay || !PHASES.includes(phaseParam)) return;
+
+    const alreadyThere =
+      targetDay.id === playthrough.current_day_id &&
+      phaseParam === playthrough.current_phase;
+    if (alreadyThere) return;
+
+    const furthestDay = days.find((d) => d.id === playthrough.furthest_day_id);
+    const reachable =
+      !furthestDay ||
+      !playthrough.furthest_phase ||
+      !isBeforeFurthest(
+        targetDayNum,
+        phaseParam,
+        furthestDay.number,
+        playthrough.furthest_phase
+      ) === false;
+
+    // Target must be at or before furthest to be reachable
+    const targetBeforeOrAtFurthest =
+      !furthestDay ||
+      !playthrough.furthest_phase ||
+      targetDayNum < furthestDay.number ||
+      (targetDayNum === furthestDay.number &&
+        PHASES.indexOf(phaseParam) <= PHASES.indexOf(playthrough.furthest_phase));
+
+    if (targetBeforeOrAtFurthest && playthrough.started) {
+      goToPhase(playthrough.id, targetDay.id, phaseParam);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep URL in sync with cursor changes.
+  useEffect(() => {
+    if (!currentDay) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("day", String(currentDay.number));
+    url.searchParams.set("phase", playthrough.current_phase);
+    router.replace(url.pathname + url.search, { scroll: false });
+  }, [currentDay, playthrough.current_phase, router]);
+
+  // --- Determine if at past phase (for hiding advance button / disabling timer) ---
+  const furthestDay = days.find((d) => d.id === playthrough.furthest_day_id);
+  const atPastPhase =
+    currentDay != null &&
+    isBeforeFurthest(
+      currentDay.number,
+      playthrough.current_phase,
+      furthestDay?.number ?? null,
+      playthrough.furthest_phase
+    );
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
@@ -114,12 +211,25 @@ function PlayModeBody({
         playthrough={playthrough}
         currentDay={currentDay}
         vars={vars}
+        phaseNav={
+          currentDay && playthrough.started ? (
+            <PhaseNav
+              playthrough={playthrough}
+              currentDay={currentDay}
+              days={days}
+              phaseLogs={phaseLogs}
+            />
+          ) : null
+        }
       />
       <main className="flex-1 overflow-y-auto px-8 py-6">
         <PhaseContent
           playthrough={playthrough}
           currentDay={currentDay}
           vars={vars}
+          days={days}
+          phaseLogs={phaseLogs}
+          atPastPhase={atPastPhase}
           sortingPhaseData={sortingPhaseData}
           inspectionPhaseData={inspectionPhaseData}
         />
@@ -130,17 +240,25 @@ function PlayModeBody({
 }
 
 /** Phase router. Switches on `playthrough.current_phase` and feeds each
- *  component its slice of pre-resolved data. */
+ *  component its slice of pre-resolved data. When `atPastPhase` is true
+ *  the "Next phase" advance button is hidden (the player uses PhaseNav's
+ *  forward button to step through history instead). */
 function PhaseContent({
   playthrough,
   currentDay,
   vars,
+  days,
+  phaseLogs,
+  atPastPhase,
   sortingPhaseData,
   inspectionPhaseData,
 }: {
   playthrough: Playthrough;
   currentDay: Day | null;
   vars: PlaythroughVariables | null;
+  days: Day[];
+  phaseLogs: PlaythroughPhaseLog[];
+  atPastPhase: boolean;
   sortingPhaseData: SortingPhaseData;
   inspectionPhaseData: InspectionPhaseData;
 }) {
@@ -149,7 +267,7 @@ function PhaseContent({
     return <StartGate playthrough={playthrough} />;
   }
 
-  const advanceButton = (
+  const advanceButton = atPastPhase ? null : (
     <AdvancePhaseButton
       playthroughId={playthrough.id}
       currentPhase={playthrough.current_phase}
@@ -160,9 +278,6 @@ function PhaseContent({
     case "top_of_day":
       return (
         <div className="flex flex-col gap-6">
-          {/* TODO: extract MiddleItem builder from morning-report-editor.tsx
-                so we can pass real items here. For now we render only the
-                intro + sign-off via empty items. */}
           <PhaseTopOfDay
             day={currentDay}
             items={[]}
@@ -170,7 +285,9 @@ function PhaseContent({
             templates={[]}
             chosenActionByLetter={{}}
           />
-          <div className="flex justify-end">{advanceButton}</div>
+          {advanceButton ? (
+            <div className="flex justify-end">{advanceButton}</div>
+          ) : null}
         </div>
       );
     case "sorting":
@@ -181,10 +298,16 @@ function PhaseContent({
             rules={sortingPhaseData.rules}
             conditionsByRule={sortingPhaseData.conditionsByRule}
             phaseTimer={
-              <PhaseTimer playthrough={playthrough} currentDay={currentDay} />
+              <PhaseTimer
+                playthrough={playthrough}
+                currentDay={currentDay}
+                disabled={atPastPhase}
+              />
             }
           />
-          <div className="flex justify-end">{advanceButton}</div>
+          {advanceButton ? (
+            <div className="flex justify-end">{advanceButton}</div>
+          ) : null}
         </div>
       );
     case "inspection":
@@ -199,19 +322,25 @@ function PhaseContent({
             chosenActionByLetter={inspectionPhaseData.chosenActionByLetter}
             storylines={inspectionPhaseData.storylines}
             phaseTimer={
-              <PhaseTimer playthrough={playthrough} currentDay={currentDay} />
+              <PhaseTimer
+                playthrough={playthrough}
+                currentDay={currentDay}
+                disabled={atPastPhase}
+              />
             }
           />
-          <div className="flex justify-end">{advanceButton}</div>
+          {advanceButton ? (
+            <div className="flex justify-end">{advanceButton}</div>
+          ) : null}
         </div>
       );
     case "end_of_day":
-      // PhaseEndOfDay hosts its own "Next day" button.
       return (
         <PhaseEndOfDay
           playthroughId={playthrough.id}
           day={currentDay}
           vars={vars}
+          hideAdvance={atPastPhase}
         />
       );
   }

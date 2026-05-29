@@ -19,10 +19,12 @@ export function PlayNavbar({
   playthrough,
   currentDay,
   vars,
+  phaseNav,
 }: {
   playthrough: Playthrough;
   currentDay: Day | null;
   vars: PlaythroughVariables | null;
+  phaseNav?: React.ReactNode;
 }) {
   const { peers, selfPeer } = usePresenceContext();
   const hudVars = vars
@@ -56,6 +58,7 @@ export function PlayNavbar({
           {PHASE_LABELS[playthrough.current_phase]}
         </span>
       </div>
+      {phaseNav}
       <GameTimer playthrough={playthrough} />
       <div className="ml-auto flex items-center gap-3">
         <VariableHud

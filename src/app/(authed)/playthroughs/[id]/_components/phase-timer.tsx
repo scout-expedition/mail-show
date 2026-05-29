@@ -63,9 +63,11 @@ function formatCountdown(ms: number): {
 export function PhaseTimer({
   playthrough,
   currentDay,
+  disabled = false,
 }: {
   playthrough: Playthrough;
   currentDay: Day;
+  disabled?: boolean;
 }) {
   const nowMs = useServerClock();
 
@@ -153,48 +155,53 @@ export function PhaseTimer({
         </span>
       </div>
 
-      {/* Pause / resume */}
-      <button
-        type="button"
-        onClick={onTogglePause}
-        disabled={pending}
-        aria-label={isPaused ? "Resume phase timer" : "Pause phase timer"}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-      >
-        {isPaused ? (
-          <Play size={13} aria-hidden />
-        ) : (
-          <Pause size={13} aria-hidden />
-        )}
-      </button>
-
-      {/* Restart */}
-      <button
-        type="button"
-        onClick={onRestart}
-        disabled={pending}
-        aria-label="Restart phase timer"
-        title="Restart phase timer (rewinds game clock by elapsed phase time)"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-      >
-        <RotateCcw size={13} aria-hidden />
-      </button>
-
-      {/* ± adjustment buttons */}
-      <div className="flex items-center gap-1">
-        {DELTA_BUTTONS.map(({ label, deltaMs }) => (
+      {/* Timer controls: hidden when viewing a past phase */}
+      {!disabled ? (
+        <>
+          {/* Pause / resume */}
           <button
-            key={label}
             type="button"
-            onClick={() => onAdjust(deltaMs)}
+            onClick={onTogglePause}
             disabled={pending}
-            aria-label={`Adjust phase timer by ${label}`}
-            className="inline-flex h-6 items-center justify-center rounded-sm border border-border bg-card/80 px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+            aria-label={isPaused ? "Resume phase timer" : "Pause phase timer"}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           >
-            {label}
+            {isPaused ? (
+              <Play size={13} aria-hidden />
+            ) : (
+              <Pause size={13} aria-hidden />
+            )}
           </button>
-        ))}
-      </div>
+
+          {/* Restart */}
+          <button
+            type="button"
+            onClick={onRestart}
+            disabled={pending}
+            aria-label="Restart phase timer"
+            title="Restart phase timer (rewinds game clock by elapsed phase time)"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card/80 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            <RotateCcw size={13} aria-hidden />
+          </button>
+
+          {/* ± adjustment buttons */}
+          <div className="flex items-center gap-1">
+            {DELTA_BUTTONS.map(({ label, deltaMs }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => onAdjust(deltaMs)}
+                disabled={pending}
+                aria-label={`Adjust phase timer by ${label}`}
+                className="inline-flex h-6 items-center justify-center rounded-sm border border-border bg-card/80 px-1.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

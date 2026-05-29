@@ -26,10 +26,12 @@ export function PhaseEndOfDay({
   playthroughId,
   day,
   vars,
+  hideAdvance = false,
 }: {
   playthroughId: string;
   day: Day;
   vars: PlaythroughVariables | null;
+  hideAdvance?: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
 
@@ -121,24 +123,26 @@ export function PhaseEndOfDay({
         </p>
       )}
 
-      {/* Next button */}
-      <div className="flex justify-end">
-        <button
-          type="button"
-          onClick={handleNext}
-          disabled={isPending}
-          className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow transition-colors hover:bg-primary/90 disabled:opacity-50"
-        >
-          {isPending ? (
-            "Advancing…"
-          ) : (
-            <>
-              Next day
-              <ArrowRight size={16} aria-hidden />
-            </>
-          )}
-        </button>
-      </div>
+      {/* Next button (hidden when viewing a past phase via back-nav) */}
+      {!hideAdvance ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleNext}
+            disabled={isPending}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow transition-colors hover:bg-primary/90 disabled:opacity-50"
+          >
+            {isPending ? (
+              "Advancing…"
+            ) : (
+              <>
+                Next day
+                <ArrowRight size={16} aria-hidden />
+              </>
+            )}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

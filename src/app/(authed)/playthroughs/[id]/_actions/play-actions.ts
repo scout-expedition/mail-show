@@ -227,6 +227,41 @@ export async function restartPhaseTimer(
 }
 
 // ---------------------------------------------------------------------------
+// Track D — Navigation back/forward
+// ---------------------------------------------------------------------------
+
+/**
+ * Jump the playthrough cursor to a previously visited (day, phase).
+ * Pauses the game first (idempotent). Does NOT touch `furthest_*` —
+ * that's only advanced by `advancePhase`.
+ *
+ * Timer controls are disabled at the component layer when current !=
+ * furthest; server-side guards in adjust/restart/pause/resume actions
+ * also check (Track D cascade commit adds those guards).
+ */
+export async function goToPhase(
+  id: string,
+  dayId: string,
+  phase: Phase
+): Promise<void> {
+  const supabase = await createSupabaseServerClient();
+
+  // Pause first (idempotent — no-ops if already paused or not started).
+  await supabase.rpc("pause_playthrough", { p_id: id });
+
+  const { error } = await supabase
+    .from("playthroughs")
+    .update({
+      current_day_id: dayId,
+      current_phase: phase,
+    })
+    .eq("id", id);
+
+  if (error) throw new Error(error.message);
+  revalidatePlayState();
+}
+
+// ---------------------------------------------------------------------------
 // Track C5 — Phase advancement
 // ---------------------------------------------------------------------------
 

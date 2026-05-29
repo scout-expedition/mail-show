@@ -8,6 +8,7 @@ import type {
   Playthrough,
   PlaythroughActionChoice,
   PlaythroughDeliveredLetter,
+  PlaythroughPhaseLog,
   PlaythroughVariables,
   SortingRule,
   SortingRuleCondition,
@@ -45,6 +46,8 @@ export default async function PlaythroughDetail({
     { data: templatesData },
     { data: storylinesData },
     { data: choicesData },
+    { data: allDaysData },
+    { data: phaseLogsData },
   ] = await Promise.all([
     playthrough.current_day_id
       ? supabase
@@ -78,11 +81,20 @@ export default async function PlaythroughDetail({
       .from("playthrough_action_choices")
       .select("*")
       .eq("playthrough_id", id),
+    supabase.from("days").select("*").order("number"),
+    supabase
+      .from("playthrough_phase_log")
+      .select("*")
+      .eq("playthrough_id", id)
+      .is("superseded_at", null)
+      .order("entered_at"),
   ]);
 
   const currentDay = (dayData as Day | null) ?? null;
   const vars = (varsData as PlaythroughVariables | null) ?? null;
   const mapImageUrl = (refData?.map_image_url as string | null) ?? null;
+  const allDays = (allDaysData ?? []) as Day[];
+  const phaseLogs = (phaseLogsData ?? []) as PlaythroughPhaseLog[];
 
   // ---- Sorting phase data: filter rules active for the current day ----
   const allRules = (rulesData ?? []) as SortingRule[];
@@ -138,6 +150,8 @@ export default async function PlaythroughDetail({
       currentDay={currentDay}
       vars={vars}
       mapImageUrl={mapImageUrl}
+      days={allDays}
+      phaseLogs={phaseLogs}
       sortingPhaseData={{ rules: activeRules, conditionsByRule }}
       inspectionPhaseData={{
         letters,
