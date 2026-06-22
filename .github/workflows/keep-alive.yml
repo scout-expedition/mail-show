@@ -1,0 +1,44 @@
+name: Keep Supabase alive
+
+on:
+  schedule:
+    - cron: '0 9 * * 1,4'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        uses: actions/github-script@v7
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        with:
+          script: |
+            const url = process.env.SUPABASE_URL;
+            const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (!url || !key) throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY secrets');
+
+            const headers = {
+              apikey: key,
+              Authorization: `Bearer ${key}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            };
+
+            const insert = await fetch(`${url}/rest/v1/keep_alive`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({}),
+            });
+            if (!insert.ok) throw new Error(`Insert failed: ${insert.status} ${await insert.text()}`);
+
+            const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+            const del = await fetch(`${url}/rest/v1/keep_alive?inserted_at=lt.${cutoff}`, {
+              method: 'DELETE',
+              headers,
+            });
+            if (!del.ok) throw new Error(`Cleanup failed: ${del.status} ${await del.text()}`);
+
+            console.log('keep_alive ping succeeded');
