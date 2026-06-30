@@ -21,7 +21,6 @@ import { useClaimWorkspacePeers } from "@/lib/realtime/workspace-peer-claims";
 import { IconDisplay } from "@/components/icon-display";
 import { CompositeActionChip } from "@/components/composite-action-chip";
 import { VariableKindIcon } from "@/lib/endings/variable-kind-icon";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -72,7 +71,6 @@ import {
   deletePieceGroup,
   duplicatePieceGroup,
   extractLetterFromPieceGroup,
-  mergeLetters,
   renumberPiecesSequentially,
   sortPiecesById,
   applyLetterGroupSequences,
@@ -111,7 +109,6 @@ import {
   updateCitizen,
 } from "./actions";
 import {
-  displayNextLetterId,
   groupLettersByPieceGroup,
   isInPieceGroup,
   pieceGroupContentId,
@@ -2209,13 +2206,6 @@ function LettersWorkspaceInner({
     if (!ok) return;
     startRowAction(async () => {
       await deletePieceGroup(groupId, variant);
-    });
-  }
-
-  async function handleMergeLetters(sourceId: string, targetId: string) {
-    if (!group) return;
-    startRowAction(async () => {
-      await mergeLetters(sourceId, targetId);
     });
   }
 
@@ -6455,15 +6445,18 @@ function ActionEditor({
   const currentNextLetterKey = currentNextLetter
     ? pieceGroupKey(currentNextLetter)
     : null;
-  const pickableLetters =
-    currentNextLetter &&
-    !nextDayLetters.some((l) =>
-      currentNextLetterKey !== null
-        ? pieceGroupKey(l) === currentNextLetterKey
-        : l.id === currentNextLetter.id
-    )
-      ? [currentNextLetter, ...nextDayLetters]
-      : nextDayLetters;
+  const pickableLetters = useMemo(
+    () =>
+      currentNextLetter &&
+      !nextDayLetters.some((l) =>
+        currentNextLetterKey !== null
+          ? pieceGroupKey(l) === currentNextLetterKey
+          : l.id === currentNextLetter.id
+      )
+        ? [currentNextLetter, ...nextDayLetters]
+        : nextDayLetters,
+    [currentNextLetter, currentNextLetterKey, nextDayLetters]
+  );
 
   // Count members in each piece-group across the full letter set so the picker
   // (and the current-target pill) can render `L-X1/a (2)` for collapsed groups.
