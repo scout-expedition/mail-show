@@ -65,8 +65,9 @@ jobs:
     name: integration · e2e
     runs-on: ubuntu-latest
     # supabase start (cold Docker image pulls, ~2-3 min) + next build dominate
-    # the wall time; give generous headroom.
-    timeout-minutes: 25
+    # the wall time; give generous headroom. The Playwright browser download
+    # is cached + retried (see below) so it can't eat the whole budget.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -134,8 +135,40 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ env.SUPABASE_TEST_URL }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ env.SUPABASE_TEST_ANON_KEY }}
 
+      # Cache the downloaded browser binaries across runs. The version is
+      # baked into pnpm-lock.yaml, so key on its hash — a Playwright bump
+      # invalidates the cache and triggers a fresh download. With a hit, the
+      # `playwright install` below finds the binaries already present and
+      # skips the CDN download entirely (the part that has been observed to
+      # hang for tens of minutes with no output).
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # OS deps (apt) are cheap (~15s) and not cacheable, so always run them.
+      # The browser download is wrapped in a timeout + retry: a healthy
+      # download is ~seconds, but the chromium headless-shell fetch has stalled
+      # indefinitely on the CDN. `timeout 300` kills a hung attempt so the loop
+      # can retry instead of letting it consume the entire job budget. A warm
+      # cache makes `playwright install chromium` a no-op.
       - name: Install Playwright browser
-        run: pnpm exec playwright install --with-deps chromium
+        timeout-minutes: 20
+        run: |
+          pnpm exec playwright install-deps chromium
+          for attempt in 1 2 3; do
+            echo "::group::playwright install chromium (attempt $attempt)"
+            if timeout 300 pnpm exec playwright install chromium; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "attempt $attempt failed or timed out; retrying…"
+            sleep 5
+          done
+          echo "playwright browser install failed after 3 attempts" >&2
+          exit 1
 
       # Blocking gate. The settings user-management specs that were failing
       # under the pre-refactor flat-button selectors were updated to drive the
