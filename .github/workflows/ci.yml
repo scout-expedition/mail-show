@@ -148,18 +148,20 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       # OS deps (apt) are cheap (~15s) and not cacheable, so always run them.
-      # The browser download is wrapped in a timeout + retry: a healthy
-      # download is ~seconds, but the chromium headless-shell fetch has stalled
-      # indefinitely on the CDN. `timeout 300` kills a hung attempt so the loop
-      # can retry instead of letting it consume the entire job budget. A warm
-      # cache makes `playwright install chromium` a no-op.
+      #
+      # `--no-shell` installs only Chrome for Testing and SKIPS the chromium
+      # headless-shell download, whose CDN fetch was observed to hang
+      # indefinitely (the 170 MB Chrome-for-Testing download itself finishes in
+      # seconds). Headless specs run fine against the full browser. The
+      # download is still wrapped in `timeout 300` + a 3x retry as cheap
+      # insurance against a transient stall; a warm cache makes it a no-op.
       - name: Install Playwright browser
-        timeout-minutes: 20
+        timeout-minutes: 15
         run: |
           pnpm exec playwright install-deps chromium
           for attempt in 1 2 3; do
-            echo "::group::playwright install chromium (attempt $attempt)"
-            if timeout 300 pnpm exec playwright install chromium; then
+            echo "::group::playwright install chromium --no-shell (attempt $attempt)"
+            if timeout 300 pnpm exec playwright install chromium --no-shell; then
               echo "::endgroup::"
               exit 0
             fi

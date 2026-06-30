@@ -31,6 +31,13 @@ export default defineConfig({
     baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    // Run the full Chrome-for-Testing build in new-headless mode rather than
+    // the separate chrome-headless-shell binary. CI installs with `--no-shell`
+    // (the headless-shell's CDN download hangs indefinitely), so the shell is
+    // absent; `channel: "chromium"` makes Playwright drive the full browser
+    // headless instead — which is exactly what `playwright install chromium
+    // --no-shell` provides. Applies to both the setup and chromium projects.
+    channel: "chromium",
   },
   projects: [
     // Signs in once via the Supabase admin API and writes
