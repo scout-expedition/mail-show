@@ -236,6 +236,69 @@ export async function addLetters(
   return data.map((r) => r.id as string);
 }
 
+/**
+ * Insert a single inspection letter with an explicit variant / piece /
+ * sort_order. Unlike `addLetters` (which derives the variant from the row
+ * index), this gives a test full control — needed for piece-group scenarios
+ * where several letters must share one variant or carry a null variant.
+ * Returns the new id.
+ */
+export async function addLetter(
+  sb: SupabaseClient,
+  opts: {
+    groupId: string;
+    variant?: string | null;
+    piece?: number | null;
+    sortOrder?: number;
+    deliveryDayOverrideId?: string | null;
+  }
+): Promise<string> {
+  const { data, error } = await sb
+    .from("inspection_letters")
+    .insert({
+      letter_group_id: opts.groupId,
+      variant: opts.variant ?? null,
+      piece: opts.piece ?? null,
+      sort_order: opts.sortOrder ?? 0,
+      delivery_day_override_id: opts.deliveryDayOverrideId ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !data) throw new Error(`addLetter: ${error?.message}`);
+  return data.id as string;
+}
+
+/**
+ * Insert a piece group: `count` letters sharing one `variant`, with pieces
+ * 1..count and consecutive sort_orders starting at `sortBase` (default 0).
+ * Returns the ids in piece order. Use this to build a multi-piece cluster
+ * that the piece-group actions operate on.
+ */
+export async function addPieceGroup(
+  sb: SupabaseClient,
+  opts: {
+    groupId: string;
+    variant: string;
+    count: number;
+    sortBase?: number;
+  }
+): Promise<string[]> {
+  const sortBase = opts.sortBase ?? 0;
+  const rows = Array.from({ length: opts.count }, (_, i) => ({
+    letter_group_id: opts.groupId,
+    variant: opts.variant,
+    piece: i + 1,
+    sort_order: sortBase + i,
+  }));
+  const { data, error } = await sb
+    .from("inspection_letters")
+    .insert(rows)
+    .select("id, piece")
+    .order("piece");
+  if (error || !data) throw new Error(`addPieceGroup: ${error?.message}`);
+  return data.map((r) => r.id as string);
+}
+
 /** Insert a report segment with a given roman-numeral variant. */
 export async function addReportSegment(
   sb: SupabaseClient,

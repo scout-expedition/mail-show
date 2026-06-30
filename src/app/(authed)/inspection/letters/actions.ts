@@ -2384,16 +2384,21 @@ export async function mergeLetters(
     .gte("piece", 1)
     .order("piece", { ascending: true });
   const tgtMembers = tgtCluster ?? [];
-  const maxTgtPiece = tgtMembers.length > 0
+  let maxTgtPiece = tgtMembers.length > 0
     ? Math.max(...tgtMembers.map((m) => Number(m.piece ?? 0)))
     : 0;
 
   // If target itself is standalone (piece null / 0), promote it to piece 1.
+  // The promotion occupies piece 1, which is not reflected in `maxTgtPiece`
+  // (computed from the pre-promotion `piece >= 1` cluster). Bump the running
+  // max so the source cluster appends *after* the promoted target instead of
+  // colliding with it on the (letter_group_id, variant, piece) unique index.
   if (!tgt.piece || Number(tgt.piece) < 1) {
     await supabase
       .from("inspection_letters")
       .update({ piece: 1, updated_by: updatedBy })
       .eq("id", targetLetterId);
+    maxTgtPiece = Math.max(maxTgtPiece, 1);
   }
 
   // Load source's cluster members (if source is grouped under oldSourceVariant).

@@ -34,17 +34,17 @@ export default defineConfig({
       include: ["src/app/**/actions.ts"],
       exclude: ["**/*.test.*", "**/types.ts"],
       // Regression ratchet — floors are set slightly below the measured
-      // baseline (see docs/testing-inventory.md). Two files drag the global
-      // numbers down hard: auth/set-password and sign-in are 0% (need GoTrue
-      // session manipulation we don't have a harness for), and the giant
-      // inspection/letters/actions.ts is 13.5% (~2000 lines; the core flows
-      // are covered but the long tail is not). The floor is global; tightening
-      // individual files happens when they get more dedicated coverage.
+      // baseline (see docs/testing-inventory.md). auth/set-password and
+      // sign-in remain 0% (need GoTrue session manipulation we don't have a
+      // harness for). The giant inspection/letters/actions.ts and the new
+      // endings/smart-variables/actions.ts got dedicated piece-group /
+      // smart-variable coverage, lifting the global baseline to
+      // 59.25 / 49.94 / 60.62 / 64.13 — floors raised to lock that in.
       thresholds: {
-        statements: 51,
-        branches: 44,
-        functions: 50,
-        lines: 54,
+        statements: 57,
+        branches: 47,
+        functions: 58,
+        lines: 62,
       },
     },
   },
