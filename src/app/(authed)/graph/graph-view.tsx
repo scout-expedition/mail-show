@@ -68,8 +68,6 @@ import {
   deleteReportSegment,
   duplicateInspectionLetter,
   duplicateReportSegment,
-  extractLetterFromPieceGroup,
-  mergeLetters,
   moveInspectionLetterToDay,
   moveLetterGroupToDay,
   moveLetterToGroup,
@@ -78,7 +76,6 @@ import {
   pinReportSegmentToDay,
   setActionNextLetterByLetterId,
   setActionReportSegment,
-  setPieceGroupDelivery,
 } from "../inspection/letters/actions";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { ActionIconEdge, type ActionIconEdgeData } from "./edges/action-icon-edge";
@@ -2943,6 +2940,7 @@ export function GraphView({
     selfRingColor,
     peerGroups,
     peerLetters,
+    peerPieceLetters,
     peerSegments,
     peerActions,
     pendingDeletes,

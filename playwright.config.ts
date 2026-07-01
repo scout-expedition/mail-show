@@ -31,6 +31,15 @@ export default defineConfig({
     baseURL,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
+    // Browser channel. In CI, drive the Google Chrome that ships preinstalled
+    // on the `ubuntu-latest` runner (`channel: "chrome"`) — Playwright's own
+    // `playwright install chromium` reproducibly hangs in post-download
+    // extraction on that runner, and using the system browser sidesteps the
+    // download entirely (faster, no flaky CDN step). Locally, use the bundled
+    // Chrome-for-Testing in new-headless mode (`channel: "chromium"`) so devs
+    // don't need a system Chrome. Applies to both the setup and chromium
+    // projects via the shared `use`.
+    channel: process.env.CI ? "chrome" : "chromium",
   },
   projects: [
     // Signs in once via the Supabase admin API and writes

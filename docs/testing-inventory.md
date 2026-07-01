@@ -66,7 +66,7 @@ threshold breach in CI, open the run page → Artifacts → download
 | Run | Baseline (stmts / branches / fns / lines) | Floor (stmts / branches / fns / lines) |
 | --- | --- | --- |
 | Unit (`src/lib/**`) | 61.46 / 56.72 / 54.92 / 62.9 | 60 / 55 / 53 / 60 |
-| Integration (`src/app/**/actions.ts`) | 53.8 / 45.79 / 52.71 / 57.64 | 52 / 44 / 50 / 55 |
+| Integration (`src/app/**/actions.ts`) | 59.25 / 49.94 / 60.62 / 64.13 | 57 / 47 / 58 / 62 |
 
 **Per-glob floors (unit)** — set just below the well-covered subdirectories so
 they can't regress quietly. Baselines shown so future reviewers can see the
