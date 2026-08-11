@@ -1,6 +1,9 @@
 # Sorting Letters workspace plan
 
-Status: draft (not started)
+Status: all five phases implemented on `sorting-letters` (4 commits, not yet
+merged). Unit + integration suites green locally; the migration is verified
+against a local `supabase db reset` but **has not been applied to the shared
+Supabase project**, which is what `pnpm dev` reads.
 Branch: `sorting-letters`
 
 Rework `/sorting/letters` from an inline-editable table into a view-only sortable
@@ -229,3 +232,35 @@ which rule it satisfied.
   into a shared component (a plain select is used instead).
 - Persisting a letter's "intended rule" — deliberately not stored.
 - Any change to how rules themselves are authored beyond the stamp rename.
+
+## Status log
+
+- **Phase 1 — stamp flip.** Migration `20260811201840_sorting_letter_stamp_valid.sql`
+  plus the code rename. `create or replace view` refuses to rename an output
+  column, so the view is dropped, recreated, and re-granted. The rule-condition
+  true/false flip runs *before* the enum rename, while the target is still
+  spelled `is_counterfeit`. Rules UI reads valid/fake; the day sorting page
+  badges fake stamps.
+- **Phase 2 — destination resolver.** `src/lib/rules/destination.ts`, 24 unit
+  tests. Undated rules rank 0; equal-rank rules that agree resolve, ones that
+  disagree conflict; a matched rule with no destination is its own state.
+- **Phase 3 — table + panel.** `?letter=<id>` deep link, `[id]` route redirects
+  in, whole-form update actions deleted, realtime refreshes on day/sort_id
+  changes.
+- **Phase 4 — bulk mode.** Select toggle, checkbox column, bulk bar. "Clear day"
+  dropped per the decision above.
+- **Phase 5 — generator.** Condition-partitioned candidate pools, bounded scan
+  for non-conjunctive rules, deterministic failure reasons, per-insert 23505
+  retry.
+
+## Follow-ups
+
+- Apply the migration to the shared Supabase project before anyone runs
+  `pnpm dev` against it — the app reads `stamp_valid` and the old column is
+  still `is_counterfeit` there.
+- The panel's citizen picker is a plain `<select>`; swap in a searchable
+  combobox if the directory grows past a few hundred (marked `ponytail:` in
+  `letter-panel.tsx`).
+- Generation is a retry loop, not a transaction (marked `ponytail:` in
+  `actions.ts`). Move it into a Postgres function if concurrent generation
+  becomes routine.
