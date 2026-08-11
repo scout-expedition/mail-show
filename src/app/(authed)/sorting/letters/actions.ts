@@ -190,19 +190,26 @@ export async function generateSortingLetters({
   });
 
   let created = 0;
+  let lostToRace = 0;
   for (const pair of pairs) {
     const inserted = await insertGeneratedLetter(dayId, pair);
     if (inserted) created++;
+    else lostToRace++;
   }
 
   revalidateSortingLetterSurfaces();
 
+  // Order matters: a letter lost to a concurrent writer is a different story
+  // from a rule nothing could satisfy, and the planner's reason shouldn't be
+  // reported for a letter that was planned fine and just lost its slot.
   const reason =
     created < count
-      ? (shortfall ??
-        (freeSlots.length < count
-          ? `Only ${freeSlots.length} free ID${freeSlots.length === 1 ? "" : "s"} left on that day.`
-          : undefined))
+      ? lostToRace > 0
+        ? "Another session claimed those IDs while generating — try again."
+        : (shortfall ??
+          (freeSlots.length < count
+            ? `Only ${freeSlots.length} free ID${freeSlots.length === 1 ? "" : "s"} left on that day.`
+            : undefined))
       : undefined;
   return { created, requested: count, reason };
 }
@@ -332,15 +339,15 @@ export async function bulkSetSortingLetterDay(ids: string[], dayId: string) {
     .select("id, sort_id")
     .eq("day_id", dayId);
 
-  const moving = new Set(ids);
-  // Slots held by letters that are staying put on the target day.
-  const taken = new Set(
-    (targetRows ?? [])
-      .filter((r) => !moving.has(r.id as string))
-      .map((r) => r.sort_id as number)
-  );
+  // Every slot the target day currently uses is taken — including slots held
+  // by selected letters that are ALREADY on that day. Those letters don't
+  // move, so treating their slots as free would hand one to an incoming
+  // letter and trip the unique constraint.
+  const taken = new Set((targetRows ?? []).map((r) => r.sort_id as number));
 
-  for (const letter of letters ?? []) {
+  const incoming = (letters ?? []).filter((r) => r.day_id !== dayId);
+
+  for (const letter of incoming) {
     let sort_id = letter.sort_id as number;
     if (taken.has(sort_id)) {
       const free = firstFree(taken);

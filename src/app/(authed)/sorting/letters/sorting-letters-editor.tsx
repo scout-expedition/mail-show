@@ -9,7 +9,7 @@ import {
   useState,
   useTransition,
 } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronUp, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -134,6 +134,7 @@ function SortingLettersWorkspace({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -152,8 +153,19 @@ function SortingLettersWorkspace({
 
   const selected = letters.find((l) => l.id === selectedId) ?? null;
 
-  // Keep ?letter=<id> in sync with the selection. A stale id (deleted letter,
-  // old link) simply drops the param rather than 404ing.
+  // The URL and the selection track each other in both directions: choosing a
+  // row writes ?letter=<id>, and navigating (back/forward, a pasted link)
+  // moves the selection. Adjusting during render rather than in an effect
+  // keeps the two from ping-ponging — the write below then finds nothing to do.
+  const urlLetterId = searchParams.get("letter");
+  const [prevUrlLetterId, setPrevUrlLetterId] = useState(urlLetterId);
+  if (urlLetterId !== prevUrlLetterId) {
+    setPrevUrlLetterId(urlLetterId);
+    setSelectedId(urlLetterId);
+  }
+
+  // A stale id (deleted letter, old link) simply drops the param rather than
+  // 404ing.
   useEffect(() => {
     const target = selected
       ? `${pathname}?letter=${encodeURIComponent(selected.id)}`

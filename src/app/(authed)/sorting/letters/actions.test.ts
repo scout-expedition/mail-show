@@ -439,6 +439,31 @@ describe("bulkSetSortingLetterDay", () => {
     expect(data).toEqual({ day_id: to, sort_id: 1 });
   });
 
+  it("should not hand an incoming letter a slot a selected letter already holds", async () => {
+    const from = await addDay(sb, { suffix: "mixed-from", number: 9367 });
+    const to = await addDay(sb, { suffix: "mixed-to", number: 9368 });
+    // The selection spans both days and both letters sit at ID 5. The one
+    // already on the target day doesn't move, so the incoming one must not be
+    // offered slot 5. The incoming letter is inserted first so it is also
+    // processed first — that is the order in which the slot it wants is still
+    // physically occupied.
+    const incoming = await addSortingLetter(sb, { dayId: from, sortId: 5 });
+    const staying = await addSortingLetter(sb, { dayId: to, sortId: 5 });
+
+    await bulkSetSortingLetterDay([staying, incoming], to);
+
+    const { data } = await sb
+      .from("sorting_letters")
+      .select("id, sort_id")
+      .eq("day_id", to)
+      .order("sort_id");
+
+    expect(data).toEqual([
+      { id: incoming, sort_id: 0 },
+      { id: staying, sort_id: 5 },
+    ]);
+  });
+
   it("should move several letters without collliding with each other", async () => {
     const from = await addDay(sb, { suffix: "multi-from", number: 9365 });
     const to = await addDay(sb, { suffix: "multi-to", number: 9366 });

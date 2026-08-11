@@ -269,9 +269,18 @@ function AddressFields({
     letter[numberKey] ?? "",
     (v) => ({ [numberKey]: v.trim() || null })
   );
-  const cityField = useLetterField(letter.id, cityKey, letter[cityKey] ?? "", (v) => ({
-    [cityKey]: v || null,
-  }));
+  // The city writes all three columns at once. A letter may name a city that
+  // isn't in the directory, so the rule evaluator falls back to the
+  // denormalized name/code — leaving those behind when the city is cleared
+  // would let a city rule keep matching a letter with no city.
+  const cityField = useLetterField(letter.id, cityKey, letter[cityKey] ?? "", (v) => {
+    const city = cities.find((c) => c.id === v);
+    return {
+      [cityKey]: v || null,
+      [`${side}_city_name`]: city?.name ?? null,
+      [`${side}_city_code`]: city?.code ?? null,
+    };
+  });
   const nationField = useLetterField(
     letter.id,
     nationKey,
