@@ -10,7 +10,7 @@ import {
   useTransition,
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { ChevronDown, ChevronUp, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -41,7 +41,9 @@ import {
   resolveDestination,
   type Destination,
 } from "@/lib/rules/destination";
+import { BulkBar } from "./bulk-bar";
 import { DestinationCell } from "./destination-cell";
+import { GenerateDialog } from "./generate-dialog";
 import { LetterPanel } from "./letter-panel";
 import { StampToggle } from "./stamp-toggle";
 import { createSortingLetter, deleteSortingLetter } from "./actions";
@@ -262,7 +264,34 @@ function SortingLettersWorkspace({
     );
   }
 
-  // ── create / delete ──────────────────────────────────────────────────────
+  // ── bulk selection ───────────────────────────────────────────────────────
+  const [selectMode, setSelectMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  // Letters can vanish under a selection (a peer deletes one, the day filter
+  // changes) — only ever act on ones still on screen.
+  const checkedLetters = view.filter((l) => checkedIds.has(l.id));
+  const allChecked = view.length > 0 && checkedLetters.length === view.length;
+
+  function toggleChecked(id: string) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setCheckedIds(allChecked ? new Set() : new Set(view.map((l) => l.id)));
+  }
+
+  function leaveSelectMode() {
+    setSelectMode(false);
+    setCheckedIds(new Set());
+  }
+
+  // ── create / generate / delete ───────────────────────────────────────────
+  const [generating, setGenerating] = useState(false);
   const [creating, startCreate] = useTransition();
   function handleCreate() {
     startCreate(async () => {
@@ -301,6 +330,30 @@ function SortingLettersWorkspace({
     <>
       {toaster}
       {confirmDialog}
+      {generating ? (
+        <GenerateDialog
+          days={days}
+          rules={rulesWithConditions}
+          defaultDayId={filterDayId}
+          onClose={() => setGenerating(false)}
+          onDone={({ created, requested, reason }) => {
+            scheduleRefresh();
+            if (created === 0) {
+              toast({
+                intent: "destructive",
+                message: reason ?? "No letters could be generated.",
+              });
+            } else if (created < requested) {
+              toast({
+                intent: "destructive",
+                message: `Generated ${created} of ${requested}. ${reason ?? ""}`.trim(),
+              });
+            } else {
+              toast({ message: `Generated ${created} sorting letters.` });
+            }
+          }}
+        />
+      ) : null}
       <div className="flex gap-3">
         <div className="min-w-0 flex-1">
           <div className="overflow-hidden rounded-md border border-border bg-card">
@@ -325,6 +378,29 @@ function SortingLettersWorkspace({
                   </Select>
                   <button
                     type="button"
+                    onClick={() => (selectMode ? leaveSelectMode() : setSelectMode(true))}
+                    aria-pressed={selectMode}
+                    className={cn(
+                      "inline-flex h-6 items-center rounded-md px-2 font-mono text-[10px] uppercase tracking-widest transition-colors",
+                      selectMode
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    )}
+                  >
+                    Select
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGenerating(true)}
+                    disabled={days.length === 0}
+                    aria-label="Generate sorting letters"
+                    title="Generate sorting letters"
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Sparkles size={14} aria-hidden />
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleCreate}
                     disabled={creating || days.length === 0}
                     aria-label="Add sorting letter"
@@ -337,9 +413,37 @@ function SortingLettersWorkspace({
               }
             />
 
+            {selectMode && checkedLetters.length > 0 ? (
+              <BulkBar
+                selected={checkedLetters}
+                days={days}
+                citizens={citizens}
+                rules={rulesWithConditions}
+                onDone={() => {
+                  setCheckedIds(new Set());
+                  scheduleRefresh();
+                }}
+                onClearSelection={() => setCheckedIds(new Set())}
+                onConfirm={confirm}
+                onError={(m) => toast({ intent: "destructive", message: m })}
+                onMessage={(m) => toast({ message: m })}
+              />
+            ) : null}
+
             <table className="w-full text-sm">
               <thead className="bg-muted/30 text-muted-foreground">
                 <tr>
+                  {selectMode ? (
+                    <th scope="col" className="w-[36px] px-3">
+                      <input
+                        type="checkbox"
+                        checked={allChecked}
+                        onChange={toggleAll}
+                        aria-label="Select all letters"
+                        className="h-3.5 w-3.5"
+                      />
+                    </th>
+                  ) : null}
                   <SortableHeader
                     label="ID"
                     sortKey="content_id"
@@ -398,6 +502,9 @@ function SortingLettersWorkspace({
                     day={dayById.get(letter.day_id) ?? null}
                     destination={destinations.get(letter.id) ?? { status: "none" }}
                     selected={letter.id === selectedId}
+                    selectMode={selectMode}
+                    checked={checkedIds.has(letter.id)}
+                    onCheck={() => toggleChecked(letter.id)}
                     onSelect={() => setSelectedId(letter.id)}
                     onDelete={() => handleDelete(letter)}
                     onError={(m) => toast({ intent: "destructive", message: m })}
@@ -440,6 +547,9 @@ function LetterRow({
   day,
   destination,
   selected,
+  selectMode,
+  checked,
+  onCheck,
   onSelect,
   onDelete,
   onError,
@@ -448,19 +558,36 @@ function LetterRow({
   day: Day | null;
   destination: Destination;
   selected: boolean;
+  selectMode: boolean;
+  checked: boolean;
+  onCheck: () => void;
   onSelect: () => void;
   onDelete: () => void;
   onError: (message: string) => void;
 }) {
   return (
     <tr
-      onClick={onSelect}
+      // In select mode the row click ticks the box instead of opening the
+      // panel — otherwise every attempt to build a selection swaps the editor.
+      onClick={selectMode ? onCheck : onSelect}
       aria-current={selected || undefined}
       className={cn(
         "cursor-pointer border-t border-border/60 hover:bg-muted/30 [&>td]:px-3 [&>td]:py-1.5",
-        selected && "bg-accent/40"
+        selected && !selectMode && "bg-accent/40",
+        selectMode && checked && "bg-accent/30"
       )}
     >
+      {selectMode ? (
+        <td onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={onCheck}
+            aria-label={`Select ${letter.content_id}`}
+            className="h-3.5 w-3.5"
+          />
+        </td>
+      ) : null}
       <td>
         <Badge variant="secondary" className="font-mono">
           {letter.content_id}
