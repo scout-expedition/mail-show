@@ -72,7 +72,7 @@ describe("createSortingLetter", () => {
 
     const { data } = await sb
       .from("sorting_letters")
-      .select("day_id, sort_id, recipient_type, sender_type, is_counterfeit")
+      .select("day_id, sort_id, recipient_type, sender_type, stamp_valid")
       .eq("day_id", dayId);
 
     expect(data).toHaveLength(1);
@@ -81,7 +81,7 @@ describe("createSortingLetter", () => {
       sort_id: 5,
       recipient_type: "full",
       sender_type: "full",
-      is_counterfeit: false,
+      stamp_valid: true,
     });
     expect(revalidatePath).toHaveBeenCalledWith("/sorting/letters");
     expect(redirect).toHaveBeenCalledTimes(1);
@@ -167,7 +167,7 @@ describe("updateSortingLetter", () => {
         day_id: dayId,
         sort_id: "12",
         storage_location: "Shelf B",
-        is_counterfeit: "on",
+        stamp_valid: "on",
         recipient_type: "lookup_2",
         recipient_name: "Mara Voss",
         recipient_citizen_number: "SL000123",
@@ -180,7 +180,7 @@ describe("updateSortingLetter", () => {
     const { data } = await sb
       .from("sorting_letters")
       .select(
-        "sort_id, storage_location, is_counterfeit, recipient_type, recipient_name, recipient_citizen_number, sender_type, sender_name, notes"
+        "sort_id, storage_location, stamp_valid, recipient_type, recipient_name, recipient_citizen_number, sender_type, sender_name, notes"
       )
       .eq("id", letterId)
       .single();
@@ -188,7 +188,7 @@ describe("updateSortingLetter", () => {
     expect(data).toEqual({
       sort_id: 12,
       storage_location: "Shelf B",
-      is_counterfeit: true,
+      stamp_valid: true,
       recipient_type: "lookup_2",
       recipient_name: "Mara Voss",
       recipient_citizen_number: "SL000123",
@@ -232,13 +232,13 @@ describe("updateSortingLetter", () => {
     });
   });
 
-  it("should default is_counterfeit to false when the checkbox is absent", async () => {
+  it("should default stamp_valid to false when the checkbox is absent", async () => {
     const dayId = await addDay(sb, { suffix: "update-cf", number: 9313 });
     const letterId = await addSortingLetter(sb, { dayId, sortId: 3 });
-    // Seed it as counterfeit so the update has something to flip.
+    // Seed it with a fake stamp so the update has something to flip.
     await sb
       .from("sorting_letters")
-      .update({ is_counterfeit: true })
+      .update({ stamp_valid: true })
       .eq("id", letterId);
 
     await updateSortingLetter(
@@ -247,11 +247,11 @@ describe("updateSortingLetter", () => {
 
     const { data } = await sb
       .from("sorting_letters")
-      .select("is_counterfeit")
+      .select("stamp_valid")
       .eq("id", letterId)
       .single();
 
-    expect(data?.is_counterfeit).toBe(false);
+    expect(data?.stamp_valid).toBe(false);
   });
 
   it("should no-op and not revalidate when the id is missing", async () => {
@@ -298,13 +298,13 @@ describe("updateAllSortingLetters", () => {
         recipient_names: ["Alpha Recip", "Beta Recip"],
         sender_names: ["Alpha Send", "Beta Send"],
         storage_locations: ["Bin 1", "Bin 2"],
-        is_counterfeits: ["false", "true"],
+        stamp_valids: ["false", "true"],
       })
     );
 
     const { data } = await sb
       .from("sorting_letters")
-      .select("id, recipient_name, sender_name, storage_location, is_counterfeit")
+      .select("id, recipient_name, sender_name, storage_location, stamp_valid")
       .in("id", [letterA, letterB]);
 
     const byId = Object.fromEntries((data ?? []).map((r) => [r.id, r]));
@@ -312,13 +312,13 @@ describe("updateAllSortingLetters", () => {
       recipient_name: "Alpha Recip",
       sender_name: "Alpha Send",
       storage_location: "Bin 1",
-      is_counterfeit: false,
+      stamp_valid: false,
     });
     expect(byId[letterB]).toMatchObject({
       recipient_name: "Beta Recip",
       sender_name: "Beta Send",
       storage_location: "Bin 2",
-      is_counterfeit: true,
+      stamp_valid: true,
     });
     expect(revalidatePath).toHaveBeenCalledTimes(1);
     expect(revalidatePath).toHaveBeenCalledWith("/sorting/letters");
@@ -339,7 +339,7 @@ describe("updateAllSortingLetters", () => {
         recipient_names: ["  "],
         sender_names: [""],
         storage_locations: [""],
-        is_counterfeits: ["false"],
+        stamp_valids: ["false"],
       })
     );
 
@@ -367,7 +367,7 @@ describe("updateAllSortingLetters", () => {
         recipient_names: ["Kept"],
         sender_names: [""],
         storage_locations: [""],
-        is_counterfeits: ["false"],
+        stamp_valids: ["false"],
       })
     );
 
@@ -391,7 +391,7 @@ describe("updateAllSortingLetters", () => {
         recipient_names: ["ignored", "Real"],
         sender_names: ["", ""],
         storage_locations: ["", ""],
-        is_counterfeits: ["false", "false"],
+        stamp_valids: ["false", "false"],
       })
     );
 
@@ -480,18 +480,18 @@ describe("patchSortingLetter", () => {
 
     await patchSortingLetter(letterId, {
       recipient_name: "Patched Name",
-      is_counterfeit: true,
+      stamp_valid: true,
     });
 
     const { data } = await sb
       .from("sorting_letters")
-      .select("recipient_name, is_counterfeit, sender_name")
+      .select("recipient_name, stamp_valid, sender_name")
       .eq("id", letterId)
       .single();
 
     expect(data).toEqual({
       recipient_name: "Patched Name",
-      is_counterfeit: true,
+      stamp_valid: true,
       sender_name: null,
     });
     // Instant-save contract: realtime fans the change out, no revalidation.

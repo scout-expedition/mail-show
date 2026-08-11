@@ -14,9 +14,9 @@ import type { TargetSubject, TargetField } from "./condition-target";
 // ---------------------------------------------------------------------------
 
 describe("decodeTarget", () => {
-  it("is_counterfeit → counterfeit, null field", () => {
-    expect(decodeTarget("is_counterfeit")).toEqual({
-      subject: "counterfeit",
+  it("stamp_valid → counterfeit, null field", () => {
+    expect(decodeTarget("stamp_valid")).toEqual({
+      subject: "stamp",
       field: null,
     });
   });
@@ -99,9 +99,9 @@ describe("decodeTarget", () => {
 // ---------------------------------------------------------------------------
 
 describe("encodeTarget", () => {
-  it("counterfeit → is_counterfeit", () => {
-    expect(encodeTarget({ subject: "counterfeit", field: null })).toBe(
-      "is_counterfeit"
+  it("counterfeit → stamp_valid", () => {
+    expect(encodeTarget({ subject: "stamp", field: null })).toBe(
+      "stamp_valid"
     );
   });
 
@@ -174,7 +174,7 @@ describe("SUBJECT_OPTIONS", () => {
       "sender",
       "recipient",
       "day",
-      "counterfeit",
+      "stamp",
     ];
     const values = SUBJECT_OPTIONS.map((o) => o.value);
     for (const s of subjects) {

@@ -65,7 +65,7 @@ export async function updateSortingLetter(formData: FormData) {
     day_id: String(formData.get("day_id") ?? ""),
     sort_id: nilNum(formData.get("sort_id")) ?? 0,
     storage_location: nilStr(formData.get("storage_location")),
-    is_counterfeit: formData.get("is_counterfeit") === "on",
+    stamp_valid: formData.get("stamp_valid") === "on",
     recipient_type: String(formData.get("recipient_type") ?? "full") as AddressType,
     recipient_name: nilStr(formData.get("recipient_name")),
     recipient_citizen_number: nilStr(formData.get("recipient_citizen_number")),
@@ -95,7 +95,7 @@ export async function updateAllSortingLetters(formData: FormData) {
   const recipientNames = formData.getAll("recipient_names").map(String);
   const senderNames = formData.getAll("sender_names").map(String);
   const storages = formData.getAll("storage_locations").map(String);
-  const counterfeits = formData.getAll("is_counterfeits").map(String);
+  const stamps = formData.getAll("stamp_valids").map(String);
 
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
@@ -105,7 +105,7 @@ export async function updateAllSortingLetters(formData: FormData) {
       recipient_name: (recipientNames[i] ?? "").trim() || null,
       sender_name: (senderNames[i] ?? "").trim() || null,
       storage_location: (storages[i] ?? "").trim() || null,
-      is_counterfeit: counterfeits[i] === "true",
+      stamp_valid: stamps[i] === "true",
     };
     if (!payload.day_id) delete (payload as Record<string, unknown>).day_id;
     const { error } = await supabase
@@ -141,7 +141,7 @@ export async function patchSortingLetter(
     day_id: string;
     sort_id: number;
     storage_location: string | null;
-    is_counterfeit: boolean;
+    stamp_valid: boolean;
     recipient_type: import("@/lib/db/enums").AddressType;
     recipient_name: string | null;
     recipient_citizen_number: string | null;

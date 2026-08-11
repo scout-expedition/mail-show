@@ -102,11 +102,11 @@ export default async function SortingLetterDetail({
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
-                  name="is_counterfeit"
-                  defaultChecked={letter.is_counterfeit}
+                  name="stamp_valid"
+                  defaultChecked={letter.stamp_valid}
                   className="h-4 w-4"
                 />
-                Counterfeit
+                Stamp valid
               </label>
             </div>
 

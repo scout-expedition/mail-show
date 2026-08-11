@@ -230,10 +230,10 @@ function SortingLetterRow({
   });
 
   const counterField = useInstantField<boolean>({
-    value: row.is_counterfeit,
-    onCommit: (v) => patchSortingLetter(row.id, { is_counterfeit: v }),
+    value: row.stamp_valid,
+    onCommit: (v) => patchSortingLetter(row.id, { stamp_valid: v }),
     onFocusChange: (focused) =>
-      setFocus(focused ? makeFocusKey("is_counterfeit") : null),
+      setFocus(focused ? makeFocusKey("stamp_valid") : null),
     onActivity: pingActivity,
   });
 
@@ -290,7 +290,7 @@ function SortingLetterRow({
         />
       </FieldHighlight>
 
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("is_counterfeit")}>
+      <FieldHighlight peers={peers} focusKey={makeFocusKey("stamp_valid")}>
         <label
           className={cn(
             "flex h-8 cursor-pointer items-center justify-center rounded-md text-xs",

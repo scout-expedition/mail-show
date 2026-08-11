@@ -237,16 +237,16 @@ describe("slice-respecting grouping", () => {
 // ---------------------------------------------------------------------------
 
 describe("boolean clash", () => {
-  it("is_counterfeit is true + is false → conflict", () => {
+  it("stamp_valid is true + is false → conflict", () => {
     const conditions: RuleCondition[] = [
       makeRuleCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         operator: "is",
         reference_type: "true",
         reference_value: null,
       }),
       makeRuleCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         operator: "is",
         reference_type: "false",
         reference_value: null,
@@ -256,13 +256,13 @@ describe("boolean clash", () => {
     expect(result.length).toBe(1);
     expect(hasConflict(result, [0, 1])).toBe(true);
     expect(result[0].message).toMatch(/true and false/i);
-    expect(result[0].message).toContain("Is counterfeit");
+    expect(result[0].message).toContain("Stamp");
   });
 
-  it("single is_counterfeit is true — no conflict", () => {
+  it("single stamp_valid is true — no conflict", () => {
     const conditions: RuleCondition[] = [
       makeRuleCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         operator: "is",
         reference_type: "true",
         reference_value: null,
@@ -443,10 +443,10 @@ describe("Cluster 2 negated-operator clashes", () => {
     expect(hasConflict(result, [0, 1])).toBe(true);
   });
 
-  it("is_counterfeit is_not true + is_not false is a contradiction", () => {
+  it("stamp_valid is_not true + is_not false is a contradiction", () => {
     const conds: RuleCondition[] = [
-      makeRuleCondition({ target: "is_counterfeit", operator: "is_not", reference_type: "true", reference_value: null }),
-      makeRuleCondition({ target: "is_counterfeit", operator: "is_not", reference_type: "false", reference_value: null }),
+      makeRuleCondition({ target: "stamp_valid", operator: "is_not", reference_type: "true", reference_value: null }),
+      makeRuleCondition({ target: "stamp_valid", operator: "is_not", reference_type: "false", reference_value: null }),
     ];
     const result = detectContradictions(conds, "all");
     expect(result.length).toBe(1);

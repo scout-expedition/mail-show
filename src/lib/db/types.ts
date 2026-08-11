@@ -214,7 +214,7 @@ export interface SortingLetter {
   day_id: string;
   sort_id: number;
   storage_location: string | null;
-  is_counterfeit: boolean;
+  stamp_valid: boolean;
   recipient_type: AddressType;
   recipient_citizen_id: string | null;
   recipient_name: string | null;
