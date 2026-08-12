@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { makeRuleCondition } from "../../../tests/fixtures/builders";
 import type { Citizen, SortingRule } from "@/lib/db/types";
 import type { RuleWithConditions } from "./destination";
-import { makeCandidates, planLetters, type Candidate } from "./generate";
+import {
+  addressColumns,
+  clearedAddressColumns,
+  makeCandidates,
+  planLetters,
+  type Candidate,
+} from "./generate";
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -362,6 +368,216 @@ describe("planLetters", () => {
     const result = plan(rules, [], 1);
 
     expect(result.shortfall).toMatch(/directory is empty/i);
+  });
+});
+
+describe("recipient-side conditions", () => {
+  it("reports the empty side when no citizen can be the recipient", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        rule: makeRule(),
+        conditions: [
+          makeRuleCondition({
+            target: "recipient_last_name",
+            operator: "equals",
+            reference_type: "string",
+            reference_value: "Nonexistent",
+          }),
+        ],
+      },
+    ];
+
+    const result = plan(rules, candidatesNamed(["Ada", "Lovelace"]), 1);
+
+    expect(result.pairs).toHaveLength(0);
+    expect(result.shortfall).toMatch(/no citizen satisfies the recipient conditions/i);
+  });
+
+  it("picks a recipient that satisfies the rule", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        rule: makeRule(),
+        conditions: [
+          makeRuleCondition({
+            target: "recipient_last_name",
+            operator: "equals",
+            reference_type: "string",
+            reference_value: "Hopper",
+          }),
+        ],
+      },
+    ];
+
+    const result = plan(
+      rules,
+      candidatesNamed(["Grace", "Hopper"], ["Ada", "Lovelace"]),
+      1
+    );
+
+    expect(result.pairs[0].recipient.citizen.last_name).toBe("Hopper");
+  });
+});
+
+describe("non-conjunctive rules", () => {
+  it("satisfies an `any` rule through the bounded scan", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        // `any` can't be split per side, so the planner falls back to scanning
+        // shuffled pairs rather than filtering pools.
+        rule: makeRule({ match_mode: "any" }),
+        conditions: [
+          makeRuleCondition({
+            target: "sender_last_name",
+            operator: "equals",
+            reference_type: "string",
+            reference_value: "Hopper",
+          }),
+          makeRuleCondition({
+            target: "recipient_last_name",
+            operator: "equals",
+            reference_type: "string",
+            reference_value: "Nobody",
+          }),
+        ],
+      },
+    ];
+
+    const result = plan(
+      rules,
+      candidatesNamed(["Grace", "Hopper"], ["Ada", "Lovelace"]),
+      1
+    );
+
+    expect(result.shortfall).toBeUndefined();
+    expect(result.pairs[0].sender.citizen.last_name).toBe("Hopper");
+  });
+
+  it("gives up cleanly when no pair can satisfy the rule", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        rule: makeRule({ match_mode: "any" }),
+        conditions: [
+          makeRuleCondition({
+            target: "sender_last_name",
+            operator: "equals",
+            reference_type: "string",
+            reference_value: "Nobody",
+          }),
+        ],
+      },
+    ];
+
+    const result = plan(
+      rules,
+      candidatesNamed(["Grace", "Hopper"], ["Ada", "Lovelace"]),
+      1
+    );
+
+    expect(result.pairs).toHaveLength(0);
+    expect(result.shortfall).toMatch(/no sender\/recipient pair/i);
+  });
+
+  it("reports a rule whose stamp conditions contradict each other", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        rule: makeRule(),
+        conditions: [
+          makeRuleCondition({
+            target: "stamp_valid",
+            operator: "is",
+            reference_type: "true",
+            reference_value: null,
+          }),
+          makeRuleCondition({
+            target: "stamp_valid",
+            operator: "is",
+            reference_type: "false",
+            reference_value: null,
+          }),
+        ],
+      },
+    ];
+
+    const result = plan(rules, candidatesNamed(["Ada", "L"], ["Alan", "T"]), 1);
+
+    expect(result.pairs).toHaveLength(0);
+    expect(result.shortfall).toMatch(/contradicts itself about the stamp/i);
+  });
+
+  it("returns nothing for a rule id that no longer exists", () => {
+    const rules: RuleWithConditions[] = [
+      {
+        rule: makeRule({ id: "real" }),
+        conditions: [makeRuleCondition({})],
+      },
+    ];
+
+    const result = planLetters({
+      rules,
+      targetRuleId: "deleted",
+      dayNumber: 1,
+      dayOfWeek: null,
+      dayNumberById: DAY_NUMBERS,
+      candidates: candidatesNamed(["Ada", "L"]),
+      usedCitizenIds: new Set(),
+      count: 1,
+      rng: noShuffle,
+    });
+
+    expect(result.pairs).toHaveLength(0);
+    expect(result.shortfall).toMatch(/no longer exists/i);
+  });
+});
+
+describe("addressColumns", () => {
+  it("denormalizes a citizen into the letter's columns", () => {
+    const [candidate] = makeCandidates(
+      [makeCitizen({ city_id: "city-1", nation_id: "nation-1" })],
+      [{ id: "city-1", name: "Pelico", code: "PL", nation_id: "nation-1" }],
+      [
+        {
+          id: "nation-1",
+          name: "Folos",
+          abbreviation: null,
+          color_hex: "#888888",
+          sort_order: 0,
+          icon_type: "lucide",
+          icon_value: null,
+        },
+      ]
+    );
+
+    expect(addressColumns("sender", candidate)).toEqual({
+      sender_citizen_id: "citizen-1",
+      sender_name: "Ada Lovelace",
+      // Stored raw, displayed with the hash.
+      sender_citizen_number: "#A1B2",
+      sender_city_id: "city-1",
+      sender_city_name: "Pelico",
+      sender_city_code: "PL",
+      sender_nation_id: "nation-1",
+    });
+  });
+
+  it("leaves the citizen number null when the citizen has no ID", () => {
+    const [candidate] = makeCandidates(
+      [makeCitizen({ citizen_id: null })],
+      [],
+      []
+    );
+    expect(addressColumns("recipient", candidate).recipient_citizen_number).toBeNull();
+  });
+
+  it("clears every column of one side", () => {
+    expect(clearedAddressColumns("recipient")).toEqual({
+      recipient_citizen_id: null,
+      recipient_name: null,
+      recipient_citizen_number: null,
+      recipient_city_id: null,
+      recipient_city_name: null,
+      recipient_city_code: null,
+      recipient_nation_id: null,
+    });
   });
 });
 

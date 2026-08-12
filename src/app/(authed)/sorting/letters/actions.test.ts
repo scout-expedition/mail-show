@@ -726,6 +726,50 @@ describe("generateSortingLetters", () => {
     expect(data).toHaveLength(0);
   });
 
+  /** Fill a day up to `upTo` IDs in one round trip. */
+  async function fillDay(dayId: string, upTo: number) {
+    const rows = Array.from({ length: upTo }, (_, sort_id) => ({
+      day_id: dayId,
+      sort_id,
+    }));
+    const { error } = await sb.from("sorting_letters").insert(rows);
+    if (error) throw new Error(error.message);
+  }
+
+  it("should cap at the day's remaining IDs and say so", async () => {
+    const { dayId, ruleId } = await seedGeneratable({
+      number: 9396,
+      suffix: "gen-capacity",
+    });
+    // 99 of the 100 IDs are spoken for, so only one letter can be built.
+    await fillDay(dayId, 99);
+
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [{ ruleId, count: 3 }],
+    });
+
+    expect(result).toMatchObject({ created: 1, requested: 3 });
+    expect(result.perRule[0]).toMatchObject({ created: 1, requested: 3 });
+    expect(result.perRule[0].reason).toMatch(/only 1 free id/i);
+  });
+
+  it("should report a full day rather than throwing", async () => {
+    const { dayId, ruleId } = await seedGeneratable({
+      number: 9397,
+      suffix: "gen-full",
+    });
+    await fillDay(dayId, 100);
+
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [{ ruleId, count: 2 }],
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.perRule[0].reason).toMatch(/100 sorting letters/i);
+  });
+
   it("should report why nothing could be generated", async () => {
     const dayId = await addDay(sb, { suffix: "gen-impossible", number: 9393 });
     const ruleId = await addRule(sb, {

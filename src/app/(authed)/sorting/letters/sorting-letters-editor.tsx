@@ -521,6 +521,7 @@ function SortingLettersWorkspace({
                     onSelect={() =>
                       setSelectedId((cur) => (cur === letter.id ? null : letter.id))
                     }
+                    onOpen={() => setSelectedId(letter.id)}
                     onDelete={() => handleDelete(letter)}
                     onError={(m) => toast({ intent: "destructive", message: m })}
                   />
@@ -566,6 +567,7 @@ function LetterRow({
   checked,
   onCheck,
   onSelect,
+  onOpen,
   onDelete,
   onError,
 }: {
@@ -576,7 +578,10 @@ function LetterRow({
   selectMode: boolean;
   checked: boolean;
   onCheck: () => void;
+  /** Row click: opens the panel, or closes it if this row is already open. */
   onSelect: () => void;
+  /** Always opens the panel — the menu's Edit must never close it. */
+  onOpen: () => void;
   onDelete: () => void;
   onError: (message: string) => void;
 }) {
@@ -636,7 +641,7 @@ function LetterRow({
             {
               label: "Edit letter",
               icon: <Pencil size={12} aria-hidden />,
-              onClick: onSelect,
+              onClick: onOpen,
             },
             { divider: true },
             {

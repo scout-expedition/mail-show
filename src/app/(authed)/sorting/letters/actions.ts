@@ -251,15 +251,25 @@ export async function generateSortingLetters({
     }
     created += ruleCreated;
 
-    // Order matters: a letter lost to a concurrent writer is a different story
-    // from a rule nothing could satisfy, and the planner's reason shouldn't be
-    // reported for a letter that planned fine and just lost its slot.
+    // A shortfall can have two causes at once — the day ran out of IDs AND the
+    // rule couldn't be satisfied for the letters there was room for — so the
+    // reasons are composed rather than one masking the other. The planner's
+    // shortfall counts against `room`, not the original ask, which is why the
+    // capacity note has to be said separately.
+    const reasons: string[] = [];
+    if (room < request.count) {
+      reasons.push(
+        `Only ${room} free ID${room === 1 ? "" : "s"} left on that day.`
+      );
+    }
+    if (lostToRace > 0) {
+      reasons.push("Another session claimed some IDs while generating.");
+    } else if (ruleCreated < room && shortfall) {
+      reasons.push(shortfall);
+    }
     const reason =
-      ruleCreated < request.count
-        ? lostToRace > 0
-          ? "Another session claimed those IDs while generating — try again."
-          : (shortfall ??
-            (room < request.count ? "No free IDs left on that day." : undefined))
+      ruleCreated < request.count && reasons.length > 0
+        ? reasons.join(" ")
         : undefined;
 
     perRule.push({
@@ -292,7 +302,15 @@ async function insertGeneratedLetter(
   const supabase = await createSupabaseServerClient();
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const sort_id = await lowestFreeSortId(dayId);
+    // A concurrent writer can fill the day between the batch's capacity check
+    // and this insert. That is a shortfall for this letter, not a failure of
+    // the whole batch, so the full-day case returns false like a lost race.
+    let sort_id: number;
+    try {
+      sort_id = await lowestFreeSortId(dayId);
+    } catch {
+      return false;
+    }
     const { error } = await supabase.from("sorting_letters").insert({
       day_id: dayId,
       sort_id,
