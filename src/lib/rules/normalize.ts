@@ -35,7 +35,7 @@ export type BuilderCondition = EditableCondition;
  *  the UI hides the slice segment for those. */
 export function slicesFor(target: RuleTarget): RuleTargetSlice[] {
   const k = targetKind(target);
-  if (k === "nation" || k === "day" || k === "counterfeit") return ["whole"];
+  if (k === "nation" || k === "day" || k === "stamp") return ["whole"];
   return [...RULE_TARGET_SLICES];
 }
 
@@ -46,7 +46,7 @@ export function operatorsFor(
 ): RuleOperator[] {
   const k = targetKind(target);
   switch (k) {
-    case "counterfeit":
+    case "stamp":
       return ["is", "is_not"];
     case "nation":
     case "day":
@@ -87,7 +87,7 @@ export function referenceTypesFor(
 ): RuleReferenceType[] {
   const k = targetKind(target);
 
-  if (k === "counterfeit") return ["true", "false"];
+  if (k === "stamp") return ["true", "false"];
   if (k === "nation" || k === "day") return ["string"];
 
   if (

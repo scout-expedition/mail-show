@@ -112,7 +112,7 @@ const SUBJECT_PILL: Record<TargetSubject, { pill: string; divider: string }> = {
     pill: "border-blue-500/45 bg-blue-500/15 text-blue-50",
     divider: "border-blue-500/45",
   },
-  counterfeit: {
+  stamp: {
     pill: "border-pink-500/45 bg-pink-500/15 text-pink-50",
     divider: "border-pink-500/45",
   },
@@ -244,7 +244,7 @@ function TargetPill({
 
   function setSubject(v: string) {
     const subject = v as TargetSubject;
-    if (subject === "day" || subject === "counterfeit") {
+    if (subject === "day" || subject === "stamp") {
       onChange({ composite: { subject, field: null }, slice: "whole" });
     } else {
       onChange({
@@ -262,7 +262,7 @@ function TargetPill({
     });
   }
 
-  // Day-of-week / counterfeit live only on the subject pill — keeping them
+  // Day-of-week / stamp live only on the subject pill — keeping them
   // off the field pill avoids a second entry point that read as redundant.
   const fieldOptions = FIELD_OPTIONS;
 
@@ -509,8 +509,9 @@ function ComparatorPill({
 }) {
   const k = targetKind(condition.target);
 
-  // Counterfeit — fixed {true, false} dropdown.
-  if (k === "counterfeit") {
+  // Stamp — fixed {valid, fake} dropdown. The stored reference_type stays
+  // true/false; only the label reads in stamp terms (true = valid stamp).
+  if (k === "stamp") {
     const color = COMPARATOR_PILL.bool;
     return (
       <span
@@ -522,13 +523,13 @@ function ComparatorPill({
         <SelectSegment
           value={condition.reference_type}
           options={[
-            { value: "true", label: "true" },
-            { value: "false", label: "false" },
+            { value: "true", label: "valid" },
+            { value: "false", label: "fake" },
           ]}
           onChange={(v) =>
             onChange({ reference_type: v as RuleReferenceType })
           }
-          ariaLabel="Counterfeit"
+          ariaLabel="Stamp"
         />
       </span>
     );
@@ -760,7 +761,7 @@ function ConditionRow({
             const nextTarget = encodeTarget(next);
             // Clear the value when the subject or field changes — a stale
             // name like "Alice" would otherwise persist into a nation /
-            // weekday / counterfeit condition where it's meaningless (the
+            // weekday / stamp condition where it's meaningless (the
             // dedicated pickers mark it as "missing" but it'd still write
             // to the DB on save). Mirrors the same clear we already do
             // when the comparator-type picker changes.

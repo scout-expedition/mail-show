@@ -83,25 +83,50 @@ describe("evaluateCondition", () => {
       }
     );
 
-    it("should return true for is_counterfeit target with reference_type 'true'", () => {
+    it("should return true for stamp_valid target with reference_type 'true'", () => {
       const cond = makeRuleCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         operator: "is",
         reference_type: "true",
         reference_value: null,
       });
-      const ctx = makeRuleContext({ is_counterfeit: true });
+      const ctx = makeRuleContext({ stamp_valid: true });
       expect(evaluateCondition(cond, ctx)).toBe(true);
     });
 
-    it("should return false for is_counterfeit target with reference_type 'false' when value is true", () => {
+    it("should return false for stamp_valid target with reference_type 'false' when value is true", () => {
       const cond = makeRuleCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         operator: "is",
         reference_type: "false",
         reference_value: null,
       });
-      const ctx = makeRuleContext({ is_counterfeit: true });
+      const ctx = makeRuleContext({ stamp_valid: true });
+      expect(evaluateCondition(cond, ctx)).toBe(false);
+    });
+
+    // `is_not` over a boolean target is the polarity-flip path that the
+    // stamp_valid rename inverts — a fake stamp must satisfy "stamp is not
+    // valid" and fail "stamp is not fake".
+    it("should return true for 'is_not' true when the stamp is fake", () => {
+      const cond = makeRuleCondition({
+        target: "stamp_valid",
+        operator: "is_not",
+        reference_type: "true",
+        reference_value: null,
+      });
+      const ctx = makeRuleContext({ stamp_valid: false });
+      expect(evaluateCondition(cond, ctx)).toBe(true);
+    });
+
+    it("should return false for 'is_not' false when the stamp is fake", () => {
+      const cond = makeRuleCondition({
+        target: "stamp_valid",
+        operator: "is_not",
+        reference_type: "false",
+        reference_value: null,
+      });
+      const ctx = makeRuleContext({ stamp_valid: false });
       expect(evaluateCondition(cond, ctx)).toBe(false);
     });
 
@@ -674,9 +699,9 @@ describe("representative (operator, reference_type) cases", () => {
     { operator: "is", reference_type: "even", reference_value: null, ctx: { sender_name: "42" }, expected: true },
     { operator: "is", reference_type: "odd", reference_value: null, ctx: { sender_name: "42" }, expected: false },
     { operator: "is", reference_type: "letter", reference_value: null, ctx: { sender_name: "42" }, expected: false },
-    { operator: "is", reference_type: "true", reference_value: null, target: "is_counterfeit", ctx: { is_counterfeit: true }, expected: true },
-    { operator: "is", reference_type: "false", reference_value: null, target: "is_counterfeit", ctx: { is_counterfeit: true }, expected: false },
-    { operator: "is_not", reference_type: "true", reference_value: null, target: "is_counterfeit", ctx: { is_counterfeit: false }, expected: true },
+    { operator: "is", reference_type: "true", reference_value: null, target: "stamp_valid", ctx: { stamp_valid: true }, expected: true },
+    { operator: "is", reference_type: "false", reference_value: null, target: "stamp_valid", ctx: { stamp_valid: true }, expected: false },
+    { operator: "is_not", reference_type: "true", reference_value: null, target: "stamp_valid", ctx: { stamp_valid: false }, expected: true },
     { operator: "is", reference_type: "digit", reference_value: "5", target: "sender_citizen_id", ctx: { sender_citizen_id: "50000" }, expected: true },
     { operator: "is", reference_type: "digit_set", reference_value: "1,3,5", target: "sender_citizen_id", ctx: { sender_citizen_id: "30000" }, expected: true },
     { operator: "is", reference_type: "letter_set", reference_value: "A,B,C", target: "sender_first_name", ctx: { sender_first_name: "alice" }, expected: true },

@@ -20,7 +20,7 @@ describe("slicesFor", () => {
   it("returns [whole] only for sliceless targets", () => {
     expect(slicesFor("recipient_nation")).toEqual(["whole"]);
     expect(slicesFor("current_day_of_week")).toEqual(["whole"]);
-    expect(slicesFor("is_counterfeit")).toEqual(["whole"]);
+    expect(slicesFor("stamp_valid")).toEqual(["whole"]);
   });
   it("returns the full slice list for character-bearing targets", () => {
     expect(slicesFor("sender_first_name")).toEqual([
@@ -50,7 +50,7 @@ describe("slicesFor", () => {
 
 describe("operatorsFor", () => {
   it("counterfeit + whole — is/is_not", () => {
-    expect(operatorsFor("is_counterfeit", "whole")).toEqual(["is", "is_not"]);
+    expect(operatorsFor("stamp_valid", "whole")).toEqual(["is", "is_not"]);
   });
   it("nation + whole — is/is_not (post-0044 predetermined-set picker)", () => {
     expect(operatorsFor("sender_nation", "whole")).toEqual(["is", "is_not"]);
@@ -132,11 +132,11 @@ describe("operatorsFor", () => {
 
 describe("referenceTypesFor", () => {
   it("counterfeit always — {true, false}", () => {
-    expect(referenceTypesFor("is_counterfeit", "whole", "is")).toEqual([
+    expect(referenceTypesFor("stamp_valid", "whole", "is")).toEqual([
       "true",
       "false",
     ]);
-    expect(referenceTypesFor("is_counterfeit", "whole", "is_not")).toEqual([
+    expect(referenceTypesFor("stamp_valid", "whole", "is_not")).toEqual([
       "true",
       "false",
     ]);
@@ -254,7 +254,7 @@ describe("hasReferenceTypePicker", () => {
     expect(
       hasReferenceTypePicker("sender_citizen_id", "first_char", "is")
     ).toBe(true);
-    expect(hasReferenceTypePicker("is_counterfeit", "whole", "is")).toBe(true);
+    expect(hasReferenceTypePicker("stamp_valid", "whole", "is")).toBe(true);
   });
 });
 
@@ -555,7 +555,7 @@ describe("normalizeCondition — slice + ref_type + reference_value snaps", () =
   it("counterfeit + true / false clears reference_value", () => {
     expect(
       normalizeCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         target_slice: "whole",
         operator: "is",
         reference_type: "true",
@@ -564,7 +564,7 @@ describe("normalizeCondition — slice + ref_type + reference_value snaps", () =
     ).toBeNull();
     expect(
       normalizeCondition({
-        target: "is_counterfeit",
+        target: "stamp_valid",
         target_slice: "whole",
         operator: "is",
         reference_type: "false",

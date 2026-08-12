@@ -1,6 +1,6 @@
 import type { RuleTarget } from "@/lib/db/enums";
 
-export type TargetSubject = "sender" | "recipient" | "day" | "counterfeit";
+export type TargetSubject = "sender" | "recipient" | "day" | "stamp";
 
 export type TargetField =
   | "first_name"
@@ -24,7 +24,7 @@ export interface CompositeTarget {
  * will produce the modern `*_first_name` target.
  */
 export function decodeTarget(t: RuleTarget): CompositeTarget {
-  if (t === "is_counterfeit") return { subject: "counterfeit", field: null };
+  if (t === "stamp_valid") return { subject: "stamp", field: null };
   if (t === "current_day_of_week") return { subject: "day", field: null };
 
   // Legacy whole-name → first_name (best-effort display)
@@ -57,7 +57,7 @@ export function decodeTarget(t: RuleTarget): CompositeTarget {
  * When `field` is null for a sender/recipient subject, defaults to `"first_name"`.
  */
 export function encodeTarget(c: CompositeTarget): RuleTarget {
-  if (c.subject === "counterfeit") return "is_counterfeit";
+  if (c.subject === "stamp") return "stamp_valid";
   if (c.subject === "day") return "current_day_of_week";
 
   const field: TargetField = c.field ?? "first_name";
@@ -74,7 +74,7 @@ export const SUBJECT_OPTIONS: { value: TargetSubject; label: string }[] = [
   { value: "sender", label: "Sender" },
   { value: "recipient", label: "Recipient" },
   { value: "day", label: "Current day of week" },
-  { value: "counterfeit", label: "Counterfeit stamp" },
+  { value: "stamp", label: "Stamp" },
 ];
 
 export const FIELD_OPTIONS: { value: TargetField; label: string }[] = [

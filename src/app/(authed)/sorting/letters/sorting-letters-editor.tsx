@@ -9,39 +9,82 @@ import {
   useState,
   useTransition,
 } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { ChevronDown, ChevronUp, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/confirm-dialog";
 import { useToast } from "@/components/toast";
-import { FieldHighlight } from "@/lib/realtime/field-highlight";
+import { OverflowMenu, PanelHeader, Spinner } from "@/components/panel";
 import type { PostgresChange } from "@/lib/realtime/channel";
-import type { PresenceFocus, PresenceProfile } from "@/lib/realtime/presence";
+import type { PresenceProfile } from "@/lib/realtime/presence";
 import {
   WorkspacePresenceProvider,
   usePresenceContext,
 } from "@/lib/realtime/presence-context";
-import { useInstantField } from "@/lib/realtime/use-instant-field";
-import type { Day, SortingLetterView } from "@/lib/db/types";
-import { deleteSortingLetter, patchSortingLetter } from "./actions";
+import type {
+  Citizen,
+  City,
+  Day,
+  Nation,
+  SortingLetterView,
+  SortingRule,
+  SortingRuleCondition,
+} from "@/lib/db/types";
+import {
+  attachConditions,
+  contextFromLetter,
+  dayNumbers,
+  makeLookups,
+  resolveDestination,
+  type Destination,
+} from "@/lib/rules/destination";
+import { BulkBar } from "./bulk-bar";
+import { DestinationCell } from "./destination-cell";
+import { GenerateDialog } from "./generate-dialog";
+import { LetterPanel } from "./letter-panel";
+import { StampToggle } from "./stamp-toggle";
+import { createSortingLetter, deleteSortingLetter } from "./actions";
 
 const POSTGRES_TABLES = ["sorting_letters"];
+
+/** Columns the table can be sorted by. */
+type SortKey =
+  | "content_id"
+  | "day"
+  | "recipient"
+  | "sender"
+  | "stamp"
+  | "destination"
+  | "storage";
+
+type SortState = { key: SortKey; dir: "asc" | "desc" };
 
 // ─── Public component: wraps inner in WorkspacePresenceProvider ──────────────
 
 export function SortingLettersEditor({
   letters,
   days,
+  rules,
+  ruleConditions,
+  citizens,
+  cities,
+  nations,
+  initialSelectedId,
   currentUserId,
   currentEmail,
   currentProfile,
 }: {
   letters: SortingLetterView[];
   days: Day[];
+  rules: SortingRule[];
+  ruleConditions: SortingRuleCondition[];
+  citizens: Citizen[];
+  cities: City[];
+  nations: Nation[];
+  initialSelectedId: string | null;
   currentUserId?: string;
   currentEmail?: string;
   currentProfile?: PresenceProfile | null;
@@ -54,29 +97,49 @@ export function SortingLettersEditor({
       profile={currentProfile}
       postgresTables={POSTGRES_TABLES}
     >
-      <SortingLettersEditorInner
+      <SortingLettersWorkspace
         letters={letters}
         days={days}
+        rules={rules}
+        ruleConditions={ruleConditions}
+        citizens={citizens}
+        cities={cities}
+        nations={nations}
+        initialSelectedId={initialSelectedId}
       />
     </WorkspacePresenceProvider>
   );
 }
 
-// ─── Inner component (reads presence context) ────────────────────────────────
+// ─── Table + panel workspace ─────────────────────────────────────────────────
 
-function SortingLettersEditorInner({
+function SortingLettersWorkspace({
   letters: lettersProp,
   days,
+  rules,
+  ruleConditions,
+  citizens,
+  cities,
+  nations,
+  initialSelectedId,
 }: {
   letters: SortingLetterView[];
   days: Day[];
+  rules: SortingRule[];
+  ruleConditions: SortingRuleCondition[];
+  citizens: Citizen[];
+  cities: City[];
+  nations: Nation[];
+  initialSelectedId: string | null;
 }) {
   const router = useRouter();
-  const { peers, onPostgresChanges } = usePresenceContext();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const { onPostgresChanges } = usePresenceContext();
   const { toast, toaster } = useToast();
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
-  // Mirror server array so postgres_changes can fan out without a page reload.
-  // "Adjust state during render" pattern keeps it in sync on structural revalidates.
+  // Mirror the server array so postgres_changes can fan out without a reload.
   const [letters, setLetters] = useState(lettersProp);
   const [prevLettersProp, setPrevLettersProp] = useState(lettersProp);
   if (lettersProp !== prevLettersProp) {
@@ -85,23 +148,42 @@ function SortingLettersEditorInner({
   }
 
   const [filterDayId, setFilterDayId] = useState<string>("");
+  const [sort, setSort] = useState<SortState>({ key: "content_id", dir: "asc" });
+  const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
 
-  // Debounced router.refresh for INSERT events from peers (view-derived columns
-  // like content_id require the RSC layer — can't be computed client-side).
+  const selected = letters.find((l) => l.id === selectedId) ?? null;
+
+  // The URL and the selection track each other in both directions: choosing a
+  // row writes ?letter=<id>, and navigating (back/forward, a pasted link)
+  // moves the selection. Adjusting during render rather than in an effect
+  // keeps the two from ping-ponging — the write below then finds nothing to do.
+  const urlLetterId = searchParams.get("letter");
+  const [prevUrlLetterId, setPrevUrlLetterId] = useState(urlLetterId);
+  if (urlLetterId !== prevUrlLetterId) {
+    setPrevUrlLetterId(urlLetterId);
+    setSelectedId(urlLetterId);
+  }
+
+  // A stale id (deleted letter, old link) simply drops the param rather than
+  // 404ing.
+  useEffect(() => {
+    const target = selected
+      ? `${pathname}?letter=${encodeURIComponent(selected.id)}`
+      : pathname;
+    router.replace(target, { scroll: false });
+  }, [selected, pathname, router]);
+
+  // Debounced refresh for what the client can't recompute: `content_id` and
+  // `day_number` come from the view, so a day / sort_id move needs the server.
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleRefresh = useCallback(() => {
-    if (refreshTimerRef.current !== null) {
-      clearTimeout(refreshTimerRef.current);
-    }
+    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
-      startTransition(() => {
-        router.refresh();
-      });
+      startTransition(() => router.refresh());
     }, 100);
   }, [router]);
 
-  // postgres_changes subscription
   useEffect(() => {
     return onPostgresChanges((change: PostgresChange) => {
       const { table, eventType } = change;
@@ -109,6 +191,7 @@ function SortingLettersEditorInner({
 
       if (eventType === "UPDATE") {
         const newRow = change.new as Record<string, unknown>;
+        const oldRow = change.old as Record<string, unknown> | undefined;
         const id = newRow.id as string | undefined;
         if (!id) return;
         setLetters((prev) =>
@@ -116,6 +199,14 @@ function SortingLettersEditorInner({
             r.id === id ? ({ ...r, ...newRow } as unknown as SortingLetterView) : r
           )
         );
+        // day_id / sort_id feed the view-derived content_id — only the server
+        // can recompute those.
+        if (
+          oldRow &&
+          (oldRow.day_id !== newRow.day_id || oldRow.sort_id !== newRow.sort_id)
+        ) {
+          scheduleRefresh();
+        }
         return;
       }
 
@@ -124,278 +215,538 @@ function SortingLettersEditorInner({
         const id = oldRow?.id as string | undefined;
         if (!id) return;
         setLetters((prev) => prev.filter((r) => r.id !== id));
+        setSelectedId((cur) => (cur === id ? null : cur));
         const by = (oldRow?.updated_by as string | undefined) ?? "Someone";
         toast({ intent: "destructive", message: `${by} deleted a sorting letter` });
         return;
       }
 
-      if (eventType === "INSERT") {
-        scheduleRefresh();
-        return;
-      }
+      if (eventType === "INSERT") scheduleRefresh();
     });
   }, [onPostgresChanges, toast, scheduleRefresh]);
 
+  // ── destinations ─────────────────────────────────────────────────────────
+  // One resolver pass over the letters, rebuilt when the rules or the
+  // directory change rather than on every render.
+  const rulesWithConditions = useMemo(
+    () => attachConditions(rules, ruleConditions),
+    [rules, ruleConditions]
+  );
+  const lookups = useMemo(
+    () => makeLookups(citizens, cities, nations),
+    [citizens, cities, nations]
+  );
+  const dayNumberById = useMemo(() => dayNumbers(days), [days]);
+  const dayById = useMemo(() => new Map(days.map((d) => [d.id, d])), [days]);
+
+  const destinations = useMemo(() => {
+    const map = new Map<string, Destination>();
+    for (const letter of letters) {
+      const day = dayById.get(letter.day_id);
+      const ctx = contextFromLetter(letter, lookups, day?.day_of_week ?? null);
+      map.set(
+        letter.id,
+        resolveDestination(
+          rulesWithConditions,
+          ctx,
+          dayNumberById,
+          day?.number ?? letter.day_number
+        )
+      );
+    }
+    return map;
+  }, [letters, lookups, rulesWithConditions, dayNumberById, dayById]);
+
+  // ── filter + sort ────────────────────────────────────────────────────────
   const view = useMemo(() => {
-    if (!filterDayId) return letters;
-    return letters.filter((r) => r.day_id === filterDayId);
-  }, [letters, filterDayId]);
+    const filtered = filterDayId
+      ? letters.filter((l) => l.day_id === filterDayId)
+      : letters;
+    const factor = sort.dir === "asc" ? 1 : -1;
+    return [...filtered].sort(
+      (a, b) => factor * compareBy(sort.key, a, b, destinations, dayById)
+    );
+  }, [letters, filterDayId, sort, destinations, dayById]);
+
+  function toggleSort(key: SortKey) {
+    setSort((cur) =>
+      cur.key === key
+        ? { key, dir: cur.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: "asc" }
+    );
+  }
+
+  // ── bulk selection ───────────────────────────────────────────────────────
+  const [selectMode, setSelectMode] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  // Letters can vanish under a selection (a peer deletes one, the day filter
+  // changes) — only ever act on ones still on screen.
+  const checkedLetters = view.filter((l) => checkedIds.has(l.id));
+  const allChecked = view.length > 0 && checkedLetters.length === view.length;
+
+  function toggleChecked(id: string) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setCheckedIds(allChecked ? new Set() : new Set(view.map((l) => l.id)));
+  }
+
+  function leaveSelectMode() {
+    setSelectMode(false);
+    setCheckedIds(new Set());
+  }
+
+  // ── create / generate / delete ───────────────────────────────────────────
+  const [generating, setGenerating] = useState(false);
+  const [creating, startCreate] = useTransition();
+  function handleCreate() {
+    startCreate(async () => {
+      try {
+        const { id } = await createSortingLetter({ dayId: filterDayId || null });
+        setSelectedId(id);
+      } catch (err) {
+        toast({
+          intent: "destructive",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    });
+  }
+
+  async function handleDelete(letter: SortingLetterView) {
+    const ok = await confirm({
+      title: "Delete sorting letter?",
+      message: `${letter.content_id} will be permanently removed.`,
+      confirmLabel: "Delete",
+      intent: "destructive",
+    });
+    if (!ok) return;
+    try {
+      await deleteSortingLetter(letter.id);
+      setSelectedId((cur) => (cur === letter.id ? null : cur));
+    } catch (err) {
+      toast({
+        intent: "destructive",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   return (
     <>
       {toaster}
-      <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
-        <Label className="!text-xs">Day</Label>
-        <Select
-          value={filterDayId}
-          onChange={(e) => setFilterDayId(e.target.value)}
-          className="h-8 w-auto"
-        >
-          <option value="">All days</option>
-          {days.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.identifier}
-              {d.name ? ` — ${d.name}` : ""}
-            </option>
-          ))}
-        </Select>
+      {confirmDialog}
+      {generating ? (
+        <GenerateDialog
+          days={days}
+          rules={rulesWithConditions}
+          defaultDayId={filterDayId}
+          onClose={() => setGenerating(false)}
+          onDone={({ created, requested, perRule }) => {
+            scheduleRefresh();
+            // Report per rule when any of them fell short — "generated 4 of 7"
+            // isn't actionable without knowing which rule couldn't be filled.
+            const short = perRule.filter((r) => r.created < r.requested);
+            if (short.length === 0) {
+              toast({ message: `Generated ${created} sorting letters.` });
+              return;
+            }
+            const detail = short
+              .map((r) => `${r.ruleLetter}: ${r.created}/${r.requested}${r.reason ? ` — ${r.reason}` : ""}`)
+              .join("; ");
+            toast({
+              intent: "destructive",
+              message: `Generated ${created} of ${requested}. ${detail}`,
+            });
+          }}
+        />
+      ) : null}
+      <div className="flex gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="overflow-hidden rounded-md border border-border bg-card">
+            <PanelHeader
+              title="Sorting Letters"
+              menu={
+                <span className="flex items-center gap-2">
+                  <Label className="!text-xs">Day</Label>
+                  <Select
+                    value={filterDayId}
+                    onChange={(e) => setFilterDayId(e.target.value)}
+                    className="h-7 w-auto"
+                    aria-label="Filter by day"
+                  >
+                    <option value="">All days</option>
+                    {days.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.identifier}
+                        {d.name ? ` — ${d.name}` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={() => (selectMode ? leaveSelectMode() : setSelectMode(true))}
+                    aria-pressed={selectMode}
+                    className={cn(
+                      "inline-flex h-6 items-center rounded-md px-2 font-mono text-[10px] uppercase tracking-widest transition-colors",
+                      selectMode
+                        ? "bg-accent text-accent-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                    )}
+                  >
+                    Select
+                  </button>
+                  {creating ? <Spinner /> : null}
+                  <OverflowMenu
+                    ariaLabel="Add sorting letters"
+                    icon={<Plus size={14} aria-hidden />}
+                    items={[
+                      {
+                        label: "Add blank sorting letter",
+                        icon: <Plus size={12} aria-hidden />,
+                        onClick: handleCreate,
+                        disabled: creating || days.length === 0,
+                      },
+                      {
+                        label: "Generate sorting letters…",
+                        icon: <Sparkles size={12} aria-hidden />,
+                        onClick: () => setGenerating(true),
+                        disabled: days.length === 0,
+                      },
+                    ]}
+                  />
+                </span>
+              }
+            />
 
-      </div>
+            {selectMode && checkedLetters.length > 0 ? (
+              <BulkBar
+                selected={checkedLetters}
+                days={days}
+                citizens={citizens}
+                rules={rulesWithConditions}
+                onDone={() => {
+                  setCheckedIds(new Set());
+                  scheduleRefresh();
+                }}
+                onClearSelection={() => setCheckedIds(new Set())}
+                onConfirm={confirm}
+                onError={(m) => toast({ intent: "destructive", message: m })}
+                onMessage={(m) => toast({ message: m })}
+              />
+            ) : null}
 
-      <div className="overflow-hidden rounded-md border border-border bg-card">
-        <div className="grid grid-cols-[80px_70px_1fr_1fr_70px_120px_28px_36px] items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
-          <Label>ID</Label>
-          <Label>Day</Label>
-          <Label>Recipient</Label>
-          <Label>Sender</Label>
-          <Label>Fake?</Label>
-          <Label>Storage</Label>
-          <span />
-          <span />
+            <table className="w-full text-sm">
+              <thead className="bg-muted/30 text-muted-foreground">
+                <tr>
+                  {selectMode ? (
+                    <th scope="col" className="w-[36px] px-3">
+                      <input
+                        type="checkbox"
+                        checked={allChecked}
+                        onChange={toggleAll}
+                        aria-label="Select all letters"
+                        className="h-3.5 w-3.5"
+                      />
+                    </th>
+                  ) : null}
+                  <SortableHeader
+                    label="ID"
+                    sortKey="content_id"
+                    sort={sort}
+                    onSort={toggleSort}
+                    className="w-[90px]"
+                  />
+                  <SortableHeader
+                    label="Day"
+                    sortKey="day"
+                    sort={sort}
+                    onSort={toggleSort}
+                    className="w-[70px]"
+                  />
+                  <SortableHeader
+                    label="Recipient"
+                    sortKey="recipient"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  <SortableHeader
+                    label="Sender"
+                    sortKey="sender"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  <SortableHeader
+                    label="Stamp"
+                    sortKey="stamp"
+                    sort={sort}
+                    onSort={toggleSort}
+                    className="w-[80px]"
+                  />
+                  <SortableHeader
+                    label="Sorts to"
+                    sortKey="destination"
+                    sort={sort}
+                    onSort={toggleSort}
+                    className="w-[120px]"
+                  />
+                  <SortableHeader
+                    label="Storage"
+                    sortKey="storage"
+                    sort={sort}
+                    onSort={toggleSort}
+                    className="w-[120px]"
+                  />
+                  <th className="w-[36px]" />
+                </tr>
+              </thead>
+              <tbody>
+                {view.map((letter) => (
+                  <LetterRow
+                    key={letter.id}
+                    letter={letter}
+                    day={dayById.get(letter.day_id) ?? null}
+                    destination={destinations.get(letter.id) ?? { status: "none" }}
+                    selected={letter.id === selectedId}
+                    selectMode={selectMode}
+                    checked={checkedIds.has(letter.id)}
+                    onCheck={() => toggleChecked(letter.id)}
+                    // Clicking the open letter again closes the panel.
+                    onSelect={() =>
+                      setSelectedId((cur) => (cur === letter.id ? null : letter.id))
+                    }
+                    onOpen={() => setSelectedId(letter.id)}
+                    onDelete={() => handleDelete(letter)}
+                    onError={(m) => toast({ intent: "destructive", message: m })}
+                  />
+                ))}
+              </tbody>
+            </table>
+
+            {view.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+                No sorting letters{filterDayId ? " for that day" : ""} yet.
+              </p>
+            ) : null}
+          </div>
         </div>
-        {view.map((row) => (
-          <SortingLetterRow
-            key={row.id}
-            row={row}
-            days={days}
-            peers={peers}
-          />
-        ))}
-        {view.length === 0 ? (
-          <p className="px-4 py-6 text-center text-sm text-muted-foreground">
-            No sorting letters{filterDayId ? " for that day" : ""} yet.
-          </p>
+
+        {selected ? (
+          <aside className="w-[560px] shrink-0">
+            <LetterPanel
+              key={selected.id}
+              letter={selected}
+              days={days}
+              citizens={citizens}
+              cities={cities}
+              nations={nations}
+              destination={destinations.get(selected.id) ?? { status: "none" }}
+              onDelete={() => handleDelete(selected)}
+            />
+          </aside>
         ) : null}
       </div>
     </>
   );
 }
 
-// ─── Per-row component with instant-save fields ──────────────────────────────
+// ─── Row ─────────────────────────────────────────────────────────────────────
 
-function SortingLetterRow({
-  row,
-  days,
-  peers,
+function LetterRow({
+  letter,
+  day,
+  destination,
+  selected,
+  selectMode,
+  checked,
+  onCheck,
+  onSelect,
+  onOpen,
+  onDelete,
+  onError,
 }: {
-  row: SortingLetterView;
-  days: Day[];
-  peers: ReturnType<typeof usePresenceContext>["peers"];
+  letter: SortingLetterView;
+  day: Day | null;
+  destination: Destination;
+  selected: boolean;
+  selectMode: boolean;
+  checked: boolean;
+  onCheck: () => void;
+  /** Row click: opens the panel, or closes it if this row is already open. */
+  onSelect: () => void;
+  /** Always opens the panel — the menu's Edit must never close it. */
+  onOpen: () => void;
+  onDelete: () => void;
+  onError: (message: string) => void;
 }) {
-  const { setFocus, pingActivity } = usePresenceContext();
-
-  function makeFocusKey(field: string): PresenceFocus {
-    return { table: "sorting_letters", recordId: row.id, field };
-  }
-
-  const dayField = useInstantField<string>({
-    value: row.day_id,
-    onCommit: (v) => patchSortingLetter(row.id, { day_id: v }),
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("day_id") : null),
-    onActivity: pingActivity,
-  });
-
-  const recipientField = useInstantField<string>({
-    value: row.recipient_name ?? "",
-    onCommit: (v) => patchSortingLetter(row.id, { recipient_name: v.trim() || null }),
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("recipient_name") : null),
-    onActivity: pingActivity,
-  });
-
-  const senderField = useInstantField<string>({
-    value: row.sender_name ?? "",
-    onCommit: (v) => patchSortingLetter(row.id, { sender_name: v.trim() || null }),
-    onFocusChange: (focused) => setFocus(focused ? makeFocusKey("sender_name") : null),
-    onActivity: pingActivity,
-  });
-
-  const counterField = useInstantField<boolean>({
-    value: row.is_counterfeit,
-    onCommit: (v) => patchSortingLetter(row.id, { is_counterfeit: v }),
-    onFocusChange: (focused) =>
-      setFocus(focused ? makeFocusKey("is_counterfeit") : null),
-    onActivity: pingActivity,
-  });
-
-  const storageField = useInstantField<string>({
-    value: row.storage_location ?? "",
-    onCommit: (v) =>
-      patchSortingLetter(row.id, { storage_location: v.trim() || null }),
-    onFocusChange: (focused) =>
-      setFocus(focused ? makeFocusKey("storage_location") : null),
-    onActivity: pingActivity,
-  });
-
   return (
-    <div className="grid grid-cols-[80px_70px_1fr_1fr_70px_120px_28px_36px] items-center gap-2 border-t border-border px-3 py-1 first:border-t-0">
-      <Badge variant="secondary" className="font-mono">
-        {row.content_id}
-      </Badge>
-
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("day_id")}>
-        <Select
-          value={dayField.value}
-          onChange={(e) => dayField.set(e.target.value)}
-          onFocus={dayField.onFocus}
-          onBlur={dayField.onBlur}
-          className="h-8"
-        >
-          {days.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.identifier}
-            </option>
-          ))}
-        </Select>
-      </FieldHighlight>
-
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("recipient_name")}>
-        <Input
-          value={recipientField.value}
-          onChange={(e) => recipientField.set(e.target.value)}
-          onFocus={recipientField.onFocus}
-          onBlur={recipientField.onBlur}
-          placeholder="—"
-          className="h-8"
-        />
-      </FieldHighlight>
-
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("sender_name")}>
-        <Input
-          value={senderField.value}
-          onChange={(e) => senderField.set(e.target.value)}
-          onFocus={senderField.onFocus}
-          onBlur={senderField.onBlur}
-          placeholder="—"
-          className="h-8"
-        />
-      </FieldHighlight>
-
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("is_counterfeit")}>
-        <label
-          className={cn(
-            "flex h-8 cursor-pointer items-center justify-center rounded-md text-xs",
-            counterField.value && "text-destructive"
-          )}
-        >
+    <tr
+      // In select mode the row click ticks the box instead of opening the
+      // panel — otherwise every attempt to build a selection swaps the editor.
+      onClick={selectMode ? onCheck : onSelect}
+      aria-current={selected || undefined}
+      className={cn(
+        "cursor-pointer border-t border-border/60 hover:bg-muted/30 [&>td]:px-3 [&>td]:py-1.5",
+        selected && !selectMode && "bg-accent/40",
+        selectMode && checked && "bg-accent/30"
+      )}
+    >
+      {selectMode ? (
+        <td onClick={(e) => e.stopPropagation()}>
           <input
             type="checkbox"
-            checked={counterField.value}
-            onChange={(e) => {
-              counterField.set(e.target.checked);
-              // Checkbox fires change but not focus — call handlers explicitly.
-              counterField.onFocus();
-              // Blur fires separately; leave the blur handler wired on the label.
-            }}
-            onFocus={counterField.onFocus}
-            onBlur={counterField.onBlur}
-            className="mr-1 accent-destructive"
+            checked={checked}
+            onChange={onCheck}
+            aria-label={`Select ${letter.content_id}`}
+            className="h-3.5 w-3.5"
           />
-          {counterField.value ? "yes" : "no"}
-        </label>
-      </FieldHighlight>
-
-      <FieldHighlight peers={peers} focusKey={makeFocusKey("storage_location")}>
-        <Input
-          value={storageField.value}
-          onChange={(e) => storageField.set(e.target.value)}
-          onFocus={storageField.onFocus}
-          onBlur={storageField.onBlur}
-          placeholder="—"
-          className="h-8 font-mono"
+        </td>
+      ) : null}
+      <td>
+        <Badge variant="secondary" className="font-mono">
+          {letter.content_id}
+        </Badge>
+      </td>
+      <td className="font-mono text-xs text-muted-foreground">
+        {day?.identifier ?? "—"}
+      </td>
+      <td className="truncate">
+        {letter.recipient_name ?? <span className="text-muted-foreground">—</span>}
+      </td>
+      <td className="truncate">
+        {letter.sender_name ?? <span className="text-muted-foreground">—</span>}
+      </td>
+      <td onClick={(e) => e.stopPropagation()}>
+        <StampToggle
+          letterId={letter.id}
+          value={letter.stamp_valid}
+          onError={onError}
         />
-      </FieldHighlight>
-
-      <Link
-        href={`/sorting/letters/${row.id}`}
-        aria-label="Open detail editor"
-        title="Open detail editor"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
-        <PencilIcon />
-      </Link>
-      <DeleteX id={row.id} name={row.content_id} />
-    </div>
+      </td>
+      <td>
+        <DestinationCell destination={destination} />
+      </td>
+      <td className="truncate font-mono text-xs text-muted-foreground">
+        {letter.storage_location ?? "—"}
+      </td>
+      <td onClick={(e) => e.stopPropagation()}>
+        <OverflowMenu
+          items={[
+            {
+              label: "Edit letter",
+              icon: <Pencil size={12} aria-hidden />,
+              onClick: onOpen,
+            },
+            { divider: true },
+            {
+              label: "Delete letter",
+              intent: "destructive",
+              icon: <Trash2 size={12} aria-hidden />,
+              onClick: onDelete,
+            },
+          ]}
+        />
+      </td>
+    </tr>
   );
 }
 
-function PencilIcon() {
+// ─── Sortable column header ──────────────────────────────────────────────────
+
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  className,
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  className?: string;
+}) {
+  const active = sort.key === sortKey;
   return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
+    <th
+      scope="col"
+      aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      className={cn("h-8 px-3 text-left", className)}
     >
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
-    </svg>
-  );
-}
-
-function DeleteX({ id, name }: { id: string; name: string }) {
-  const { confirm: confirmDialog, dialog: confirmDialogEl } = useConfirm();
-  const [pending, startTransition] = useTransition();
-  return (
-    <>
       <button
         type="button"
-        disabled={pending}
-        aria-label="Delete sorting letter"
-        title="Delete"
-        onClick={async () => {
-          const ok = await confirmDialog({
-            title: "Delete sorting letter?",
-            message: `${name} will be permanently removed.`,
-            confirmLabel: "Delete",
-            intent: "destructive",
-          });
-          if (!ok) return;
-          const fd = new FormData();
-          fd.set("id", id);
-          startTransition(() => deleteSortingLetter(fd));
-        }}
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive disabled:opacity-50"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          "inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-widest transition-colors hover:text-foreground",
+          active ? "text-foreground" : "text-muted-foreground"
+        )}
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
+        {label}
+        {active ? (
+          sort.dir === "asc" ? (
+            <ChevronUp size={11} aria-hidden />
+          ) : (
+            <ChevronDown size={11} aria-hidden />
+          )
+        ) : null}
       </button>
-      {confirmDialogEl}
-    </>
+    </th>
   );
+}
+
+// ─── Sorting ─────────────────────────────────────────────────────────────────
+
+/** Rank for the destination column: slot number first, then Reporting, then
+ *  the unresolved states. Sorts like with like instead of by rendered text. */
+function destinationRank(d: Destination): number {
+  if (d.status === "resolved") {
+    if (d.routesToReporting) return 100;
+    return d.slot ?? 99;
+  }
+  if (d.status === "unassigned") return 200;
+  if (d.status === "conflict") return 300;
+  return 400;
+}
+
+function text(v: string | null | undefined): string {
+  return (v ?? "").toLowerCase();
+}
+
+function compareBy(
+  key: SortKey,
+  a: SortingLetterView,
+  b: SortingLetterView,
+  destinations: Map<string, Destination>,
+  dayById: Map<string, Day>
+): number {
+  switch (key) {
+    case "content_id":
+      // Day first, then position within the day — the reading order the ID
+      // itself encodes.
+      return a.day_number - b.day_number || a.sort_id - b.sort_id;
+    case "day": {
+      const dayA = dayById.get(a.day_id)?.number ?? a.day_number;
+      const dayB = dayById.get(b.day_id)?.number ?? b.day_number;
+      return dayA - dayB || a.sort_id - b.sort_id;
+    }
+    case "recipient":
+      return text(a.recipient_name).localeCompare(text(b.recipient_name));
+    case "sender":
+      return text(a.sender_name).localeCompare(text(b.sender_name));
+    case "stamp":
+      return Number(a.stamp_valid) - Number(b.stamp_valid);
+    case "destination": {
+      const rankA = destinationRank(destinations.get(a.id) ?? { status: "none" });
+      const rankB = destinationRank(destinations.get(b.id) ?? { status: "none" });
+      return rankA - rankB;
+    }
+    case "storage":
+      return text(a.storage_location).localeCompare(text(b.storage_location));
+  }
 }

@@ -75,7 +75,7 @@ export default async function SortingTab({
             <THead>
               <tr>
                 <TH style={{ width: 90 }}>ID</TH>
-                <TH style={{ width: 90 }}>Counterfeit?</TH>
+                <TH style={{ width: 90 }}>Stamp</TH>
                 <TH>Recipient</TH>
                 <TH>Sender</TH>
                 <TH style={{ width: 120 }}>Storage</TH>
@@ -90,10 +90,10 @@ export default async function SortingTab({
                     </Badge>
                   </TD>
                   <TD>
-                    {l.is_counterfeit ? (
-                      <Badge variant="destructive">counterfeit</Badge>
+                    {l.stamp_valid ? (
+                      <span className="text-muted-foreground">valid</span>
                     ) : (
-                      <span className="text-muted-foreground">—</span>
+                      <Badge variant="destructive">fake</Badge>
                     )}
                   </TD>
                   <TD className="text-xs text-muted-foreground">

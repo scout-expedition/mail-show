@@ -50,3 +50,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# npm lockfile — this project uses pnpm. Worktrees sometimes get an
+# `npm install` to work around a Turbopack symlink issue; that artifact
+# must not be committed.
+/package-lock.json
+
+# Local dev-server log (see the run helper).
+/dev.log

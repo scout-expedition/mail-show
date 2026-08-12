@@ -147,7 +147,7 @@ export function makeRuleContext(
     recipient_city_name: null,
     recipient_city_code: null,
     recipient_nation: null,
-    is_counterfeit: false,
+    stamp_valid: true,
     current_day_of_week: null,
     ...overrides,
   };

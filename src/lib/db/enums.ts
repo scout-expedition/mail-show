@@ -81,6 +81,20 @@ export const ADDRESS_TYPE_LABELS: Record<AddressType, string> = {
   lookup_3: "3-lookup (name + citizen ID only)",
 };
 
+/**
+ * The same column read as the player's task: how many lookups the recipient
+ * address forces before the letter can be sorted. Each step withholds one more
+ * line of the address on export / in a playthrough, so the player has to look
+ * it up: 1 step hides the nation, 2 also hides the city, 3 also hides the city
+ * code.
+ */
+export const LOOKUP_TYPE_LABELS: Record<AddressType, string> = {
+  full: "— (none)",
+  lookup_1: "1 step — no nation",
+  lookup_2: "2 step — no nation, no city",
+  lookup_3: "3 step — no nation, city, or city code",
+};
+
 export const CONTENT_REF_TYPES = ["sorting", "inspection"] as const;
 export type ContentRefType = (typeof CONTENT_REF_TYPES)[number];
 
@@ -123,7 +137,7 @@ export const RULE_TARGETS = [
   "recipient_city_name",
   "recipient_city_code",
   "recipient_nation",
-  "is_counterfeit",
+  "stamp_valid",
   "current_day_of_week",
 ] as const;
 export type RuleTarget = (typeof RULE_TARGETS)[number];
@@ -144,7 +158,7 @@ export const RULE_TARGET_LABELS: Record<RuleTarget, string> = {
   recipient_city_name: "Recipient city name",
   recipient_city_code: "Recipient city code",
   recipient_nation: "Recipient nation",
-  is_counterfeit: "Is counterfeit",
+  stamp_valid: "Stamp",
   current_day_of_week: "Current day of week",
 };
 
@@ -168,10 +182,10 @@ export type TargetKind =
   | "city_code"
   | "nation"
   | "day"
-  | "counterfeit";
+  | "stamp";
 
 export function targetKind(t: RuleTarget): TargetKind {
-  if (t === "is_counterfeit") return "counterfeit";
+  if (t === "stamp_valid") return "stamp";
   if (t === "current_day_of_week") return "day";
   if (t === "sender_nation" || t === "recipient_nation") return "nation";
   if (t === "sender_city_name" || t === "recipient_city_name") return "city_name";
@@ -277,8 +291,8 @@ export const NUMERIC_REFERENCE_TYPES: RuleReferenceType[] = [
 // Operator/reference-type validity is now expressed as a target-aware matrix
 // in `src/lib/rules/normalize.ts` (`operatorsFor` + `referenceTypesFor`).
 
-/** Targets that never take a reference value (is_counterfeit only pairs with true/false). */
-export const BOOLEAN_TARGETS: RuleTarget[] = ["is_counterfeit"];
+/** Targets that never take a reference value (stamp_valid only pairs with true/false). */
+export const BOOLEAN_TARGETS: RuleTarget[] = ["stamp_valid"];
 
 // Endings — chip operator + variable kind. Mirrored from
 // supabase/migrations/0014_endings_v3.sql + 0020_endings_aggregate.sql

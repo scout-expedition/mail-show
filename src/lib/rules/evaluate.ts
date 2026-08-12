@@ -24,7 +24,7 @@ export interface RuleContext {
   recipient_city_name: string | null;
   recipient_city_code: string | null;
   recipient_nation: string | null;
-  is_counterfeit: boolean;
+  stamp_valid: boolean;
   current_day_of_week: string | null;
 }
 
@@ -53,7 +53,7 @@ function asTargetValue(
   target: RuleTarget,
   slice: RuleTargetSlice
 ): { str: string | null; bool: boolean | null } {
-  if (target === "is_counterfeit") return { str: null, bool: ctx.is_counterfeit };
+  if (target === "stamp_valid") return { str: null, bool: ctx.stamp_valid };
   const raw = ctx[target];
   if (raw == null) return { str: null, bool: null };
   if (typeof raw === "boolean") return { str: null, bool: raw };
