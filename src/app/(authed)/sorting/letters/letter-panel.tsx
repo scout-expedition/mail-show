@@ -13,7 +13,7 @@ import { usePresenceContext } from "@/lib/realtime/presence-context";
 import { useInstantField } from "@/lib/realtime/use-instant-field";
 import { citizenDisplayName } from "@/lib/citizen-name";
 import { displayCitizenId } from "@/lib/citizen-id";
-import { ADDRESS_TYPES, ADDRESS_TYPE_LABELS, type AddressType } from "@/lib/db/enums";
+import { ADDRESS_TYPES, LOOKUP_TYPE_LABELS, type AddressType } from "@/lib/db/enums";
 import type {
   Citizen,
   City,
@@ -92,6 +92,15 @@ export function LetterPanel({
   const notesField = useLetterField(letter.id, "notes", letter.notes ?? "", (v) => ({
     notes: v.trim() || null,
   }));
+  // "Lookup type" is the recipient address type read as the player's task:
+  // each step withholds one more line of the recipient address, so the player
+  // has to look it up. The sender address is always shown in full.
+  const lookupField = useLetterField(
+    letter.id,
+    "recipient_type",
+    letter.recipient_type,
+    (v) => ({ recipient_type: v })
+  );
 
   const sortedCitizens = useMemo(
     () =>
@@ -176,6 +185,25 @@ export function LetterPanel({
         </div>
 
         <div className="col-span-2 flex flex-col gap-1">
+          <Label>Lookup type</Label>
+          <FieldHighlight peers={peers} focusKey={focusKey("recipient_type")}>
+            <Select
+              value={lookupField.value}
+              onChange={(e) => lookupField.set(e.target.value as AddressType)}
+              onFocus={lookupField.onFocus}
+              onBlur={lookupField.onBlur}
+              className={`h-8 ${GHOST_FIELD}`}
+            >
+              {ADDRESS_TYPES.map((a) => (
+                <option key={a} value={a}>
+                  {LOOKUP_TYPE_LABELS[a]}
+                </option>
+              ))}
+            </Select>
+          </FieldHighlight>
+        </div>
+
+        <div className="col-span-2 flex flex-col gap-1">
           <Label>Storage location</Label>
           <FieldHighlight peers={peers} focusKey={focusKey("storage_location")}>
             <Input
@@ -204,6 +232,7 @@ export function LetterPanel({
             citizens={sortedCitizens}
             cities={cities}
             nations={nations}
+            lookupType={lookupField.value as AddressType}
           />
           <AddressFields
             side="sender"
@@ -211,6 +240,7 @@ export function LetterPanel({
             citizens={sortedCitizens}
             cities={cities}
             nations={nations}
+            lookupType="full"
           />
         </div>
 
@@ -232,6 +262,23 @@ export function LetterPanel({
   );
 }
 
+/**
+ * Flags a field the lookup type withholds from the player. The field stays
+ * editable — the value still exists and the rule evaluator still reads it;
+ * the player just has to look it up.
+ */
+function WithheldMark({ hidden, note }: { hidden: boolean; note: string }) {
+  if (!hidden) return null;
+  return (
+    <span
+      className="ml-1 font-mono text-[9px] uppercase tracking-widest text-warning"
+      title={`Not shown to the player — ${note}`}
+    >
+      · hidden
+    </span>
+  );
+}
+
 // ─── One address side ────────────────────────────────────────────────────────
 
 function AddressFields({
@@ -240,26 +287,25 @@ function AddressFields({
   citizens,
   cities,
   nations,
+  lookupType,
 }: {
   side: Side;
   letter: SortingLetterView;
   citizens: Citizen[];
   cities: City[];
   nations: Nation[];
+  /** Which lines this side withholds from the player. Sender is always full. */
+  lookupType: AddressType;
 }) {
   const { peers } = usePresenceContext();
   const focusKey = (field: string) => focusKeyFor(letter.id, field);
 
-  const typeKey = `${side}_type` as const;
   const nameKey = `${side}_name` as const;
   const numberKey = `${side}_citizen_number` as const;
   const cityKey = `${side}_city_id` as const;
   const nationKey = `${side}_nation_id` as const;
   const citizenKey = `${side}_citizen_id` as const;
 
-  const typeField = useLetterField(letter.id, typeKey, letter[typeKey], (v) => ({
-    [typeKey]: v,
-  }));
   const nameField = useLetterField(letter.id, nameKey, letter[nameKey] ?? "", (v) => ({
     [nameKey]: v.trim() || null,
   }));
@@ -288,10 +334,12 @@ function AddressFields({
     (v) => ({ [nationKey]: v || null })
   );
 
-  const type = typeField.value as AddressType;
-  const showCity = type === "full" || type === "lookup_1";
-  const showNation = type === "full";
-  const showCitizenNumber = type !== "lookup_3";
+  // A withheld line still lives in the database — the player just doesn't get
+  // to read it — so these fields are shown greyed rather than removed, and the
+  // rule evaluator keeps seeing the real address.
+  const showCity = lookupType === "full" || lookupType === "lookup_1";
+  const showNation = lookupType === "full";
+  const showCityCode = lookupType !== "lookup_3";
 
   /**
    * Picking a citizen fills the whole side in one write: the FK plus the
@@ -322,21 +370,11 @@ function AddressFields({
         <h4 className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
           {side}
         </h4>
-        <FieldHighlight peers={peers} focusKey={focusKey(typeKey)}>
-          <Select
-            value={typeField.value}
-            onChange={(e) => typeField.set(e.target.value as AddressType)}
-            onFocus={typeField.onFocus}
-            onBlur={typeField.onBlur}
-            className={`h-7 w-52 ${GHOST_FIELD}`}
-          >
-            {ADDRESS_TYPES.map((a) => (
-              <option key={a} value={a}>
-                {ADDRESS_TYPE_LABELS[a]}
-              </option>
-            ))}
-          </Select>
-        </FieldHighlight>
+        {lookupType !== "full" ? (
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            {LOOKUP_TYPE_LABELS[lookupType]}
+          </span>
+        ) : null}
       </div>
 
       <div className="grid grid-cols-6 gap-2">
@@ -383,23 +421,27 @@ function AddressFields({
               onChange={(e) => numberField.set(e.target.value)}
               onFocus={numberField.onFocus}
               onBlur={numberField.onBlur}
-              disabled={!showCitizenNumber}
-              placeholder={showCitizenNumber ? "#0042" : "(hidden)"}
+              placeholder="#0042"
               className={`h-8 font-mono ${GHOST_FIELD}`}
             />
           </FieldHighlight>
         </div>
 
         <div className="col-span-3 flex flex-col gap-1">
-          <Label>City</Label>
+          <Label>
+            City
+            <WithheldMark
+              hidden={!showCity}
+              note={showCityCode ? "city name withheld" : "city and code withheld"}
+            />
+          </Label>
           <FieldHighlight peers={peers} focusKey={focusKey(cityKey)}>
             <Select
               value={cityField.value}
               onChange={(e) => cityField.set(e.target.value)}
               onFocus={cityField.onFocus}
               onBlur={cityField.onBlur}
-              disabled={!showCity}
-              className={`h-8 ${GHOST_FIELD}`}
+              className={`h-8 ${GHOST_FIELD} ${showCity ? "" : "opacity-60"}`}
             >
               <option value="">—</option>
               {cities.map((c) => (
@@ -412,15 +454,17 @@ function AddressFields({
         </div>
 
         <div className="col-span-3 flex flex-col gap-1">
-          <Label>Nation</Label>
+          <Label>
+            Nation
+            <WithheldMark hidden={!showNation} note="nation withheld" />
+          </Label>
           <FieldHighlight peers={peers} focusKey={focusKey(nationKey)}>
             <Select
               value={nationField.value}
               onChange={(e) => nationField.set(e.target.value)}
               onFocus={nationField.onFocus}
               onBlur={nationField.onBlur}
-              disabled={!showNation}
-              className={`h-8 ${GHOST_FIELD}`}
+              className={`h-8 ${GHOST_FIELD} ${showNation ? "" : "opacity-60"}`}
             >
               <option value="">—</option>
               {nations.map((n) => (

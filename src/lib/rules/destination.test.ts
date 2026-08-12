@@ -54,13 +54,14 @@ function makeRule(overrides: Partial<SortingRule> = {}): SortingRule {
   };
 }
 
-/** A rule that matches any letter whose sender first name is `name`. */
+/** A rule that matches any letter whose sender first name is `name`. Dated to
+ *  day 1 unless a test says otherwise, since an undated rule is never active. */
 function ruleMatchingSender(
   name: string,
   overrides: Partial<SortingRule> = {}
 ): RuleWithConditions {
   return {
-    rule: makeRule(overrides),
+    rule: makeRule({ day_implemented_id: "day-1", ...overrides }),
     conditions: [
       makeRuleCondition({
         target: "sender_first_name",
@@ -75,9 +76,13 @@ function ruleMatchingSender(
 // ── activeRules ──────────────────────────────────────────────────────────────
 
 describe("activeRules", () => {
-  it("treats an undated rule as active from the first day", () => {
-    const rules = [ruleMatchingSender("Ada")];
-    expect(activeRules(rules, DAY_NUMBERS, 1)).toHaveLength(1);
+  it("never activates a rule with no implemented day", () => {
+    // An unset implemented day means "not a rule yet", not "a rule since the
+    // beginning of the show".
+    const rules = [ruleMatchingSender("Ada", { day_implemented_id: null })];
+    for (const day of [1, 2, 3, 4]) {
+      expect(activeRules(rules, DAY_NUMBERS, day)).toHaveLength(0);
+    }
   });
 
   it("excludes a rule implemented after the day", () => {
@@ -109,10 +114,15 @@ describe("activeRules", () => {
     }
   });
 
-  it("treats dangling day references as undated / uncancelled", () => {
+  it("treats a dangling implemented day as never implemented", () => {
+    const rules = [ruleMatchingSender("Ada", { day_implemented_id: "deleted-day" })];
+    expect(activeRules(rules, DAY_NUMBERS, 2)).toHaveLength(0);
+  });
+
+  it("treats a dangling cancelled day as uncancelled", () => {
     const rules = [
       ruleMatchingSender("Ada", {
-        day_implemented_id: "deleted-day",
+        day_implemented_id: "day-1",
         day_cancelled_id: "also-deleted",
       }),
     ];
@@ -184,9 +194,13 @@ describe("resolveDestination", () => {
     });
   });
 
-  it("ranks an undated rule below a rule implemented on day 1", () => {
+  it("ignores a matching rule that was never implemented", () => {
     const rules = [
-      ruleMatchingSender("Ada", { id: "undated", destination_slot: 1 }),
+      ruleMatchingSender("Ada", {
+        id: "undated",
+        destination_slot: 1,
+        day_implemented_id: null,
+      }),
       ruleMatchingSender("Ada", {
         id: "dated",
         letter: "B",
@@ -197,6 +211,13 @@ describe("resolveDestination", () => {
     expect(resolveDestination(rules, ctx, DAY_NUMBERS, 1)).toMatchObject({
       status: "resolved",
       slot: 9,
+    });
+  });
+
+  it("reports none when the only matching rule was never implemented", () => {
+    const rules = [ruleMatchingSender("Ada", { day_implemented_id: null })];
+    expect(resolveDestination(rules, ctx, DAY_NUMBERS, 1)).toEqual({
+      status: "none",
     });
   });
 

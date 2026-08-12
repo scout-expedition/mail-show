@@ -348,21 +348,22 @@ function SortingLettersWorkspace({
           rules={rulesWithConditions}
           defaultDayId={filterDayId}
           onClose={() => setGenerating(false)}
-          onDone={({ created, requested, reason }) => {
+          onDone={({ created, requested, perRule }) => {
             scheduleRefresh();
-            if (created === 0) {
-              toast({
-                intent: "destructive",
-                message: reason ?? "No letters could be generated.",
-              });
-            } else if (created < requested) {
-              toast({
-                intent: "destructive",
-                message: `Generated ${created} of ${requested}. ${reason ?? ""}`.trim(),
-              });
-            } else {
+            // Report per rule when any of them fell short — "generated 4 of 7"
+            // isn't actionable without knowing which rule couldn't be filled.
+            const short = perRule.filter((r) => r.created < r.requested);
+            if (short.length === 0) {
               toast({ message: `Generated ${created} sorting letters.` });
+              return;
             }
+            const detail = short
+              .map((r) => `${r.ruleLetter}: ${r.created}/${r.requested}${r.reason ? ` — ${r.reason}` : ""}`)
+              .join("; ");
+            toast({
+              intent: "destructive",
+              message: `Generated ${created} of ${requested}. ${detail}`,
+            });
           }}
         />
       ) : null}
@@ -401,26 +402,25 @@ function SortingLettersWorkspace({
                   >
                     Select
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setGenerating(true)}
-                    disabled={days.length === 0}
-                    aria-label="Generate sorting letters"
-                    title="Generate sorting letters"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Sparkles size={14} aria-hidden />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCreate}
-                    disabled={creating || days.length === 0}
-                    aria-label="Add sorting letter"
-                    title="Add sorting letter"
-                    className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {creating ? <Spinner /> : <Plus size={14} aria-hidden />}
-                  </button>
+                  {creating ? <Spinner /> : null}
+                  <OverflowMenu
+                    ariaLabel="Add sorting letters"
+                    icon={<Plus size={14} aria-hidden />}
+                    items={[
+                      {
+                        label: "Add blank sorting letter",
+                        icon: <Plus size={12} aria-hidden />,
+                        onClick: handleCreate,
+                        disabled: creating || days.length === 0,
+                      },
+                      {
+                        label: "Generate sorting letters…",
+                        icon: <Sparkles size={12} aria-hidden />,
+                        onClick: () => setGenerating(true),
+                        disabled: days.length === 0,
+                      },
+                    ]}
+                  />
                 </span>
               }
             />
@@ -517,7 +517,10 @@ function SortingLettersWorkspace({
                     selectMode={selectMode}
                     checked={checkedIds.has(letter.id)}
                     onCheck={() => toggleChecked(letter.id)}
-                    onSelect={() => setSelectedId(letter.id)}
+                    // Clicking the open letter again closes the panel.
+                    onSelect={() =>
+                      setSelectedId((cur) => (cur === letter.id ? null : letter.id))
+                    }
                     onDelete={() => handleDelete(letter)}
                     onError={(m) => toast({ intent: "destructive", message: m })}
                   />

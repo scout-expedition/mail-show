@@ -608,7 +608,10 @@ describe("generateSortingLetters", () => {
       suffix: "gen-ok",
     });
 
-    const result = await generateSortingLetters({ dayId, ruleId, count: 2 });
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [{ ruleId, count: 2 }],
+    });
 
     expect(result).toMatchObject({ created: 2, requested: 2 });
     const { data } = await sb
@@ -635,7 +638,7 @@ describe("generateSortingLetters", () => {
     await addSortingLetter(sb, { dayId, sortId: 0 });
     await addSortingLetter(sb, { dayId, sortId: 2 });
 
-    await generateSortingLetters({ dayId, ruleId, count: 1 });
+    await generateSortingLetters({ dayId, requests: [{ ruleId, count: 1 }] });
 
     const { data } = await sb
       .from("sorting_letters")
@@ -644,6 +647,83 @@ describe("generateSortingLetters", () => {
       .order("sort_id");
 
     expect(data?.map((r) => r.sort_id)).toEqual([0, 1, 2]);
+  });
+
+  it("should generate per rule in one pass, reporting each separately", async () => {
+    const dayId = await addDay(sb, { suffix: "gen-multi", number: 9394 });
+    // Two rules on the same day, each keyed on a different sender surname.
+    const ruleA = await addRule(sb, {
+      letter: "A",
+      dayImplementedId: dayId,
+      destinationSlot: 1,
+    });
+    await addRuleCondition(sb, {
+      ruleId: ruleA,
+      target: "sender_last_name",
+      operator: "equals",
+      referenceType: "string",
+      referenceValue: testName("gen-multi-a"),
+    });
+    const ruleB = await addRule(sb, {
+      letter: "B",
+      dayImplementedId: dayId,
+      destinationSlot: 2,
+    });
+    await addRuleCondition(sb, {
+      ruleId: ruleB,
+      target: "sender_last_name",
+      operator: "equals",
+      referenceType: "string",
+      referenceValue: testName("gen-multi-b"),
+    });
+    await addCitizen(sb, { suffix: "gen-multi-a", firstName: "Grace" });
+    await addCitizen(sb, { suffix: "gen-multi-b", firstName: "Ada" });
+    await addCitizen(sb, { suffix: "gen-multi-filler", firstName: "Alan" });
+
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [
+        { ruleId: ruleA, count: 2 },
+        { ruleId: ruleB, count: 1 },
+      ],
+    });
+
+    expect(result).toMatchObject({ created: 3, requested: 3 });
+    expect(result.perRule.map((r) => [r.ruleLetter, r.created])).toEqual([
+      ["A", 2],
+      ["B", 1],
+    ]);
+
+    const { data } = await sb
+      .from("sorting_letters")
+      .select("sort_id, sender_name")
+      .eq("day_id", dayId)
+      .order("sort_id");
+
+    // IDs are handed out across the whole batch, not restarted per rule.
+    expect(data?.map((r) => r.sort_id)).toEqual([0, 1, 2]);
+    const surnames = (data ?? []).map((r) => String(r.sender_name));
+    expect(surnames.filter((n) => n.includes(testName("gen-multi-a")))).toHaveLength(2);
+    expect(surnames.filter((n) => n.includes(testName("gen-multi-b")))).toHaveLength(1);
+  });
+
+  it("should skip a rule asked for zero letters", async () => {
+    const { dayId, ruleId } = await seedGeneratable({
+      number: 9395,
+      suffix: "gen-zero",
+    });
+
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [{ ruleId, count: 0 }],
+    });
+
+    expect(result).toMatchObject({ created: 0, requested: 0, perRule: [] });
+    const { data } = await sb
+      .from("sorting_letters")
+      .select("id")
+      .eq("day_id", dayId);
+    expect(data).toHaveLength(0);
   });
 
   it("should report why nothing could be generated", async () => {
@@ -662,10 +742,13 @@ describe("generateSortingLetters", () => {
     });
     await addCitizen(sb, { suffix: "gen-impossible-1", firstName: "Ada" });
 
-    const result = await generateSortingLetters({ dayId, ruleId, count: 3 });
+    const result = await generateSortingLetters({
+      dayId,
+      requests: [{ ruleId, count: 3 }],
+    });
 
     expect(result.created).toBe(0);
-    expect(result.reason).toMatch(/no citizen satisfies/i);
+    expect(result.perRule[0].reason).toMatch(/no citizen satisfies/i);
     const { data } = await sb
       .from("sorting_letters")
       .select("id")

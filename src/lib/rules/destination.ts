@@ -42,16 +42,17 @@ export type Destination =
   | { status: "conflict"; rules: SortingRule[] };
 
 /**
- * Precedence rank of a rule: the day number it was implemented on. An undated
- * rule ranks 0 — active from the start of the show, and below every dated rule
- * (day numbers start at 1), so it never ties with a real day-1 rule.
+ * Precedence rank of a rule: the day number it was implemented on, or null
+ * when it has no implemented day. A rule that was never implemented is not in
+ * force on any day — an unset implemented day means "not yet a rule", not
+ * "a rule since the beginning". A dangling day reference reads the same way.
  */
 export function implementedRank(
   rule: SortingRule,
   dayNumberById: ReadonlyMap<string, number>
-): number {
-  if (!rule.day_implemented_id) return 0;
-  return dayNumberById.get(rule.day_implemented_id) ?? 0;
+): number | null {
+  if (!rule.day_implemented_id) return null;
+  return dayNumberById.get(rule.day_implemented_id) ?? null;
 }
 
 /** Day number lookup keyed by day id — built once, passed everywhere. */
@@ -64,9 +65,9 @@ export function dayNumbers(days: Day[]): Map<string, number> {
  * cancelled. Cancellation is inclusive of the cancelling day — a rule
  * cancelled on day 4 does not apply on day 4.
  *
- * Degenerate data degrades rather than throws: a dangling implemented-day
- * reference reads as undated, a dangling cancelled-day reference as
- * uncancelled, and a rule cancelled before it was implemented is never active.
+ * A rule with no implemented day is never active. Degenerate data degrades
+ * rather than throws: a dangling cancelled-day reference reads as uncancelled,
+ * and a rule cancelled before it was implemented is never active.
  */
 export function activeRules<T extends { rule: SortingRule }>(
   rules: T[],
@@ -75,6 +76,7 @@ export function activeRules<T extends { rule: SortingRule }>(
 ): T[] {
   return rules.filter(({ rule }) => {
     const implemented = implementedRank(rule, dayNumberById);
+    if (implemented == null) return false;
     if (implemented > dayNumber) return false;
     if (!rule.day_cancelled_id) return true;
     const cancelled = dayNumberById.get(rule.day_cancelled_id);
@@ -107,11 +109,12 @@ export function resolveDestination(
   );
   if (matches.length === 0) return { status: "none" };
 
+  // Every active rule has an implemented day, so the ranks here are numbers.
   const topRank = Math.max(
-    ...matches.map((m) => implementedRank(m.rule, dayNumberById))
+    ...matches.map((m) => implementedRank(m.rule, dayNumberById) ?? 0)
   );
   const winners = matches.filter(
-    (m) => implementedRank(m.rule, dayNumberById) === topRank
+    (m) => (implementedRank(m.rule, dayNumberById) ?? 0) === topRank
   );
 
   // Several rules implemented on the same day are only a conflict when they
@@ -147,11 +150,12 @@ export function uniqueWinner(
     evaluateRule(r.conditions, r.rule.match_mode, ctx)
   );
   if (matches.length === 0) return null;
+  // Every active rule has an implemented day, so the ranks here are numbers.
   const topRank = Math.max(
-    ...matches.map((m) => implementedRank(m.rule, dayNumberById))
+    ...matches.map((m) => implementedRank(m.rule, dayNumberById) ?? 0)
   );
   const winners = matches.filter(
-    (m) => implementedRank(m.rule, dayNumberById) === topRank
+    (m) => (implementedRank(m.rule, dayNumberById) ?? 0) === topRank
   );
   return winners.length === 1 ? winners[0].rule : null;
 }

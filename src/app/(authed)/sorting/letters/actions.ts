@@ -98,25 +98,45 @@ export async function deleteSortingLetter(id: string) {
   revalidateSortingLetterSurfaces();
 }
 
+/** How many letters to build for one rule. */
+export type GenerationRequest = { ruleId: string; count: number };
+
+export type GenerationResult = {
+  created: number;
+  requested: number;
+  /** Per-rule outcome, in the order requested; only rules with a count > 0. */
+  perRule: Array<{
+    ruleId: string;
+    ruleLetter: string;
+    created: number;
+    requested: number;
+    reason?: string;
+  }>;
+};
+
 /**
- * Fill a day with letters that sort to a chosen rule.
+ * Fill a day with letters, so many per rule.
  *
- * The intention isn't stored anywhere: the letters are built so the rule wins
- * *at the moment they are generated*, and a rule authored later may well
- * capture them. That is the same deal every hand-authored letter gets.
+ * The intention isn't stored anywhere: each letter is built so its rule wins
+ * *at the moment it is generated*, and a rule authored later may well capture
+ * it. That is the same deal every hand-authored letter gets.
+ *
+ * Rules are planned in sequence against one shared pool: citizens used by an
+ * earlier rule's letters are avoided by the later ones, and the day's free IDs
+ * are handed out across the whole batch rather than per rule.
  */
 export async function generateSortingLetters({
   dayId,
-  ruleId,
-  count,
+  requests,
 }: {
   dayId: string;
-  ruleId: string;
-  count: number;
-}): Promise<{ created: number; requested: number; reason?: string }> {
+  requests: GenerationRequest[];
+}): Promise<GenerationResult> {
   const supabase = await createSupabaseServerClient();
-  if (!dayId || !ruleId) throw new Error("Pick a day and a rule to generate for.");
-  if (count < 1) return { created: 0, requested: count };
+  if (!dayId) throw new Error("Pick a day to generate for.");
+  const wanted = requests.filter((r) => r.ruleId && r.count > 0);
+  const totalRequested = wanted.reduce((sum, r) => sum + r.count, 0);
+  if (totalRequested === 0) return { created: 0, requested: 0, perRule: [] };
 
   const [
     { data: dayData },
@@ -146,20 +166,34 @@ export async function generateSortingLetters({
 
   const existing = existingData ?? [];
   const taken = new Set(existing.map((r) => r.sort_id as number));
-  const freeSlots: number[] = [];
-  for (let i = 0; i <= 99 && freeSlots.length < count; i++) {
-    if (!taken.has(i)) freeSlots.push(i);
-  }
+  let capacity = 0;
+  for (let i = 0; i <= 99; i++) if (!taken.has(i)) capacity++;
+
+  const rules = attachConditions(
+    (rulesData ?? []) as SortingRule[],
+    (conditionsData ?? []) as SortingRuleCondition[]
+  );
+  const letterFor = (ruleId: string) =>
+    rules.find((r) => r.rule.id === ruleId)?.rule.letter ?? "?";
+
   // Capacity is knowable up front — no point sampling letters there is no room
   // for.
-  if (freeSlots.length === 0) {
+  if (capacity === 0) {
     return {
       created: 0,
-      requested: count,
-      reason: "That day already holds 100 sorting letters (IDs 0–99).",
+      requested: totalRequested,
+      perRule: wanted.map((r) => ({
+        ruleId: r.ruleId,
+        ruleLetter: letterFor(r.ruleId),
+        created: 0,
+        requested: r.count,
+        reason: "That day already holds 100 sorting letters (IDs 0–99).",
+      })),
     };
   }
 
+  // Citizens already on the day's letters, grown as each rule's letters land
+  // so two rules don't both reach for the same person.
   const usedCitizenIds = new Set<string>();
   for (const row of existing) {
     if (row.sender_citizen_id) usedCitizenIds.add(row.sender_citizen_id as string);
@@ -167,51 +201,78 @@ export async function generateSortingLetters({
       usedCitizenIds.add(row.recipient_citizen_id as string);
   }
 
-  const rules = attachConditions(
-    (rulesData ?? []) as SortingRule[],
-    (conditionsData ?? []) as SortingRuleCondition[]
-  );
   const candidates = makeCandidates(
     (citizensData ?? []) as Citizen[],
     (citiesData ?? []) as City[],
     (nationsData ?? []) as Nation[]
   );
+  const dayNumberById = dayNumbers((daysData ?? []) as Day[]);
 
-  const { pairs, shortfall } = planLetters({
-    rules,
-    targetRuleId: ruleId,
-    dayNumber: day.number,
-    dayOfWeek: day.day_of_week,
-    dayNumberById: dayNumbers((daysData ?? []) as Day[]),
-    candidates,
-    usedCitizenIds,
-    count: freeSlots.length,
-    rng: Math.random,
-  });
-
+  const perRule: GenerationResult["perRule"] = [];
   let created = 0;
-  let lostToRace = 0;
-  for (const pair of pairs) {
-    const inserted = await insertGeneratedLetter(dayId, pair);
-    if (inserted) created++;
-    else lostToRace++;
+
+  for (const request of wanted) {
+    const room = Math.min(request.count, capacity);
+    if (room === 0) {
+      perRule.push({
+        ruleId: request.ruleId,
+        ruleLetter: letterFor(request.ruleId),
+        created: 0,
+        requested: request.count,
+        reason: "No free IDs left on that day.",
+      });
+      continue;
+    }
+
+    const { pairs, shortfall } = planLetters({
+      rules,
+      targetRuleId: request.ruleId,
+      dayNumber: day.number,
+      dayOfWeek: day.day_of_week,
+      dayNumberById,
+      candidates,
+      usedCitizenIds,
+      count: room,
+      rng: Math.random,
+    });
+
+    let ruleCreated = 0;
+    let lostToRace = 0;
+    for (const pair of pairs) {
+      const inserted = await insertGeneratedLetter(dayId, pair);
+      if (!inserted) {
+        lostToRace++;
+        continue;
+      }
+      ruleCreated++;
+      capacity--;
+      usedCitizenIds.add(pair.sender.citizen.id);
+      usedCitizenIds.add(pair.recipient.citizen.id);
+    }
+    created += ruleCreated;
+
+    // Order matters: a letter lost to a concurrent writer is a different story
+    // from a rule nothing could satisfy, and the planner's reason shouldn't be
+    // reported for a letter that planned fine and just lost its slot.
+    const reason =
+      ruleCreated < request.count
+        ? lostToRace > 0
+          ? "Another session claimed those IDs while generating — try again."
+          : (shortfall ??
+            (room < request.count ? "No free IDs left on that day." : undefined))
+        : undefined;
+
+    perRule.push({
+      ruleId: request.ruleId,
+      ruleLetter: letterFor(request.ruleId),
+      created: ruleCreated,
+      requested: request.count,
+      reason,
+    });
   }
 
   revalidateSortingLetterSurfaces();
-
-  // Order matters: a letter lost to a concurrent writer is a different story
-  // from a rule nothing could satisfy, and the planner's reason shouldn't be
-  // reported for a letter that was planned fine and just lost its slot.
-  const reason =
-    created < count
-      ? lostToRace > 0
-        ? "Another session claimed those IDs while generating — try again."
-        : (shortfall ??
-          (freeSlots.length < count
-            ? `Only ${freeSlots.length} free ID${freeSlots.length === 1 ? "" : "s"} left on that day.`
-            : undefined))
-      : undefined;
-  return { created, requested: count, reason };
+  return { created, requested: totalRequested, perRule };
 }
 
 /**

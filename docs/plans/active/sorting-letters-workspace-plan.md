@@ -33,12 +33,13 @@ sorts to a chosen rule.
   stays `not null`: a sorting letter always belongs to a day, so `content_id`
   is never ambiguous and `unique (day_id, sort_id)` keeps its meaning. The bulk
   menu offers "Set delivery day" with no clear.
-- **Rules with no `day_implemented_id` rank at 0** — active from the first day,
-  below every dated rule (a real day-1 rule ranks 1 and wins the tie).
+- **A rule with no `day_implemented_id` is never active.** An unset implemented
+  day means "not a rule yet", not "a rule since the beginning of the show". A
+  dangling implemented-day reference reads the same way.
 - **A rule stops applying on its `day_cancelled` day** (cancellation is
   inclusive of the cancelling day: active while `implemented <= day < cancelled`).
   A rule whose cancelled day precedes its implemented day is never active.
-  Missing/deleted day references degrade to undated / uncancelled.
+  A dangling cancelled-day reference reads as uncancelled.
 - The panel picks citizens with a plain `<Select>` over the directory rather than
   extracting the `HeroSearch` combobox out of `inspection/letters/workspace.tsx`.
   Upgrade path noted with a `ponytail:` comment if the directory outgrows it.
@@ -264,3 +265,32 @@ which rule it satisfied.
 - Generation is a retry loop, not a transaction (marked `ponytail:` in
   `actions.ts`). Move it into a Postgres function if concurrent generation
   becomes routine.
+
+## Round 2 (post-review changes)
+
+Requested after the first QA pass:
+
+- **An undated rule is not active.** `activeRules` now excludes rules with no
+  implemented day (previously they ranked 0 and applied from day 1). This is
+  the rule the generator's picker and the destination column both read, so an
+  unimplemented rule no longer offers itself as a target or claims letters.
+- **Generate takes a count per rule.** The dialog lists every rule in force on
+  the chosen day with its own number field; `generateSortingLetters` takes
+  `requests: [{ ruleId, count }]` and plans them in sequence against one shared
+  pool — free IDs are handed out across the whole batch, and citizens used by
+  an earlier rule's letters are avoided by the later ones. The result reports
+  per rule, so a shortfall names which rule fell short and why.
+- **The + button is a menu** — "Add blank sorting letter" or "Generate sorting
+  letters…". `OverflowMenu` grew an optional trigger icon rather than gaining a
+  second implementation.
+- **Clicking the open row closes the panel.**
+- **Lookup type.** A letter-level setting — none / 1 step / 2 step / 3 step —
+  reusing the existing `recipient_type` column, whose steps already meant
+  exactly this. Each step withholds one more line of the *recipient* address
+  from the player: nation, then city, then city code. The sender is always
+  shown in full, so the per-side type picker is gone and `sender_type` stays
+  `full`. Withheld fields are marked `· hidden` and dimmed in the panel but
+  remain editable — the value still exists and the rule evaluator still reads
+  it; only the player's view withholds it. The hiding itself lands when an
+  export or playthrough view is built.
+- `components/address-block.tsx` deleted — the detail page it served is gone.

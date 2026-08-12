@@ -81,6 +81,20 @@ export const ADDRESS_TYPE_LABELS: Record<AddressType, string> = {
   lookup_3: "3-lookup (name + citizen ID only)",
 };
 
+/**
+ * The same column read as the player's task: how many lookups the recipient
+ * address forces before the letter can be sorted. Each step withholds one more
+ * line of the address on export / in a playthrough, so the player has to look
+ * it up: 1 step hides the nation, 2 also hides the city, 3 also hides the city
+ * code.
+ */
+export const LOOKUP_TYPE_LABELS: Record<AddressType, string> = {
+  full: "— (none)",
+  lookup_1: "1 step — no nation",
+  lookup_2: "2 step — no nation, no city",
+  lookup_3: "3 step — no nation, city, or city code",
+};
+
 export const CONTENT_REF_TYPES = ["sorting", "inspection"] as const;
 export type ContentRefType = (typeof CONTENT_REF_TYPES)[number];
 

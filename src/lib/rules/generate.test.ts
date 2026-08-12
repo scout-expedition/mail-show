@@ -39,7 +39,9 @@ function makeRule(overrides: Partial<SortingRule> = {}): SortingRule {
     summary: null,
     notes: null,
     color_hex: null,
-    day_implemented_id: null,
+    // Dated by default: a rule with no implemented day is never active, so an
+    // undated one could never be a generation target.
+    day_implemented_id: "day-1",
     day_cancelled_id: null,
     destination_slot: 1,
     routes_to_reporting: false,

@@ -173,9 +173,14 @@ export type OverflowMenuItem =
 export function OverflowMenu({
   items,
   size = "default",
+  icon,
+  ariaLabel = "More actions",
 }: {
   items: OverflowMenuItem[];
   size?: "default" | "sm";
+  /** Overrides the kebab glyph — e.g. a Plus for an "add" menu. */
+  icon?: React.ReactNode;
+  ariaLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -211,10 +216,10 @@ export function OverflowMenu({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="More actions"
+        aria-label={ariaLabel}
         className={buttonClass}
       >
-        <MoreVertical size={iconSize} aria-hidden />
+        {icon ?? <MoreVertical size={iconSize} aria-hidden />}
       </button>
       {open ? (
         <div
